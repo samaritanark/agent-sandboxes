@@ -3,27 +3,29 @@
 #
 # Trivy security scans.
 #
-# Runs on every push to master, every PR, weekly, and on demand. Two
-# complementary scans:
+# Runs on every push to master, every PR, weekly, and on demand. Two scans:
 #
-#   - fs:     scans the repo tree for known CVEs in any tracked
-#             lockfiles/manifests and for accidentally committed secrets.
-#   - config: scans Dockerfiles and Kubernetes manifests for common
-#             misconfigurations (e.g. containers running as root,
-#             missing securityContext fields).
+#   - fs:     scans the repo tree for known CVEs in tracked lockfiles/manifests
+#             and for accidentally committed secrets.
+#   - config: scans Dockerfiles and Kubernetes manifests for misconfigurations
+#             (containers running as root, missing securityContext, etc.).
 #
-# Findings are uploaded to GitHub's code-scanning UI as SARIF when this
-# workflow runs on github.com. On Gitea, the scan still runs and prints
-# findings in the job log; only the SARIF upload step is skipped.
+# Findings print to the job log (table format). This is report-only — the job
+# does not fail on findings. To enforce, add `exit-code: 1` to the steps below
+# (keep severity + ignore-unfixed so it only trips on actionable issues).
 #
-# Report mode: the scan does not fail the job on findings — they surface
-# in the GitHub Security tab and the job log, but PRs are not blocked.
-# Tighten by setting `exit-code: 1` once the baseline is clean.
+# NOTE — Security tab / code scanning: this repo is PRIVATE, and GitHub code
+# scanning (SARIF upload) requires GitHub Advanced Security on private repos.
+# So findings go to the job log, not the Security tab. WHEN THIS REPO GOES
+# PUBLIC (code scanning is free for public repos), switch to the richer view:
+#   1. add to permissions:  security-events: write  and  actions: read
+#   2. on each Trivy step, replace `format: table` with
+#      `format: sarif` + `output: trivy-<fs|config>.sarif`
+#   3. add an `if: always()` step per file using
+#      github/codeql-action/upload-sarif@v4 to upload it.
 #
-# Not yet covered: image-content scans of the built agent containers
-# (apt/npm/pip/curl packages installed during `docker build`). This
-# requires image-build infrastructure in CI, which the repo does not
-# have today. Add image scan steps when that exists.
+# Not covered: image-content scans of the built agent containers — needs
+# image-build infrastructure in CI, which the repo doesn't have yet.
 
 on:  # yamllint disable-line rule:truthy
   push:
@@ -35,7 +37,6 @@ on:  # yamllint disable-line rule:truthy
 
 permissions:
   contents: read
-  security-events: write  # required for SARIF upload to code-scanning
 
 jobs:
   trivy:
@@ -43,15 +44,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Trivy filesystem scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
-          format: sarif
-          output: trivy-fs.sarif
+          format: table
           severity: CRITICAL,HIGH,MEDIUM
           ignore-unfixed: true
 
@@ -60,20 +60,5 @@ jobs:
         with:
           scan-type: config
           scan-ref: .
-          format: sarif
-          output: trivy-config.sarif
+          format: table
           severity: CRITICAL,HIGH,MEDIUM
-
-      - name: Upload SARIF (filesystem)
-        if: always() && github.server_url == 'https://github.com'
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-fs.sarif
-          category: trivy-fs
-
-      - name: Upload SARIF (config)
-        if: always() && github.server_url == 'https://github.com'
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-config.sarif
-          category: trivy-config
