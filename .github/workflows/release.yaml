@@ -42,9 +42,10 @@ jobs:
           fetch-tags: true
 
       - name: Install Taskfile
-        uses: actions/setup-task@v2
+        uses: arduino/setup-task@v2
         with:
           version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Resolve version from tag
         id: ver
