@@ -1,0 +1,16 @@
+# manifests/namespace.yaml
+# Sandbox Kubernetes namespace
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sandbox
+  labels:
+    # PodSecurity is set to privileged because both baseline and restricted
+    # block hostPath volumes (Kubernetes 1.25+), which are required for tier 2/3
+    # workspace mounts.  Sandbox isolation is enforced by two independent controls
+    # that PSA cannot provide: gVisor (RuntimeClass runsc) for syscall isolation
+    # and per-session CiliumNetworkPolicy (default-deny) for network isolation.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged

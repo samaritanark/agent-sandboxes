@@ -1,0 +1,34 @@
+---
+# yaml-language-server:$schema=https://json.schemastore.org/github-workflow.json
+#
+# Run the cluster-free test suite on every push.
+#
+# This workflow lives under .github/workflows/ rather than .gitea/workflows/
+# so it runs on both platforms: Gitea Actions reads .github/workflows/ by
+# default (1.21+), and GitHub Actions only reads .github/workflows/. One
+# file, both CI systems.
+#
+# Only tests/test-audit.sh runs here: it exercises the audit-log and
+# transcript-capture logic with no external dependencies. The remaining
+# tests in tests/ require a live k3s cluster (Cilium, gVisor, real
+# `sandbox run`) and are run manually against a real environment.
+
+on:  # yamllint disable-line rule:truthy
+  push:
+
+jobs:
+  test:
+    # Careful: Gitea / GitHub branch protection rules may key off this name.
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Taskfile
+        uses: actions/setup-task@v2
+        with:
+          version: 3.x
+
+      - name: Run cluster-free tests
+        run: task test

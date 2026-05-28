@@ -1,0 +1,61 @@
+---
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+#
+# Release packaging for the agent-sandboxes tool. The Gitea Actions
+# release workflow (.gitea/workflows/release.yaml) computes the version
+# and invokes `task release VERSION=vX.Y.Z`.
+version: 3
+
+vars:
+  APP: agent-sandboxes
+  DIST: dist
+  VERSION: '{{.VERSION | default "dev"}}'
+
+tasks:
+  test:
+    desc: >-
+      Run the cluster-free test suite (YAML helpers, profile/overlay
+      resolution, onboard credential staging, secret store, the cluster-
+      free parts of 'sandbox allow', audit / transcript logic). The rest
+      of tests/ needs a live k3s cluster and is run manually.
+    cmds:
+      - bash tests/test-config.sh
+      - bash tests/test-profile.sh
+      - bash tests/test-onboard.sh
+      - bash tests/test-secrets.sh
+      - bash tests/test-allow.sh
+      - bash tests/test-audit.sh
+
+  release:
+    desc: Build the release tarball. Pass VERSION=vX.Y.Z (defaults to "dev").
+    cmd: |-
+      set -euo pipefail
+
+      repo_dir=$(git rev-parse --show-toplevel)
+      cd "${repo_dir}"
+
+      version="{{.VERSION}}"
+      prefix="{{.APP}}-${version}"
+      dist="{{.DIST}}"
+      stage="${dist}/stage"
+      pkgdir="${stage}/${prefix}"
+      tarball="${dist}/${prefix}.tar.gz"
+
+      rm -rf "${stage}"
+      mkdir -p "${pkgdir}"
+
+      # Pull tracked release files at HEAD into the staging dir. tests/ is
+      # intentionally excluded — end users don't need the test suite.
+      git archive HEAD -- \
+        bin lib setup config manifests docker lima examples \
+        setup.sh uninstall.sh README.md PRINCIPLES.md \
+        | tar -x -C "${pkgdir}"
+
+      # Stamp the release version into the packaged CLI. The source tree
+      # keeps SANDBOX_VERSION="dev"; only the shipped artifact is pinned.
+      sed -i "s/^SANDBOX_VERSION=.*/SANDBOX_VERSION=\"${version}\"/" \
+        "${pkgdir}/bin/sandbox"
+
+      tar -czf "${tarball}" -C "${stage}" "${prefix}"
+      rm -rf "${stage}"
+      echo ">> Built ${tarball}"

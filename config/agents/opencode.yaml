@@ -1,0 +1,34 @@
+# config/agents/opencode.yaml
+# OpenCode agent profile (descriptive — runtime config lives in lib/agents.sh
+# and lib/credentials.sh; this file documents the contract).
+
+agent: opencode
+display_name: "OpenCode (OpenAI-compatible)"
+image_base: "sandbox:opencode"
+image_infra: "sandbox:opencode-infra"
+credential_type: apikey  # API key injected via Kubernetes Secret (PRINCIPLES.md)
+entrypoint: opencode
+
+# Allowed egress domains — derived at runtime from the hostname of
+# OPENCODE_BASE_URL (see lib/agents.sh:get_agent_domains). The operator
+# chooses the OpenAI-compatible endpoint (OpenAI, an internal proxy, vLLM,
+# Ollama, etc.); the sandbox restricts egress to that single host.
+allowed_domains: []
+
+# Environment variables injected into pod
+env:
+  HOME: /home/agent
+  TERM: xterm-256color
+  # OPENAI_BASE_URL is injected from the host's OPENCODE_BASE_URL at runtime
+  # (lib/manifest.sh). OPENAI_API_KEY is injected via K8s Secret.
+
+# Env vars sourced from Kubernetes Secret at session start
+secret_env:
+  - OPENAI_API_KEY
+  - OPENCODE_CONFIG_CONTENT
+
+# Host env vars required for this agent
+# (read at session start; stored in K8s Secret or passed to pod env)
+required_host_env:
+  - OPENCODE_API_KEY
+  - OPENCODE_BASE_URL

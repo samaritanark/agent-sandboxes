@@ -1,0 +1,17 @@
+# config/containerd-config.toml.tmpl
+# containerd drop-in config for gVisor integration with k3s
+# Deployed to: /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/gvisor.toml
+#
+# k3s (with bundled containerd v2) generates a version=3 base config at
+# /var/lib/rancher/k3s/agent/etc/containerd/config.toml which imports all
+# *.toml files from config-v3.toml.d/. This file is that drop-in — it only
+# adds the runsc runtime stanza; k3s owns everything else.
+#
+# Plugin path uses containerd v2 CRI runtime key (io.containerd.cri.v1.runtime).
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]
+  runtime_type = "io.containerd.runsc.v1"
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc.options]
+  TypeUrl    = "io.containerd.runsc.v1.options"
+  ConfigPath = "/etc/containerd/runsc.toml"

@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+# lib/onboard.sh — One-time host-to-sandbox credential staging
+#
+# 'sandbox onboard' copies an operator's existing host-side agent CLI
+# state into ~/.sandbox/agent-home/<agent>/ so the first sandbox session
+# uses already-authenticated OAuth tokens instead of triggering a fresh
+# login. It only touches OAuth state and benign settings files — see
+# PRINCIPLES.md ("Credential isolation", rule 1):
+#
+#   "Agents never hold long-lived API keys directly. Provider credentials
+#    (LLM keys, cloud tokens) are injected at runtime via Kubernetes
+#    Secrets keyed to the session, not baked into images, config files,
+#    or shell rcs that the agent could read."
+#
+# So:
+#   - claude / codex (OAuth): onboard stages the credential file.
+#   - opencode (API key): onboard refuses and points the operator at
+#     'sandbox secret' (Phase 4), which keeps the key host-side and
+#     injects a session-scoped K8s Secret at launch.
+#
+# Files copied per agent (best-effort; missing files are skipped silently):
+#
+#   claude  ~/.claude/.credentials.json  → ~/.sandbox/agent-home/claude/.credentials.json
+#           ~/.claude/settings.json       → ~/.sandbox/agent-home/claude/settings.json
+#
+#   codex   ~/.codex/auth.json            → ~/.sandbox/agent-home/codex/auth.json
+#           ~/.codex/config.toml          → ~/.sandbox/agent-home/codex/config.toml
+#
+# Conversation history (~/.claude/projects/, ~/.codex/sessions/) is
+# intentionally NOT copied — the sandbox is meant to start fresh.
+set -euo pipefail
+
+ONBOARD_AGENT_HOME_BASE="${HOME}/.sandbox/agent-home"
+
+# Forbidden host env vars: onboard never persists these and warns if
+# they're set. Matches lib/credentials.sh:HOST_ENV_BLOCKLIST_PATTERNS for
+# the LLM-provider keys; the runtime block remains the source of truth.
+ONBOARD_FORBIDDEN_ENV=(
+  "ANTHROPIC_API_KEY"
+  "ANTHROPIC_AUTH_TOKEN"
+  "OPENAI_API_KEY"
+)
+
+# warn_forbidden_env — emit a warning for each forbidden var that's
+# currently set in the host shell. Returns the count via stdout for the
+# caller's summary line.
+warn_forbidden_env() {
+  local count=0
+  local var
+  for var in "${ONBOARD_FORBIDDEN_ENV[@]}"; do
+    if [[ -n "${!var:-}" ]]; then
+      echo "  WARN: host env '${var}' is set." >&2
+      echo "        onboard will NOT copy it. PRINCIPLES.md rule 1 forbids" >&2
+      echo "        baking long-lived API keys into agent state." >&2
+      (( count++ )) || true
+    fi
+  done
+  echo "${count}"
+}
+
+# stage_file — copy <src> to <dst> with mode 0600. Honors --dry-run /
+# --force semantics from the caller via the two boolean args.
+#
+# Args: stage_file <src> <dst> <dry_run:true|false> <force:true|false>
+# Returns the action via stdout: "copied" | "skipped-exists" | "missing-src"
+stage_file() {
+  local src="$1"
+  local dst="$2"
+  local dry_run="$3"
+  local force="$4"
+
+  if [[ ! -f "${src}" ]]; then
+    echo "missing-src"
+    return 0
+  fi
+
+  if [[ -f "${dst}" ]] && [[ "${force}" != "true" ]]; then
+    echo "skipped-exists"
+    return 0
+  fi
+
+  if [[ "${dry_run}" == "true" ]]; then
+    echo "copied"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "${dst}")"
+  cp -f "${src}" "${dst}"
+  chmod 0600 "${dst}"
+  echo "copied"
+}
+
+# print_stage_result — pretty-print a stage_file outcome with a
+# host-relative source path for readability.
+print_stage_result() {
+  local agent="$1" src="$2" dst="$3" result="$4"
+  local src_disp="${src/#${HOME}/\~}"
+  local dst_disp="${dst/#${HOME}/\~}"
+  case "${result}" in
+    copied)
+      echo "  ${agent}: staged ${src_disp} → ${dst_disp}"
+      ;;
+    skipped-exists)
+      echo "  ${agent}: ${dst_disp} already exists — re-run with --force to overwrite."
+      ;;
+    missing-src)
+      echo "  ${agent}: no host-side state at ${src_disp} — skipping."
+      ;;
+  esac
+}
+
+# onboard_agent <agent> <dry_run> <force> — stage OAuth state + settings
+# for one agent. Returns 0 if any file was actionable (copied or
+# skipped-existing), or for opencode which always exits 0 after
+# printing the refusal. Caller decides what to print summary-wise.
+onboard_agent() {
+  local agent="$1"
+  local dry_run="$2"
+  local force="$3"
+
+  case "${agent}" in
+    claude)
+      _onboard_claude "${dry_run}" "${force}"
+      ;;
+    codex)
+      _onboard_codex "${dry_run}" "${force}"
+      ;;
+    opencode)
+      _onboard_opencode_refuse
+      ;;
+    *)
+      echo "  ${agent}: not a known agent — skipping." >&2
+      return 1
+      ;;
+  esac
+}
+
+_onboard_claude() {
+  local dry_run="$1" force="$2"
+  local agent_home="${ONBOARD_AGENT_HOME_BASE}/claude"
+  mkdir -p "${agent_home}"
+
+  local src dst result
+  for pair in \
+    "${HOME}/.claude/.credentials.json|${agent_home}/.credentials.json" \
+    "${HOME}/.claude/settings.json|${agent_home}/settings.json"
+  do
+    src="${pair%|*}"
+    dst="${pair##*|}"
+    result="$(stage_file "${src}" "${dst}" "${dry_run}" "${force}")"
+    print_stage_result claude "${src}" "${dst}" "${result}"
+  done
+}
+
+_onboard_codex() {
+  local dry_run="$1" force="$2"
+  local agent_home="${ONBOARD_AGENT_HOME_BASE}/codex"
+  mkdir -p "${agent_home}"
+
+  local src dst result
+  for pair in \
+    "${HOME}/.codex/auth.json|${agent_home}/auth.json" \
+    "${HOME}/.codex/config.toml|${agent_home}/config.toml"
+  do
+    src="${pair%|*}"
+    dst="${pair##*|}"
+    result="$(stage_file "${src}" "${dst}" "${dry_run}" "${force}")"
+    print_stage_result codex "${src}" "${dst}" "${result}"
+  done
+}
+
+_onboard_opencode_refuse() {
+  echo "  opencode: refused — opencode authenticates with an API key, not"
+  echo "            OAuth. PRINCIPLES.md rule 1 forbids baking long-lived"
+  echo "            API keys into agent state. Use 'sandbox secret set"
+  echo "            opencode-api-key' (Phase 4) instead; the secret is"
+  echo "            kept host-side and injected as a session-scoped K8s"
+  echo "            Secret at launch, then deleted on teardown."
+}
+
+# write_starter_user_config <dry_run> <force> — write a commented
+# starter ~/.sandbox/config.yaml so the operator can see the available
+# keys (extra_allowed_domains, overlay) without digging through docs.
+# Idempotent unless --force.
+write_starter_user_config() {
+  local dry_run="$1" force="$2"
+  local dst="${HOME}/.sandbox/config.yaml"
+
+  if [[ -f "${dst}" ]] && [[ "${force}" != "true" ]]; then
+    echo "  config: ${dst/#${HOME}/\~} already exists — leaving it alone."
+    return 0
+  fi
+
+  if [[ "${dry_run}" == "true" ]]; then
+    echo "  config: would write starter ${dst/#${HOME}/\~}"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "${dst}")"
+  cat > "${dst}" <<'YAML'
+# ~/.sandbox/config.yaml
+#
+# Per-user defaults for sandbox sessions. See README's "Persistent
+# extras" and "Profiles and overlays" sections for the full schema.
+# All keys below are optional.
+
+# Extra allowed egress domains, merged with the tier defaults on every
+# run. Subject to the org-level blocked-destinations check (and the
+# overlay's, if one is configured).
+# extra_allowed_domains:
+#   - internal-registry.example.com
+#   - artifactory.example.com
+
+# Path to a team overlay directory (ships profiles/, GOVERNANCE.md, an
+# additional blocked-destinations.yaml, and extra-ca-certs/). See
+# examples/overlay-template/. Overlays can only ADD restrictions; they
+# cannot weaken org-level controls or the tier model.
+# overlay: ~/overlays/myteam
+YAML
+  chmod 0600 "${dst}"
+  echo "  config: wrote starter ${dst/#${HOME}/\~}"
+}

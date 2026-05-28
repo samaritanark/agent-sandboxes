@@ -1,0 +1,36 @@
+# docker/Dockerfile.opencode
+# sandbox:opencode — OpenCode agent image
+# - Installs OpenCode binary from GitHub releases
+# - API key is injected at runtime via K8s Secret — NOT baked in
+# - Egress is restricted at runtime to a single OpenAI-compatible host
+#   (configured by the operator via OPENCODE_BASE_URL on the host)
+
+FROM sandbox:base
+
+# Install OpenCode from GitHub releases.
+# Repo moved from sst/opencode to anomalyco/opencode; asset is now a tarball.
+# Default 'latest' tracks the newest release so `sandbox rebuild` picks up
+# updates; pass --opencode-version X.Y.Z to pin a specific release.
+ARG OPENCODE_VERSION=latest
+USER root
+# opencode names its Intel build `x64` (not `amd64`/`x86_64`); arm64 matches.
+RUN arch="$(dpkg --print-architecture)" \
+  && case "${arch}" in amd64) arch=x64 ;; esac \
+  && if [ "${OPENCODE_VERSION}" = "latest" ]; then \
+      url="https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${arch}.tar.gz"; \
+    else \
+      url="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${arch}.tar.gz"; \
+    fi \
+  && curl -fsSL "${url}" | tar -xz -C /usr/local/bin \
+  && chmod +x /usr/local/bin/opencode
+USER agent
+RUN opencode --version
+
+# runtime by lib/manifest.sh (from the host's OPENCODE_BASE_URL and a K8s
+# Secret respectively). Neither is baked into the image.
+
+RUN test -z "${OPENAI_API_KEY:-}" || \
+    (echo "ERROR: OPENAI_API_KEY must not be set in image" && exit 1)
+
+ENTRYPOINT ["opencode"]
+CMD []
