@@ -4,7 +4,7 @@
 # - No tsh, docker CLI, podman CLI, or SSH client
 # - Non-root user 'agent' (UID 1000)
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 # Prevent interactive prompts during package install
 ENV DEBIAN_FRONTEND=noninteractive
