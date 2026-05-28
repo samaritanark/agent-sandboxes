@@ -1,0 +1,30 @@
+# Build artifacts produced by `task release` etc.
+dist/
+
+# Editor / OS scratch
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Per-user / per-session state from agent CLIs that may drop files into
+# the working tree. None of these are project content; keep them out of
+# the repo whether or not the tool was used here.
+.claude/
+.codex/
+.opencode/
+
+# General-purpose scratch — anything dropped here is by definition not
+# project content.
+tmp/
+
+# Language / build-tool caches
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+
+# Per-user TLS-intercept proxy roots (Zscaler/Netskope/etc.) — org-specific,
+# not project content. The directories themselves are kept via .gitkeep.
+config/extra-ca-certs/*.crt
+docker/extra-ca-certs/*.crt

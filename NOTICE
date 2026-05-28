@@ -1,0 +1,15 @@
+Agent Sandbox
+
+Copyright 2026 Samaritan's Purse
+
+The code authored by Samaritan's Purse in this repository is licensed under
+Apache License, Version 2.0. See the LICENSE file for the full license terms.
+
+Agent Sandbox installs the following third-party open source dependencies from
+their respective upstream package repositories during setup. These third-party
+components are not bundled in this repository, are not sublicensed under this
+repository's license, and remain subject to their own license terms.
+
+  gVisor (runsc)      Apache License 2.0
+  Cilium              Apache License 2.0
+  k3s                 Apache License 2.0

@@ -1,0 +1,12 @@
+# docker/Dockerfile.shell
+# sandbox:shell — Interactive shell image for debugging and exploration
+# - Based on sandbox:base
+# - Entrypoint is bash
+# - Useful for ad-hoc investigation without a specific agent tool
+
+FROM sandbox:base
+
+# No additional packages — shell sessions use the base toolset
+
+ENTRYPOINT ["/bin/bash"]
+CMD ["--login"]

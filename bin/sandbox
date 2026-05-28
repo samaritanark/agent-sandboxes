@@ -1,0 +1,2195 @@
+#!/usr/bin/env bash
+# bin/sandbox — Agent Sandbox CLI
+# See PRINCIPLES.md for the design intent (threat model, tier model,
+# credential isolation, default-deny egress, filesystem masking).
+set -euo pipefail
+
+###############################################################################
+# Constants & paths
+###############################################################################
+SANDBOX_VERSION="dev"  # stamped to the release tag by 'task release'
+SANDBOX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SANDBOX_LOGS_DIR="${SANDBOX_LOGS_DIR:-${HOME}/.sandbox/logs}"
+SANDBOX_NAMESPACE="sandbox"
+SANDBOX_RUNTIME_CLASS="gvisor"
+SANDBOX_SERVICE_ACCOUNT="sandbox-agent"
+
+# Source library files
+# shellcheck source=../lib/platform.sh
+source "${SANDBOX_ROOT}/lib/platform.sh"
+# shellcheck source=../lib/lima.sh
+source "${SANDBOX_ROOT}/lib/lima.sh"
+# shellcheck source=../lib/cluster.sh
+source "${SANDBOX_ROOT}/lib/cluster.sh"
+# shellcheck source=../lib/agents.sh
+source "${SANDBOX_ROOT}/lib/agents.sh"
+# shellcheck source=../lib/tier.sh
+source "${SANDBOX_ROOT}/lib/tier.sh"
+# shellcheck source=../lib/policy.sh
+source "${SANDBOX_ROOT}/lib/policy.sh"
+# shellcheck source=../lib/resources.sh
+source "${SANDBOX_ROOT}/lib/resources.sh"
+# shellcheck source=../lib/manifest.sh
+source "${SANDBOX_ROOT}/lib/manifest.sh"
+# shellcheck source=../lib/filesystem.sh
+source "${SANDBOX_ROOT}/lib/filesystem.sh"
+# shellcheck source=../lib/credentials.sh
+source "${SANDBOX_ROOT}/lib/credentials.sh"
+# shellcheck source=../lib/audit.sh
+source "${SANDBOX_ROOT}/lib/audit.sh"
+# shellcheck source=../lib/checks.sh
+source "${SANDBOX_ROOT}/lib/checks.sh"
+# shellcheck source=../lib/config.sh
+source "${SANDBOX_ROOT}/lib/config.sh"
+# shellcheck source=../lib/profile.sh
+source "${SANDBOX_ROOT}/lib/profile.sh"
+# shellcheck source=../lib/onboard.sh
+source "${SANDBOX_ROOT}/lib/onboard.sh"
+# shellcheck source=../lib/secrets.sh
+source "${SANDBOX_ROOT}/lib/secrets.sh"
+# shellcheck source=../lib/network.sh
+source "${SANDBOX_ROOT}/lib/network.sh"
+# shellcheck source=../lib/certs.sh
+source "${SANDBOX_ROOT}/lib/certs.sh"
+
+###############################################################################
+# Utility helpers
+###############################################################################
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+info() {
+  echo "  $*"
+}
+
+warn() {
+  echo "WARN: $*" >&2
+}
+
+# Print usage and exit
+usage() {
+  cat <<EOF
+sandbox ${SANDBOX_VERSION} — AI agent sandboxed execution environment
+
+USAGE:
+  sandbox <COMMAND> [OPTIONS]
+
+COMMANDS:
+  run          Launch a sandboxed agent session
+  resume       Reconnect to a running session
+  allow        Add domains to a running session's egress allowlist (no restart)
+  list         List active and recent sessions
+  logs         Show audit log for a session
+  flows        Show Hubble network flows for a session
+  stop         Stop a session and run teardown
+  cleanup      Remove old session logs
+  check        Pre-flight workspace check
+  status       Show cluster and sandbox status
+  setup        Install/configure sandbox prerequisites
+  onboard      Stage host-side agent OAuth state for first-run convenience
+  secret       Manage host-side secret store (injected per-session by profile)
+  configure-network   Re-detect host network state and reconcile k3s/Cilium
+                      (run after a VPN reconnects or the host IP changes)
+  setup-proxy-cert    Extract a corporate TLS-intercept proxy's root CA
+                      from the host trust store and drop it in
+                      config/extra-ca-certs/ for the image build
+  rebuild      Rebuild sandbox container image(s)
+  version      Print version
+
+Run 'sandbox <COMMAND> --help' for command-specific help.
+
+EXAMPLES:
+  sandbox run --agent claude --tier 1
+  sandbox run --agent claude --tier 2 --repo ~/repos/my-project
+  sandbox run --agent claude --tier 3 --repo ~/repos/infra \\
+      --infra-kubeconfig ~/.kube/config --infra-kube-context dev
+  sandbox run --agent opencode --tier 3 --repo ~/repos/infra --infra-token ~/.infra-token
+  sandbox list
+  sandbox logs ses-20260401-143022-a7b3
+  sandbox cleanup --older-than 30
+EOF
+  exit 0
+}
+
+usage_run() {
+  cat <<EOF
+sandbox run — Launch a sandboxed agent session
+
+USAGE:
+  sandbox run [OPTIONS]
+
+OPTIONS:
+  --agent <claude|codex|opencode>   Agent to run (default: claude)
+  --tier <1|2|3>                    Isolation tier (default: 1)
+  --profile <NAME>                  Named profile or numeric tier alias.
+                                    '1', '2', '3' aliases --tier <N>.
+                                    Other names resolve a YAML in
+                                    ~/.sandbox/profiles/<name>.yaml or the
+                                    overlay's profiles/<name>.yaml and
+                                    contribute: required tier, optional
+                                    default --repo, and extra_allowed_domains
+                                    (subject to the blocked-destinations
+                                    check). Mutually consistent with --tier.
+  --repo <PATH>                     Workspace path (required for tier 2/3;
+                                    repeatable — pass multiple times to mount
+                                    several repos under /workspace/<basename>)
+  --allow-domain <DOMAIN>           Extra allowed egress domain (repeatable)
+  --base-url <URL>                  OpenAI-compatible endpoint URL for the
+                                    opencode agent. Overrides OPENCODE_BASE_URL
+                                    in the host env. Required for opencode
+                                    (via this flag or the env var).
+  --infra-token <PATH>              Path to infra token file (tier 3)
+                                    Injected as INFRA_TOKEN env var inside pod.
+  --infra-kubeconfig <PATH>         Path to kubeconfig file (tier 3)
+                                    Minified to a single context, mounted as a
+                                    Secret at /home/agent/.kube/config, and
+                                    KUBECONFIG is set. The cluster's API
+                                    server hostname/port is auto-allowlisted.
+  --infra-kube-context <NAME>       Context to extract from --infra-kubeconfig
+                                    (default: kubeconfig's current-context)
+  --allow-exec-plugin               Don't prompt when --infra-kubeconfig uses
+                                    an exec credential plugin (it won't work
+                                    in the pod; useful only if kubectl access
+                                    is best-effort, e.g. you also pass an
+                                    --infra-token for the real auth path)
+  --infra-endpoint <URL>            Extra infra endpoint URL (tier 3, repeatable)
+  --dry-run                         Print manifests without applying
+  --name <NAME>                     Human-readable session name
+  --keep-alive                      Leave the pod running after disconnect
+                                    (default: tear down on exit to free cluster
+                                    resources; conversation history persists in
+                                    ~/.sandbox/agent-home/<agent>/ and can be
+                                    restored via the agent's /resume command)
+  --help                            Show this help
+
+TIERS:
+  1  Ephemeral workspace, agent domains only
+  2  Host repo mounted, agent + project domains (github, pypi, npm, terraform)
+  3  Tier 2 + infra tooling image + dynamic endpoints
+     Requires at least one of --infra-token or --infra-kubeconfig.
+
+PERSISTENT EXTRAS:
+  Three sources contribute additional allowed egress domains on every run,
+  so you don't need --allow-domain for hosts your team always needs:
+    ~/.sandbox/config.yaml         extra_allowed_domains: list (YAML)
+    \$SANDBOX_EXTRA_ALLOWED_DOMAINS comma-separated env var
+    <repo>/.sandbox/config.yaml    per-repo extras (one per --repo)
+  All three are subject to the blocked-destinations check.
+
+OVERLAYS:
+  Teams can ship a directory of profiles, GOVERNANCE.md, an additive
+  blocked-destinations.yaml, and extra-ca-certs/ in an overlay. Point at
+  it via \$SANDBOX_OVERLAY or 'overlay: <path>' in ~/.sandbox/config.yaml.
+  Overlays only ADD restrictions — nothing in an overlay can weaken the
+  org-level blocked-destinations list or the tier model.
+
+See PRINCIPLES.md for design intent (threat model, tier model, credential
+isolation, never-permitted list).
+EOF
+  exit 0
+}
+
+###############################################################################
+# Session ID generation — ses-<YYYYMMDD>-<HHMMSS>-<4hex>
+###############################################################################
+generate_session_id() {
+  local date_part
+  local time_part
+  local rand_part
+  date_part="$(date -u '+%Y%m%d')"
+  time_part="$(date -u '+%H%M%S')"
+  rand_part="$(head -c 2 /dev/urandom | xxd -p | head -c 4)"
+  echo "ses-${date_part}-${time_part}-${rand_part}"
+}
+
+###############################################################################
+# generate_uuid — emit a random RFC-4122 v4 UUID using only /dev/urandom and
+# xxd (both already required tools — see lib/checks.sh; avoids a uuidgen dep).
+# Used to pin an agent's conversation ID so its transcript file is known.
+###############################################################################
+generate_uuid() {
+  local h
+  h="$(head -c 16 /dev/urandom | xxd -p | tr -d '\n')"
+  printf '%s-%s-4%s-%x%s-%s\n' \
+    "${h:0:8}" "${h:8:4}" "${h:13:3}" \
+    "$(( 0x${h:16:1} & 0x3 | 0x8 ))" "${h:17:3}" "${h:20:12}"
+}
+
+###############################################################################
+# resolve_pod_name — read pod_name from session.json; fall back to legacy format
+###############################################################################
+resolve_pod_name() {
+  local session_id="$1"
+  local session_json="${SANDBOX_LOGS_DIR}/${session_id}/session.json"
+  local pod_name
+  pod_name="$(jq -r '.pod_name // ""' "${session_json}" 2>/dev/null || true)"
+  if [[ -z "${pod_name}" ]]; then
+    pod_name="sandbox-${session_id}"
+  fi
+  echo "${pod_name}"
+}
+
+###############################################################################
+# Session banner
+###############################################################################
+print_session_banner() {
+  local session_id="$1"
+  local agent="$2"
+  local tier="$3"
+  local domain_count="$4"
+  local log_dir="$5"
+  local name="${6:-}"
+  shift 6
+  local -a repos=("$@")
+
+  local agent_desc
+  local tier_desc
+
+  case "${agent}" in
+    claude)   agent_desc="claude (Anthropic OAuth)" ;;
+    codex)    agent_desc="codex (OpenAI OAuth)" ;;
+    opencode) agent_desc="opencode (vLLM proxy)" ;;
+    *)        agent_desc="${agent}" ;;
+  esac
+
+  case "${tier}" in
+    1) tier_desc="1 — Ephemeral" ;;
+    2) tier_desc="2 — Project" ;;
+    3) tier_desc="3 — Infra" ;;
+    *) tier_desc="${tier}" ;;
+  esac
+
+  local log_display="${log_dir/#${HOME}/\~}"
+  local sep="  ────────────────────────────────────────────────"
+
+  echo "${sep}"
+  echo "  SANDBOX SESSION"
+  echo "${sep}"
+  printf "  %-9s  %s\n" "Session" "${session_id}"
+  [[ -n "${name}" ]] && printf "  %-9s  %s\n" "Name" "${name}"
+  printf "  %-9s  %s\n" "Agent"   "${agent_desc}"
+  printf "  %-9s  %s\n" "Tier"    "${tier_desc}"
+  # Read profile/overlay from env vars set by cmd_run — avoids threading
+  # two more positional args through every banner call site.
+  if [[ -n "${SESSION_PROFILE:-}" ]]; then
+    printf "  %-9s  %s\n" "Profile" "${SESSION_PROFILE}"
+  fi
+  if [[ -n "${SESSION_OVERLAY:-}" ]]; then
+    printf "  %-9s  %s\n" "Overlay" "${SESSION_OVERLAY/#${HOME}/\~}"
+  fi
+
+  if [[ "${#repos[@]}" -eq 0 ]]; then
+    printf "  %-9s  %s\n" "Repo"  "emptyDir (ephemeral)"
+  elif [[ "${#repos[@]}" -eq 1 ]]; then
+    printf "  %-9s  %s\n" "Repo"  "${repos[0]/#${HOME}/\~}"
+  else
+    printf "  %-9s  %s\n" "Repos"  "${#repos[@]} mounted under /workspace:"
+    local r
+    for r in "${repos[@]}"; do
+      printf "             /workspace/%s  ←  %s\n" \
+        "$(basename "${r}")" "${r/#${HOME}/\~}"
+    done
+  fi
+
+  printf "  %-9s  %s\n" "Egress"  "${agent} + tier${tier} (${domain_count} domains)"
+  printf "  %-9s  %s\n" "Runtime" "gvisor"
+  printf "  %-9s  %s\n" "Log"     "${log_display}"
+  echo "${sep}"
+}
+
+###############################################################################
+# cmd_run — main session launch
+###############################################################################
+cmd_run() {
+  local opt_agent="claude"
+  local opt_tier="1"
+  local opt_tier_explicit="false"
+  local opt_profile=""
+  local -a opt_repos=()
+  local opt_name=""
+  local opt_infra_token=""
+  local opt_infra_kubeconfig=""
+  local opt_infra_kube_context=""
+  local opt_allow_exec_plugin="false"
+  local opt_dry_run="false"
+  local opt_keep_alive="false"
+  local opt_base_url=""
+  local -a opt_allow_domains=()
+  local -a opt_infra_endpoints=()
+
+  # Parse arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)               usage_run ;;
+      --agent)                 opt_agent="${2:?--agent requires a value}"; shift ;;
+      --agent=*)               opt_agent="${1#--agent=}" ;;
+      --tier)                  opt_tier="${2:?--tier requires a value}"; opt_tier_explicit="true"; shift ;;
+      --tier=*)                opt_tier="${1#--tier=}"; opt_tier_explicit="true" ;;
+      --profile)               opt_profile="${2:?--profile requires a value}"; shift ;;
+      --profile=*)             opt_profile="${1#--profile=}" ;;
+      --repo)                  opt_repos+=("${2:?--repo requires a value}"); shift ;;
+      --repo=*)                opt_repos+=("${1#--repo=}") ;;
+      --allow-domain)          opt_allow_domains+=("${2:?--allow-domain requires a value}"); shift ;;
+      --allow-domain=*)        opt_allow_domains+=("${1#--allow-domain=}") ;;
+      --base-url)              opt_base_url="${2:?--base-url requires a value}"; shift ;;
+      --base-url=*)            opt_base_url="${1#--base-url=}" ;;
+      --infra-token)           opt_infra_token="${2:?--infra-token requires a value}"; shift ;;
+      --infra-token=*)         opt_infra_token="${1#--infra-token=}" ;;
+      --infra-kubeconfig)      opt_infra_kubeconfig="${2:?--infra-kubeconfig requires a value}"; shift ;;
+      --infra-kubeconfig=*)    opt_infra_kubeconfig="${1#--infra-kubeconfig=}" ;;
+      --infra-kube-context)    opt_infra_kube_context="${2:?--infra-kube-context requires a value}"; shift ;;
+      --infra-kube-context=*)  opt_infra_kube_context="${1#--infra-kube-context=}" ;;
+      --allow-exec-plugin)     opt_allow_exec_plugin="true" ;;
+      --infra-endpoint)        opt_infra_endpoints+=("${2:?--infra-endpoint requires a value}"); shift ;;
+      --infra-endpoint=*)      opt_infra_endpoints+=("${1#--infra-endpoint=}") ;;
+      --dry-run)               opt_dry_run="true" ;;
+      --name)                  opt_name="${2:?--name requires a value}"; shift ;;
+      --name=*)                opt_name="${1#--name=}" ;;
+      --keep-alive)            opt_keep_alive="true" ;;
+      *)                       die "Unknown option: $1. Run 'sandbox run --help' for usage." ;;
+    esac
+    shift
+  done
+
+  # Expand tilde in repo / kubeconfig paths
+  local _i
+  for _i in "${!opt_repos[@]}"; do
+    opt_repos[$_i]="${opt_repos[$_i]/#\~/${HOME}}"
+  done
+  if [[ -n "${opt_infra_kubeconfig}" ]]; then
+    opt_infra_kubeconfig="${opt_infra_kubeconfig/#\~/${HOME}}"
+  fi
+
+  # Profile resolution. Numeric profiles ('1'|'2'|'3') are pure aliases for
+  # --tier <N>. Named profiles resolve to a YAML in ~/.sandbox/profiles or
+  # the overlay; their `tier:` field is treated exactly like --tier and
+  # passes through the same validate_tier check below. SESSION_PROFILE /
+  # SESSION_OVERLAY are exported for the audit record so we can tell, post
+  # hoc, which profile/overlay produced the session.
+  SESSION_PROFILE=""
+  SESSION_OVERLAY=""
+  if [[ -n "${opt_profile}" ]]; then
+    local _resolved_overlay
+    _resolved_overlay="$(resolve_overlay_path)"
+    SESSION_OVERLAY="${_resolved_overlay}"
+
+    if is_numeric_profile "${opt_profile}"; then
+      if [[ "${opt_tier_explicit}" == "true" ]] && [[ "${opt_tier}" != "${opt_profile}" ]]; then
+        die "--profile ${opt_profile} conflicts with --tier ${opt_tier}; pass only one."
+      fi
+      opt_tier="${opt_profile}"
+      SESSION_PROFILE="${opt_profile}"
+    else
+      local _profile_path
+      if ! _profile_path="$(find_profile_path "${opt_profile}")"; then
+        die "Profile '${opt_profile}' not found in ~/.sandbox/profiles/ or overlay (\$SANDBOX_OVERLAY / ~/.sandbox/config.yaml overlay:)."
+      fi
+      SESSION_PROFILE="${opt_profile}"
+      echo "==> Loading profile '${opt_profile}' (${_profile_path/#${HOME}/\~})"
+
+      local _profile_tier
+      _profile_tier="$(extract_yaml_scalar_from_file "${_profile_path}" tier)"
+      [[ -n "${_profile_tier}" ]] || die "Profile '${opt_profile}' missing required 'tier:' field."
+      if [[ "${opt_tier_explicit}" == "true" ]] && [[ "${opt_tier}" != "${_profile_tier}" ]]; then
+        die "Profile '${opt_profile}' declares tier ${_profile_tier} but --tier ${opt_tier} was also passed; remove --tier or change the profile."
+      fi
+      opt_tier="${_profile_tier}"
+
+      local _profile_default_repo
+      _profile_default_repo="$(extract_yaml_scalar_from_file "${_profile_path}" default_repo)"
+      if [[ -n "${_profile_default_repo}" ]] && [[ "${#opt_repos[@]}" -eq 0 ]]; then
+        opt_repos+=("${_profile_default_repo/#\~/${HOME}}")
+        echo "    default_repo: ${_profile_default_repo}"
+      fi
+
+      local _profile_extra
+      while IFS= read -r _profile_extra; do
+        [[ -z "${_profile_extra}" ]] && continue
+        opt_allow_domains+=("${_profile_extra}")
+      done < <(extract_yaml_list_from_file "${_profile_path}" extra_allowed_domains)
+
+      # Phase 4/5: secrets and mcps are read here so the audit record can
+      # see them; the actual injection wiring is added in those phases.
+      SESSION_PROFILE_SECRETS="$(extract_yaml_list_from_file "${_profile_path}" secrets | paste -sd, - 2>/dev/null || true)"
+      SESSION_PROFILE_MCPS="$(extract_yaml_list_from_file "${_profile_path}" mcps | paste -sd, - 2>/dev/null || true)"
+    fi
+  fi
+
+  ###########################################################################
+  # Step 1: Validate inputs
+  ###########################################################################
+  echo "==> Validating inputs..."
+
+  validate_agent "${opt_agent}"
+  validate_tier "${opt_tier}"
+
+  # --base-url overrides OPENCODE_BASE_URL from the host environment. Exported
+  # so the downstream libs (credentials.sh, manifest.sh, agents.sh) see the
+  # resolved value through the same env-var path they always use.
+  if [[ -n "${opt_base_url}" ]]; then
+    export OPENCODE_BASE_URL="${opt_base_url}"
+  fi
+
+  # opencode requires both an API key and an endpoint URL — fail fast before
+  # creating any cluster resources. The URL must include a scheme; without it,
+  # the host-side curl that fetches the model list silently produces an empty
+  # config and the launched pod ends up reporting "no provider set".
+  if [[ "${opt_agent}" == "opencode" ]]; then
+    if [[ -z "${OPENCODE_API_KEY:-}" ]]; then
+      die "OPENCODE_API_KEY must be set in host environment for opencode agent."
+    fi
+    if [[ -z "${OPENCODE_BASE_URL:-}" ]]; then
+      die "opencode requires an OpenAI-compatible endpoint URL — pass --base-url <URL> or set OPENCODE_BASE_URL in the host environment."
+    fi
+    if [[ ! "${OPENCODE_BASE_URL}" =~ ^https?://[^/[:space:]] ]]; then
+      die "OPENCODE_BASE_URL must be a complete URL with http(s) scheme — got '${OPENCODE_BASE_URL}'. Example: https://vllm-proxy.example.com/v1"
+    fi
+  fi
+
+  if [[ "${opt_tier}" -ge 2 ]] && [[ "${#opt_repos[@]}" -eq 0 ]]; then
+    die "Tier ${opt_tier} requires --repo <PATH>."
+  fi
+
+  local _r
+  for _r in "${opt_repos[@]+"${opt_repos[@]}"}"; do
+    validate_repo_path "${_r}"
+  done
+
+  # When multiple --repo are given, basenames must be unique because each
+  # repo is mounted at /workspace/<basename>. Refuse on collision.
+  if [[ "${#opt_repos[@]}" -gt 1 ]]; then
+    local _dup
+    _dup="$(printf '%s\n' "${opt_repos[@]}" | xargs -n1 basename 2>/dev/null \
+      | sort | uniq -d | head -1)"
+    if [[ -n "${_dup}" ]]; then
+      die "duplicate --repo basename '${_dup}' — rename one repo or symlink it before passing both."
+    fi
+  fi
+
+  if [[ "${opt_tier}" -eq 3 ]]; then
+    if [[ -z "${opt_infra_token}" ]] && [[ -z "${opt_infra_kubeconfig}" ]]; then
+      die "Tier 3 requires at least one of --infra-token <PATH> or --infra-kubeconfig <PATH>."
+    fi
+    if [[ -n "${opt_infra_token}" ]] && [[ ! -f "${opt_infra_token}" ]]; then
+      die "Infra token file not found: ${opt_infra_token}."
+    fi
+    if [[ -n "${opt_infra_kubeconfig}" ]] && [[ ! -f "${opt_infra_kubeconfig}" ]]; then
+      die "Kubeconfig file not found: ${opt_infra_kubeconfig}."
+    fi
+  else
+    if [[ -n "${opt_infra_kubeconfig}" ]]; then
+      die "--infra-kubeconfig is only valid for tier 3."
+    fi
+  fi
+  if [[ -n "${opt_infra_kube_context}" ]] && [[ -z "${opt_infra_kubeconfig}" ]]; then
+    die "--infra-kube-context requires --infra-kubeconfig."
+  fi
+
+  # Merge persistent extras from ~/.sandbox/config.yaml and the
+  # SANDBOX_EXTRA_ALLOWED_DOMAINS env var into the per-invocation list so
+  # they go through the same blocked-destinations validation below. Lets
+  # operators ship a per-user/per-team default allowlist without baking
+  # their internal hosts into this repo. See lib/config.sh.
+  local _extra_domain
+  while IFS= read -r _extra_domain; do
+    [[ -z "${_extra_domain}" ]] && continue
+    opt_allow_domains+=("${_extra_domain}")
+  done < <(load_user_extra_allowed_domains)
+
+  # Per-repo extras: load <repo>/.sandbox/config.yaml for each --repo and
+  # print a banner showing what each repo contributed. Banner runs on every
+  # session start (not just first-time) so a domain slipped into a repo
+  # config stays visible to the operator launching it. Each entry still
+  # goes through the blocked-destinations check below.
+  local _repo _repo_config _d
+  local -a _repo_extras=()
+  for _repo in "${opt_repos[@]+"${opt_repos[@]}"}"; do
+    _repo_config="${_repo}/.sandbox/config.yaml"
+    [[ -f "${_repo_config}" ]] || continue
+    _repo_extras=()
+    while IFS= read -r _extra_domain; do
+      [[ -z "${_extra_domain}" ]] && continue
+      _repo_extras+=("${_extra_domain}")
+      opt_allow_domains+=("${_extra_domain}")
+    done < <(load_extra_allowed_domains_from_file "${_repo_config}")
+    if [[ "${#_repo_extras[@]}" -gt 0 ]]; then
+      echo "==> $(basename "${_repo}")/.sandbox/config.yaml contributes ${#_repo_extras[@]} extra domain(s):"
+      for _d in "${_repo_extras[@]}"; do
+        echo "      - ${_d}"
+      done
+    fi
+  done
+
+  # Validate allowed domains against blocked list
+  for domain in "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}"; do
+    check_domain_not_blocked "${domain}"
+  done
+
+  # Profile-declared secrets: parse SESSION_PROFILE_SECRETS (set by the
+  # profile-resolution block above), confirm each name exists in the
+  # host-side store, and surface them for the manifest builder. The
+  # actual K8s Secret is created later (Step 4 area) once we know the
+  # session ID. Validating up front fails fast before any cluster ops.
+  declare -ga SESSION_PROFILE_SECRETS_LIST=()
+  SESSION_HAS_SECRETS="false"
+  if [[ -n "${SESSION_PROFILE_SECRETS:-}" ]]; then
+    local _s _ifs="${IFS}"
+    IFS=','
+    for _s in ${SESSION_PROFILE_SECRETS}; do
+      _s="$(echo "${_s}" | tr -d '[:space:]')"
+      [[ -z "${_s}" ]] && continue
+      secret_validate_name "${_s}"
+      if ! secret_exists "${_s}"; then
+        IFS="${_ifs}"
+        die "Profile '${SESSION_PROFILE}' requires secret '${_s}' but it's not in the host-side store. Run 'sandbox secret set ${_s}' first."
+      fi
+      SESSION_PROFILE_SECRETS_LIST+=("${_s}")
+    done
+    IFS="${_ifs}"
+    if [[ "${#SESSION_PROFILE_SECRETS_LIST[@]}" -gt 0 ]]; then
+      SESSION_HAS_SECRETS="true"
+      echo "==> Profile secrets to inject: ${SESSION_PROFILE_SECRETS_LIST[*]}"
+    fi
+  fi
+  export SESSION_HAS_SECRETS
+
+  # Ensure cluster is reachable (and Lima is running on macOS)
+  ensure_cluster_ready
+
+  # Auto-correct Cilium's device wiring if the host's primary NIC or VPN
+  # interfaces have changed since the cluster was last configured. Skipped
+  # for --dry-run since a correction mutates the cluster (helm upgrade +
+  # Cilium restart). See lib/network.sh.
+  if [[ "${opt_dry_run}" != "true" ]]; then
+    ensure_network_config_current "${SANDBOX_KUBECONFIG}"
+  fi
+
+  ###########################################################################
+  # Step 1b: Process --infra-kubeconfig (minify, scan for exec plugins,
+  #          extract API server host/port). The minified file lives in a
+  #          0600 temp file that we delete on exit.
+  ###########################################################################
+  local kubeconfig_minified=""
+  local kube_server_host=""
+  local kube_server_port=""
+  local kube_server_ip=""
+  if [[ -n "${opt_infra_kubeconfig}" ]]; then
+    kubeconfig_minified="$(mktemp -t sandbox-kubeconfig.XXXXXX)"
+    chmod 0600 "${kubeconfig_minified}"
+    # shellcheck disable=SC2064
+    trap "rm -f '${kubeconfig_minified}'" EXIT
+
+    echo "==> Minifying kubeconfig (context: ${opt_infra_kube_context:-<current-context>})..."
+    minify_kubeconfig "${opt_infra_kubeconfig}" "${opt_infra_kube_context}" \
+      > "${kubeconfig_minified}"
+
+    local exec_cmd
+    exec_cmd="$(kubeconfig_exec_command "${kubeconfig_minified}")"
+    if [[ -n "${exec_cmd}" ]]; then
+      warn "kubeconfig uses exec credential plugin '${exec_cmd}'."
+      warn "  That binary is NOT present inside the sandbox image, and even if"
+      warn "  it were, its host-side config (e.g. ~/.tsh/, ~/.aws/) is not"
+      warn "  mounted. Every kubectl call inside the sandbox WILL FAIL at auth."
+      warn "  Bake a static kubeconfig before mounting — see examples/ in the"
+      warn "  repo, or README §'Tier 3 Infra Credentials'."
+      if [[ "${opt_allow_exec_plugin}" == "true" ]]; then
+        warn "  --allow-exec-plugin set; continuing anyway."
+      elif [[ "${opt_dry_run}" == "true" ]]; then
+        : # dry-run never launches; no need to prompt
+      elif [[ ! -t 0 ]]; then
+        die "stdin is not a TTY; refusing to launch with a broken kubeconfig. Pass --allow-exec-plugin to override."
+      else
+        local reply=""
+        printf "  Continue anyway? [y/N] " >&2
+        read -r reply
+        case "${reply}" in
+          y|Y|yes|YES) ;;
+          *) die "Aborted. Bake static credentials and retry, or re-run with --allow-exec-plugin." ;;
+        esac
+      fi
+    fi
+
+    local server_url
+    server_url="$(kubeconfig_server_url "${kubeconfig_minified}")"
+    if [[ -z "${server_url}" ]]; then
+      die "Could not read cluster.server from minified kubeconfig."
+    fi
+    kube_server_host="$(url_host "${server_url}")"
+    kube_server_port="$(url_port "${server_url}")"
+    echo "  Cluster API: ${server_url}"
+    echo "  Auto-allowlisting: ${kube_server_host}:${kube_server_port:-443}"
+
+    # Record the API server hostname in the session allowlist — audit
+    # (session.json) and a toFQDNs fallback. Primary enforcement is the
+    # toCIDR rule keyed on kube_server_ip (Step 7).
+    opt_allow_domains+=("${kube_server_host}")
+
+    # Resolve the API server hostname on the host and pin it as a pod
+    # hostAlias. This sidesteps environments where the pod's CoreDNS can't
+    # reach the resolver that knows the name (corporate VPN-only DNS, split-
+    # horizon DNS, per-link systemd-resolved entries, etc.). Prefer IPv4.
+    if [[ "${kube_server_host}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      # Already a literal IP — no host-side lookup needed.
+      kube_server_ip="${kube_server_host}"
+    else
+      kube_server_ip="$(getent ahostsv4 "${kube_server_host}" 2>/dev/null \
+        | awk 'NR==1 {print $1}')"
+      if [[ -z "${kube_server_ip}" ]]; then
+        warn "Could not resolve ${kube_server_host} on host; pod will rely on"
+        warn "  cluster DNS. If the pod fails with 'no such host', resolve the"
+        warn "  hostname yourself and add it via your DNS or a hosts entry."
+      else
+        echo "  Pinning hostAlias: ${kube_server_host} → ${kube_server_ip}"
+      fi
+    fi
+  fi
+
+  ###########################################################################
+  # Step 2: Pre-session workspace check (Tier 2/3)
+  ###########################################################################
+  if [[ "${opt_tier}" -ge 2 ]] && [[ "${#opt_repos[@]}" -gt 0 ]]; then
+    echo "==> Running pre-session workspace check..."
+    for _r in "${opt_repos[@]}"; do
+      workspace_prescan "${_r}"
+    done
+    check_masking_paths "${opt_repos[@]}"
+  fi
+
+  ###########################################################################
+  # Step 3: Generate session ID and auto-name
+  ###########################################################################
+  local session_id
+  session_id="$(generate_session_id)"
+  echo "==> Session ID: ${session_id}"
+
+  # Auto-generate a human-readable name if not supplied.
+  # Single repo → "<repo-basename>/<agent>"; multi-repo → "multi/<agent>";
+  # no repo (tier 1) → "<agent>".
+  if [[ -z "${opt_name}" ]]; then
+    if [[ "${#opt_repos[@]}" -eq 0 ]]; then
+      opt_name="${opt_agent}"
+    elif [[ "${#opt_repos[@]}" -eq 1 ]]; then
+      opt_name="$(basename "${opt_repos[0]}")/${opt_agent}"
+    else
+      opt_name="multi/${opt_agent}"
+    fi
+  fi
+
+  # Derive a DNS-safe pod name from the human-readable name + 4hex session suffix.
+  # Kubernetes names: lowercase alphanumeric and hyphens only, max 253 chars.
+  local short_id="${session_id##*-}"
+  local sanitized_name
+  sanitized_name="$(echo "${opt_name}" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -cs 'a-z0-9-' '-' \
+    | sed 's/^-*//;s/-*$//')"
+  local pod_name="sandbox-${sanitized_name}-${short_id}"
+
+  ###########################################################################
+  # Step 4: Create session log directory and write session.json
+  ###########################################################################
+  local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
+  mkdir -p "${log_dir}"
+
+  # Ensure the persistent agent home directory exists on the host before the pod
+  # mounts it.  This is shared across sessions for the same agent so auth tokens
+  # (e.g. ~/.claude/) survive pod restarts without requiring re-authentication.
+  local agent_home="${HOME}/.sandbox/agent-home/${opt_agent}"
+  mkdir -p "${agent_home}"
+
+  # Lima/virtiofs translates the macOS user's UID (e.g. 501) into the VM and
+  # on into the pod's hostPath mount, but the pod runs as UID 1000. opencode
+  # in particular mkdirs new subdirs under its config root at startup (log/,
+  # repos/, others over time) — without making the tree writable by "other",
+  # those mkdirs EACCES and the agent bails before doing anything. Mode-only
+  # (no chown), so the host-side inode owner stays as the Mac user; what they
+  # see in ~/.sandbox/agent-home/ remains theirs. find -exec instead of
+  # chmod -R so symlinks aren't followed out of the tree. Harmless no-op on
+  # Linux where host UID typically matches the pod's UID 1000.
+  find "${agent_home}" -exec chmod u+rwX,go+rwX {} + 2>/dev/null || true
+
+  local current_user="${USER:-$(id -un)}"
+  local start_time
+  start_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+  # Collect all domains for this session
+  local -a agent_domains=()
+  mapfile -t agent_domains < <(get_agent_domains "${opt_agent}")
+  local -a tier_domains=()
+  mapfile -t tier_domains < <(get_tier_domains "${opt_tier}")
+  local -a all_domains=("${agent_domains[@]}" "${tier_domains[@]}" "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}")
+  local domain_count="${#all_domains[@]}"
+
+  # Pin the agent's conversation ID (when the agent supports it) so teardown
+  # can copy the exact transcript file rather than guessing by mtime.
+  local agent_session_id=""
+  if [[ -n "$(get_agent_session_id_flag "${opt_agent}")" ]]; then
+    agent_session_id="$(generate_uuid)"
+  fi
+
+  # Build JSON array form of the repo list for the audit record.
+  local repos_json="[]"
+  if [[ "${#opt_repos[@]}" -gt 0 ]]; then
+    repos_json="$(printf '%s\n' "${opt_repos[@]}" | jq -R . | jq -s -c .)"
+  fi
+
+  # Snapshot the kube API server for 'sandbox allow' to use when it
+  # rebuilds the policy later. Empty for Tier 1/2.
+  if [[ -n "${kube_server_ip}" ]]; then
+    SESSION_KUBE_API_CIDR="${kube_server_ip}/32"
+  else
+    SESSION_KUBE_API_CIDR=""
+  fi
+  SESSION_KUBE_API_PORT="${kube_server_port:-}"
+  export SESSION_KUBE_API_CIDR SESSION_KUBE_API_PORT
+
+  audit_write_session_json \
+    "${log_dir}" \
+    "${session_id}" \
+    "${opt_agent}" \
+    "${opt_tier}" \
+    "${current_user}" \
+    "${repos_json}" \
+    "${opt_name}" \
+    "${pod_name}" \
+    "${start_time}" \
+    "${all_domains[@]+"${all_domains[@]}"}"
+
+  if [[ -n "${agent_session_id}" ]]; then
+    audit_record_agent_session_id "${log_dir}" "${agent_session_id}"
+  fi
+
+  ###########################################################################
+  # Step 5: Capture workspace baseline (Tier 2/3)
+  ###########################################################################
+  if [[ "${opt_tier}" -ge 2 ]] && [[ "${#opt_repos[@]}" -gt 0 ]]; then
+    echo "==> Capturing workspace baseline..."
+    capture_workspace_baseline "${log_dir}" "${opt_repos[@]}"
+  fi
+
+  ###########################################################################
+  # Step 6: Select container image
+  ###########################################################################
+  local container_image
+  if [[ "${opt_tier}" -eq 3 ]]; then
+    container_image="sandbox:${opt_agent}-infra"
+  else
+    container_image="sandbox:${opt_agent}"
+  fi
+  echo "==> Image: ${container_image}"
+
+  ###########################################################################
+  # Step 7: Build CiliumNetworkPolicy
+  ###########################################################################
+  echo "==> Building network policy..."
+  local kube_api_cidr=""
+  [[ -n "${kube_server_ip}" ]] && kube_api_cidr="${kube_server_ip}/32"
+  local policy_yaml
+  policy_yaml="$(build_cilium_policy \
+    "${session_id}" \
+    "${opt_agent}" \
+    "${opt_tier}" \
+    "${kube_api_cidr}" \
+    "${kube_server_port:-443}" \
+    "${opt_infra_endpoints[@]+"${opt_infra_endpoints[@]}"}" \
+    "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}")"
+
+  ###########################################################################
+  # Step 8: Build pod manifest
+  ###########################################################################
+  echo "==> Building pod manifest..."
+  local pod_yaml
+  local infra_kubeconfig_flag=""
+  [[ -n "${opt_infra_kubeconfig}" ]] && infra_kubeconfig_flag="1"
+  pod_yaml="$(build_pod_manifest \
+    "${session_id}" \
+    "${opt_agent}" \
+    "${opt_tier}" \
+    "${container_image}" \
+    "${opt_name}" \
+    "${current_user}" \
+    "${opt_infra_token}" \
+    "${pod_name}" \
+    "${infra_kubeconfig_flag}" \
+    "${kube_server_ip}" \
+    "${kube_server_host}" \
+    "${opt_repos[@]+"${opt_repos[@]}"}")"
+
+  ###########################################################################
+  # Step 9: Apply policy and pod (or dry-run)
+  ###########################################################################
+  if [[ "${opt_dry_run}" == "true" ]]; then
+    echo ""
+    echo "==> DRY RUN — CiliumNetworkPolicy:"
+    echo "${policy_yaml}"
+    echo ""
+    echo "==> DRY RUN — Pod manifest:"
+    echo "${pod_yaml}"
+    echo ""
+    echo "Dry run complete. No resources applied."
+    return 0
+  fi
+
+  # Handle Tier 3 infra token secret (optional now that --infra-kubeconfig exists)
+  local infra_secret_name=""
+  if [[ "${opt_tier}" -eq 3 ]] && [[ -n "${opt_infra_token}" ]]; then
+    infra_secret_name="infra-token-${session_id}"
+    echo "==> Creating infra token secret: ${infra_secret_name}..."
+    create_infra_token_secret "${infra_secret_name}" "${opt_infra_token}"
+  fi
+
+  # Profile-declared secrets: bundle the host-side values into one
+  # session-scoped K8s Secret. Lifecycle matches infra-token — created
+  # here, deleted at teardown in cmd_stop. PRINCIPLES.md rule 2:
+  # secrets never persist in the cluster across sessions.
+  if [[ "${SESSION_HAS_SECRETS}" == "true" ]]; then
+    echo "==> Creating session secrets: $(session_secrets_name "${session_id}")..."
+    create_session_secrets "${session_id}" "${SESSION_PROFILE_SECRETS_LIST[@]}"
+  fi
+
+  # Handle Tier 3 kubeconfig secret
+  if [[ -n "${opt_infra_kubeconfig}" ]]; then
+    local kc_secret_name="kubeconfig-${session_id}"
+    echo "==> Creating kubeconfig secret: ${kc_secret_name}..."
+    create_kubeconfig_secret "${kc_secret_name}" "${kubeconfig_minified}"
+  fi
+
+  # Create opencode API key secret before the pod references it
+  if [[ "${opt_agent}" == "opencode" ]]; then
+    echo "==> Creating opencode API key secret..."
+    create_opencode_apikey_secret "${session_id}"
+  fi
+
+  echo "==> Applying CiliumNetworkPolicy..."
+  echo "${policy_yaml}" | kubectl apply -f - 2>&1
+
+  echo "==> Applying pod..."
+  echo "${pod_yaml}" | kubectl apply -f - 2>&1
+
+  ###########################################################################
+  # Step 10: Wait for pod Running
+  ###########################################################################
+  echo "==> Waiting for pod to become Ready..."
+  wait_for_pod "${pod_name}"
+
+  ###########################################################################
+  # Step 11: Show banner and attach
+  ###########################################################################
+  echo ""
+  print_session_banner \
+    "${session_id}" \
+    "${opt_agent}" \
+    "${opt_tier}" \
+    "${domain_count}" \
+    "${log_dir}" \
+    "${opt_name}" \
+    "${opt_repos[@]+"${opt_repos[@]}"}"
+  echo ""
+
+  # Build the agent launch command, pinning the conversation ID when supported.
+  local -a agent_cmd=("${opt_agent}")
+  if [[ -n "${agent_session_id}" ]]; then
+    agent_cmd+=("$(get_agent_session_id_flag "${opt_agent}")" "${agent_session_id}")
+  fi
+
+  echo "==> Attaching to session (Ctrl-D or 'exit' to end)..."
+  kubectl exec -n "${SANDBOX_NAMESPACE}" -it "${pod_name}" -c agent -- "${agent_cmd[@]}" || true
+
+  ###########################################################################
+  # Step 12: Disconnect — tear down by default; --keep-alive preserves the pod
+  ###########################################################################
+  echo ""
+  if [[ "${opt_keep_alive}" == "true" ]]; then
+    echo "==> Disconnected from session ${session_id} (pod kept alive)."
+    echo "    Resume:  sandbox resume ${session_id}"
+    echo "    Stop:    sandbox stop ${session_id}"
+    echo "    Logs:    ${log_dir}"
+  else
+    echo "==> Disconnected — tearing down session to free cluster resources..."
+    cmd_stop "${session_id}"
+    echo ""
+    echo "    Conversation history preserved in ~/.sandbox/agent-home/${opt_agent}/"
+    echo "    To continue: start a new session and use the agent's /resume command."
+  fi
+}
+
+###############################################################################
+# cmd_list — list sessions
+###############################################################################
+cmd_list() {
+  echo "Active pods in namespace '${SANDBOX_NAMESPACE}':"
+  echo ""
+  if ! kubectl get pods -n "${SANDBOX_NAMESPACE}" \
+       -l "sandbox-session" \
+       -o custom-columns='SESSION:.metadata.labels.sandbox-session,AGENT:.metadata.labels.sandbox-agent,TIER:.metadata.labels.sandbox-tier,NAME:.metadata.annotations.sandbox-name,STATUS:.status.phase,AGE:.metadata.creationTimestamp' \
+       2>/dev/null; then
+    echo "(could not reach cluster)"
+  fi
+
+  echo ""
+  echo "Recent sessions (${SANDBOX_LOGS_DIR}):"
+  echo ""
+  if [[ -d "${SANDBOX_LOGS_DIR}" ]]; then
+    local found=0
+    for session_dir in "${SANDBOX_LOGS_DIR}"/ses-*/; do
+      [[ -d "${session_dir}" ]] || continue
+      local sid
+      sid="$(basename "${session_dir}")"
+      local session_json="${session_dir}/session.json"
+      if [[ -f "${session_json}" ]]; then
+        local agent tier name start end
+        agent="$(jq -r '.agent // "?"' "${session_json}" 2>/dev/null || echo "?")"
+        tier="$(jq -r '.tier // "?"' "${session_json}" 2>/dev/null || echo "?")"
+        name="$(jq -r '.name // ""' "${session_json}" 2>/dev/null || echo "")"
+        start="$(jq -r '.start_time // "?"' "${session_json}" 2>/dev/null || echo "?")"
+        end="$(jq -r '.end_time // "running"' "${session_json}" 2>/dev/null || echo "running")"
+        printf "  %-36s  %-10s  tier%-2s  %-24s  %s → %s\n" \
+          "${sid}" "${agent}" "${tier}" "${name}" "${start}" "${end}"
+      else
+        printf "  %-36s  (no session.json)\n" "${sid}"
+      fi
+      found=1
+    done
+    if [[ "${found}" -eq 0 ]]; then
+      echo "  (no sessions found)"
+    fi
+  else
+    echo "  (log directory does not exist: ${SANDBOX_LOGS_DIR})"
+  fi
+}
+
+###############################################################################
+# cmd_logs — show session audit log
+###############################################################################
+cmd_logs() {
+  local session_id="${1:?Usage: sandbox logs <SESSION_ID>}"
+  local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
+
+  if [[ ! -d "${log_dir}" ]]; then
+    die "Session not found: ${session_id} (looked in ${log_dir})"
+  fi
+
+  echo "=== Session: ${session_id} ==="
+  echo ""
+
+  local session_json="${log_dir}/session.json"
+  if [[ -f "${session_json}" ]]; then
+    echo "--- session.json ---"
+    jq . "${session_json}"
+    echo ""
+  fi
+
+  local transcript_dir="${log_dir}/transcript"
+  if [[ -d "${transcript_dir}" ]]; then
+    echo "--- transcript (agent conversation) ---"
+    local tf
+    while IFS= read -r tf; do
+      printf "  %s\n" "${tf}"
+    done < <(find "${transcript_dir}" -type f | sort)
+    echo ""
+  fi
+
+  local files_log="${log_dir}/files.log"
+  if [[ -f "${files_log}" ]]; then
+    echo "--- files.log (workspace changes) ---"
+    cat "${files_log}"
+    echo ""
+  fi
+}
+
+###############################################################################
+# cmd_flows — show Hubble network flows
+###############################################################################
+cmd_flows() {
+  local session_id="${1:?Usage: sandbox flows <SESSION_ID>}"
+  local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
+
+  if [[ ! -d "${log_dir}" ]]; then
+    die "Session not found: ${session_id} (looked in ${log_dir})"
+  fi
+
+  local flows_json="${log_dir}/flows.json"
+  if [[ -f "${flows_json}" ]]; then
+    echo "=== Hubble flows for ${session_id} ==="
+    jq . "${flows_json}"
+  else
+    # Try live query if pod is still running
+    local pod_name
+    pod_name="$(resolve_pod_name "${session_id}")"
+    if kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null; then
+      echo "==> Session is still running; querying Hubble live..."
+      kubectl -n kube-system exec ds/cilium -- \
+        hubble observe --namespace "${SANDBOX_NAMESPACE}" \
+        --label "sandbox-session=${session_id}" \
+        --output json 2>/dev/null || warn "Could not query Hubble via the Cilium agent."
+    else
+      echo "(no flows.json found and session is not running)"
+    fi
+  fi
+}
+
+###############################################################################
+# cmd_stop — stop a session and run full teardown
+###############################################################################
+cmd_stop() {
+  local session_id="${1:?Usage: sandbox stop <SESSION_ID>}"
+  local pod_name
+  pod_name="$(resolve_pod_name "${session_id}")"
+  local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
+  local session_json="${log_dir}/session.json"
+
+  echo "==> Stopping session: ${session_id}"
+
+  # Read session metadata so teardown can run audit steps
+  local tier="1"
+  local -a repos=()
+  local agent=""
+  local agent_session_id=""
+  if [[ -f "${session_json}" ]]; then
+    tier="$(jq -r '.tier // "1"' "${session_json}" 2>/dev/null || echo "1")"
+    # Read `.repos` (array, new schema); fall back to `[.repo]` for old
+    # session.json files written before the multi-repo refactor.
+    mapfile -t repos < <(jq -r '
+      (.repos // [.repo])
+      | map(select(. != null and . != ""))
+      | .[]
+    ' "${session_json}" 2>/dev/null || true)
+    agent="$(jq -r '.agent // ""' "${session_json}" 2>/dev/null || echo "")"
+    agent_session_id="$(jq -r '.agent_session_id // ""' "${session_json}" 2>/dev/null || echo "")"
+  fi
+
+  # Workspace diff (Tier 2/3)
+  if [[ "${tier}" -ge 2 ]] && [[ "${#repos[@]}" -gt 0 ]]; then
+    echo "==> Capturing workspace diff..."
+    capture_workspace_diff "${log_dir}" "${repos[@]}"
+  fi
+
+  # Capture the agent conversation transcript into the session log directory
+  if [[ -n "${agent}" ]]; then
+    echo "==> Capturing conversation transcript..."
+    audit_capture_transcript "${log_dir}" "${agent}" \
+      "${HOME}/.sandbox/agent-home/${agent}" "${agent_session_id}"
+  fi
+
+  # Export Hubble flows
+  echo "==> Exporting Hubble flows..."
+  export_hubble_flows "${session_id}" "${log_dir}" \
+    || warn "Could not export Hubble flows (is hubble CLI available?)"
+
+  # Delete pod
+  if kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null 2>&1; then
+    kubectl delete pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" --grace-period=10 2>&1
+    echo "  Pod deleted."
+  else
+    warn "Pod ${pod_name} not found (already stopped)."
+  fi
+
+  # Delete network policy
+  kubectl delete ciliumnetworkpolicy -n "${SANDBOX_NAMESPACE}" \
+    "policy-${session_id}" --ignore-not-found=true 2>&1 || true
+
+  # Delete infra token secret if present (Tier 3)
+  local infra_secret_name="infra-token-${session_id}"
+  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${infra_secret_name}" \
+       &>/dev/null 2>&1; then
+    kubectl delete secret -n "${SANDBOX_NAMESPACE}" "${infra_secret_name}" \
+      --ignore-not-found=true 2>&1 || true
+    warn "REMINDER: Revoke infra token used in this session."
+  fi
+
+  # Delete kubeconfig secret if present (Tier 3 --infra-kubeconfig)
+  local kc_secret_name="kubeconfig-${session_id}"
+  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${kc_secret_name}" \
+       &>/dev/null 2>&1; then
+    delete_kubeconfig_secret "${session_id}"
+    warn "REMINDER: kubeconfig credentials used in this session may still be"
+    warn "         valid on the target cluster. Rotate or let them expire."
+  fi
+
+  # Delete opencode API key secret if present
+  delete_opencode_apikey_secret "${session_id}"
+
+  # Delete profile-declared session-secrets bundle if present. No-op
+  # when the session didn't use any. PRINCIPLES.md rule 2.
+  delete_session_secrets "${session_id}"
+
+  # Mark session ended
+  if [[ -d "${log_dir}" ]]; then
+    local end_time
+    end_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    audit_update_end_time "${log_dir}" "${end_time}"
+  fi
+
+  echo ""
+  echo "Session ${session_id} stopped."
+  echo "Logs: ${log_dir}"
+}
+
+###############################################################################
+# cmd_resume — reconnect to a running session
+###############################################################################
+cmd_resume() {
+  local opt_keep_alive="false"
+  local session_id=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --keep-alive) opt_keep_alive="true" ;;
+      --help|-h)    echo "Usage: sandbox resume <SESSION_ID> [--keep-alive]"; exit 0 ;;
+      -*)           die "Unknown option: $1" ;;
+      *)
+        if [[ -z "${session_id}" ]]; then
+          session_id="$1"
+        else
+          die "Unexpected argument: $1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  [[ -n "${session_id}" ]] || die "Usage: sandbox resume <SESSION_ID> [--keep-alive]"
+
+  local pod_name
+  pod_name="$(resolve_pod_name "${session_id}")"
+  local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
+  local session_json="${log_dir}/session.json"
+
+  if [[ ! -f "${session_json}" ]]; then
+    die "Session not found: ${session_id} (no session.json in ${log_dir})"
+  fi
+
+  local agent
+  agent="$(jq -r '.agent // "claude"' "${session_json}" 2>/dev/null || echo "claude")"
+  local agent_session_id
+  agent_session_id="$(jq -r '.agent_session_id // ""' "${session_json}" 2>/dev/null || echo "")"
+
+  if ! kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null 2>&1; then
+    die "Pod ${pod_name} not found. Use 'sandbox list' to check session state."
+  fi
+
+  local pod_phase
+  pod_phase="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+    -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")"
+  if [[ "${pod_phase}" != "Running" ]]; then
+    die "Pod is not running (phase: ${pod_phase}). Use 'sandbox stop ${session_id}' to clean up."
+  fi
+
+  echo "==> Resuming session: ${session_id}"
+  echo "    Agent: ${agent}  |  Log: ${log_dir/#${HOME}/\~}"
+  echo ""
+
+  # Re-attach to the same conversation when the agent supports resume-by-ID,
+  # so the reconnect continues this session's existing transcript file.
+  local -a agent_cmd=("${agent}")
+  local resume_flag
+  resume_flag="$(get_agent_resume_flag "${agent}")"
+  if [[ -n "${agent_session_id}" ]] && [[ -n "${resume_flag}" ]]; then
+    agent_cmd+=("${resume_flag}" "${agent_session_id}")
+  fi
+
+  kubectl exec -n "${SANDBOX_NAMESPACE}" -it "${pod_name}" -c agent -- "${agent_cmd[@]}" || true
+
+  echo ""
+  if [[ "${opt_keep_alive}" == "true" ]]; then
+    echo "==> Disconnected from session ${session_id} (pod kept alive)."
+    echo "    Resume:  sandbox resume ${session_id}"
+    echo "    Stop:    sandbox stop ${session_id}"
+  else
+    echo "==> Disconnected — tearing down session to free cluster resources..."
+    cmd_stop "${session_id}"
+    echo ""
+    echo "    Conversation history preserved in ~/.sandbox/agent-home/${agent}/"
+    echo "    To continue: start a new session and use the agent's /resume command."
+  fi
+}
+
+###############################################################################
+# cmd_cleanup — remove old session logs
+###############################################################################
+cmd_cleanup() {
+  local older_than_days="90"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --older-than) older_than_days="${2:?--older-than requires a value}"; shift ;;
+      --older-than=*) older_than_days="${1#--older-than=}" ;;
+      *) die "Unknown option: $1" ;;
+    esac
+    shift
+  done
+
+  echo "==> Cleaning sessions older than ${older_than_days} days..."
+
+  if [[ ! -d "${SANDBOX_LOGS_DIR}" ]]; then
+    echo "No log directory found."
+    return 0
+  fi
+
+  local count=0
+  while IFS= read -r -d '' session_dir; do
+    local sid
+    sid="$(basename "${session_dir}")"
+    echo "  Removing: ${sid}"
+    rm -rf "${session_dir}"
+    (( count++ )) || true
+  done < <(find "${SANDBOX_LOGS_DIR}" -maxdepth 1 -name 'ses-*' -type d \
+             -mtime "+${older_than_days}" -print0 2>/dev/null)
+
+  echo "Removed ${count} session(s)."
+}
+
+###############################################################################
+# cmd_check — pre-flight workspace check
+###############################################################################
+cmd_check() {
+  local workspace="${1:?Usage: sandbox check <WORKSPACE_PATH>}"
+  workspace="${workspace/#\~/${HOME}}"
+
+  echo "==> Checking workspace: ${workspace}"
+
+  validate_repo_path "${workspace}"
+  workspace_prescan "${workspace}"
+
+  echo ""
+  echo "Workspace check passed."
+}
+
+###############################################################################
+# cmd_status — cluster and sandbox status
+###############################################################################
+cmd_status() {
+  echo "=== Sandbox Status ==="
+  echo ""
+
+  # Platform
+  local platform
+  platform="$(detect_platform)"
+  echo "Platform:    ${platform}"
+  echo "Version:     ${SANDBOX_VERSION}"
+  echo ""
+
+  # Lima (macOS only)
+  if [[ "${platform}" == "macos" ]]; then
+    echo "Lima VM:"
+    if lima_vm_running; then
+      echo "  Status: running"
+    else
+      echo "  Status: stopped (run 'sandbox setup' or 'limactl start sandbox-vm')"
+    fi
+    echo ""
+  fi
+
+  # Cluster
+  echo "Kubernetes cluster:"
+  if kubectl cluster-info &>/dev/null 2>&1; then
+    kubectl cluster-info 2>&1 | head -5
+    echo ""
+    echo "Nodes:"
+    kubectl get nodes -o wide 2>&1 || true
+  else
+    echo "  (cluster not reachable)"
+  fi
+  echo ""
+
+  # Cilium
+  echo "Cilium:"
+  if kubectl get pods -n kube-system -l k8s-app=cilium \
+       -o jsonpath='{.items[*].status.phase}' 2>/dev/null | grep -q Running; then
+    echo "  Status: running"
+    # Check policy enforcement mode
+    if kubectl get configmap -n kube-system cilium-config \
+         -o jsonpath='{.data.enable-policy}' 2>/dev/null | grep -q always; then
+      echo "  PolicyEnforcementMode: always (correct)"
+    else
+      warn "PolicyEnforcementMode may not be 'always'"
+    fi
+  else
+    echo "  Status: not running"
+  fi
+  echo ""
+
+  # gVisor
+  echo "gVisor RuntimeClass:"
+  if kubectl get runtimeclass gvisor &>/dev/null 2>&1; then
+    echo "  Status: configured"
+  else
+    echo "  Status: not found (run 'sandbox setup')"
+  fi
+  echo ""
+
+  # Sandbox namespace
+  echo "Sandbox namespace:"
+  if kubectl get namespace "${SANDBOX_NAMESPACE}" &>/dev/null 2>&1; then
+    echo "  Status: exists"
+    local pod_count
+    pod_count="$(kubectl get pods -n "${SANDBOX_NAMESPACE}" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+    echo "  Running sessions: ${pod_count}"
+  else
+    echo "  Status: not found (run 'sandbox setup')"
+  fi
+}
+
+###############################################################################
+# cmd_rebuild — rebuild sandbox container image(s)
+#
+# container images").
+#
+# Rebuilds one or more sandbox:* images without re-running the full setup.
+# Useful when an agent CLI has a new release (e.g. Claude Code updates for
+# new Anthropic model support) and the existing cached image needs to be
+# refreshed.
+###############################################################################
+
+usage_rebuild() {
+  cat <<EOF
+sandbox rebuild — Rebuild sandbox container image(s)
+
+USAGE:
+  sandbox rebuild [OPTIONS]
+
+OPTIONS:
+  --agent <NAME>               Image to rebuild. One of:
+                                 claude, codex, opencode, shell, base, all
+                                 (default: all)
+  --tier3                      Also rebuild the matching *-infra image(s)
+  --no-cache                   Pass --no-cache to the container builder
+  --codex-version <VER>        Pin @openai/codex npm version (default: latest)
+  --opencode-version <VER>     Pin OpenCode release (default: latest)
+  --help                       Show this help
+
+NOTES:
+  - 'sandbox:base' is only rebuilt when --agent base or --agent all is given.
+    Agent images depend on base; if base is missing, rebuild with --agent all.
+  - By default, rebuilding the claude image cache-busts the Claude Code
+    install layer using a timestamp build arg, so the latest release is
+    always fetched from https://claude.ai/install.sh.
+  - On Linux, rebuilt images are re-imported into k3s containerd automatically.
+  - Version info for rebuilt images is recorded at:
+      ${SANDBOX_LOGS_DIR}/image-builds.log
+
+EXAMPLES:
+  sandbox rebuild --agent claude
+  sandbox rebuild --agent claude --tier3
+  sandbox rebuild --agent all --no-cache
+  sandbox rebuild --agent codex --codex-version 0.2.1
+EOF
+  exit 0
+}
+
+cmd_rebuild() {
+  local opt_agent="all"
+  local opt_tier3="false"
+  local opt_no_cache="false"
+  local opt_codex_version=""
+  local opt_opencode_version=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --agent)             opt_agent="${2:?--agent requires a value}"; shift ;;
+      --agent=*)           opt_agent="${1#--agent=}" ;;
+      --tier3)             opt_tier3="true" ;;
+      --no-cache)          opt_no_cache="true" ;;
+      --codex-version)     opt_codex_version="${2:?--codex-version requires a value}"; shift ;;
+      --codex-version=*)   opt_codex_version="${1#--codex-version=}" ;;
+      --opencode-version)  opt_opencode_version="${2:?--opencode-version requires a value}"; shift ;;
+      --opencode-version=*) opt_opencode_version="${1#--opencode-version=}" ;;
+      --help|-h)           usage_rebuild ;;
+      *)                   die "Unknown option: $1 (run 'sandbox rebuild --help')" ;;
+    esac
+    shift
+  done
+
+  case "${opt_agent}" in
+    claude|codex|opencode|shell|base|all) ;;
+    *) die "Invalid --agent: ${opt_agent} (must be claude, codex, opencode, shell, base, or all)" ;;
+  esac
+
+  # Container builder — match setup/common.sh preference order.
+  local container_cli=""
+  if command -v docker &>/dev/null; then
+    container_cli="docker"
+  elif command -v podman &>/dev/null; then
+    container_cli="podman"
+  else
+    die "Neither docker nor podman found. Install one and retry."
+  fi
+
+  local platform
+  platform="$(detect_platform)"
+  if [[ "${platform}" == "macos" ]]; then
+    echo "==> Rebuild on macOS must be run inside the Lima VM."
+    echo "    limactl shell sandbox-vm -- sandbox rebuild $*"
+    exit 1
+  fi
+
+  local docker_dir="${SANDBOX_ROOT}/docker"
+  mkdir -p "${SANDBOX_LOGS_DIR}"
+  local build_log="${SANDBOX_LOGS_DIR}/image-builds.log"
+
+  echo "==> Rebuilding sandbox image(s): ${opt_agent}"
+  echo "    Builder:  ${container_cli}"
+  echo "    No-cache: ${opt_no_cache}"
+  echo "    Tier 3:   ${opt_tier3}"
+  echo ""
+
+  # Build flags applied to every build invocation.
+  local -a common_flags=()
+  [[ "${opt_no_cache}" == "true" ]] && common_flags+=("--no-cache")
+
+  # _rebuild_one <tag> <dockerfile> [extra build args...]
+  _rebuild_one() {
+    local tag="$1"; local dockerfile="$2"; shift 2
+    if [[ ! -f "${docker_dir}/${dockerfile}" ]]; then
+      die "Dockerfile not found: ${docker_dir}/${dockerfile}"
+    fi
+    echo "==> Building ${tag} (${dockerfile})"
+    "${container_cli}" build "${common_flags[@]}" \
+      -t "${tag}" -f "${docker_dir}/${dockerfile}" "$@" "${docker_dir}"
+    _import_to_k3s "${tag}"
+    _record_build "${tag}"
+  }
+
+  _import_to_k3s() {
+    local tag="$1"
+    if [[ "${platform}" != "linux" ]]; then return 0; fi
+    if ! command -v k3s &>/dev/null; then
+      warn "k3s not found — skipping containerd import for ${tag}"
+      return 0
+    fi
+    echo "    Importing ${tag} into k3s containerd..."
+    "${container_cli}" save "${tag}" | sudo k3s ctr images import -
+  }
+
+  # _record_build <tag> — append version info to image-builds.log
+  _record_build() {
+    local tag="$1"
+    local version_cmd=""
+    case "${tag}" in
+      sandbox:claude|sandbox:claude-infra)     version_cmd="claude --version" ;;
+      sandbox:codex|sandbox:codex-infra)       version_cmd="codex --version" ;;
+      sandbox:opencode|sandbox:opencode-infra) version_cmd="opencode --version" ;;
+      sandbox:shell)                           version_cmd="bash --version | head -1" ;;
+      sandbox:base)                            version_cmd="node --version" ;;
+    esac
+
+    local agent_ver="(unknown)"
+    if [[ -n "${version_cmd}" ]]; then
+      agent_ver="$("${container_cli}" run --rm --entrypoint sh "${tag}" \
+                   -c "${version_cmd}" 2>/dev/null | head -1 || echo '(unknown)')"
+    fi
+    local ts
+    ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo "${ts}  ${tag}  ${agent_ver}" >> "${build_log}"
+    echo "    Recorded: ${tag} → ${agent_ver}"
+  }
+
+  # Resolve the agent-build args — cache-bust for claude, version pin for codex/opencode.
+  local -a claude_args=()
+  local claude_rev
+  claude_rev="$(date -u '+%Y%m%d%H%M%S')"
+  claude_args+=(--build-arg "CLAUDE_CODE_INSTALL_REV=${claude_rev}")
+
+  local -a codex_args=()
+  [[ -n "${opt_codex_version}" ]] && codex_args+=(--build-arg "CODEX_VERSION=${opt_codex_version}")
+
+  local -a opencode_args=()
+  [[ -n "${opt_opencode_version}" ]] && opencode_args+=(--build-arg "OPENCODE_VERSION=${opt_opencode_version}")
+
+  # Build in dependency order.
+  if [[ "${opt_agent}" == "base" || "${opt_agent}" == "all" ]]; then
+    _rebuild_one "docker.io/library/sandbox:base" "Dockerfile.base"
+  fi
+
+  if [[ "${opt_agent}" == "claude" || "${opt_agent}" == "all" ]]; then
+    _rebuild_one "docker.io/library/sandbox:claude" "Dockerfile.claude" "${claude_args[@]}"
+  fi
+  if [[ "${opt_agent}" == "codex" || "${opt_agent}" == "all" ]]; then
+    _rebuild_one "docker.io/library/sandbox:codex" "Dockerfile.codex" "${codex_args[@]}"
+  fi
+  if [[ "${opt_agent}" == "opencode" || "${opt_agent}" == "all" ]]; then
+    _rebuild_one "docker.io/library/sandbox:opencode" "Dockerfile.opencode" "${opencode_args[@]}"
+  fi
+  if [[ "${opt_agent}" == "shell" || "${opt_agent}" == "all" ]]; then
+    _rebuild_one "docker.io/library/sandbox:shell" "Dockerfile.shell"
+  fi
+
+  # Tier 3 infra variants — only rebuild for agents that have them.
+  if [[ "${opt_tier3}" == "true" || "${opt_agent}" == "all" ]]; then
+    if [[ "${opt_agent}" == "claude" || "${opt_agent}" == "all" ]]; then
+      _rebuild_one "docker.io/library/sandbox:claude-infra" "Dockerfile.infra" \
+        --build-arg "BASE_IMAGE=sandbox:claude"
+    fi
+    if [[ "${opt_agent}" == "codex" || "${opt_agent}" == "all" ]]; then
+      _rebuild_one "docker.io/library/sandbox:codex-infra" "Dockerfile.infra" \
+        --build-arg "BASE_IMAGE=sandbox:codex"
+    fi
+    if [[ "${opt_agent}" == "opencode" || "${opt_agent}" == "all" ]]; then
+      _rebuild_one "docker.io/library/sandbox:opencode-infra" "Dockerfile.infra" \
+        --build-arg "BASE_IMAGE=sandbox:opencode"
+    fi
+  fi
+
+  echo ""
+  echo "==> Rebuild complete. Build log: ${build_log}"
+}
+
+###############################################################################
+# cmd_setup — install prerequisites
+###############################################################################
+cmd_setup() {
+  echo "==> Running sandbox setup..."
+  bash "${SANDBOX_ROOT}/setup.sh" "$@"
+}
+
+###############################################################################
+# cmd_configure_network — re-detect host network state and reconcile k3s/Cilium.
+#
+# Two kinds of drift are handled, in order:
+#   1. Primary IPv4 changed (interface name unchanged) — dominant on WSL2,
+#      where each Windows reboot can hand the sandbox-vm distro a fresh
+#      address from Hyper-V's virtual NAT. Requires a k3s + Cilium restart
+#      so the node InternalIP, API-server cert SANs, and BPF masquerade
+#      source are re-read.
+#   2. Primary or VPN interface names changed — Cilium reads its `devices`
+#      list once at agent startup, so the stale pin survives until the
+#      DaemonSet restarts. Common after a VPN reconnects or a dock swap.
+#
+# Idempotent: when nothing has drifted, both checks are silent no-ops.
+#
+# Linux only. The macOS-via-Lima case (VPN on macOS host, cluster inside
+# Lima VM) is a different topology that this tool does not handle.
+###############################################################################
+cmd_configure_network() {
+  if [[ "$(detect_platform)" != "linux" ]]; then
+    die "configure-network is Linux-only. On macOS the cluster runs inside the Lima VM and cannot see the host's VPN interfaces."
+  fi
+  require_command kubectl "Install kubectl: https://kubernetes.io/docs/tasks/tools/"
+  require_command helm "Install helm: https://helm.sh/docs/intro/install/"
+  require_command jq "Install jq via your package manager."
+
+  echo "==> Re-detecting host network state..."
+  reconcile_node_ipv4 "${SANDBOX_KUBECONFIG}"
+  configure_cilium_for_vpn "${SANDBOX_KUBECONFIG}"
+}
+
+###############################################################################
+# cmd_onboard — stage host-side agent OAuth state into ~/.sandbox/agent-home
+###############################################################################
+usage_onboard() {
+  cat <<EOF
+sandbox onboard — One-time host-to-sandbox credential staging
+
+USAGE:
+  sandbox onboard [OPTIONS]
+
+OPTIONS:
+  --agent <claude|codex|opencode|all>  Limit to one agent (default: all)
+  --skip-config                        Don't write ~/.sandbox/config.yaml
+  --dry-run                            Report what would be done; copy nothing
+  --force                              Overwrite already-staged files
+  --help                               Show this help
+
+WHAT IT DOES:
+  For each detected agent, copies the host-side OAuth credential file and
+  benign settings into ~/.sandbox/agent-home/<agent>/ so the first sandbox
+  session uses already-authenticated tokens. Skips conversation history.
+  Refuses to ingest long-lived API keys (PRINCIPLES.md rule 1) — for
+  opencode, point users at 'sandbox secret' (Phase 4) instead.
+
+  Also writes a starter ~/.sandbox/config.yaml if absent.
+EOF
+  exit 0
+}
+
+cmd_onboard() {
+  local opt_agent="all"
+  local opt_dry_run="false"
+  local opt_force="false"
+  local opt_skip_config="false"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)         usage_onboard ;;
+      --agent)           opt_agent="${2:?--agent requires a value}"; shift ;;
+      --agent=*)         opt_agent="${1#--agent=}" ;;
+      --dry-run)         opt_dry_run="true" ;;
+      --force)           opt_force="true" ;;
+      --skip-config)     opt_skip_config="true" ;;
+      *)                 die "Unknown option: $1. Run 'sandbox onboard --help' for usage." ;;
+    esac
+    shift
+  done
+
+  case "${opt_agent}" in
+    claude|codex|opencode|all) ;;
+    *) die "--agent must be one of: claude, codex, opencode, all" ;;
+  esac
+
+  if [[ "${opt_dry_run}" == "true" ]]; then
+    echo "==> sandbox onboard (dry-run)"
+  else
+    echo "==> sandbox onboard"
+  fi
+  echo
+
+  # Warn (don't fail) on forbidden host env vars. They will never enter
+  # the sandbox via this command — but the operator deserves a heads-up
+  # that whatever's set won't be carried forward.
+  local _forbidden_count
+  _forbidden_count="$(warn_forbidden_env)"
+  if [[ "${_forbidden_count}" -gt 0 ]]; then
+    echo
+  fi
+
+  echo "==> Staging agent credentials"
+  local -a agents=()
+  if [[ "${opt_agent}" == "all" ]]; then
+    agents=(claude codex opencode)
+  else
+    agents=("${opt_agent}")
+  fi
+
+  local a
+  for a in "${agents[@]}"; do
+    onboard_agent "${a}" "${opt_dry_run}" "${opt_force}"
+  done
+
+  if [[ "${opt_skip_config}" != "true" ]]; then
+    echo
+    echo "==> Starter user config"
+    write_starter_user_config "${opt_dry_run}" "${opt_force}"
+  fi
+
+  echo
+  if [[ "${opt_dry_run}" == "true" ]]; then
+    echo "Dry-run complete; nothing was written."
+  else
+    echo "Onboard complete. Run 'sandbox run --agent <name>' to launch a session."
+  fi
+}
+
+###############################################################################
+# cmd_allow — hot-reload a running session's allowed-domain list
+###############################################################################
+usage_allow() {
+  cat <<EOF
+sandbox allow — Add domains to a running session's egress allowlist
+
+USAGE:
+  sandbox allow <session-id> --add-domain <DOMAIN> [--add-domain <DOMAIN> ...]
+  sandbox allow --help
+
+WHAT IT DOES:
+  Regenerates the session's CiliumNetworkPolicy with the existing
+  allowed-domain list PLUS the supplied --add-domain values and applies
+  it. Because Cilium identifies the policy by name, the apply is a
+  patch — the live pod is NOT restarted and DNS/HTTPS connections
+  in flight are preserved. Updates session.json's allowed_domains and
+  emits an audit event.
+
+  Every --add-domain still passes through the org-level (and overlay,
+  if configured) blocked-destinations check. The session pod must
+  still be running.
+
+  Add-only by design. Removing a domain from a live session can break
+  in-flight requests in subtle ways and weakens the audit trail; if
+  you need a narrower allowlist, stop the session and re-run with the
+  intended set.
+
+EXAMPLES:
+  # Add a single domain
+  sandbox allow ses-20260527-...-a7b3 --add-domain go.private.example.com
+
+  # Add several at once
+  sandbox allow ses-20260527-...-a7b3 \\
+      --add-domain artifactory.example.com \\
+      --add-domain pypi.private.example.com
+EOF
+  exit 0
+}
+
+cmd_allow() {
+  if [[ $# -eq 0 ]]; then
+    usage_allow
+  fi
+
+  local session_id=""
+  local -a opt_add_domains=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)         usage_allow ;;
+      --add-domain)      opt_add_domains+=("${2:?--add-domain requires a value}"); shift ;;
+      --add-domain=*)    opt_add_domains+=("${1#--add-domain=}") ;;
+      -*)                die "Unknown option for 'allow': $1" ;;
+      *)
+        if [[ -n "${session_id}" ]]; then
+          die "Unexpected extra argument: $1 (only one session-id allowed)."
+        fi
+        session_id="$1"
+        ;;
+    esac
+    shift
+  done
+
+  [[ -n "${session_id}" ]] \
+    || die "Usage: sandbox allow <session-id> --add-domain <DOMAIN> [...]"
+  [[ "${#opt_add_domains[@]}" -gt 0 ]] \
+    || die "At least one --add-domain is required."
+
+  local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
+  local session_json="${log_dir}/session.json"
+  [[ -f "${session_json}" ]] \
+    || die "No session.json for ${session_id} at ${log_dir/#${HOME}/\~}/."
+
+  # Validate each new domain against the blocked-destinations list
+  # (and overlay's, if configured). Same code path as --allow-domain.
+  # Runs BEFORE the cluster check so a blocked domain is rejected
+  # without needing a live cluster.
+  local d
+  for d in "${opt_add_domains[@]}"; do
+    check_domain_not_blocked "${d}"
+  done
+
+  # Verify the pod is still alive. Hot-reload against a torn-down session
+  # would leave session.json in a state that disagrees with reality.
+  ensure_cluster_ready
+  local pod_name
+  pod_name="$(resolve_pod_name "${session_id}")"
+  if ! kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+       >/dev/null 2>&1; then
+    die "Pod ${pod_name} not running — hot-reload only works on live sessions. (Use 'sandbox run' to start a new session with the wider allowlist.)"
+  fi
+
+  # Read session metadata needed to rebuild the policy.
+  local agent tier kube_api_cidr kube_api_port
+  agent="$(jq -r '.agent' "${session_json}")"
+  tier="$(jq -r '.tier' "${session_json}")"
+  kube_api_cidr="$(jq -r '.kube_api_cidr // ""' "${session_json}")"
+  kube_api_port="$(jq -r '.kube_api_port // ""' "${session_json}")"
+
+  # Compute the new "extras" list = (existing allowed_domains ∪ new) –
+  # (agent_domains ∪ tier_domains). build_cilium_policy re-adds agent +
+  # tier on top of whatever extras we pass, so we strip them out here
+  # to avoid duplicate matchName entries in the rendered YAML.
+  local agent_dom_json tier_dom_json new_arr_json
+  agent_dom_json="$(get_agent_domains "${agent}" | jq -R . | jq -s -c .)"
+  tier_dom_json="$(get_tier_domains "${tier}" | jq -R . | jq -s -c .)"
+  new_arr_json="$(printf '%s\n' "${opt_add_domains[@]}" | jq -R . | jq -s -c .)"
+
+  # Merged full set (for session.json) and extras-only (for the policy).
+  local merged_full_json merged_extras_json
+  merged_full_json="$(jq -c -n \
+    --argjson cur "$(jq '.allowed_domains' "${session_json}")" \
+    --argjson new "${new_arr_json}" \
+    '($cur + $new) | unique')"
+  merged_extras_json="$(jq -c -n \
+    --argjson full "${merged_full_json}" \
+    --argjson agent "${agent_dom_json}" \
+    --argjson tier "${tier_dom_json}" \
+    '($full - $agent - $tier)')"
+
+  # Detect the no-op case (every --add-domain was already allowed) so
+  # the operator gets a clear "nothing to do" rather than a silent
+  # kubectl apply that changes nothing.
+  local new_count
+  new_count="$(jq -r '. | length' <<<"${merged_full_json}")"
+  local existing_count
+  existing_count="$(jq -r '.allowed_domains | length' "${session_json}")"
+  if [[ "${new_count}" -eq "${existing_count}" ]]; then
+    echo "All requested domains are already in the allowlist; nothing to do."
+    return 0
+  fi
+
+  # Rebuild and apply the policy. Same name as the original → kubectl
+  # apply is a patch; the running pod is not disturbed.
+  local -a extras_arr=()
+  mapfile -t extras_arr < <(jq -r '.[]' <<<"${merged_extras_json}")
+
+  echo "==> Regenerating CiliumNetworkPolicy for ${session_id}..."
+  local policy_yaml
+  policy_yaml="$(build_cilium_policy \
+    "${session_id}" \
+    "${agent}" \
+    "${tier}" \
+    "${kube_api_cidr}" \
+    "${kube_api_port}" \
+    "${extras_arr[@]+"${extras_arr[@]}"}")"
+  echo "${policy_yaml}" | kubectl apply -f - >/dev/null
+  echo "  Applied: $(( new_count - existing_count )) new domain(s)."
+
+  # Update session.json's allowed_domains and append an audit event.
+  local tmp_json
+  tmp_json="$(mktemp)"
+  jq --argjson full "${merged_full_json}" \
+    '.allowed_domains = $full' \
+    "${session_json}" > "${tmp_json}"
+  mv "${tmp_json}" "${session_json}"
+
+  local added_csv
+  added_csv="$(jq -r '. | join(",")' <<<"${new_arr_json}")"
+  audit_log_event "${log_dir}" "allowlist-extended" "Added domains: ${added_csv}"
+
+  echo
+  echo "Allowlist updated for ${session_id}."
+  echo "  Full allowed-domain count: ${new_count}"
+}
+
+###############################################################################
+# cmd_secret — manage host-side secret store, injected per-session by profile
+###############################################################################
+usage_secret() {
+  cat <<EOF
+sandbox secret — Manage host-side secrets injected by profile declaration
+
+USAGE:
+  sandbox secret set <NAME> [--from-file PATH | --from-env[=VAR]]
+  sandbox secret list
+  sandbox secret delete <NAME>
+  sandbox secret --help
+
+The store lives at ~/.sandbox/secrets/ (mode 0600 per file). Names must be
+valid env-var identifiers — [A-Z_][A-Z0-9_]* — because the NAME is the
+env-var the agent sees inside the pod when a profile injects it.
+
+PROFILE INJECTION:
+  Profiles list secrets to inject under 'secrets:' (see Phase 2 docs):
+
+      # ~/.sandbox/profiles/dev-app.yaml
+      tier: 2
+      secrets:
+        - JIRA_PAT
+        - GITEA_TOKEN
+
+  At 'sandbox run --profile dev-app' time, those values are read from
+  the host store and bundled into ONE session-scoped K8s Secret
+  (session-secrets-<id>). The pod gets them via envFrom: secretRef so
+  each declared name lands as a container env var. The Secret is
+  deleted on teardown — secrets never persist in the cluster across
+  sessions (PRINCIPLES.md rule 2).
+
+EXAMPLES:
+  # Pipe a token in
+  printf '%s' 'abcd1234' | sandbox secret set JIRA_PAT
+
+  # From a host env var with the same name (--from-env defaults to NAME)
+  sandbox secret set JIRA_PAT --from-env
+
+  # From a differently-named host env var
+  sandbox secret set JIRA_PAT --from-env=JIRA_PROD_TOKEN
+
+  # From a file
+  sandbox secret set GITEA_TOKEN --from-file ~/.gitea-token
+
+  # List (names + sizes + mtimes; values are never printed)
+  sandbox secret list
+
+  # Remove
+  sandbox secret delete JIRA_PAT
+EOF
+  exit 0
+}
+
+cmd_secret() {
+  if [[ $# -eq 0 ]]; then
+    usage_secret
+  fi
+
+  local sub="$1"
+  shift
+
+  case "${sub}" in
+    --help|-h|help)
+      usage_secret
+      ;;
+    set)
+      # _USE_DEFAULT is the sentinel for "--from-env" with no argument —
+      # resolved to the secret name after the parse loop, once `name` is
+      # known. --from-env=VAR is the explicit form; the bare `--from-env VAR`
+      # space form is intentionally NOT supported (ambiguous with the
+      # secret-name positional; the = form is unambiguous).
+      local name="" from_file="" from_env=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --from-file)   from_file="${2:?--from-file requires a path}"; shift ;;
+          --from-file=*) from_file="${1#--from-file=}" ;;
+          --from-env)    from_env="_USE_DEFAULT" ;;
+          --from-env=*)  from_env="${1#--from-env=}" ;;
+          --help|-h)     usage_secret ;;
+          -*)            die "Unknown option for 'secret set': $1" ;;
+          *)
+            if [[ -n "${name}" ]]; then
+              die "Unexpected extra argument: $1"
+            fi
+            name="$1"
+            ;;
+        esac
+        shift
+      done
+      [[ -n "${name}" ]] || die "Usage: sandbox secret set <NAME> [--from-file PATH | --from-env[=VAR]]"
+      secret_validate_name "${name}"
+      if [[ -n "${from_file}" ]] && [[ -n "${from_env}" ]]; then
+        die "secret set: --from-file and --from-env are mutually exclusive."
+      fi
+      if [[ -n "${from_file}" ]]; then
+        secret_set_from_file "${name}" "${from_file/#\~/${HOME}}"
+        echo "Stored secret '${name}' from ${from_file}."
+      elif [[ -n "${from_env}" ]]; then
+        # Resolve _USE_DEFAULT to the secret name — common case where the
+        # host env var is named the same as the secret it populates.
+        [[ "${from_env}" == "_USE_DEFAULT" ]] && from_env="${name}"
+        secret_set_from_env "${name}" "${from_env}"
+        echo "Stored secret '${name}' from \$${from_env}."
+      else
+        if [[ -t 0 ]]; then
+          echo "Reading secret value from stdin. End with EOF (Ctrl-D)." >&2
+        fi
+        secret_set_from_stdin "${name}"
+        echo "Stored secret '${name}'."
+      fi
+      ;;
+    list)
+      local count=0
+      while IFS= read -r line; do
+        if [[ -z "${line}" ]]; then continue; fi
+        if [[ "${count}" -eq 0 ]]; then
+          printf '%-32s  %12s  %s\n' "NAME" "SIZE" "UPDATED"
+        fi
+        echo "${line}"
+        (( count++ )) || true
+      done < <(secret_list)
+      if [[ "${count}" -eq 0 ]]; then
+        echo "No secrets in ${SECRETS_STORE_DIR/#${HOME}/\~}/."
+        echo "Add one with: sandbox secret set <NAME>"
+      fi
+      ;;
+    delete|rm|remove)
+      [[ $# -ge 1 ]] || die "Usage: sandbox secret delete <NAME>"
+      local name="$1"
+      secret_validate_name "${name}"
+      if secret_exists "${name}"; then
+        secret_delete "${name}"
+        echo "Deleted secret '${name}'."
+      else
+        echo "Secret '${name}' is not in the store; nothing to delete." >&2
+      fi
+      ;;
+    *)
+      die "Unknown 'secret' subcommand: ${sub}. Run 'sandbox secret --help'."
+      ;;
+  esac
+}
+
+###############################################################################
+# cmd_setup_proxy_cert — find and stage a corporate TLS-intercept proxy's
+# root CA so the image build (and the running agent pods) trust the
+# resigned certs it presents on egress.
+#
+# Resolution order:
+#   1. --from-wire <host>      Direct openssl s_client extraction.
+#   2. host trust store        Linux: /usr/local/share/ca-certificates/* and
+#                              the system bundle. macOS: System keychain.
+#                              WSL2 with no Linux match: Windows Root store.
+#
+# Output path defaults to config/extra-ca-certs/proxy-ca.crt (or the value
+# of --output). Re-running with the same vendor overwrites in place.
+#
+# This command does not modify the sandbox cluster — after it succeeds, the
+# user runs `sandbox rebuild` (or first-time `sandbox setup`) to bake the
+# cert into the image. We surface that hint at the end on success.
+###############################################################################
+cmd_setup_proxy_cert() {
+  local from_wire=""
+  local vendor=""
+  local out_path="${SANDBOX_ROOT}/config/extra-ca-certs/proxy-ca.crt"
+  local list_only="false"
+  local force="false"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --from-wire)
+        shift
+        [[ $# -gt 0 ]] || die "setup-proxy-cert: --from-wire needs a host argument"
+        from_wire="$1"
+        shift ;;
+      --vendor)
+        shift
+        [[ $# -gt 0 ]] || die "setup-proxy-cert: --vendor needs a name"
+        vendor="$1"
+        shift ;;
+      --output|-o)
+        shift
+        [[ $# -gt 0 ]] || die "setup-proxy-cert: --output needs a path"
+        out_path="$1"
+        shift ;;
+      --list)
+        list_only="true"
+        shift ;;
+      --force|-f)
+        force="true"
+        shift ;;
+      --help|-h)
+        cat <<'EOF'
+Usage: sandbox setup-proxy-cert [options]
+
+Auto-extract a corporate TLS-intercept proxy's root CA from the host's
+trust store and stage it for the sandbox image build.
+
+Options:
+  --from-wire <host[:port]>  Skip the trust-store scan; instead open a TLS
+                             connection to <host> and capture the proxy
+                             chain on the wire. Defaults port to 443.
+  --vendor <name>            Restrict trust-store matching to a specific
+                             subject substring. Default tries common ones
+                             (Zscaler, Netskope, Forcepoint, Cisco
+                             Umbrella, Palo Alto/Prisma, Symantec/Blue
+                             Coat, iboss, Menlo).
+  --output <path>            Write the PEM here. Default:
+                             config/extra-ca-certs/proxy-ca.crt
+  --list                     Print what was found; don't write the file.
+  --force                    Overwrite an existing output file without
+                             prompting.
+
+After this command succeeds, run `sandbox rebuild` to bake the cert into
+the sandbox image. The same cert is then trusted by all derived agent
+images and by anything the running agent does inside the pod.
+EOF
+        return 0 ;;
+      *)
+        die "setup-proxy-cert: unknown option '$1' (use --help)" ;;
+    esac
+  done
+
+  require_command openssl "Install openssl via your package manager."
+
+  local platform
+  platform="$(detect_platform)"
+
+  local tmp_pem
+  tmp_pem="$(mktemp -t sandbox-proxy-ca.XXXXXX.pem)"
+  # shellcheck disable=SC2064
+  trap "rm -f '${tmp_pem}'" EXIT
+
+  local vendor_re
+  vendor_re="$(proxy_ca_vendor_regex "${vendor}")"
+
+  local source_desc=""
+  if [[ -n "${from_wire}" ]]; then
+    echo "==> Extracting proxy chain from wire (${from_wire})..."
+    if ! extract_proxy_cert_from_wire "${from_wire}" "${tmp_pem}"; then
+      die "Could not extract a cert chain from ${from_wire}. Check the host is reachable."
+    fi
+    source_desc="wire: ${from_wire}"
+  elif [[ "${platform}" == "macos" ]]; then
+    echo "==> Searching macOS System keychain for proxy CA (vendors: ${vendor_re})..."
+    if ! extract_proxy_cert_macos "${vendor_re}" "${tmp_pem}"; then
+      die "$(cat <<EOF
+No matching cert in /Library/Keychains/System.keychain. If your org's
+MITM uses an unusual name, pass --vendor <substring>, or try
+  sandbox setup-proxy-cert --from-wire deb.nodesource.com
+EOF
+)"
+    fi
+    source_desc="macOS System keychain"
+  else
+    # Linux (and WSL2 — try Linux store first, fall back to Windows store).
+    echo "==> Searching Linux trust store for proxy CA (vendors: ${vendor_re})..."
+    if extract_proxy_cert_linux "${vendor_re}" "${tmp_pem}"; then
+      source_desc="Linux trust store"
+    elif is_wsl; then
+      echo "  Nothing matched inside the WSL distro. Trying Windows trust store via PowerShell..."
+      if ! extract_proxy_cert_windows "${vendor_re}" "${tmp_pem}"; then
+        die "$(cat <<EOF
+No matching cert in either the WSL distro trust store or the Windows
+LocalMachine\\Root store. Pass --vendor <substring> if your org uses a
+non-standard name, or try
+  sandbox setup-proxy-cert --from-wire deb.nodesource.com
+EOF
+)"
+      fi
+      source_desc="Windows LocalMachine\\Root (via PowerShell)"
+    else
+      die "$(cat <<EOF
+No matching cert in the host trust store. Pass --vendor <substring>
+if your org uses a non-standard name, or try
+  sandbox setup-proxy-cert --from-wire deb.nodesource.com
+EOF
+)"
+    fi
+  fi
+
+  echo "  Source: ${source_desc}"
+  echo "  Cert(s) extracted:"
+  describe_pems "${tmp_pem}"
+
+  if [[ "${list_only}" == "true" ]]; then
+    return 0
+  fi
+
+  if [[ -e "${out_path}" ]] && [[ "${force}" != "true" ]]; then
+    if [[ ! -t 0 ]]; then
+      die "${out_path} already exists and stdin is not a TTY. Re-run with --force to overwrite."
+    fi
+    printf "Overwrite %s? [y/N] " "${out_path}" >&2
+    local reply=""
+    read -r reply
+    case "${reply}" in
+      y|Y|yes|YES) ;;
+      *) echo "Aborted; existing file untouched." >&2; return 1 ;;
+    esac
+  fi
+
+  mkdir -p "$(dirname "${out_path}")"
+  cp "${tmp_pem}" "${out_path}"
+  echo "==> Wrote ${out_path}"
+  echo "    Run 'sandbox rebuild' to bake this cert into the sandbox image."
+}
+
+###############################################################################
+# cmd_version — print version
+###############################################################################
+cmd_version() {
+  echo "sandbox ${SANDBOX_VERSION}"
+  echo "Runtime: bash ${BASH_VERSION}"
+  echo "Root:    ${SANDBOX_ROOT}"
+}
+
+###############################################################################
+# Main dispatch
+###############################################################################
+main() {
+  if [[ $# -eq 0 ]]; then
+    usage
+  fi
+
+  local command="$1"
+  shift
+
+  case "${command}" in
+    run)        cmd_run "$@" ;;
+    resume)     cmd_resume "$@" ;;
+    allow)      cmd_allow "$@" ;;
+    list)       cmd_list "$@" ;;
+    logs)       cmd_logs "$@" ;;
+    flows)      cmd_flows "$@" ;;
+    stop)       cmd_stop "$@" ;;
+    cleanup)    cmd_cleanup "$@" ;;
+    check)      cmd_check "$@" ;;
+    status)     cmd_status "$@" ;;
+    setup)      cmd_setup "$@" ;;
+    onboard)    cmd_onboard "$@" ;;
+    secret)     cmd_secret "$@" ;;
+    configure-network) cmd_configure_network "$@" ;;
+    setup-proxy-cert) cmd_setup_proxy_cert "$@" ;;
+    rebuild)    cmd_rebuild "$@" ;;
+    version)    cmd_version "$@" ;;
+    --help|-h|help) usage ;;
+    *) die "Unknown command: ${command}. Run 'sandbox --help' for usage." ;;
+  esac
+}
+
+main "$@"

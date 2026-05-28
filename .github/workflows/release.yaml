@@ -1,0 +1,86 @@
+---
+# yaml-language-server:$schema=https://json.schemastore.org/github-workflow.json
+#
+# Publish a GitHub Release when a vX.Y.Z tag arrives.
+#
+# This workflow does NOT compute version numbers. The internal Gitea
+# release workflow is the single source of truth for versioning: it
+# bumps the version, tags the commit, and (when GITHUB_MIRROR_TOKEN is
+# configured on the Gitea side) pushes the tag and master to this
+# repository. This workflow then picks up the tag and publishes the
+# matching GitHub Release.
+#
+# Effect: GitHub release versions always match Gitea release versions,
+# no race conditions, no divergence.
+#
+# Artifact: source tarball produced by `task release VERSION=...`. The
+# version stamps into the packaged bin/sandbox so `sandbox version`
+# reports the release tag.
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Release
+    # Only run on github.com. This file lives at .github/workflows/, which
+    # Gitea Actions also reads by default — without this guard, every Gitea
+    # tag push would trigger this workflow and fail at `gh release create`.
+    # On Gitea, github.server_url is the Gitea server URL, so the condition
+    # is false and the job is skipped silently.
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install Taskfile
+        uses: actions/setup-task@v2
+        with:
+          version: 3.x
+
+      - name: Resolve version from tag
+        id: ver
+        run: |
+          set -euo pipefail
+          # GITHUB_REF_NAME is the tag name (e.g. v2.0.3) when the workflow
+          # was triggered by a tag push.
+          version="${GITHUB_REF_NAME}"
+          if [[ ! "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: tag '${version}' does not look like vX.Y.Z." >&2
+            exit 1
+          fi
+          echo "Resolved version: ${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build release artifact
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: task release VERSION="${VERSION}"
+
+      - name: Publish GitHub Release with assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          body=$(printf 'Automated release built from %s.\n' "${SHA}")
+
+          # Collect asset paths into an array so paths with spaces are safe.
+          assets=()
+          for asset in dist/agent-sandboxes-*; do
+            [[ -f "${asset}" ]] && assets+=("${asset}")
+          done
+
+          gh release create "${VERSION}" \
+            --title "${VERSION}" \
+            --notes "${body}" \
+            "${assets[@]}"

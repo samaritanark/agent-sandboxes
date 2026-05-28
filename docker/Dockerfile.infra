@@ -1,0 +1,59 @@
+# docker/Dockerfile.infra
+# sandbox:*-infra — Infra tooling layer (for Tier 3 sessions)
+# - Adds kubectl, helm, openstack CLI, ansible
+# - Build args determine which agent base to extend
+# - NO baked-in credentials, no tsh, no docker/podman CLI
+#
+# Usage:
+#   docker build --build-arg BASE_IMAGE=sandbox:claude -t sandbox:claude-infra -f Dockerfile.infra .
+#   docker build --build-arg BASE_IMAGE=sandbox:codex -t sandbox:codex-infra -f Dockerfile.infra .
+#   docker build --build-arg BASE_IMAGE=sandbox:opencode -t sandbox:opencode-infra -f Dockerfile.infra .
+
+ARG BASE_IMAGE=sandbox:base
+FROM ${BASE_IMAGE}
+
+# Switch to root for package installation, then back to agent
+USER root
+
+# --- kubectl ---
+ARG KUBECTL_VERSION=1.31.3
+RUN arch="$(dpkg --print-architecture)" \
+  && curl -fsSL \
+      "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/${arch}/kubectl" \
+      -o /usr/local/bin/kubectl \
+  && chmod +x /usr/local/bin/kubectl \
+  && kubectl version --client
+
+# --- helm ---
+ARG HELM_VERSION=3.16.3
+RUN arch="$(dpkg --print-architecture)" \
+  && curl -fsSL \
+      "https://get.helm.sh/helm-v${HELM_VERSION}-linux-${arch}.tar.gz" \
+    | tar -xz -C /usr/local/bin --strip-components=1 "linux-${arch}/helm" \
+  && chmod +x /usr/local/bin/helm \
+  && helm version
+
+# --- OpenStack CLI ---
+# --break-system-packages opts out of Ubuntu 24.04's PEP 668 guard, which
+# blocks bare pip installs into the externally-managed system Python.
+ARG OPENSTACKCLIENT_VERSION=7.2.1
+RUN pip3 install --no-cache-dir --break-system-packages \
+    "python-openstackclient==${OPENSTACKCLIENT_VERSION}" \
+  && openstack --version
+
+# --- Ansible ---
+ARG ANSIBLE_VERSION=10.6.0
+RUN pip3 install --no-cache-dir --break-system-packages \
+    "ansible==${ANSIBLE_VERSION}" \
+  && ansible --version
+
+# Verify they are NOT present
+RUN ! command -v tsh > /dev/null 2>&1 \
+  && ! command -v docker > /dev/null 2>&1 \
+  && ! command -v podman > /dev/null 2>&1 \
+  && echo "Infra image security checks passed."
+
+# Return to non-root user
+USER agent
+
+# ENTRYPOINT is inherited from base agent image
