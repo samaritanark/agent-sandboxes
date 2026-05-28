@@ -1,0 +1,26 @@
+# docker/Dockerfile.claude
+# sandbox:claude — Claude Code agent image
+# - Installs @anthropic-ai/claude-code globally
+# - NO ANTHROPIC_API_KEY baked in — authentication is OAuth only
+# - NO tsh, docker CLI, or SSH client
+
+FROM sandbox:base
+
+# Install Claude Code via the official native installer.
+# The npm package (@anthropic-ai/claude-code) is deprecated as of Claude Code 2.x.
+# The native installer downloads a pre-built binary and places it in PATH.
+#
+# CLAUDE_CODE_INSTALL_REV busts the Docker layer cache when a new Claude Code
+# release is available. Bumping this arg (e.g. `--build-arg CLAUDE_CODE_INSTALL_REV=$(date +%s)`)
+# forces a re-fetch of install.sh — used by `sandbox rebuild` so operators can
+# refresh on their own cadence without editing this file.
+ARG CLAUDE_CODE_INSTALL_REV=initial
+RUN echo "claude-code install rev: ${CLAUDE_CODE_INSTALL_REV}" \
+  && curl -fsSL https://claude.ai/install.sh | bash \
+  && claude --version
+
+RUN test -z "${ANTHROPIC_API_KEY:-}" || \
+    (echo "ERROR: ANTHROPIC_API_KEY must not be set in image" && exit 1)
+
+ENTRYPOINT ["claude"]
+CMD []

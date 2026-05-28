@@ -1,0 +1,34 @@
+# manifests/policy-kube-system.yaml
+# CiliumNetworkPolicy — allow kube-system infrastructure pods unrestricted traffic
+#
+# With policyEnforcementMode: always, Cilium enforces default-deny on every
+# endpoint cluster-wide, including system pods.  Without this policy:
+#   - CoreDNS cannot forward queries to upstream resolvers → EAI_AGAIN
+#   - hubble-relay cannot reach cilium-agent gRPC → CrashLoopBackOff
+#   - local-path-provisioner cannot reach the API server → CrashLoopBackOff
+#
+# kube-system pods are trusted cluster infrastructure.  Sandbox pod isolation
+# is enforced by per-session CiliumNetworkPolicies in the sandbox namespace
+# (see lib/policy.sh), not by restricting system components.
+---
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-kube-system
+  namespace: kube-system
+spec:
+  # matchLabels: {} selects all endpoints in the kube-system namespace
+  endpointSelector:
+    matchLabels: {}
+  egress:
+    - toEntities:
+        - world
+        - cluster
+        - host
+        - remote-node
+  ingress:
+    - fromEntities:
+        - world
+        - cluster
+        - host
+        - remote-node

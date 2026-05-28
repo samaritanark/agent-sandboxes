@@ -1,0 +1,36 @@
+---
+# yaml-language-server:$schema=https://json.schemastore.org/dependabot-2.0.json
+#
+# Dependabot keeps two narrow ecosystems up to date:
+#
+#   - github-actions: action versions in .github/workflows/*.yaml
+#   - docker:         FROM lines in docker/Dockerfile* (currently just
+#                     ubuntu:24.04 in Dockerfile.base; the agent-specific
+#                     Dockerfiles inherit FROM sandbox:base and are not
+#                     externally tracked)
+#
+# Dependabot does NOT see inside the images themselves — packages
+# installed via apt/npm/pip/curl during image build are Trivy's job
+# (see .github/workflows/security.yaml).
+#
+# Dependabot is GitHub-only; Gitea ignores this file.
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"

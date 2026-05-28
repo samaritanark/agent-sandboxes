@@ -1,0 +1,193 @@
+# lima/sandbox-vm.yaml.tmpl
+# Lima VM configuration TEMPLATE for macOS sandbox hosts
+#
+# This is a template, not a ready-to-use Lima config. setup/macos.sh renders
+# it (substituting __APISERVER_PORT__) to ~/.sandbox/lima-sandbox-vm.yaml and
+# passes that rendered file to limactl. Do not run limactl against this file
+# directly.
+#
+# __APISERVER_PORT__ — the Kubernetes API server port, set by
+#   './setup.sh --apiserver-port <PORT>' (default 6443). Lima bakes port
+#   forwards in at VM-creation time, so changing the port on an existing VM
+#   requires recreating it: 'limactl delete sandbox-vm' then re-run setup.
+
+# Ubuntu 24.04 LTS guest
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+# CPU and memory — sized for k3s + gVisor + agent workloads
+cpus: 4
+memory: "8GiB"
+disk: "60GiB"
+
+# Virtualization backend: prefer vz (macOS Virtualization.framework), fall back to qemu
+vmType: "vz"
+rosetta:
+  enabled: false  # x86 emulation not needed
+
+# Filesystem sharing — expose host home directory via virtiofs
+mounts:
+  - location: "~"
+    mountPoint: "/Users/{{.User}}"
+    writable: true
+    9p:
+      securityModel: "mapped-xattr"
+      cache: "mmap"
+  - location: "/tmp/lima"
+    mountPoint: "/tmp/lima"
+    writable: true
+
+# Port forwarding — expose k3s API server to host kubectl.
+# guestPort/hostPort track --apiserver-port so the forward does not collide
+# with another local Kubernetes endpoint already bound to 6443 on the host.
+portForwards:
+  - guestPort: __APISERVER_PORT__
+    hostPort: __APISERVER_PORT__
+    hostIP: "127.0.0.1"
+  # Hubble relay
+  - guestPort: 4245
+    hostPort: 4245
+    hostIP: "127.0.0.1"
+
+# No `networks:` block — Lima's default user-mode networking covers the
+# VM's needs: outbound internet for provisioning, plus the host port-forwards
+# declared above for kubectl and Hubble. The `lima: shared` mode would add a
+# host<->VM direct-IP interface that nothing here uses, and it requires the
+# sudo-installed socket_vmnet helper on macOS.
+
+# Provisioning scripts — run once on first boot
+provision:
+  - mode: system
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      # Capture all provisioning output to a log inside the VM so a failed
+      # run is diagnosable after the fact — setup/macos.sh's dump_vm_diagnostics
+      # prints this file when the cluster does not come up.
+      exec >> /var/log/sandbox-provision.log 2>&1
+      echo "==> Installing k3s..."
+      # API server listen port — pinned via the k3s config file so it is
+      # honoured on first start. Mirrors write_k3s_apiserver_config in
+      # setup/linux.sh; the value is substituted from --apiserver-port.
+      mkdir -p /etc/rancher/k3s
+      cat > /etc/rancher/k3s/config.yaml << 'K3S_CONFIG_EOF'
+      https-listen-port: __APISERVER_PORT__
+      K3S_CONFIG_EOF
+      # --cluster-cidr / --service-cidr: kept in sync with setup/common.sh
+      # defaults so the Node's .spec.podCIDR matches Cilium's IPAM pool
+      # (100.64.0.0/10) and operators don't see a phantom CIDR mismatch
+      # during triage. If you change either default in setup/common.sh,
+      # update the matching value here too.
+      export INSTALL_K3S_EXEC="--flannel-backend=none --disable-network-policy --disable=servicelb --disable=traefik --disable=metrics-server --cluster-cidr=100.64.0.0/10 --service-cidr=10.43.0.0/16"
+      curl -sfL https://get.k3s.io | sh -
+      systemctl enable --now k3s
+
+      echo "==> Waiting for k3s to be ready..."
+      until kubectl get nodes; do sleep 3; done
+
+      echo "==> Installing gVisor (runsc)..."
+      # gVisor's release bucket is keyed by the raw `uname -m` value
+      # (x86_64 / aarch64) — do NOT rename the architecture. An earlier
+      # `aarch64`->`arm64` rewrite produced a 404 on Apple Silicon, which
+      # (under `set -e`) aborted provisioning before Cilium ever installed.
+      # Download the binaries and their .sha512 manifests into a working
+      # directory so `sha512sum -c` finds the files the manifests name,
+      # verify, then install. See gvisor.dev/docs/user_guide/install.
+      gvisor_arch="$(uname -m)"
+      gvisor_url="https://storage.googleapis.com/gvisor/releases/release/latest/${gvisor_arch}"
+      gvisor_tmp="$(mktemp -d)"
+      (
+        cd "${gvisor_tmp}"
+        curl -fsSL \
+          -O "${gvisor_url}/runsc" \
+          -O "${gvisor_url}/runsc.sha512" \
+          -O "${gvisor_url}/containerd-shim-runsc-v1" \
+          -O "${gvisor_url}/containerd-shim-runsc-v1.sha512"
+        sha512sum -c runsc.sha512 containerd-shim-runsc-v1.sha512
+        chmod +x runsc containerd-shim-runsc-v1
+        mv runsc containerd-shim-runsc-v1 /usr/local/bin/
+      )
+      rm -rf "${gvisor_tmp}"
+
+      # containerd config for gVisor
+      mkdir -p /var/lib/rancher/k3s/agent/etc/containerd/
+      cat > /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl << 'CONTAINERD_EOF'
+      version = 2
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
+        runtime_type = "io.containerd.runsc.v1"
+      CONTAINERD_EOF
+
+      systemctl restart k3s
+      until kubectl get nodes; do sleep 3; done
+
+      echo "==> Installing Cilium via Helm..."
+      # helm needs an explicit kubeconfig: unlike the k3s `kubectl` symlink,
+      # the helm binary does not auto-discover /etc/rancher/k3s/k3s.yaml, and
+      # root has no ~/.kube/config — without this, `helm install` below would
+      # try localhost:8080, fail, and abort provisioning before Cilium installs.
+      export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+      curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      helm repo add cilium https://helm.cilium.io/
+      helm repo update
+      # socketLB.hostNamespaceOnly=true: required for gVisor pods to reach
+      # ClusterIP services. See setup/common.sh for the full explanation.
+      helm install cilium cilium/cilium \
+        --namespace kube-system \
+        --set operator.replicas=1 \
+        --set hubble.relay.enabled=true \
+        --set hubble.enabled=true \
+        --set hubble.metrics.enableOpenMetrics=false \
+        --set kubeProxyReplacement=true \
+        --set k8sServiceHost="127.0.0.1" \
+        --set k8sServicePort="__APISERVER_PORT__" \
+        --set policyEnforcementMode="always" \
+        --set socketLB.hostNamespaceOnly=true \
+        --set ipam.operator.clusterPoolIPv4PodCIDRList="100.64.0.0/10"
+
+      # Sandbox manifests (namespace, serviceaccount, runtimeclass) are
+      # applied host-side by setup/common.sh once the VM's kubeconfig is
+      # reachable — not from inside the VM.
+
+      echo "==> Installing nerdctl + buildkit (in-VM image builder)..."
+      # macOS builds the agent images inside this VM — the host may have no
+      # Docker. buildkit runs with the containerd worker pointed at k3s's own
+      # containerd and the k8s.io namespace, so a build can `FROM` a just-built
+      # local image and the result is immediately visible to k3s. nerdctl
+      # release assets use Go-style arch names (amd64 / arm64) — the opposite
+      # of gVisor's x86_64 / aarch64, hence the separate rename here.
+      nerdctl_arch="$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
+      nerdctl_ver="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+        https://github.com/containerd/nerdctl/releases/latest \
+        | sed -E 's#.*/tag/v##')"
+      curl -fsSL \
+        "https://github.com/containerd/nerdctl/releases/download/v${nerdctl_ver}/nerdctl-full-${nerdctl_ver}-linux-${nerdctl_arch}.tar.gz" \
+        | tar -xz -C /usr/local
+      mkdir -p /etc/buildkit
+      cat > /etc/buildkit/buildkitd.toml << 'BUILDKITD_EOF'
+      [worker.oci]
+        enabled = false
+      [worker.containerd]
+        enabled = true
+        address = "/run/k3s/containerd/containerd.sock"
+        namespace = "k8s.io"
+      BUILDKITD_EOF
+      systemctl daemon-reload
+      systemctl enable --now buildkit
+
+      echo "==> Lima VM provisioning complete."
+
+# Copy kubeconfig to a location accessible from host
+probes:
+  - description: "k3s is running"
+    script: |
+      #!/usr/bin/env bash
+      sudo kubectl get nodes
+    hint: "Wait for k3s to initialize — usually takes 1-2 minutes."
+
+# SSH settings
+ssh:
+  localPort: 0  # auto-assign
+  loadDotSSHPubKeys: true

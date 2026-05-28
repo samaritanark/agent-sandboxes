@@ -1,0 +1,28 @@
+# config/agents/claude.yaml
+# Claude Code agent profile
+
+agent: claude
+display_name: "Claude Code (Anthropic)"
+image_base: "sandbox:claude"
+image_infra: "sandbox:claude-infra"
+credential_type: oauth  # OAuth — NO API key injection (PRINCIPLES.md)
+entrypoint: claude
+
+# Allowed egress domains — Tier 1 only (Tier 2/3 add tier_domains on top)
+allowed_domains:
+  - claude.ai
+  - api.anthropic.com
+  - console.anthropic.com
+  - statsig.anthropic.com
+  - sentry.io
+
+# Environment variables injected into pod
+env:
+  HOME: /home/agent
+  TERM: xterm-256color
+  # ANTHROPIC_API_KEY is explicitly forbidden — authentication is OAuth only
+
+# Forbidden env vars — must not appear in pod spec
+forbidden_env:
+  - ANTHROPIC_API_KEY
+  - ANTHROPIC_AUTH_TOKEN

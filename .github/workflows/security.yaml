@@ -1,0 +1,79 @@
+---
+# yaml-language-server:$schema=https://json.schemastore.org/github-workflow.json
+#
+# Trivy security scans.
+#
+# Runs on every push to master, every PR, weekly, and on demand. Two
+# complementary scans:
+#
+#   - fs:     scans the repo tree for known CVEs in any tracked
+#             lockfiles/manifests and for accidentally committed secrets.
+#   - config: scans Dockerfiles and Kubernetes manifests for common
+#             misconfigurations (e.g. containers running as root,
+#             missing securityContext fields).
+#
+# Findings are uploaded to GitHub's code-scanning UI as SARIF when this
+# workflow runs on github.com. On Gitea, the scan still runs and prints
+# findings in the job log; only the SARIF upload step is skipped.
+#
+# Report mode: the scan does not fail the job on findings — they surface
+# in the GitHub Security tab and the job log, but PRs are not blocked.
+# Tighten by setting `exit-code: 1` once the baseline is clean.
+#
+# Not yet covered: image-content scans of the built agent containers
+# (apt/npm/pip/curl packages installed during `docker build`). This
+# requires image-build infrastructure in CI, which the repo does not
+# have today. Add image scan steps when that exists.
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: '0 7 * * 1'  # Mondays 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write  # required for SARIF upload to code-scanning
+
+jobs:
+  trivy:
+    name: Trivy scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true
+
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy-config.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+
+      - name: Upload SARIF (filesystem)
+        if: always() && github.server_url == 'https://github.com'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: Upload SARIF (config)
+        if: always() && github.server_url == 'https://github.com'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config

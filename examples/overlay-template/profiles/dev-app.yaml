@@ -1,0 +1,31 @@
+# overlay-template/profiles/dev-app.yaml
+#
+# Example named profile. Invoke with:
+#   sandbox run --profile dev-app
+#
+# Filename is canonical — the `profile:` key inside is informational.
+
+profile: dev-app
+
+# Required: profile must declare a tier (1|2|3). The CLI runs the same
+# validate_tier check as if you'd passed `--tier <N>` directly.
+tier: 2
+
+# Optional: pre-fill --repo when the operator doesn't pass one. Ignored
+# if --repo is given on the command line.
+default_repo: ~/repos/dev-app
+
+# Optional: extra allowed egress domains. Each one passes through the
+# blocked-destinations check (both the org-level file and this overlay's
+# blocked-destinations.yaml).
+extra_allowed_domains:
+  - api.dev-app.example.com
+  - internal-registry.example.com
+
+# Optional (Phase 4): host-side secrets injected as session-scoped K8s
+# Secrets. Created on start, deleted on teardown — never persisted in
+# the cluster across sessions.
+secrets: []
+
+# Optional (Phase 5): MCP servers deployed alongside the session.
+mcps: []

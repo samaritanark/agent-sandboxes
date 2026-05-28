@@ -1,0 +1,20 @@
+# overlay-template/blocked-destinations.yaml
+#
+# Additional destinations this overlay blocks, ON TOP of the org-level
+# config/blocked-destinations.yaml. Overlays are additive only — anything
+# listed here is added to the deny list at session-launch time. Removing
+# entries here does NOT remove anything the org has blocked.
+#
+# Schema matches the org file:
+#   blocked_domains:
+#     - "exact.example.com"
+#     - "*.example.com"           # wildcard prefix
+#
+# Use this for: team-specific internal endpoints that this overlay's
+# users must NEVER reach (e.g. a sensitive internal service, a separate
+# team's prod, an off-limits research environment).
+
+blocked_domains:
+  # Examples — replace with your team's actual entries.
+  # - "prod.example.com"
+  # - "*.sensitive.internal.example.com"

@@ -1,0 +1,159 @@
+# docker/Dockerfile.base
+# sandbox:base — foundation image for all agent containers
+# - No baked-in credentials
+# - No tsh, docker CLI, podman CLI, or SSH client
+# - Non-root user 'agent' (UID 1000)
+
+FROM ubuntu:24.04
+
+# Prevent interactive prompts during package install
+ENV DEBIAN_FRONTEND=noninteractive
+
+# --- Extra trusted root CAs (corporate TLS-intercept proxies, internal CAs) ---
+# Anything in this directory on the host is staged into the build context by
+# setup/common.sh:build_images from config/extra-ca-certs/. update-ca-certificates
+# runs automatically from the ca-certificates package postinst (next layer), so
+# everything dropped in here ends up trusted in /etc/ssl/certs/. The COPY is
+# unconditional — the staging dir always exists (.gitkeep) and is empty by
+# default, which is a no-op.
+COPY extra-ca-certs/ /usr/local/share/ca-certificates/
+
+# --- System packages ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Core utilities
+    ca-certificates \
+    curl \
+    wget \
+    gnupg \
+    lsb-release \
+    unzip \
+    xz-utils \
+    # Version control
+    git \
+    git-lfs \
+    # Text processing
+    jq \
+    less \
+    ripgrep \
+    fd-find \
+    # Python
+    python3 \
+    python3-pip \
+    python3-venv \
+    # Build essentials (for pip-compiled packages)
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    python3-dev \
+  && rm -rf /var/lib/apt/lists/*
+
+# Node ships its own compiled-in CA list and does not consult the system
+# bundle by default — so without this, npm and Node-based agent CLIs reject
+# corp TLS-intercept proxy certs that update-ca-certificates just merged
+# in. NODE_EXTRA_CA_CERTS adds the system bundle on top of Node's built-in
+# list (additive, not replacing), covering both build-time `npm install`
+# and runtime calls from claude/codex/etc. through the proxy.
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+
+# --- Node.js LTS (via NodeSource) ---
+# Pin to Node.js 20 LTS
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+  && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/*
+
+# Verify node/npm versions
+RUN node --version && npm --version
+
+# --- uv (Python package manager) ---
+# Pin to a specific version for reproducibility
+ARG UV_VERSION=0.4.18
+# uv release assets are keyed by `uname -m` (x86_64 / aarch64).
+RUN arch="$(uname -m)" \
+  && curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${arch}-unknown-linux-gnu.tar.gz" \
+    | tar -xz -C /usr/local/bin --strip-components=1 "uv-${arch}-unknown-linux-gnu/uv" \
+  && chmod +x /usr/local/bin/uv \
+  && uv --version
+
+# --- gitleaks ---
+ARG GITLEAKS_VERSION=8.21.2
+# gitleaks names its Intel build `x64` (not `amd64`/`x86_64`); arm64 matches.
+RUN arch="$(dpkg --print-architecture)" \
+  && case "${arch}" in amd64) arch=x64 ;; esac \
+  && curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz" \
+    | tar -xz -C /usr/local/bin gitleaks \
+  && chmod +x /usr/local/bin/gitleaks \
+  && gitleaks version
+
+# --- Terraform CLI ---
+ARG TERRAFORM_VERSION=1.9.8
+# HashiCorp uses Go-style arch names (amd64 / arm64) — dpkg's naming.
+RUN arch="$(dpkg --print-architecture)" \
+  && curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${arch}.zip" \
+    -o /tmp/terraform.zip \
+  && unzip /tmp/terraform.zip -d /usr/local/bin/ \
+  && rm /tmp/terraform.zip \
+  && chmod +x /usr/local/bin/terraform \
+  && terraform version
+
+# --- Go toolchain ---
+# Upstream tarball, not apt — the Ubuntu package lags releases by enough that
+# many modules won't compile against it. Tracks the current stable release;
+# image rebuilds pick up new Go versions without code changes. Pin via
+# `--build-arg GO_VERSION=go1.26.3` if a specific version is required.
+ARG GO_VERSION=
+RUN arch="$(dpkg --print-architecture)" \
+  && version="${GO_VERSION:-$(curl -fsSL https://go.dev/VERSION?m=text | head -n1)}" \
+  && curl -fsSL "https://go.dev/dl/${version}.linux-${arch}.tar.gz" \
+    | tar -xz -C /usr/local \
+  && /usr/local/go/bin/go version
+ENV PATH="/usr/local/go/bin:${PATH}"
+# GOPATH defaults to /home/agent/go for the agent user (set after USER switch
+# below so per-user tool installs land somewhere writable).
+
+# --- Taskfile (go-task) ---
+# Upstream install script tracks the latest release. The image is rebuilt
+# infrequently enough that "latest at build time" is acceptable; pin via the
+# script's -v flag if a specific version is required.
+RUN curl -fsSL https://taskfile.dev/install.sh \
+    | sh -s -- -b /usr/local/bin \
+  && task --version
+
+# --- Create non-root agent user ---
+# Ubuntu 24.04 ships with an 'ubuntu' user at UID/GID 1000; remove it first.
+RUN userdel -f ubuntu 2>/dev/null || true \
+    && groupdel ubuntu 2>/dev/null || true \
+    && groupadd --gid 1000 agent \
+    && useradd --uid 1000 --gid 1000 --shell /bin/bash \
+               --create-home --home-dir /home/agent \
+               agent
+
+# Set up workspace directory
+RUN mkdir -p /workspace && chown agent:agent /workspace
+
+# --- Environment ---
+ENV HOME=/home/agent
+ENV TERM=xterm-256color
+ENV PATH="/home/agent/.local/bin:${PATH}"
+
+# Default working directory
+WORKDIR /workspace
+
+# Switch to non-root user
+USER agent
+
+# Ensure npm global bin is on PATH for agent user
+ENV PATH="/home/agent/.npm-global/bin:${PATH}"
+RUN npm config set prefix '/home/agent/.npm-global'
+
+# Go user-installed binaries land in $GOPATH/bin (default ~/go/bin). Setting
+# the env vars here keeps `go install <tool>@latest` discoverable on PATH.
+ENV GOPATH=/home/agent/go
+ENV PATH="/home/agent/go/bin:${PATH}"
+
+# Verify git-lfs
+RUN git lfs install --skip-repo
+
+# Health check: verify core tools are present
+RUN python3 --version && node --version && git --version && jq --version
+
+# No CMD/ENTRYPOINT in base — defined by derived images
