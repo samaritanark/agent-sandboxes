@@ -1,0 +1,36 @@
+# Force Unix (LF) line endings on every file Linux/Lima/WSL2 will source or
+# execute, regardless of any user's git core.autocrlf setting. Git on Windows
+# defaults autocrlf=true, which rewrites .sh checkouts to CRLF — bash inside
+# WSL then parses '#!/usr/bin/env bash\r\n' as an interpreter literally named
+# 'bash\r' and fails with "No such file or directory". This file pins the
+# correct EOL per filetype on every fresh clone.
+
+# Default: any text file Git auto-detects is normalized to LF in the index
+# and checked out as LF on every platform.
+* text=auto eol=lf
+
+# Unix scripts and config — sourced or executed inside Lima / WSL2 / Linux.
+*.sh        text eol=lf
+*.bash      text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.json      text eol=lf
+*.toml      text eol=lf
+*.md        text eol=lf
+*.tmpl      text eol=lf
+Dockerfile* text eol=lf
+bin/sandbox text eol=lf
+
+# Windows scripts — must be CRLF for Notepad / older PowerShell hosts.
+*.ps1       text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# Binary assets — never convert.
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.tar.gz    binary
+*.zip       binary

@@ -1,0 +1,67 @@
+# config/tiers/tier2.yaml
+# Tier 2 — Project sandbox
+
+tier: 2
+name: Project
+description: >
+  Project repository mounted read-write with sensitive files masked.
+  Agent + project domains (GitHub, PyPI, npm, Terraform registry).
+  Requires --repo pointing to a git repository.
+
+# Workspace: hostPath from --repo
+workspace_type: hostPath
+
+# Additional egress domains — project registries and VCS
+# Operators using an internal Git host (Gitea, GitLab Self-Managed, etc.)
+# can add it per-invocation with --allow-domain <host>.
+# Authoritative list lives in lib/tier.sh:get_tier_domains.
+extra_domains:
+  - github.com
+  - api.github.com
+  - codeload.github.com
+  - objects.githubusercontent.com
+  - release-assets.githubusercontent.com
+  - pypi.org
+  - files.pythonhosted.org
+  - registry.npmjs.org
+  - registry.terraform.io
+  - go.dev
+  - dl.google.com
+  - proxy.golang.org
+  - sum.golang.org
+
+# Filesystem isolation settings
+filesystem:
+  workspace_mount: /workspace
+  host_path: true
+  gitconfig_readonly: true
+  # These paths inside /workspace are masked with emptyDir overlays
+  masked_paths:
+    - ".env"
+    - ".env.*"
+    - ".npmrc"
+    - "*-openrc.sh"
+    - "clouds.yaml"
+    - "kubeconfig"
+    - ".kube/"
+  # These are mounted read-only from host
+  readonly_paths:
+    - ".git/config"
+    - ".gitmodules"
+    - ".vscode/"
+    - ".idea/"
+    - ".devcontainer/"
+
+# Forbidden host paths (cannot be --repo value)
+forbidden_host_paths:
+  - "~/.tsh/"
+  - "~/.kube/"
+  - "~/.ssh/"
+  - "~/.config/openstack/"
+  - "~/.aws/"
+  - "~/.config/gcloud/"
+  - "~/.azure/"
+  - "$HOME"
+
+# Log retention
+retention_days: 90

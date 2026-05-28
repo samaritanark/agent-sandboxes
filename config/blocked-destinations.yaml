@@ -1,0 +1,27 @@
+# config/blocked-destinations.yaml
+# Destinations that may NEVER appear in --allow-domain or network policies.
+#
+# These protect against agents exfiltrating data via communication platforms,
+# internal infrastructure endpoints, and email.
+
+blocked_domains:
+  # Operators: add your internal SSO / identity-provider hosts here so an
+  # agent in the sandbox can never reach them (e.g. teleport.example.com,
+  # okta.example.com, *.teleport.example.com).
+
+  # Email — SMTP relays and webmail
+  - "smtp.*"
+  - "mail.*"
+
+  # Team communication platforms
+  - "*.slack.com"
+  - "*.teams.microsoft.com"
+
+  # Additional high-risk services
+  - "*.discord.com"
+  - "pastebin.com"
+  - "*.pastebin.com"
+
+blocked_cidrs:
+  # Add CIDR ranges here if needed, e.g. internal RFC-1918 ranges.
+  # []

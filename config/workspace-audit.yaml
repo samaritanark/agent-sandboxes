@@ -1,0 +1,52 @@
+# config/workspace-audit.yaml
+# Directories pruned during workspace audit (baseline + diff capture).
+#
+# These dirs are NOT walked during sha256 baseline/diff computation,
+# so changes inside them are not recorded in the session audit log.
+# Defaults cover regenerable artifacts (dependencies, build outputs,
+# tool caches) that obscure meaningful source-code changes and balloon
+# scan time on large repos.
+#
+# Match is by basename at any depth (e.g. `node_modules` prunes both
+# `<repo>/node_modules` and `<repo>/packages/*/node_modules`).
+#
+# Threat-model note: an agent CAN modify files inside pruned dirs
+# without leaving an audit-log entry. The defaults are appropriate
+# when the workspace is your own source repo and you trust the agent
+# not to hide payloads in dependency caches you regenerate anyway.
+# For higher-assurance reviews, narrow this list (or empty it) and
+# re-run setup.
+
+prune_dirs:
+  # Python
+  - .venv
+  - venv
+  - __pycache__
+  - .pytest_cache
+  - .mypy_cache
+  - .ruff_cache
+  - .tox
+
+  # Node / JS / TS
+  - node_modules
+  - .next
+  - .nuxt
+  - .turbo
+  - .parcel-cache
+  - .yarn
+
+  # Go / Rust / Java
+  - vendor
+  - target
+  - .gradle
+
+  # Generic build outputs
+  - build
+  - dist
+  - out
+  - coverage
+  - .coverage
+
+  # IaC / tooling caches
+  - .terraform
+  - .terragrunt-cache

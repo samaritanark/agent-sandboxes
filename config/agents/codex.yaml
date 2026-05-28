@@ -1,0 +1,28 @@
+# config/agents/codex.yaml
+# OpenAI Codex CLI agent profile
+
+agent: codex
+display_name: "OpenAI Codex CLI"
+image_base: "sandbox:codex"
+image_infra: "sandbox:codex-infra"
+credential_type: oauth  # OAuth — NO API key injection (PRINCIPLES.md)
+entrypoint: codex
+
+# Allowed egress domains — Tier 1 only
+allowed_domains:
+  - api.openai.com
+  - auth.openai.com
+  - auth0.openai.com
+  - chatgpt.com
+  - cdn.openai.com
+
+# Environment variables injected into pod
+env:
+  HOME: /home/agent
+  TERM: xterm-256color
+  # OPENAI_API_KEY is explicitly forbidden — authentication is OAuth only
+
+# Forbidden env vars — must not appear in pod spec
+forbidden_env:
+  - OPENAI_API_KEY
+  - OPENAI_AUTH_TOKEN

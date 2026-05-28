@@ -1,0 +1,26 @@
+# config/tiers/tier1.yaml
+# Tier 1 — Ephemeral sandbox
+
+tier: 1
+name: Ephemeral
+description: >
+  Fully isolated execution with ephemeral workspace.
+  Agent domains only. No host filesystem access.
+  Use for short-lived, stateless tasks.
+
+# Workspace: emptyDir — no host path mounts
+workspace_type: emptyDir
+
+# Additional egress domains beyond agent-specific domains
+# Tier 1: none
+extra_domains: []
+
+# Filesystem isolation settings
+filesystem:
+  workspace_mount: /workspace
+  host_path: false
+  gitconfig_readonly: false
+  masked_paths: []
+
+# Log retention
+retention_days: 90

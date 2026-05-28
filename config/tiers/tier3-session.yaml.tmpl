@@ -1,0 +1,60 @@
+# config/tiers/tier3-session.yaml.tmpl
+# Tier 3 — Infra sandbox (template — filled at session start)
+#
+# Placeholders: {{SESSION_ID}}, {{INFRA_ENDPOINTS}}, {{AGENT}}
+
+tier: 3
+name: Infra
+session_id: "{{SESSION_ID}}"
+agent: "{{AGENT}}"
+description: >
+  Full Tier-2 isolation plus infra tooling image (kubectl, helm, openstack, ansible).
+  Dynamic endpoints allowed via --infra-endpoint.
+  Requires --infra-token; token is stored in a K8s Secret and deleted at teardown.
+  REMINDER: Revoke infra token after session ends.
+
+# Workspace: same as Tier 2
+workspace_type: hostPath
+
+# Egress: Tier 2 domains + dynamic infra endpoints
+# (Operators using an internal Git host can add it via --allow-domain,
+# ~/.sandbox/config.yaml's extra_allowed_domains, or SANDBOX_EXTRA_ALLOWED_DOMAINS.)
+# Authoritative list lives in lib/tier.sh:get_tier_domains.
+extra_domains:
+  - github.com
+  - api.github.com
+  - codeload.github.com
+  - objects.githubusercontent.com
+  - release-assets.githubusercontent.com
+  - pypi.org
+  - files.pythonhosted.org
+  - registry.npmjs.org
+  - registry.terraform.io
+  - go.dev
+  - dl.google.com
+  - proxy.golang.org
+  - sum.golang.org
+
+# Dynamic infra endpoints (added via --infra-endpoint at session start)
+infra_endpoints:
+{{INFRA_ENDPOINTS}}
+
+# Infra token secret name (created at session start, deleted at teardown)
+infra_token_secret: "infra-token-{{SESSION_ID}}"
+
+# Filesystem: same as Tier 2
+filesystem:
+  workspace_mount: /workspace
+  host_path: true
+  gitconfig_readonly: true
+  masked_paths:
+    - ".env"
+    - ".env.*"
+    - ".npmrc"
+    - "*-openrc.sh"
+    - "clouds.yaml"
+    - "kubeconfig"
+    - ".kube/"
+
+# Log retention — longer for infra sessions
+retention_days: 180

@@ -1,0 +1,34 @@
+# config/defaults.yaml
+# Default configuration values for the sandbox CLI.
+
+defaults:
+  agent: claude
+  tier: 1
+  namespace: sandbox
+  runtime_class: gvisor
+  service_account: sandbox-agent
+  image_pull_policy: IfNotPresent
+
+# Per-pod resource requests/limits and the namespace ResourceQuota live in
+# lib/resources.sh — the single source of truth. The quota is sized to the
+# node's allocatable CPU/memory at 'sandbox setup' time rather than fixed
+# here.
+
+retention_days:
+  tier1: 90
+  tier2: 90
+  tier3: 180
+
+# Pod startup timeout in seconds
+pod_ready_timeout_seconds: 120
+
+logs:
+  # Base directory for session logs; can be overridden with SANDBOX_LOGS_DIR env var
+  base_dir: "~/.sandbox/logs"
+
+security:
+  # Enforce these regardless of any flag — see PRINCIPLES.md
+  auto_mount_service_account_token: false
+  run_as_non_root: true
+  allow_privilege_escalation: false
+  drop_all_capabilities: true

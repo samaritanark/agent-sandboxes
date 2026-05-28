@@ -1,0 +1,26 @@
+# docker/Dockerfile.codex
+# sandbox:codex — OpenAI Codex CLI agent image
+# - Installs @openai/codex globally
+# - NO OPENAI_API_KEY baked in — authentication is OAuth only
+# - NO tsh, docker CLI, or SSH client
+
+FROM sandbox:base
+
+# bubblewrap — Codex CLI's Linux sandbox backend. Without it Codex falls
+# back to a bundled copy and prints a startup warning.
+USER root
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends bubblewrap \
+  && rm -rf /var/lib/apt/lists/*
+USER agent
+
+# Install OpenAI Codex CLI
+ARG CODEX_VERSION=latest
+RUN npm install -g "@openai/codex@${CODEX_VERSION}" \
+  && codex --version
+
+RUN test -z "${OPENAI_API_KEY:-}" || \
+    (echo "ERROR: OPENAI_API_KEY must not be set in image" && exit 1)
+
+ENTRYPOINT ["codex"]
+CMD []
