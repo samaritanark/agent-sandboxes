@@ -190,16 +190,160 @@ YAML
     && fail "overlay-blocked domain should be blocked" \
     || pass "overlay exact-match block applies"
 
-  # Overlay wildcard
+  # Overlay wildcard — subdomain
   ( SANDBOX_OVERLAY="${overlay}" check_domain_not_blocked sub.overlay-wild.example.com >/dev/null 2>&1 ) \
     && fail "overlay wildcard subdomain should be blocked" \
     || pass "overlay wildcard block applies"
+
+  # Overlay wildcard — apex ('*.overlay-wild.example.com' must also block the
+  # bare 'overlay-wild.example.com', so it can't be allow-listed around).
+  ( SANDBOX_OVERLAY="${overlay}" check_domain_not_blocked overlay-wild.example.com >/dev/null 2>&1 ) \
+    && fail "overlay wildcard apex should be blocked" \
+    || pass "overlay wildcard apex block applies"
 
   # No overlay configured → only org check (sanity)
   unset SANDBOX_OVERLAY
   ( check_domain_not_blocked github.com >/dev/null 2>&1 ) \
     && pass "no overlay → org-only path still works" \
     || fail "github.com should pass with no overlay"
+}
+
+###############################################################################
+# is_valid_profile_name
+###############################################################################
+test_is_valid_profile_name() {
+  info "Testing is_valid_profile_name..."
+
+  local n
+  for n in stratum-codex dev_app foo.bar a1 ABC tier2; do
+    is_valid_profile_name "${n}" || fail "is_valid_profile_name '${n}' should be valid"
+  done
+  pass "accepts normal names"
+
+  # Empty, numeric tier aliases, path separators, traversal, leading dot, junk.
+  for n in "" 1 2 3 "a/b" ".." ".hidden" "a b" "na/../me" 'x;y'; do
+    if is_valid_profile_name "${n}"; then
+      fail "is_valid_profile_name '${n}' should be invalid"
+    fi
+  done
+  pass "rejects empty, numeric, slashes, traversal, leading dot, junk"
+}
+
+###############################################################################
+# render_profile_yaml — agent + repo optional, round-trips through the parser
+###############################################################################
+test_render_profile_yaml() {
+  info "Testing render_profile_yaml..."
+
+  local out
+  # Full profile: agent + repo + two domains.
+  out="$(printf '%s\n' a.example.com b.example.com \
+         | render_profile_yaml full 2 codex /repo/full)"
+  grep -q '^tier: 2$'              <<<"${out}" || fail "render: missing tier"
+  grep -q '^agent: codex$'         <<<"${out}" || fail "render: missing agent"
+  grep -q '^default_repo: /repo/full$' <<<"${out}" || fail "render: missing default_repo"
+  grep -q '^  - a.example.com$'    <<<"${out}" || fail "render: missing domain"
+  pass "full profile renders all fields"
+
+  # Optional agent omitted → NO agent: line (agent must stay optional).
+  out="$(printf '' | render_profile_yaml noagent 2 '' '')"
+  if grep -q '^agent:'        <<<"${out}"; then fail "agent: line should be absent when agent empty"; fi
+  if grep -q '^default_repo:' <<<"${out}"; then fail "default_repo line should be absent when repo empty"; fi
+  if grep -q '^extra_allowed_domains:' <<<"${out}"; then fail "domains block should be absent when none given"; fi
+  grep -q '^tier: 2$' <<<"${out}" || fail "render: minimal profile still needs tier"
+  pass "optional fields (agent, repo, domains) omitted cleanly"
+
+  # Round-trip through the exact helpers cmd_run uses to read profiles back.
+  local rt="${TEST_DIR}/rt.yaml"
+  printf '%s\n' x.example.com | render_profile_yaml rt 3 claude /repo/x > "${rt}"
+  eq "round-trip tier"   "3"             "$(extract_yaml_scalar_from_file "${rt}" tier)"
+  eq "round-trip agent"  "claude"        "$(extract_yaml_scalar_from_file "${rt}" agent)"
+  eq "round-trip repo"   "/repo/x"       "$(extract_yaml_scalar_from_file "${rt}" default_repo)"
+  eq "round-trip domain" "x.example.com" "$(extract_yaml_list_from_file "${rt}" extra_allowed_domains)"
+}
+
+###############################################################################
+# CLI: 'sandbox profile save/list/show/delete' end-to-end (no cluster needed).
+# HOME is overridden at the top of this file, so the real binary writes into
+# the per-test ~/.sandbox/profiles/.
+###############################################################################
+test_cli_profile_lifecycle() {
+  info "Testing 'sandbox profile' lifecycle via the real CLI..."
+  local sb="${SANDBOX_ROOT}/bin/sandbox"
+  local repo="${TEST_DIR}/repo/stratum"
+  mkdir -p "${repo}"
+  unset SANDBOX_OVERLAY
+
+  local out
+  # dry-run WITH --agent → agent line present.
+  out="$("${sb}" profile save --tier 2 --agent codex --repo "${repo}" --dry-run)"
+  grep -q '^agent: codex$' <<<"${out}" || fail "dry-run should include agent: codex"
+  pass "dry-run includes agent when --agent given"
+
+  # dry-run WITHOUT --agent → agent line absent (optional).
+  out="$("${sb}" profile save --tier 2 --repo "${repo}" --dry-run)"
+  if grep -q '^agent:' <<<"${out}"; then fail "dry-run must omit agent: without --agent"; fi
+  pass "dry-run omits agent when --agent absent"
+
+  # Real save with name derived from repo + agent.
+  "${sb}" profile save --tier 2 --agent codex --repo "${repo}" >/dev/null \
+    || fail "save failed"
+  [[ -f "${HOME}/.sandbox/profiles/stratum-codex.yaml" ]] \
+    || fail "expected derived-name profile stratum-codex.yaml"
+  pass "save writes a derived-name profile"
+
+  # list + show surface it.
+  "${sb}" profile list | grep -q 'stratum-codex' || fail "list omits the saved profile"
+  pass "list shows the saved profile"
+  "${sb}" profile show stratum-codex | grep -q '^tier: 2$' || fail "show omits content"
+  pass "show prints the profile"
+
+  # Overwrite refused without --force, allowed with it.
+  if "${sb}" profile save --tier 2 --agent codex --repo "${repo}" >/dev/null 2>&1; then
+    fail "overwrite should be refused without --force"
+  fi
+  pass "overwrite refused without --force"
+  "${sb}" profile save --tier 1 --name stratum-codex --force >/dev/null \
+    || fail "--force overwrite should succeed"
+  pass "--force overwrites"
+
+  # delete removes it.
+  "${sb}" profile delete stratum-codex --yes >/dev/null || fail "delete failed"
+  [[ -f "${HOME}/.sandbox/profiles/stratum-codex.yaml" ]] \
+    && fail "profile still present after delete"
+  pass "delete removes the profile"
+}
+
+test_cli_profile_rejections() {
+  info "Testing 'sandbox profile save' rejections..."
+  local sb="${SANDBOX_ROOT}/bin/sandbox"
+  local repo="${TEST_DIR}/repo/r1"
+  mkdir -p "${repo}" "${TEST_DIR}/repo/r2"
+  unset SANDBOX_OVERLAY
+
+  # Blocked domain (pastebin.com ships in config/blocked-destinations.yaml).
+  if "${sb}" profile save --tier 1 --allow-domain pastebin.com --name blk --dry-run >/dev/null 2>&1; then
+    fail "blocked domain should be rejected at save time"
+  fi
+  pass "blocked domain rejected at save time"
+
+  # More than one --repo.
+  if "${sb}" profile save --tier 2 --repo "${repo}" --repo "${TEST_DIR}/repo/r2" --name multi --dry-run >/dev/null 2>&1; then
+    fail "multi-repo should be rejected"
+  fi
+  pass "multi-repo rejected"
+
+  # Missing required --tier.
+  if "${sb}" profile save --agent codex --name notier --dry-run >/dev/null 2>&1; then
+    fail "missing --tier should be rejected"
+  fi
+  pass "missing --tier rejected"
+
+  # Invalid (numeric) profile name.
+  if "${sb}" profile save --tier 1 --name 1 --dry-run >/dev/null 2>&1; then
+    fail "numeric profile name should be rejected"
+  fi
+  pass "numeric profile name rejected"
 }
 
 main() {
@@ -215,6 +359,10 @@ main() {
   test_find_profile_path
   test_overlay_blocked_destinations_file
   test_check_domain_with_overlay
+  test_is_valid_profile_name
+  test_render_profile_yaml
+  test_cli_profile_lifecycle
+  test_cli_profile_rejections
 
   echo ""
   echo "All profile/overlay tests passed."
