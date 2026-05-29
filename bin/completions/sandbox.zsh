@@ -29,6 +29,7 @@ _sandbox() {
         'setup:Install/configure sandbox prerequisites'
         'onboard:Stage host-side agent OAuth state for first-run convenience'
         'secret:Manage host-side secret store (injected per-session by profile)'
+        'profile:Create and manage launch profiles (save/list/show/delete)'
         'configure-network:Re-detect host interfaces and re-apply to Cilium (run after VPN reconnects)'
         'rebuild:Rebuild sandbox container image(s)'
         'version:Print version'
@@ -49,6 +50,7 @@ _sandbox() {
         setup)  _sandbox_setup ;;
         onboard) _sandbox_onboard ;;
         secret) _sandbox_secret ;;
+        profile) _sandbox_profile ;;
       esac
       ;;
   esac
@@ -96,6 +98,45 @@ _sandbox_secret() {
   esac
 }
 
+_sandbox_profile() {
+  local pdir="${HOME}/.sandbox/profiles"
+  local pnames=()
+  if [[ -d "${pdir}" ]]; then
+    pnames=(${(f)"$(cd "${pdir}" && ls -1 *.yaml(N) 2>/dev/null | sed 's/\.yaml$//')"})
+  fi
+
+  if (( CURRENT == 2 )); then
+    _values 'subcommand' \
+      'save[Generate ~/.sandbox/profiles/<name>.yaml from run-style flags]' \
+      'list[List user and overlay profiles]' \
+      'show[Print a profile YAML]' \
+      'delete[Remove one of your profiles]'
+    return
+  fi
+
+  case "${words[2]}" in
+    save)
+      _arguments \
+        '--tier[Isolation tier (required)]:tier:(1 2 3)' \
+        '--agent[Agent to pin (optional)]:agent:(claude codex opencode)' \
+        '--repo[Default workspace repository]:directory:_files -/' \
+        '*--allow-domain[Extra allowed egress domain]:domain:' \
+        '--name[Profile name (default: derived from repo + agent)]:name:' \
+        '--force[Overwrite an existing profile]' \
+        '--dry-run[Print the YAML instead of writing it]' \
+        '--help[Show help]'
+      ;;
+    show|cat)
+      _values 'profile name' "${pnames[@]}"
+      ;;
+    delete|rm|remove)
+      _arguments \
+        '--yes[Skip the confirmation prompt]' \
+        "*:profile name:(${pnames[*]})"
+      ;;
+  esac
+}
+
 _sandbox_onboard() {
   _arguments \
     '--agent[Limit to one agent (default: all)]:agent:(claude codex opencode all)' \
@@ -123,10 +164,15 @@ _sandbox_rebuild() {
 }
 
 _sandbox_run() {
+  local pdir="${HOME}/.sandbox/profiles"
+  local pnames=(1 2 3)
+  if [[ -d "${pdir}" ]]; then
+    pnames+=(${(f)"$(cd "${pdir}" && ls -1 *.yaml(N) 2>/dev/null | sed 's/\.yaml$//')"})
+  fi
   _arguments \
     '--agent[Agent to run]:agent:(claude codex opencode)' \
     '--tier[Isolation tier]:tier:(1 2 3)' \
-    '--profile[Numeric (1|2|3) aliases --tier; named resolves a profile YAML]:profile:' \
+    "--profile[Numeric (1|2|3) aliases --tier; named resolves a profile YAML]:profile:(${pnames[*]})" \
     '--repo[Workspace git repository]:directory:_files -/' \
     '--allow-domain[Extra allowed egress domain]:domain:' \
     '--base-url[opencode: OpenAI-compatible endpoint URL; overrides OPENCODE_BASE_URL]:url:' \
