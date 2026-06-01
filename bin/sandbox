@@ -91,6 +91,7 @@ COMMANDS:
   setup        Install/configure sandbox prerequisites
   onboard      Stage host-side agent OAuth state for first-run convenience
   secret       Manage host-side secret store (injected per-session by profile)
+  profile      Create and manage launch profiles (save/list/show/delete)
   configure-network   Re-detect host network state and reconcile k3s/Cilium
                       (run after a VPN reconnects or the host IP changes)
   setup-proxy-cert    Extract a corporate TLS-intercept proxy's root CA
@@ -107,6 +108,8 @@ EXAMPLES:
   sandbox run --agent claude --tier 3 --repo ~/repos/infra \\
       --infra-kubeconfig ~/.kube/config --infra-kube-context dev
   sandbox run --agent opencode --tier 3 --repo ~/repos/infra --infra-token ~/.infra-token
+  sandbox profile save --tier 2 --agent codex --repo ~/git/public/stratum --name stratum-codex
+  sandbox run --profile stratum-codex
   sandbox list
   sandbox logs ses-20260401-143022-a7b3
   sandbox cleanup --older-than 30
@@ -305,6 +308,7 @@ print_session_banner() {
 ###############################################################################
 cmd_run() {
   local opt_agent="claude"
+  local opt_agent_explicit="false"
   local opt_tier="1"
   local opt_tier_explicit="false"
   local opt_profile=""
@@ -324,8 +328,8 @@ cmd_run() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --help|-h)               usage_run ;;
-      --agent)                 opt_agent="${2:?--agent requires a value}"; shift ;;
-      --agent=*)               opt_agent="${1#--agent=}" ;;
+      --agent)                 opt_agent="${2:?--agent requires a value}"; opt_agent_explicit="true"; shift ;;
+      --agent=*)               opt_agent="${1#--agent=}"; opt_agent_explicit="true" ;;
       --tier)                  opt_tier="${2:?--tier requires a value}"; opt_tier_explicit="true"; shift ;;
       --tier=*)                opt_tier="${1#--tier=}"; opt_tier_explicit="true" ;;
       --profile)               opt_profile="${2:?--profile requires a value}"; shift ;;
@@ -397,6 +401,20 @@ cmd_run() {
         die "Profile '${opt_profile}' declares tier ${_profile_tier} but --tier ${opt_tier} was also passed; remove --tier or change the profile."
       fi
       opt_tier="${_profile_tier}"
+
+      # agent is optional in a profile. When present it fills in for an
+      # absent --agent, mirroring default_repo. An explicit --agent that
+      # disagrees is a hard error (same stance as the tier check above), so
+      # there's never ambiguity about which agent a launch used.
+      local _profile_agent
+      _profile_agent="$(extract_yaml_scalar_from_file "${_profile_path}" agent)"
+      if [[ -n "${_profile_agent}" ]]; then
+        if [[ "${opt_agent_explicit}" == "true" ]] && [[ "${opt_agent}" != "${_profile_agent}" ]]; then
+          die "Profile '${opt_profile}' declares agent '${_profile_agent}' but --agent '${opt_agent}' was also passed; remove --agent or change the profile."
+        fi
+        opt_agent="${_profile_agent}"
+        echo "    agent: ${_profile_agent}"
+      fi
 
       local _profile_default_repo
       _profile_default_repo="$(extract_yaml_scalar_from_file "${_profile_path}" default_repo)"
@@ -527,6 +545,11 @@ cmd_run() {
   for domain in "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}"; do
     check_domain_not_blocked "${domain}"
   done
+
+  # Fail fast on a malformed blocked_cidrs entry, before any cluster ops —
+  # a bad CIDR would otherwise render into the egressDeny rule and Cilium
+  # would reject the whole policy (a block that silently doesn't block).
+  check_blocked_cidrs_valid
 
   # Profile-declared secrets: parse SESSION_PROFILE_SECRETS (set by the
   # profile-resolution block above), confirm each name exists in the
@@ -1754,6 +1777,9 @@ cmd_allow() {
   for d in "${opt_add_domains[@]}"; do
     check_domain_not_blocked "${d}"
   done
+  # The regenerated policy re-renders egressDeny from blocked_cidrs, so a
+  # malformed entry would break the hot-reload too — validate it first.
+  check_blocked_cidrs_valid
 
   # Verify the pod is still alive. Hot-reload against a torn-down session
   # would leave session.json in a state that disagrees with reality.
@@ -1985,6 +2011,252 @@ cmd_secret() {
 }
 
 ###############################################################################
+# cmd_profile — create and manage launch profiles
+###############################################################################
+usage_profile() {
+  cat <<EOF
+sandbox profile — Create and manage launch profiles
+
+USAGE:
+  sandbox profile save [OPTIONS]
+  sandbox profile list
+  sandbox profile show <NAME>
+  sandbox profile delete <NAME> [--yes]
+  sandbox profile --help
+
+A profile is a named bundle of launch settings stored at
+~/.sandbox/profiles/<name>.yaml and used via 'sandbox run --profile <name>'.
+It records a required tier plus OPTIONAL agent, default repo, and extra
+allowed domains. 'save' only writes YAML — every value is re-validated at
+'run' time (tier check, blocked-destinations check on domains), so a saved
+profile can never widen what a session is allowed to do.
+
+SAVE OPTIONS (mirror 'sandbox run'):
+  --tier <1|2|3>            Required.
+  --agent <claude|codex|opencode>
+                            OPTIONAL. If omitted, the profile pins no agent
+                            and 'run --profile' falls back to its --agent flag
+                            (default: claude).
+  --repo <PATH>             Optional default repo (single — see NOTES).
+  --allow-domain <DOMAIN>   Optional extra egress domain (repeatable). Each is
+                            run through the blocked-destinations check now, so
+                            a profile that 'run' would reject is never saved.
+  --name <NAME>             Profile name → filename. If omitted, it's derived
+                            from the repo basename and agent (e.g. the example
+                            below yields 'stratum-codex'), or the agent alone,
+                            or 'tier<N>' for a bare-tier profile.
+  --force                   Overwrite an existing profile of the same name.
+  --dry-run                 Print the YAML to stdout instead of writing it.
+
+NOTES:
+  - Profiles are written to ~/.sandbox/profiles/ only, never an overlay.
+    Overlay profiles are team-shipped; 'list'/'show' can read them, but
+    'save'/'delete' will not touch them.
+  - A single --repo is supported (the schema's default_repo is one path).
+    Multi-repo launches still work via 'run --repo ... --repo ...'.
+
+EXAMPLES:
+  sandbox profile save --tier 2 --agent codex --repo ~/git/public/stratum \\
+      --name stratum-codex
+  sandbox profile save --tier 2 --repo ~/git/public/stratum   # → 'stratum'
+  sandbox profile list
+  sandbox profile show stratum-codex
+  sandbox run --profile stratum-codex
+EOF
+  exit 0
+}
+
+# _profile_save — generate ~/.sandbox/profiles/<name>.yaml from run-style flags.
+_profile_save() {
+  local opt_tier="" opt_agent="" opt_name="" opt_force="false" opt_dry_run="false"
+  local -a opt_repos=() opt_allow_domains=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)         usage_profile ;;
+      --tier)            opt_tier="${2:?--tier requires a value}"; shift ;;
+      --tier=*)          opt_tier="${1#--tier=}" ;;
+      --agent)           opt_agent="${2:?--agent requires a value}"; shift ;;
+      --agent=*)         opt_agent="${1#--agent=}" ;;
+      --repo)            opt_repos+=("${2:?--repo requires a value}"); shift ;;
+      --repo=*)          opt_repos+=("${1#--repo=}") ;;
+      --allow-domain)    opt_allow_domains+=("${2:?--allow-domain requires a value}"); shift ;;
+      --allow-domain=*)  opt_allow_domains+=("${1#--allow-domain=}") ;;
+      --name)            opt_name="${2:?--name requires a value}"; shift ;;
+      --name=*)          opt_name="${1#--name=}" ;;
+      --force)           opt_force="true" ;;
+      --dry-run)         opt_dry_run="true" ;;
+      -*)                die "Unknown option for 'profile save': $1. Run 'sandbox profile --help'." ;;
+      *)                 die "Unexpected argument: $1. Run 'sandbox profile --help'." ;;
+    esac
+    shift
+  done
+
+  [[ -n "${opt_tier}" ]] || die "profile save: --tier is required."
+  validate_tier "${opt_tier}"
+  [[ -n "${opt_agent}" ]] && validate_agent "${opt_agent}"
+
+  # The schema's default_repo is a single path; refuse multi-repo rather than
+  # silently dropping all but the first.
+  if [[ "${#opt_repos[@]}" -gt 1 ]]; then
+    die "profile save: only one --repo is supported (the profile holds a single default_repo). Use 'run --repo ... --repo ...' for multi-repo launches."
+  fi
+
+  local repo=""
+  if [[ "${#opt_repos[@]}" -eq 1 ]]; then
+    repo="${opt_repos[0]/#\~/${HOME}}"
+    [[ -d "${repo}" ]] || warn "repo path '${repo}' is not a directory here; saving anyway (it may live on another machine)."
+  fi
+  if [[ "${opt_tier}" != "1" ]] && [[ -z "${repo}" ]]; then
+    warn "tier ${opt_tier} usually needs a repo; none set, so 'run --profile' will require --repo."
+  fi
+
+  # Reject any blocked domain now — don't persist a profile 'run' would refuse.
+  # check_domain_not_blocked exits non-zero (inside the subshell) on a match.
+  if [[ "${#opt_allow_domains[@]}" -gt 0 ]]; then
+    local d
+    for d in "${opt_allow_domains[@]}"; do
+      ( check_domain_not_blocked "${d}" ) \
+        || die "profile save: domain '${d}' is blocked; refusing to save a profile that 'run' would reject."
+    done
+  fi
+
+  # Derive a name when --name is absent (the "I'm lazy" path).
+  local name="${opt_name}"
+  if [[ -z "${name}" ]]; then
+    local repo_base=""
+    [[ -n "${repo}" ]] && repo_base="$(basename "${repo}")"
+    if   [[ -n "${repo_base}" ]] && [[ -n "${opt_agent}" ]]; then name="${repo_base}-${opt_agent}"
+    elif [[ -n "${repo_base}" ]]; then                           name="${repo_base}"
+    elif [[ -n "${opt_agent}" ]]; then                           name="${opt_agent}"
+    else                                                         name="tier${opt_tier}"
+    fi
+  fi
+  if ! is_valid_profile_name "${name}"; then
+    die "profile save: invalid name '${name}'. Use letters, digits, '.', '_', '-'; no '/', no leading '.', and not a bare tier number (1|2|3)."
+  fi
+
+  local domains_str=""
+  [[ "${#opt_allow_domains[@]}" -gt 0 ]] && domains_str="$(printf '%s\n' "${opt_allow_domains[@]}")"
+
+  local yaml
+  yaml="$(render_profile_yaml "${name}" "${opt_tier}" "${opt_agent}" "${repo}" <<<"${domains_str}")"
+
+  if [[ "${opt_dry_run}" == "true" ]]; then
+    echo "${yaml}"
+    return 0
+  fi
+
+  local dir; dir="$(user_profiles_dir)"
+  local path="${dir}/${name}.yaml"
+  if [[ -e "${path}" ]] && [[ "${opt_force}" != "true" ]]; then
+    die "profile '${name}' already exists at ${path/#${HOME}/\~}. Re-run with --force to overwrite."
+  fi
+  mkdir -p "${dir}"
+  printf '%s\n' "${yaml}" > "${path}"
+  chmod 0644 "${path}"
+  echo "Saved profile '${name}' → ${path/#${HOME}/\~}"
+  echo "Launch it with: sandbox run --profile ${name}"
+}
+
+# _profile_list — list user + (non-shadowed) overlay profiles.
+_profile_list() {
+  case "${1:-}" in --help|-h) usage_profile ;; "") ;; *) die "Unexpected argument: $1" ;; esac
+
+  local user_dir; user_dir="$(user_profiles_dir)"
+  local overlay;  overlay="$(resolve_overlay_path)"
+
+  local -a rows=()
+  local f name tier agent repo
+  if [[ -d "${user_dir}" ]]; then
+    for f in "${user_dir}"/*.yaml; do
+      [[ -e "${f}" ]] || continue
+      name="$(basename "${f}" .yaml)"
+      tier="$(extract_yaml_scalar_from_file "${f}" tier)"
+      agent="$(extract_yaml_scalar_from_file "${f}" agent)"
+      repo="$(extract_yaml_scalar_from_file "${f}" default_repo)"
+      rows+=("$(printf '%-24s  %-7s  %-4s  %-8s  %s' "${name}" "user" "${tier:--}" "${agent:--}" "${repo:--}")")
+    done
+  fi
+  if [[ -n "${overlay}" ]] && [[ -d "${overlay}/profiles" ]]; then
+    for f in "${overlay}/profiles"/*.yaml; do
+      [[ -e "${f}" ]] || continue
+      name="$(basename "${f}" .yaml)"
+      [[ -f "${user_dir}/${name}.yaml" ]] && continue   # user copy wins; already listed
+      tier="$(extract_yaml_scalar_from_file "${f}" tier)"
+      agent="$(extract_yaml_scalar_from_file "${f}" agent)"
+      repo="$(extract_yaml_scalar_from_file "${f}" default_repo)"
+      rows+=("$(printf '%-24s  %-7s  %-4s  %-8s  %s' "${name}" "overlay" "${tier:--}" "${agent:--}" "${repo:--}")")
+    done
+  fi
+
+  if [[ "${#rows[@]}" -eq 0 ]]; then
+    echo "No profiles found in ${user_dir/#${HOME}/\~}/${overlay:+ or the overlay}."
+    echo "Create one with: sandbox profile save --tier <N> [--agent <A>] [--repo <PATH>] [--name <NAME>]"
+    return 0
+  fi
+  printf '%-24s  %-7s  %-4s  %-8s  %s\n' "NAME" "SOURCE" "TIER" "AGENT" "REPO"
+  printf '%s\n' "${rows[@]}"
+}
+
+# _profile_show — print a profile's YAML (user dir first, then overlay).
+_profile_show() {
+  [[ $# -ge 1 ]] || die "Usage: sandbox profile show <NAME>"
+  case "$1" in --help|-h) usage_profile ;; esac
+  local name="$1" path
+  if ! path="$(find_profile_path "${name}")"; then
+    die "Profile '${name}' not found in ~/.sandbox/profiles/ or the overlay."
+  fi
+  echo "# ${path/#${HOME}/\~}"
+  cat "${path}"
+}
+
+# _profile_delete — remove a user profile (never an overlay profile).
+_profile_delete() {
+  local opt_yes="false" name=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h) usage_profile ;;
+      --yes|-y)  opt_yes="true" ;;
+      -*)        die "Unknown option for 'profile delete': $1" ;;
+      *)         [[ -z "${name}" ]] || die "Unexpected argument: $1"; name="$1" ;;
+    esac
+    shift
+  done
+  [[ -n "${name}" ]] || die "Usage: sandbox profile delete <NAME> [--yes]"
+
+  local user_dir; user_dir="$(user_profiles_dir)"
+  local path="${user_dir}/${name}.yaml"
+  if [[ ! -f "${path}" ]]; then
+    local resolved
+    if resolved="$(find_profile_path "${name}")"; then
+      die "Profile '${name}' is an overlay profile (${resolved/#${HOME}/\~}); 'profile delete' only removes your own profiles under ${user_dir/#${HOME}/\~}/."
+    fi
+    die "Profile '${name}' not found in ${user_dir/#${HOME}/\~}/."
+  fi
+  if [[ "${opt_yes}" != "true" ]]; then
+    printf "Delete profile '%s' (%s)? [y/N] " "${name}" "${path/#${HOME}/\~}"
+    local reply; read -r reply
+    case "${reply}" in y|Y|yes|YES) ;; *) echo "Aborted."; return 0 ;; esac
+  fi
+  rm -f "${path}"
+  echo "Deleted profile '${name}'."
+}
+
+cmd_profile() {
+  [[ $# -gt 0 ]] || usage_profile
+  local sub="$1"; shift
+  case "${sub}" in
+    --help|-h|help)    usage_profile ;;
+    save)              _profile_save "$@" ;;
+    list|ls)           _profile_list "$@" ;;
+    show|cat)          _profile_show "$@" ;;
+    delete|rm|remove)  _profile_delete "$@" ;;
+    *) die "Unknown 'profile' subcommand: ${sub}. Run 'sandbox profile --help'." ;;
+  esac
+}
+
+###############################################################################
 # cmd_setup_proxy_cert — find and stage a corporate TLS-intercept proxy's
 # root CA so the image build (and the running agent pods) trust the
 # resigned certs it presents on egress.
@@ -2183,6 +2455,7 @@ main() {
     setup)      cmd_setup "$@" ;;
     onboard)    cmd_onboard "$@" ;;
     secret)     cmd_secret "$@" ;;
+    profile)    cmd_profile "$@" ;;
     configure-network) cmd_configure_network "$@" ;;
     setup-proxy-cert) cmd_setup_proxy_cert "$@" ;;
     rebuild)    cmd_rebuild "$@" ;;
