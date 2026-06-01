@@ -3,6 +3,17 @@
 #
 # These protect against agents exfiltrating data via communication platforms,
 # internal infrastructure endpoints, and email.
+#
+# Pattern matching (see lib/checks.sh):
+#   example.com      exact host only.
+#   *.example.com    the apex 'example.com' AND every subdomain. Blocking a
+#                    domain blocks the bare domain too, so '*.example.com'
+#                    cannot be side-stepped with '--allow-domain example.com'.
+#   prefix.*         any host whose leading label is 'prefix'
+#                    (e.g. 'smtp.*' blocks 'smtp.anything').
+# Matching is on label boundaries, so 'notslack.com' is NOT caught by
+# '*.slack.com'. List both the apex and the wildcard only if you want to be
+# explicit; '*.example.com' alone already covers the apex.
 
 blocked_domains:
   # Operators: add your internal SSO / identity-provider hosts here so an
@@ -23,5 +34,21 @@ blocked_domains:
   - "*.pastebin.com"
 
 blocked_cidrs:
-  # Add CIDR ranges here if needed, e.g. internal RFC-1918 ranges.
-  # []
+  # Enforced as a Cilium egressDeny rule (deny beats allow), so a range here
+  # stays unreachable even if an allow-listed FQDN resolves into it (DNS
+  # rebinding, a domain that points at internal infra, etc.). CIDR rules match
+  # the external/"world" identity only, so blocking a range that overlaps the
+  # cluster's own service/pod CIDR does NOT break in-cluster DNS (verified).
+  #
+  # The cloud metadata endpoint is a prime credential-exfiltration target for a
+  # sandboxed agent, so it's blocked by default:
+  - "169.254.169.254/32"     # AWS/GCP/Azure IMDS
+  # Internal RFC-1918 ranges are left as commented examples and NOT enforced by
+  # default: Tier 3 sessions routinely reach Kubernetes API servers inside
+  # these ranges, and egressDeny beats the explicit per-session kube-API allow
+  # rule (deny wins in Cilium), so blocking them here would break Tier 3.
+  # Uncomment only the ranges your environment can safely forbid:
+  #   - "10.0.0.0/8"
+  #   - "172.16.0.0/12"
+  #   - "192.168.0.0/16"
+  #   - "fd00:ec2::254/128"   # AWS IMDSv6
