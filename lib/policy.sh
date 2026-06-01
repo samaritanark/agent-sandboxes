@@ -55,6 +55,32 @@ EOF
 )"
   fi
 
+  # Blocked CIDRs — deny egress to forbidden IP ranges even when an allow-listed
+  # FQDN resolves into one (DNS rebinding, or an allowed domain that points at
+  # internal infra or a cloud-metadata endpoint like 169.254.169.254). Cilium
+  # evaluates deny rules ahead of allow rules, so this is a hard backstop over
+  # the FQDN allowlist above. CIDR rules match the external/"world" identity
+  # only; in-cluster traffic (kube-dns, the Tier 3 API server's pod identity)
+  # is governed by endpoint identities, so this never breaks cluster DNS.
+  local egress_deny_block=""
+  local -a blocked_cidrs=()
+  mapfile -t blocked_cidrs < <(get_blocked_cidrs)
+  if [[ "${#blocked_cidrs[@]}" -gt 0 ]]; then
+    local cidr_entries="" c
+    for c in "${blocked_cidrs[@]}"; do
+      [[ -z "${c}" ]] && continue
+      cidr_entries+="        - \"${c}\""$'\n'
+    done
+    if [[ -n "${cidr_entries}" ]]; then
+      egress_deny_block="$(cat <<EOF
+  egressDeny:
+    - toCIDR:
+${cidr_entries%$'\n'}
+EOF
+)"
+    fi
+  fi
+
   cat <<EOF
 ---
 apiVersion: "cilium.io/v2"
@@ -96,6 +122,7 @@ ${fqdn_block}
             - port: "443"
               protocol: TCP
 ${kube_cidr_block}
+${egress_deny_block}
   ingress:
     # Allow return traffic for all outbound connections.
     # The sandbox pod does not listen on any ports; this rule only enables

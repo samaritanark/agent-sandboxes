@@ -8,13 +8,15 @@ _sandbox_complete() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="run resume allow list logs flows stop cleanup check status setup onboard secret configure-network rebuild version"
+  local commands="run resume allow list logs flows stop cleanup check status setup onboard secret profile configure-network rebuild version"
   local run_opts="--agent --tier --profile --repo --allow-domain --base-url --infra-token --infra-kubeconfig --infra-kube-context --allow-exec-plugin --infra-endpoint --dry-run --name --keep-alive --help"
   local rebuild_opts="--agent --tier3 --no-cache --codex-version --opencode-version --help"
   local setup_opts="--pod-cidr --service-cidr --apiserver-port"
   local onboard_opts="--agent --skip-config --dry-run --force --help"
   local secret_subs="set list delete"
   local secret_set_opts="--from-file --help"
+  local profile_subs="save list show delete"
+  local profile_save_opts="--tier --agent --repo --allow-domain --name --force --dry-run --help"
   local agents="claude codex opencode"
   local onboard_agents="claude codex opencode all"
   local rebuild_agents="claude codex opencode shell base all"
@@ -39,6 +41,13 @@ _sandbox_complete() {
         --tier)
           # shellcheck disable=SC2207
           COMPREPLY=($(compgen -W "${tiers}" -- "${cur}"))
+          return ;;
+        --profile)
+          # Numeric tier aliases + saved profile names from the user dir.
+          local _pdir="${HOME}/.sandbox/profiles" _pnames=""
+          [[ -d "${_pdir}" ]] && _pnames="$(cd "${_pdir}" && ls -1 ./*.yaml 2>/dev/null | sed 's#.*/##;s/\.yaml$//' || true)"
+          # shellcheck disable=SC2207
+          COMPREPLY=($(compgen -W "1 2 3 ${_pnames}" -- "${cur}"))
           return ;;
         --repo|--infra-token|--infra-kubeconfig)
           # File/directory completion
@@ -148,6 +157,36 @@ _sandbox_complete() {
           fi
           # shellcheck disable=SC2207
           COMPREPLY=($(compgen -W "${stored}" -- "${cur}"))
+          ;;
+      esac
+      ;;
+    profile)
+      # First positional after 'profile' is the sub-subcommand.
+      if [[ "${cword}" -eq 2 ]]; then
+        # shellcheck disable=SC2207
+        COMPREPLY=($(compgen -W "${profile_subs}" -- "${cur}"))
+        return
+      fi
+      local profile_sub="${words[2]}"
+      case "${profile_sub}" in
+        save)
+          case "${prev}" in
+            --agent) COMPREPLY=($(compgen -W "${agents}" -- "${cur}")); return ;;
+            --tier)  COMPREPLY=($(compgen -W "${tiers}" -- "${cur}")); return ;;
+            --repo)  _filedir -d; return ;;
+            --allow-domain|--name) return ;;
+          esac
+          if [[ "${cur}" == --* ]]; then
+            # shellcheck disable=SC2207
+            COMPREPLY=($(compgen -W "${profile_save_opts}" -- "${cur}"))
+          fi
+          ;;
+        show|cat|delete|rm|remove)
+          # Complete with saved profile names from the user dir.
+          local pdir="${HOME}/.sandbox/profiles" pnames=""
+          [[ -d "${pdir}" ]] && pnames="$(cd "${pdir}" && ls -1 ./*.yaml 2>/dev/null | sed 's#.*/##;s/\.yaml$//' || true)"
+          # shellcheck disable=SC2207
+          COMPREPLY=($(compgen -W "${pnames} --yes" -- "${cur}"))
           ;;
       esac
       ;;

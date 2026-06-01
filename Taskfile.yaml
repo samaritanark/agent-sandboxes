@@ -15,12 +15,15 @@ tasks:
   test:
     desc: >-
       Run the cluster-free test suite (YAML helpers, profile/overlay
-      resolution, onboard credential staging, secret store, the cluster-
-      free parts of 'sandbox allow', audit / transcript logic). The rest
-      of tests/ needs a live k3s cluster and is run manually.
+      resolution, blocked domain + CIDR checks, onboard credential staging,
+      secret store, the cluster-free parts of 'sandbox allow', audit /
+      transcript logic). The rest of tests/ needs a live k3s cluster and is
+      run manually.
     cmds:
       - bash tests/test-config.sh
       - bash tests/test-profile.sh
+      - bash tests/test-blocked-domains.sh
+      - bash tests/test-blocked-cidrs.sh
       - bash tests/test-onboard.sh
       - bash tests/test-secrets.sh
       - bash tests/test-allow.sh
