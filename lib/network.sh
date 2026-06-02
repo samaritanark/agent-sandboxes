@@ -271,20 +271,39 @@ reconcile_node_ipv4() {
     return 0
   fi
 
+  # From here on the calls are best-effort (see the function header): a
+  # rollout that times out must NOT abort under `set -e`, or the caller's
+  # remaining reconcilers would never run. We track success so we only stamp
+  # the annotation when the restart actually settled — otherwise we leave it
+  # stale so a later run retries.
+  local ok=1
+
   echo "  Restarting Cilium DaemonSet..."
-  kubectl --kubeconfig "${kc}" -n kube-system rollout restart ds/cilium
-  kubectl --kubeconfig "${kc}" -n kube-system rollout status ds/cilium --timeout=120s
+  kubectl --kubeconfig "${kc}" -n kube-system rollout restart ds/cilium || ok=0
+  kubectl --kubeconfig "${kc}" -n kube-system rollout status ds/cilium --timeout=120s || {
+    ok=0
+    echo "  WARN: Cilium DaemonSet did not become ready within 120s." >&2
+  }
 
   echo "  Bouncing pod-backed control-plane pods to re-program service backends..."
   kubectl --kubeconfig "${kc}" -n kube-system delete pod \
     -l k8s-app=kube-dns --ignore-not-found >/dev/null 2>&1 || true
   kubectl --kubeconfig "${kc}" -n kube-system delete pod \
     -l app.kubernetes.io/name=hubble-relay --ignore-not-found >/dev/null 2>&1 || true
-  kubectl --kubeconfig "${kc}" -n kube-system rollout status deploy/coredns --timeout=120s
+  kubectl --kubeconfig "${kc}" -n kube-system rollout status deploy/coredns --timeout=120s || {
+    ok=0
+    echo "  WARN: CoreDNS did not become ready within 120s." >&2
+  }
 
-  kubectl --kubeconfig "${kc}" annotate node "${node}" \
-    "${SANDBOX_NODE_IPV4_ANNOTATION}=${current_ip}" --overwrite >/dev/null
-  echo "  Node IPv4 reconcile complete."
+  if [[ "${ok}" -eq 1 ]]; then
+    kubectl --kubeconfig "${kc}" annotate node "${node}" \
+      "${SANDBOX_NODE_IPV4_ANNOTATION}=${current_ip}" --overwrite >/dev/null
+    echo "  Node IPv4 reconcile complete."
+  else
+    echo "  WARN: IPv4 reconcile did not fully settle; leaving baseline" >&2
+    echo "        annotation at ${recorded_ip} so a later run retries." >&2
+    echo "        Re-run 'sandbox configure-network' once the host network is stable." >&2
+  fi
 }
 
 # ensure_network_config_current <kubeconfig_path>
@@ -297,14 +316,27 @@ reconcile_node_ipv4() {
 # device wiring matched to the host without the user remembering to run
 # `sandbox configure-network` by hand.
 #
-# Two kinds of drift are reconciled, in order:
-#   1. Primary IPv4 changed but interface name didn't (reconcile_node_ipv4).
+# Two kinds of drift are reconciled. ORDER MATTERS — the device-name reconcile
+# MUST run first:
+#   1. Primary or VPN interface NAMES changed (configure_cilium_for_vpn).
+#      Cilium reads its `devices` list once at agent startup, so the stale
+#      pin survives until the DaemonSet restarts. Crucially, a valid
+#      `direct-routing-device` is a *precondition* for the cilium-agent to
+#      initialize its datapath at all ("IPv4 direct routing device IP not
+#      found" otherwise) — so this pin must be corrected before anything
+#      restarts Cilium.
+#   2. Primary IPv4 changed but interface name didn't (reconcile_node_ipv4).
 #      This is the dominant case on WSL2, where the sandbox-vm distro comes
 #      up with a fresh address from the Hyper-V virtual NAT after every
 #      Windows host reboot. Fix requires a k3s + Cilium restart.
-#   2. Primary or VPN interface NAMES changed (configure_cilium_for_vpn).
-#      Cilium reads its `devices` list once at agent startup, so the stale
-#      pin survives until the DaemonSet restarts.
+#
+# When a host moves between PHYSICAL interfaces both drifts fire at once (a
+# different NIC means both a different name and a different DHCP lease). If the
+# IPv4 reconcile ran first it would restart Cilium while `devices=` still pins
+# the now-down old NIC: the fresh agent fails datapath init, its rollout times
+# out, and (under `set -e`) the device reconcile never runs — the cluster stays
+# wedged. Fixing the device pin first means the restart in step 2 lands on a
+# healthy datapath.
 #
 # Guards so it is a clean no-op where it cannot apply:
 #   - non-Linux: on macOS the cluster runs inside Lima and cannot see the
@@ -316,6 +348,6 @@ ensure_network_config_current() {
   command -v helm >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
   echo "==> Checking host network configuration..."
-  reconcile_node_ipv4 "${kc}"
   configure_cilium_for_vpn "${kc}"
+  reconcile_node_ipv4 "${kc}"
 }
