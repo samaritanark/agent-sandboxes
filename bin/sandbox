@@ -1595,8 +1595,12 @@ cmd_configure_network() {
   require_command jq "Install jq via your package manager."
 
   echo "==> Re-detecting host network state..."
-  reconcile_node_ipv4 "${SANDBOX_KUBECONFIG}"
+  # Device-name reconcile first: a valid direct-routing-device is a
+  # precondition for Cilium's datapath to initialize, so the `devices=` pin
+  # must be corrected before reconcile_node_ipv4's k3s/Cilium restart. See
+  # ensure_network_config_current for the full rationale.
   configure_cilium_for_vpn "${SANDBOX_KUBECONFIG}"
+  reconcile_node_ipv4 "${SANDBOX_KUBECONFIG}"
 }
 
 ###############################################################################
