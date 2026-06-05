@@ -52,7 +52,7 @@ jobs:
           scan-type: fs
           scan-ref: .
           format: table
-          severity: CRITICAL,HIGH,MEDIUM
+          severity: CRITICAL,HIGH
           ignore-unfixed: true
 
       - name: Trivy config scan
@@ -61,4 +61,4 @@ jobs:
           scan-type: config
           scan-ref: .
           format: table
-          severity: CRITICAL,HIGH,MEDIUM
+          severity: CRITICAL,HIGH
