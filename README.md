@@ -325,6 +325,27 @@ gets them via `envFrom: secretRef`, so each lands as `$JIRA_PAT` /
 from the host store the launch is aborted before any cluster resources
 are created.
 
+### Using a secret inside the session
+
+Each declared secret is a plain environment variable in the agent's
+shell, named exactly as you stored it. So once you're in the session you
+(or the agent) just reference it like any other env var — no unlock step,
+no file to read:
+
+```bash
+# Inside the sandbox, the value is already in the environment:
+curl -H "Authorization: Bearer $JIRA_PAT" https://jira.example.com/rest/...
+git clone https://oauth2:$GITEA_TOKEN@gitea.example.com/team/repo.git
+```
+
+When you're driving the agent in natural language, tell it the env var
+name rather than the value — e.g. "authenticate with the token in
+`$JIRA_PAT`". The agent can use the variable without the secret ever
+appearing in the transcript. To confirm what's present without printing
+values, run `env | grep -o '^[A-Z_]*=' | sort` inside the session (or
+check `printenv JIRA_PAT >/dev/null && echo set`); `sandbox secret list`
+on the host shows the same names from the outside.
+
 ## CLI Reference
 
 ```text
@@ -369,6 +390,12 @@ sandbox profile save [--tier N] [--agent NAME] [--repo PATH]
 sandbox profile list
 sandbox profile show <NAME>
 sandbox profile delete <NAME> [--yes]
+sandbox secret set <NAME> [--from-file PATH | --from-env[=VAR]]  # else reads stdin
+                     # NAME must match [A-Z_][A-Z0-9_]* — it's the env var
+                     # the agent sees inside the pod. --from-env defaults
+                     # the source var to NAME; use =VAR to override.
+sandbox secret list                           # names + sizes + mtimes; values never printed
+sandbox secret delete <NAME>
 sandbox cleanup [--older-than DAYS]            default: 90
 sandbox check <WORKSPACE_PATH>
 sandbox status
