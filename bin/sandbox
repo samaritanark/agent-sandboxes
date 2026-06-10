@@ -798,9 +798,9 @@ cmd_run() {
   ###########################################################################
   local container_image
   if [[ "${opt_tier}" -eq 3 ]]; then
-    container_image="sandbox:${opt_agent}-infra"
+    container_image="docker.io/library/sandbox:${opt_agent}-infra"
   else
-    container_image="sandbox:${opt_agent}"
+    container_image="docker.io/library/sandbox:${opt_agent}"
   fi
   echo "==> Image: ${container_image}"
 

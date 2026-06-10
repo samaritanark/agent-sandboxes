@@ -479,9 +479,9 @@ build_images() {
   _build_image "docker.io/library/sandbox:shell"    "Dockerfile.shell"
 
   # Tier 3 infra variants — one per agent
-  _build_image "docker.io/library/sandbox:claude-infra"   "Dockerfile.infra" --build-arg "BASE_IMAGE=sandbox:claude"
-  _build_image "docker.io/library/sandbox:codex-infra"    "Dockerfile.infra" --build-arg "BASE_IMAGE=sandbox:codex"
-  _build_image "docker.io/library/sandbox:opencode-infra" "Dockerfile.infra" --build-arg "BASE_IMAGE=sandbox:opencode"
+  _build_image "docker.io/library/sandbox:claude-infra"   "Dockerfile.infra" --build-arg "BASE_IMAGE=docker.io/library/sandbox:claude"
+  _build_image "docker.io/library/sandbox:codex-infra"    "Dockerfile.infra" --build-arg "BASE_IMAGE=docker.io/library/sandbox:codex"
+  _build_image "docker.io/library/sandbox:opencode-infra" "Dockerfile.infra" --build-arg "BASE_IMAGE=docker.io/library/sandbox:opencode"
 
   # k3s uses its own containerd instance; Docker-built images are not visible
   # to it until explicitly imported.
