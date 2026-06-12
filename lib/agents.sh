@@ -88,6 +88,29 @@ get_agent_resume_flag() {
   esac
 }
 
+# get_agent_sandbox_flags — print extra launch flags that pin the agent's own
+# in-process OS sandbox, or nothing if the agent needs none. Codex wraps every
+# shell/apply_patch operation in bubblewrap, whose netns setup configures
+# loopback via a netlink RTM_NEWADDR call gVisor doesn't emulate — so bwrap
+# aborts ("loopback: Failed RTM_NEWADDR: No child processes") before Codex can
+# even read a file. The pod already IS the boundary (gVisor kernel isolation +
+# Cilium default-deny egress + filesystem masking), so that inner sandbox is
+# redundant as well as broken. "--sandbox danger-full-access" disables ONLY the
+# inner OS-sandbox; it is sandbox-only and leaves "--ask-for-approval" (Codex's
+# human-in-the-loop prompts) untouched, so it is NOT a bypass-approvals posture.
+#
+# This duplicates the intent of the staged config.toml sandbox_mode key
+# (lib/onboard.sh) on purpose, as defense-in-depth: the launch flag overrides
+# config and so works even when an agent-home was staged before this change (no
+# 're-run sandbox onboard' required), when a pre-existing sandbox_mode key would
+# otherwise be left alone, or when Codex rewrites config.toml at runtime.
+get_agent_sandbox_flags() {
+  case "$1" in
+    codex) echo "--sandbox danger-full-access" ;;
+    *)     echo "" ;;
+  esac
+}
+
 # get_agent_credential_type — returns "oauth" or "apikey"
 get_agent_credential_type() {
   local agent="$1"
