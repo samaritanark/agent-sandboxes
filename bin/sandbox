@@ -1571,17 +1571,12 @@ cmd_setup() {
 ###############################################################################
 # cmd_configure_network — re-detect host network state and reconcile k3s/Cilium.
 #
-# Two kinds of drift are handled, in order:
-#   1. Primary IPv4 changed (interface name unchanged) — dominant on WSL2,
-#      where each Windows reboot can hand the sandbox-vm distro a fresh
-#      address from Hyper-V's virtual NAT. Requires a k3s + Cilium restart
-#      so the node InternalIP, API-server cert SANs, and BPF masquerade
-#      source are re-read.
-#   2. Primary or VPN interface names changed — Cilium reads its `devices`
-#      list once at agent startup, so the stale pin survives until the
-#      DaemonSet restarts. Common after a VPN reconnects or a dock swap.
-#
-# Idempotent: when nothing has drifted, both checks are silent no-ops.
+# Handles every kind of host-network drift in a single pass — primary/VPN
+# interface name changes (VPN reconnect, dock swap) and primary IPv4 changes
+# (DHCP lease, wifi SSID swap, or a WSL2 distro getting a fresh Hyper-V NAT
+# address after a Windows reboot), including all of them at once. Applies the
+# minimum restart needed; idempotent when nothing has drifted. See
+# reconcile_host_network in lib/network.sh for the full ordering rationale.
 #
 # Linux only. The macOS-via-Lima case (VPN on macOS host, cluster inside
 # Lima VM) is a different topology that this tool does not handle.
@@ -1595,12 +1590,7 @@ cmd_configure_network() {
   require_command jq "Install jq via your package manager."
 
   echo "==> Re-detecting host network state..."
-  # Device-name reconcile first: a valid direct-routing-device is a
-  # precondition for Cilium's datapath to initialize, so the `devices=` pin
-  # must be corrected before reconcile_node_ipv4's k3s/Cilium restart. See
-  # ensure_network_config_current for the full rationale.
-  configure_cilium_for_vpn "${SANDBOX_KUBECONFIG}"
-  reconcile_node_ipv4 "${SANDBOX_KUBECONFIG}"
+  reconcile_host_network "${SANDBOX_KUBECONFIG}"
 }
 
 ###############################################################################

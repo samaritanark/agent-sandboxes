@@ -48,133 +48,12 @@ detect_primary_ipv4() {
     | jq -r '[.[].addr_info[]? | select(.scope == "global") | .local] | first // empty'
 }
 
-# configure_cilium_for_vpn <kubeconfig_path>
-#
-# Detects the current primary + VPN interfaces and reconciles Cilium's device
-# wiring to match. Three settings together are required for VPN-routed cluster
-# egress:
-#   --set devices='{primary,vpn1,...}'
-#   --set extraConfig.direct-routing-device=<primary>
-#   --set extraConfig.egress-masquerade-interfaces=''  (default; empty = per-egress-iface SNAT)
-#
-# Idempotent — the device list is compared as a SET, so VPN bring-up order
-# alone doesn't churn Cilium. This matters because the only way to apply a
-# devices change is `kubectl rollout restart ds/cilium`, and restarting the
-# agent on a live cluster leaves the BPF service-LB backend map stale: pod
-# veths can no longer resolve ClusterIP→PodIP, so CoreDNS loses its path to
-# kube-apiserver, its readiness probe fails, kube-dns EndpointSlice goes
-# unready, and cluster DNS dies. When a restart IS necessary we therefore
-# also bounce the pod-backed control-plane pods (CoreDNS, hubble-relay) so
-# their EndpointSlice updates re-program backend slots under the fresh agent.
-#
-# Behaviour by VPN state:
-#   - VPN up: pin devices='{primary,vpn,...}' so VPN-routed pod egress is
-#     SNAT'd to the tunnel source IP.
-#   - VPN down, but Cilium still carries an explicit device list from an
-#     earlier VPN session: reset to a single-NIC pin (devices='{primary}')
-#     so a now-stale interface name can't break pod endpoint creation.
-#   - VPN down and no explicit device list ever applied: leave Cilium on its
-#     single-NIC auto-detect default untouched (avoids a needless restart).
-# Safe to call unconditionally during setup and before every `sandbox run`.
-configure_cilium_for_vpn() {
-  local kc="${1:?configure_cilium_for_vpn: kubeconfig path required}"
-
-  local primary
-  primary="$(detect_primary_iface)"
-  if [[ -z "${primary}" ]]; then
-    echo "  No default route detected; skipping Cilium device configuration."
-    return 0
-  fi
-
-  local -a vpn_ifaces=()
-  while IFS= read -r line; do
-    [[ -n "${line}" ]] && vpn_ifaces+=("${line}")
-  done < <(detect_vpn_ifaces | sort)
-
-  # Desired device list: primary first, then VPN interfaces alphabetically.
-  # With no VPN up this is just the primary — a deterministic single-NIC pin.
-  # The display CSV preserves primary-first; the comparison CSV sorts all
-  # entries so a reordering by ifindex (bring-up order) doesn't look like a
-  # change.
-  local -a desired_devices=("${primary}" "${vpn_ifaces[@]+"${vpn_ifaces[@]}"}")
-  local desired_csv
-  desired_csv="$(IFS=,; echo "${desired_devices[*]}")"
-  local desired_sorted
-  desired_sorted="$(printf '%s\n' "${desired_devices[@]}" | sort | paste -sd, -)"
-
-  # Compare against current helm values. Skip the helm upgrade and DS
-  # rollout-restart entirely when nothing has actually changed.
-  local current_json
-  current_json="$(helm --kubeconfig "${kc}" -n kube-system get values cilium -o json 2>/dev/null || echo '{}')"
-  local current_sorted current_primary current_mq
-  current_sorted="$(jq -r '(.devices // []) | sort | join(",")' <<<"${current_json}")"
-  current_primary="$(jq -r '.extraConfig["direct-routing-device"] // ""' <<<"${current_json}")"
-  current_mq="$(jq -r '.extraConfig["egress-masquerade-interfaces"] // ""' <<<"${current_json}")"
-
-  # No VPN, and Cilium has never had an explicit device list applied: leave it
-  # on its single-NIC auto-detect default. Pinning devices here would force a
-  # one-time DaemonSet restart on every plain no-VPN host for no real gain.
-  if [[ "${#vpn_ifaces[@]}" -eq 0 ]] \
-     && [[ -z "${current_sorted}" ]] && [[ -z "${current_primary}" ]]; then
-    echo "  No VPN interface detected; Cilium on single-NIC auto-detect. Nothing to do."
-    return 0
-  fi
-
-  if [[ "${current_sorted}" == "${desired_sorted}" ]] \
-     && [[ "${current_primary}" == "${primary}" ]] \
-     && [[ -z "${current_mq}" ]]; then
-    echo "  Cilium already configured for current interfaces (${desired_csv}); skipping."
-    return 0
-  fi
-
-  if [[ "${#vpn_ifaces[@]}" -eq 0 ]]; then
-    echo "  No VPN interface detected; resetting stale device list to a single-NIC pin."
-    echo "  Detected primary interface:  ${primary}"
-  else
-    echo "  Detected primary interface:  ${primary}"
-    echo "  Detected VPN interface(s):   ${vpn_ifaces[*]}"
-  fi
-  echo "  Applying Cilium devices:     ${desired_csv}"
-  echo "  Reconfiguring Cilium now — takes ~1-2 min; any sandboxes already"
-  echo "  running may see a brief network blip during the DaemonSet restart."
-
-  helm --kubeconfig "${kc}" upgrade cilium cilium/cilium \
-    --namespace kube-system \
-    --reuse-values \
-    --set "devices={${desired_csv}}" \
-    --set-string "extraConfig.direct-routing-device=${primary}" \
-    --set-string "extraConfig.egress-masquerade-interfaces="
-
-  echo "  Restarting Cilium DaemonSet..."
-  kubectl --kubeconfig "${kc}" -n kube-system rollout restart ds/cilium
-  kubectl --kubeconfig "${kc}" -n kube-system rollout status ds/cilium --timeout=120s
-
-  # Force a fresh EndpointSlice update for pod-backed services so the new
-  # agent re-programs BPF backend slots. Without this, CoreDNS (and any
-  # other Service whose backend is a pod, e.g. hubble-relay's ClusterIP)
-  # stays unreachable from inside other pods until something else triggers
-  # a reconcile.
-  echo "  Bouncing pod-backed control-plane pods to re-program service backends..."
-  kubectl --kubeconfig "${kc}" -n kube-system delete pod \
-    -l k8s-app=kube-dns --ignore-not-found >/dev/null 2>&1 || true
-  kubectl --kubeconfig "${kc}" -n kube-system delete pod \
-    -l app.kubernetes.io/name=hubble-relay --ignore-not-found >/dev/null 2>&1 || true
-  kubectl --kubeconfig "${kc}" -n kube-system rollout status deploy/coredns --timeout=120s
-
-  if [[ "${#vpn_ifaces[@]}" -eq 0 ]]; then
-    echo "  Cilium reset to single-NIC config (${desired_csv})."
-  else
-    echo "  Cilium configured for VPN-routed egress."
-  fi
-}
-
 # Node annotation used to remember the IPv4 address of the host's primary
 # interface at the time the cluster was last reconciled. Compared against the
 # live value on every `sandbox run` to detect a same-name-different-IP drift
 # (DHCP lease change, swapping wifi SSIDs, WSL2 distro coming up with a fresh
 # address from the Hyper-V NAT after a Windows reboot — none of which change
-# `eth0`'s name, so the device-list check in configure_cilium_for_vpn can't
-# see them).
+# `eth0`'s name, so the device-list check alone can't see them).
 SANDBOX_NODE_IPV4_ANNOTATION="sandbox-network-primary-ipv4"
 
 # wait_for_k3s_api <kubeconfig> [retries] — block until kubectl can reach the
@@ -195,148 +74,253 @@ wait_for_k3s_api() {
   return 0
 }
 
-# reconcile_node_ipv4 <kubeconfig>
+# reconcile_host_network <kubeconfig_path>
 #
-# Detect a change in the host's primary IPv4 (interface name unchanged, IP
-# changed) and run the full restart sequence needed to make k3s and Cilium
-# re-learn the new address. The configure_cilium_for_vpn path only compares
-# device NAMES, so it cannot see this kind of drift on its own.
+# Single-pass reconcile of the cluster's host-network wiring. Laptops move
+# between wifi, ethernet, and dock adapters and toggle VPNs constantly; a host
+# can change its primary interface NAME, its primary IPv4, or both at once. This
+# detects all three and applies the minimum restart needed — at most ONE k3s
+# restart, ONE Cilium DaemonSet restart, and ONE control-plane bounce, even when
+# every kind of drift fires together.
 #
-# Why a full restart, and what each step does:
-#   - `systemctl restart k3s`: kubelet stamps the node's `InternalIP` and the
-#     API server's serving-cert SANs from the live primary IP at startup.
-#     Without a restart the Node object keeps the old IP and the cert SAN
-#     list stays stale (mostly cosmetic for us since pods talk to
-#     k8sServiceHost=127.0.0.1, but any out-of-cluster client that resolved
-#     the node by IP breaks).
-#   - `rollout restart ds/cilium`: the cilium-agent reads the
-#     direct-routing-device's IPv4 at startup and writes it into BPF maps for
-#     masquerade source and the CiliumNode CRD. Netlink IP-change events
-#     don't fully reconcile those.
-#   - Bounce CoreDNS + hubble-relay: same problem the configure_cilium_for_vpn
-#     restart path already handles — the BPF service-LB backend map is left
-#     stale after the agent restart and pod->ClusterIP fails until the
-#     EndpointSlice is re-emitted.
+# Two independent facts about the host can drift:
 #
-# State is stored as a Node annotation (one node in the cluster, so we read
-# the first item). On a fresh install with no annotation we seed without
-# restarting; that bootstrap stamp is written by setup/common.sh once Cilium
-# is up. Subsequent runs compare against the stamped value.
+#   A. Device names — the primary NIC and/or VPN interface names Cilium should
+#      masquerade through. Cilium reads its `devices` / `direct-routing-device`
+#      list once at cilium-agent startup, so a stale pin survives until the
+#      DaemonSet restarts. The three settings below are required together for
+#      VPN-routed cluster egress:
+#        --set devices='{primary,vpn1,...}'
+#        --set extraConfig.direct-routing-device=<primary>
+#        --set extraConfig.egress-masquerade-interfaces=''  (empty = per-iface SNAT)
 #
-# Best-effort: any failure to reach the API or detect the IP returns 0 — the
-# caller (ensure_network_config_current) is a pre-flight hook and must not
-# block a sandbox launch on a soft failure.
-reconcile_node_ipv4() {
-  local kc="$1"
+#   B. Primary IPv4 — the address on the primary NIC, even if its name didn't
+#      change (DHCP lease change, wifi SSID swap, or — the dominant case — a
+#      WSL2 distro getting a fresh Hyper-V NAT address after a Windows reboot).
+#      kubelet stamps the node's InternalIP and the `kubernetes` Service
+#      endpoint from the live primary IP at k3s startup; until k3s restarts,
+#      in-cluster clients (notably CoreDNS's kubernetes plugin) keep dialing the
+#      OLD apiserver IP and fail. The cilium-agent also stamps its BPF
+#      masquerade source IP from the live interface at startup, so an IP change
+#      needs a fresh agent too.
+#
+# Why ONE pass, and why this order:
+#   1. Apply the device list to the cilium-config ConfigMap FIRST, with no
+#      restart. A valid direct-routing-device is a precondition for the
+#      cilium-agent to initialize its datapath at all ("IPv4 direct routing
+#      device IP not found" otherwise). Writing the ConfigMap before any restart
+#      guarantees the next agent start reads a device that is actually up — so
+#      the restart order between k3s and Cilium no longer matters.
+#   2. Restart k3s iff the IPv4 drifted, to re-stamp the node InternalIP and the
+#      apiserver Service endpoint. NOTE: `systemctl restart k3s` does NOT bounce
+#      already-running pods — containerd shims are re-parented and the kubelet
+#      re-adopts them — so this does not restart cilium-agent. The two restarts
+#      are genuinely independent; neither subsumes the other.
+#   3. Restart the cilium-agent iff the devices OR the IPv4 drifted, so it
+#      re-reads `devices` and re-stamps the BPF masquerade source.
+#   4. Whenever the agent restarts, re-emit EndpointSlices for pod-backed
+#      Services (CoreDNS, hubble-relay): the agent restart leaves the BPF
+#      service-LB backend map stale, so pod->ClusterIP — including CoreDNS's
+#      path to kube-apiserver — stays broken until the slice is re-programmed.
+#
+# Behaviour by VPN state (device half):
+#   - VPN up: pin devices='{primary,vpn,...}' so VPN-routed pod egress is SNAT'd
+#     to the tunnel source IP.
+#   - VPN down, but Cilium still carries an explicit list from an earlier VPN
+#     session: reset to a single-NIC pin so a stale name can't break pod
+#     endpoint creation.
+#   - VPN down and no explicit list ever applied: leave Cilium on its single-NIC
+#     auto-detect default untouched (avoids a needless restart).
+#
+# State for the IPv4 half lives in a Node annotation. On a fresh install with no
+# annotation we seed the baseline without restarting; subsequent runs compare
+# against it. Best-effort throughout: any failure to reach the API or a rollout
+# that times out warns and returns 0 — the caller is a pre-flight hook and must
+# not block a sandbox launch, and the annotation is only stamped once a restart
+# actually settles, so a later run retries.
+#
+# Safe to call unconditionally during setup and before every `sandbox run`.
+reconcile_host_network() {
+  local kc="${1:?reconcile_host_network: kubeconfig path required}"
 
+  # ---- Detect host interface state --------------------------------------
   local primary
   primary="$(detect_primary_iface)"
-  [[ -z "${primary}" ]] && return 0
+  if [[ -z "${primary}" ]]; then
+    echo "  No default route detected; skipping network reconcile."
+    return 0
+  fi
 
-  local current_ip
+  local -a vpn_ifaces=()
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] && vpn_ifaces+=("${line}")
+  done < <(detect_vpn_ifaces | sort)
+
+  # Desired device list: primary first, then VPN interfaces alphabetically.
+  # With no VPN up this is just the primary — a deterministic single-NIC pin.
+  # The display CSV preserves primary-first; the comparison CSV sorts all
+  # entries so a reordering by ifindex (bring-up order) doesn't look like a
+  # change.
+  local -a desired_devices=("${primary}" "${vpn_ifaces[@]+"${vpn_ifaces[@]}"}")
+  local desired_csv desired_sorted
+  desired_csv="$(IFS=,; echo "${desired_devices[*]}")"
+  desired_sorted="$(printf '%s\n' "${desired_devices[@]}" | sort | paste -sd, -)"
+
+  # ---- Decide whether the Cilium device list needs reapplying (drift A) ---
+  local current_json current_sorted current_primary current_mq
+  current_json="$(helm --kubeconfig "${kc}" -n kube-system get values cilium -o json 2>/dev/null || echo '{}')"
+  current_sorted="$(jq -r '(.devices // []) | sort | join(",")' <<<"${current_json}")"
+  current_primary="$(jq -r '.extraConfig["direct-routing-device"] // ""' <<<"${current_json}")"
+  current_mq="$(jq -r '.extraConfig["egress-masquerade-interfaces"] // ""' <<<"${current_json}")"
+
+  local device_drift=0
+  if [[ "${#vpn_ifaces[@]}" -eq 0 ]] \
+     && [[ -z "${current_sorted}" ]] && [[ -z "${current_primary}" ]]; then
+    # No VPN, and Cilium has never had an explicit device list applied: leave it
+    # on its single-NIC auto-detect default. Pinning devices here would force a
+    # one-time DaemonSet restart on every plain no-VPN host for no real gain.
+    device_drift=0
+  elif [[ "${current_sorted}" == "${desired_sorted}" ]] \
+       && [[ "${current_primary}" == "${primary}" ]] \
+       && [[ -z "${current_mq}" ]]; then
+    device_drift=0
+  else
+    device_drift=1
+  fi
+
+  # ---- Decide whether the primary IPv4 drifted (drift B) -----------------
+  # seed_only: a fresh cluster with no recorded baseline yet — stamp it without
+  # restarting anything (the bootstrap path used by setup/common.sh).
+  local current_ip node recorded_ip ip_drift=0 seed_only=0
   current_ip="$(detect_primary_ipv4 "${primary}")"
-  [[ -z "${current_ip}" ]] && return 0
-
-  local node
   node="$(kubectl --kubeconfig "${kc}" get nodes \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-  [[ -z "${node}" ]] && return 0
+  if [[ -n "${current_ip}" && -n "${node}" ]]; then
+    recorded_ip="$(kubectl --kubeconfig "${kc}" get node "${node}" \
+      -o "jsonpath={.metadata.annotations.${SANDBOX_NODE_IPV4_ANNOTATION}}" \
+      2>/dev/null || true)"
+    if [[ -z "${recorded_ip}" ]]; then
+      seed_only=1
+    elif [[ "${recorded_ip}" != "${current_ip}" ]]; then
+      ip_drift=1
+    fi
+  fi
 
-  local recorded_ip
-  recorded_ip="$(kubectl --kubeconfig "${kc}" get node "${node}" \
-    -o "jsonpath={.metadata.annotations.${SANDBOX_NODE_IPV4_ANNOTATION}}" \
-    2>/dev/null || true)"
-
-  if [[ -z "${recorded_ip}" ]]; then
-    echo "  Recording baseline primary IPv4 (${current_ip}) on node/${node}."
-    kubectl --kubeconfig "${kc}" annotate node "${node}" \
-      "${SANDBOX_NODE_IPV4_ANNOTATION}=${current_ip}" --overwrite >/dev/null
+  # ---- Fast path: nothing to restart ------------------------------------
+  if [[ "${device_drift}" -eq 0 && "${ip_drift}" -eq 0 ]]; then
+    if [[ "${seed_only}" -eq 1 ]]; then
+      echo "  Recording baseline primary IPv4 (${current_ip}) on node/${node}."
+      kubectl --kubeconfig "${kc}" annotate node "${node}" \
+        "${SANDBOX_NODE_IPV4_ANNOTATION}=${current_ip}" --overwrite >/dev/null
+    else
+      echo "  Host network already current (${desired_csv}); nothing to do."
+    fi
     return 0
   fi
 
-  if [[ "${recorded_ip}" == "${current_ip}" ]]; then
-    return 0
+  # ---- Report what drifted ----------------------------------------------
+  if [[ "${device_drift}" -eq 1 ]]; then
+    if [[ "${#vpn_ifaces[@]}" -eq 0 ]]; then
+      echo "  No VPN interface detected; resetting stale device list to a single-NIC pin."
+      echo "  Detected primary interface:  ${primary}"
+    else
+      echo "  Detected primary interface:  ${primary}"
+      echo "  Detected VPN interface(s):   ${vpn_ifaces[*]}"
+    fi
+    echo "  Applying Cilium devices:     ${desired_csv}"
+  fi
+  if [[ "${ip_drift}" -eq 1 ]]; then
+    echo "  Host primary IPv4 changed:   ${recorded_ip} -> ${current_ip} on ${primary}."
+  fi
+  echo "  Reconciling now — takes ~1-2 min; any sandboxes already running may"
+  echo "  see a brief network blip during the restart."
+
+  # ---- Phase 1: stage the Cilium device list (ConfigMap only, no restart) -
+  # Writing the cilium-config ConfigMap before any restart guarantees the
+  # cilium-agent reads a valid direct-routing-device when it next starts, so
+  # datapath init can't fail on a now-down NIC — the precondition the old
+  # two-pass ordering protected, now satisfied by sequencing helm first.
+  if [[ "${device_drift}" -eq 1 ]]; then
+    helm --kubeconfig "${kc}" upgrade cilium cilium/cilium \
+      --namespace kube-system \
+      --reuse-values \
+      --set "devices={${desired_csv}}" \
+      --set-string "extraConfig.direct-routing-device=${primary}" \
+      --set-string "extraConfig.egress-masquerade-interfaces="
   fi
 
-  echo "  Host primary IPv4 changed: ${recorded_ip} -> ${current_ip} on ${primary}."
-  echo "  Restarting k3s and Cilium so the node InternalIP and BPF masquerade"
-  echo "  source pick up the new address. This takes ~1-2 min; any sandboxes"
-  echo "  already running may see a brief network blip."
-
-  echo "  Restarting k3s..."
-  sudo systemctl restart k3s
-  if ! wait_for_k3s_api "${kc}" 60; then
-    echo "  WARN: k3s API did not become ready in time; aborting IP reconcile." >&2
-    echo "        Run 'sandbox configure-network' once k3s is up to retry." >&2
-    return 0
-  fi
-
-  # From here on the calls are best-effort (see the function header): a
-  # rollout that times out must NOT abort under `set -e`, or the caller's
-  # remaining reconcilers would never run. We track success so we only stamp
-  # the annotation when the restart actually settled — otherwise we leave it
-  # stale so a later run retries.
+  # Best-effort from here: a rollout that times out must NOT abort under
+  # `set -e`. We track success so the IPv4 baseline is only stamped once the
+  # restart actually settled — otherwise we leave it stale so a later run
+  # retries.
   local ok=1
 
-  echo "  Restarting Cilium DaemonSet..."
-  kubectl --kubeconfig "${kc}" -n kube-system rollout restart ds/cilium || ok=0
-  kubectl --kubeconfig "${kc}" -n kube-system rollout status ds/cilium --timeout=120s || {
-    ok=0
-    echo "  WARN: Cilium DaemonSet did not become ready within 120s." >&2
-  }
-
-  echo "  Bouncing pod-backed control-plane pods to re-program service backends..."
-  kubectl --kubeconfig "${kc}" -n kube-system delete pod \
-    -l k8s-app=kube-dns --ignore-not-found >/dev/null 2>&1 || true
-  kubectl --kubeconfig "${kc}" -n kube-system delete pod \
-    -l app.kubernetes.io/name=hubble-relay --ignore-not-found >/dev/null 2>&1 || true
-  kubectl --kubeconfig "${kc}" -n kube-system rollout status deploy/coredns --timeout=120s || {
-    ok=0
-    echo "  WARN: CoreDNS did not become ready within 120s." >&2
-  }
-
-  if [[ "${ok}" -eq 1 ]]; then
-    kubectl --kubeconfig "${kc}" annotate node "${node}" \
-      "${SANDBOX_NODE_IPV4_ANNOTATION}=${current_ip}" --overwrite >/dev/null
-    echo "  Node IPv4 reconcile complete."
-  else
-    echo "  WARN: IPv4 reconcile did not fully settle; leaving baseline" >&2
-    echo "        annotation at ${recorded_ip} so a later run retries." >&2
-    echo "        Re-run 'sandbox configure-network' once the host network is stable." >&2
+  # ---- Phase 2: restart k3s iff the IPv4 drifted -------------------------
+  if [[ "${ip_drift}" -eq 1 ]]; then
+    echo "  Restarting k3s..."
+    sudo systemctl restart k3s
+    if ! wait_for_k3s_api "${kc}" 60; then
+      echo "  WARN: k3s API did not become ready in time; aborting reconcile." >&2
+      echo "        Run 'sandbox configure-network' once k3s is up to retry." >&2
+      return 0
+    fi
   fi
+
+  # ---- Phase 3: restart cilium-agent iff devices OR IPv4 drifted ---------
+  if [[ "${device_drift}" -eq 1 || "${ip_drift}" -eq 1 ]]; then
+    echo "  Restarting Cilium DaemonSet..."
+    kubectl --kubeconfig "${kc}" -n kube-system rollout restart ds/cilium || ok=0
+    kubectl --kubeconfig "${kc}" -n kube-system rollout status ds/cilium --timeout=120s || {
+      ok=0
+      echo "  WARN: Cilium DaemonSet did not become ready within 120s." >&2
+    }
+
+    # Re-emit EndpointSlices for pod-backed Services so the fresh agent
+    # re-programs BPF backend slots. Without this, CoreDNS (and any other
+    # Service whose backend is a pod, e.g. hubble-relay's ClusterIP) stays
+    # unreachable from inside other pods until something else reconciles.
+    echo "  Bouncing pod-backed control-plane pods to re-program service backends..."
+    kubectl --kubeconfig "${kc}" -n kube-system delete pod \
+      -l k8s-app=kube-dns --ignore-not-found >/dev/null 2>&1 || true
+    kubectl --kubeconfig "${kc}" -n kube-system delete pod \
+      -l app.kubernetes.io/name=hubble-relay --ignore-not-found >/dev/null 2>&1 || true
+    kubectl --kubeconfig "${kc}" -n kube-system rollout status deploy/coredns --timeout=120s || {
+      ok=0
+      echo "  WARN: CoreDNS did not become ready within 120s." >&2
+    }
+  fi
+
+  # ---- Phase 4: stamp the IPv4 baseline once the restart settled ---------
+  if [[ "${ip_drift}" -eq 1 || "${seed_only}" -eq 1 ]]; then
+    if [[ "${ok}" -eq 1 ]]; then
+      kubectl --kubeconfig "${kc}" annotate node "${node}" \
+        "${SANDBOX_NODE_IPV4_ANNOTATION}=${current_ip}" --overwrite >/dev/null
+      echo "  Host network reconcile complete."
+    else
+      echo "  WARN: reconcile did not fully settle; leaving baseline at" >&2
+      echo "        ${recorded_ip:-unset} so a later run retries. Re-run" >&2
+      echo "        'sandbox configure-network' once the host network is stable." >&2
+    fi
+  elif [[ "${ok}" -eq 1 ]]; then
+    echo "  Cilium reconfigured for current interfaces (${desired_csv})."
+  fi
+
+  # Always succeed: a soft rollout timeout above must not abort the caller (a
+  # pre-flight hook before `sandbox run`). The trailing branch would otherwise
+  # leak its own exit status when ok=0.
+  return 0
 }
 
 # ensure_network_config_current <kubeconfig_path>
 #
 # Auto-correct hook for normal commands (e.g. `sandbox run`). Laptops move
 # between wifi, ethernet, and dock adapters and toggle VPNs constantly; each
-# change can leave Cilium's pinned `devices` / `direct-routing-device` list
-# pointing at an interface that is now down or has no IP, which makes new pod
-# endpoints fail to come up. Calling this before launching a sandbox keeps the
-# device wiring matched to the host without the user remembering to run
-# `sandbox configure-network` by hand.
-#
-# Two kinds of drift are reconciled. ORDER MATTERS — the device-name reconcile
-# MUST run first:
-#   1. Primary or VPN interface NAMES changed (configure_cilium_for_vpn).
-#      Cilium reads its `devices` list once at agent startup, so the stale
-#      pin survives until the DaemonSet restarts. Crucially, a valid
-#      `direct-routing-device` is a *precondition* for the cilium-agent to
-#      initialize its datapath at all ("IPv4 direct routing device IP not
-#      found" otherwise) — so this pin must be corrected before anything
-#      restarts Cilium.
-#   2. Primary IPv4 changed but interface name didn't (reconcile_node_ipv4).
-#      This is the dominant case on WSL2, where the sandbox-vm distro comes
-#      up with a fresh address from the Hyper-V virtual NAT after every
-#      Windows host reboot. Fix requires a k3s + Cilium restart.
-#
-# When a host moves between PHYSICAL interfaces both drifts fire at once (a
-# different NIC means both a different name and a different DHCP lease). If the
-# IPv4 reconcile ran first it would restart Cilium while `devices=` still pins
-# the now-down old NIC: the fresh agent fails datapath init, its rollout times
-# out, and (under `set -e`) the device reconcile never runs — the cluster stays
-# wedged. Fixing the device pin first means the restart in step 2 lands on a
-# healthy datapath.
+# change can leave Cilium's pinned `devices` list pointing at an interface that
+# is now down, or the node InternalIP stamped with a stale primary IP, either of
+# which breaks pod networking or cluster DNS. Calling this before launching a
+# sandbox keeps the wiring matched to the host without the user remembering to
+# run `sandbox configure-network` by hand. All drift handling — and the careful
+# single-restart ordering — lives in reconcile_host_network.
 #
 # Guards so it is a clean no-op where it cannot apply:
 #   - non-Linux: on macOS the cluster runs inside Lima and cannot see the
@@ -348,6 +332,5 @@ ensure_network_config_current() {
   command -v helm >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
   echo "==> Checking host network configuration..."
-  configure_cilium_for_vpn "${kc}"
-  reconcile_node_ipv4 "${kc}"
+  reconcile_host_network "${kc}"
 }
