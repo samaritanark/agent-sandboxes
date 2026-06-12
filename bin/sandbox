@@ -1617,6 +1617,12 @@ WHAT IT DOES:
   Refuses to ingest long-lived API keys (PRINCIPLES.md rule 1) — for
   opencode, point users at 'sandbox secret' (Phase 4) instead.
 
+  For codex, also ensures the staged config.toml sets
+  sandbox_mode = "danger-full-access" — Codex's own bubblewrap sandbox
+  can't start under gVisor and blocks apply_patch; the pod already
+  provides isolation. Re-run any time to apply this to an existing
+  agent-home (an operator's own sandbox_mode, if set, is left alone).
+
   Also writes a starter ~/.sandbox/config.yaml if absent.
 EOF
   exit 0

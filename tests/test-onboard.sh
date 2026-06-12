@@ -217,6 +217,104 @@ test_onboard_agent_opencode_refusal() {
 ###############################################################################
 # warn_forbidden_env
 ###############################################################################
+test_onboard_codex_sandbox_mode_fresh() {
+  info "Testing onboard_agent codex seeds sandbox_mode with no host config..."
+
+  local h
+  h="$(new_home codex-fresh)"
+  load_onboard_with_home "${h}"
+
+  # Host has auth but no ~/.codex/config.toml.
+  mkdir -p "${h}/.codex"
+  echo '{"oauth":"fake"}' > "${h}/.codex/auth.json"
+
+  onboard_agent codex false false >/dev/null
+
+  local cfg="${h}/.sandbox/agent-home/codex/config.toml"
+  [[ -f "${cfg}" ]] && pass "config.toml created when host had none" \
+    || fail "config.toml not created"
+  grep -q 'sandbox_mode = "danger-full-access"' "${cfg}" \
+    && pass "sandbox_mode seeded" \
+    || fail "sandbox_mode not seeded; got: $(cat "${cfg}")"
+  eq "seeded config mode 0600" "600" "$(stat -c '%a' "${cfg}")"
+}
+
+test_onboard_codex_sandbox_mode_prepended() {
+  info "Testing onboard_agent codex prepends sandbox_mode above [tables]..."
+
+  local h
+  h="$(new_home codex-prepend)"
+  load_onboard_with_home "${h}"
+
+  # Host config opens with a table header — the top-level key must land
+  # ABOVE it to remain a top-level key in TOML.
+  mkdir -p "${h}/.codex"
+  echo '{"oauth":"fake"}' > "${h}/.codex/auth.json"
+  printf '[projects."/workspace"]\ntrust_level = "trusted"\n' \
+    > "${h}/.codex/config.toml"
+
+  onboard_agent codex false false >/dev/null
+
+  local cfg="${h}/.sandbox/agent-home/codex/config.toml"
+  local first_key
+  first_key="$(grep -nE '^[^#[:space:]]' "${cfg}" | head -1)"
+  if echo "${first_key}" | grep -q 'sandbox_mode'; then
+    pass "sandbox_mode is the first non-comment key (above the table)"
+  else
+    fail "sandbox_mode not prepended above table; first key: ${first_key}"
+  fi
+  grep -q 'trust_level = "trusted"' "${cfg}" \
+    && pass "operator's existing table preserved" \
+    || fail "operator config content lost"
+}
+
+test_onboard_codex_sandbox_mode_idempotent() {
+  info "Testing onboard_agent codex leaves an operator's sandbox_mode alone..."
+
+  local h
+  h="$(new_home codex-idem)"
+  load_onboard_with_home "${h}"
+
+  mkdir -p "${h}/.codex"
+  echo '{"oauth":"fake"}' > "${h}/.codex/auth.json"
+  printf 'sandbox_mode = "workspace-write"\n' > "${h}/.codex/config.toml"
+
+  local out
+  out="$(onboard_agent codex false false)"
+
+  local cfg="${h}/.sandbox/agent-home/codex/config.toml"
+  grep -q 'sandbox_mode = "workspace-write"' "${cfg}" \
+    && pass "existing sandbox_mode preserved" \
+    || fail "operator's sandbox_mode was overwritten"
+  [[ "$(grep -c 'sandbox_mode' "${cfg}")" -eq 1 ]] \
+    && pass "no duplicate sandbox_mode key" \
+    || fail "duplicate sandbox_mode key written"
+  echo "${out}" | grep -q "leaving it as-is" \
+    && pass "onboard reports it left the value alone" \
+    || fail "expected 'leaving it as-is' note; got: ${out}"
+}
+
+test_onboard_codex_sandbox_mode_dry_run() {
+  info "Testing onboard_agent codex dry-run writes no sandbox_mode..."
+
+  local h
+  h="$(new_home codex-dry)"
+  load_onboard_with_home "${h}"
+
+  mkdir -p "${h}/.codex"
+  echo '{"oauth":"fake"}' > "${h}/.codex/auth.json"
+
+  local out
+  out="$(onboard_agent codex true false)"
+
+  [[ ! -f "${h}/.sandbox/agent-home/codex/config.toml" ]] \
+    && pass "dry-run wrote no config.toml" \
+    || fail "dry-run created config.toml"
+  echo "${out}" | grep -q 'would set sandbox_mode' \
+    && pass "dry-run reports the intended change" \
+    || fail "dry-run missing 'would set sandbox_mode'; got: ${out}"
+}
+
 test_warn_forbidden_env() {
   info "Testing warn_forbidden_env counts and message..."
 
@@ -304,6 +402,10 @@ main() {
   test_onboard_agent_claude_real
   test_onboard_agent_claude_no_host_state
   test_onboard_agent_opencode_refusal
+  test_onboard_codex_sandbox_mode_fresh
+  test_onboard_codex_sandbox_mode_prepended
+  test_onboard_codex_sandbox_mode_idempotent
+  test_onboard_codex_sandbox_mode_dry_run
   test_warn_forbidden_env
   test_write_starter_user_config
 
