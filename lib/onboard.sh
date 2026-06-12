@@ -167,6 +167,63 @@ _onboard_codex() {
     result="$(stage_file "${src}" "${dst}" "${dry_run}" "${force}")"
     print_stage_result codex "${src}" "${dst}" "${result}"
   done
+
+  ensure_codex_sandbox_mode "${agent_home}/config.toml" "${dry_run}"
+}
+
+# ensure_codex_sandbox_mode <config.toml> <dry_run> — guarantee the staged
+# Codex config disables Codex's own OS-level sandbox.
+#
+# Codex wraps every shell/apply_patch operation in bubblewrap. Inside our
+# pods that inner sandbox unshares a netns and configures loopback via a
+# netlink RTM_NEWADDR call that gVisor doesn't emulate, so bwrap aborts
+# ("loopback: Failed RTM_NEWADDR: No child processes") before Codex can
+# even read a file. The pod already IS the boundary (gVisor kernel
+# isolation + Cilium default-deny egress + filesystem masking), so the
+# inner layer is redundant as well as broken. sandbox_mode =
+# "danger-full-access" turns off ONLY that inner OS-sandbox: pod egress
+# stays default-deny via Cilium regardless, and approval_policy (Codex's
+# human-in-the-loop prompts) is a separate setting left untouched.
+#
+# top-level TOML keys must precede any [table] header, so we PREPEND rather
+# than append (a staged config may open with [projects.*] / [tui.*]).
+# Idempotent: if any sandbox_mode key is already present we leave the
+# operator's choice alone and only note it.
+ensure_codex_sandbox_mode() {
+  local cfg="$1" dry_run="$2"
+  local cfg_disp="${cfg/#${HOME}/\~}"
+
+  if [[ -f "${cfg}" ]] && grep -qE '^[[:space:]]*sandbox_mode[[:space:]]*=' "${cfg}"; then
+    echo "  codex: ${cfg_disp} already sets sandbox_mode — leaving it as-is."
+    return 0
+  fi
+
+  if [[ "${dry_run}" == "true" ]]; then
+    echo "  codex: would set sandbox_mode=\"danger-full-access\" in ${cfg_disp}"
+    return 0
+  fi
+
+  local header
+  header="$(cat <<'TOML'
+# Added by 'sandbox onboard'. The pod already isolates this agent (gVisor +
+# Cilium default-deny egress + filesystem masking), so Codex's own
+# bubblewrap sandbox is redundant — and it cannot start under gVisor
+# (bwrap loopback RTM_NEWADDR failure), which blocks apply_patch. This
+# disables only that inner OS-sandbox; egress and approval prompts are
+# unaffected. Remove this line to restore Codex's built-in sandboxing.
+sandbox_mode = "danger-full-access"
+TOML
+)"
+
+  mkdir -p "$(dirname "${cfg}")"
+  if [[ -f "${cfg}" ]]; then
+    printf '%s\n\n%s' "${header}" "$(cat "${cfg}")" > "${cfg}.tmp"
+    mv "${cfg}.tmp" "${cfg}"
+  else
+    printf '%s\n' "${header}" > "${cfg}"
+  fi
+  chmod 0600 "${cfg}"
+  echo "  codex: set sandbox_mode=\"danger-full-access\" in ${cfg_disp}"
 }
 
 _onboard_opencode_refuse() {
