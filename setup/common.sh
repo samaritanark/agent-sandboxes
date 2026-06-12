@@ -173,12 +173,12 @@ install_cilium_helm() {
 
   # If a VPN interface is up at install time, pin Cilium's device list in the
   # INITIAL install so the cluster comes up correct on first boot. Otherwise
-  # configure_cilium_for_vpn (called below) has to apply the device list with
+  # reconcile_host_network (called below) has to apply the device list with
   # `helm upgrade` + `rollout restart ds/cilium` AFTER k3s has already started
   # CoreDNS — and restarting the agent mid-bringup leaves stale BPF service
   # maps that break pod->ClusterIP, which kills cluster DNS and strands setup.
-  # See the configure_cilium_for_vpn header in lib/network.sh. These settings
-  # match what configure_cilium_for_vpn would apply, so the call below sees no
+  # See the reconcile_host_network header in lib/network.sh. These settings
+  # match what reconcile_host_network would apply, so the call below sees no
   # change and skips the restart entirely.
   local -a cilium_device_args=()
   local primary_iface vpn_iface_count
@@ -240,20 +240,16 @@ install_cilium_helm() {
     echo "  Added iptables MASQUERADE rule for pod egress."
   fi
 
-  # Verify/reconcile Cilium's device wiring. When a VPN was up at install
-  # time the devices were already baked into the helm install above, so this
-  # is a no-op — no DaemonSet restart. It still covers the no-VPN case and
-  # any interface drift. Operators reconnecting a VPN after setup run
-  # 'sandbox configure-network' to re-apply.
+  # Verify/reconcile Cilium's device wiring and seed the baseline primary-IPv4
+  # annotation on the Node. When a VPN was up at install time the devices were
+  # already baked into the helm install above, so the device half is a no-op —
+  # no DaemonSet restart. With no prior annotation the IPv4 half just stamps the
+  # current address as the baseline (no restart); subsequent `sandbox run`s
+  # compare against it to catch a host IP change that didn't rename the
+  # interface — the WSL2-on-Windows-reboot case in particular. Operators
+  # reconnecting a VPN after setup run 'sandbox configure-network' to re-apply.
   echo "==> Verifying Cilium network configuration..."
-  configure_cilium_for_vpn "${SANDBOX_KUBECONFIG}"
-
-  # Seed the baseline primary-IPv4 annotation on the Node. reconcile_node_ipv4
-  # compares this on every subsequent `sandbox run` to detect a host IP change
-  # that didn't rename the interface — the WSL2-on-Windows-reboot case in
-  # particular. Without this seed the first post-install run would treat the
-  # current IP as "new" and trigger a needless restart sequence.
-  reconcile_node_ipv4 "${SANDBOX_KUBECONFIG}"
+  reconcile_host_network "${SANDBOX_KUBECONFIG}"
 
   echo "  Cilium installed."
 }
