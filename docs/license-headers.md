@@ -13,7 +13,7 @@ always the same:
 
 ```
 SPDX-License-Identifier: Apache-2.0
-Copyright 2026 Samaritan Ark
+Copyright 2026 Samaritan's Purse
 ```
 
 ### Shell scripts (`.sh`, and `bin/sandbox`)
@@ -23,21 +23,21 @@ The header goes **after** the shebang, before any code:
 ```bash
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 Samaritan Ark
+# Copyright 2026 Samaritan's Purse
 ```
 
 ### YAML (`.yaml`, `.yml`) and Dockerfiles
 
 ```yaml
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 Samaritan Ark
+# Copyright 2026 Samaritan's Purse
 ```
 
 ### PowerShell (`.ps1`)
 
 ```powershell
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 Samaritan Ark
+# Copyright 2026 Samaritan's Purse
 ```
 
 ## Rules of thumb
@@ -45,7 +45,7 @@ The header goes **after** the shebang, before any code:
 - **One header per source file we wrote.** Add it to new files at
   creation time.
 - **Update the year on substantive change, don't accumulate ranges.**
-  A single `Copyright <current-year> Samaritan Ark` is enough; we don't
+  A single `Copyright <current-year> Samaritan's Purse` is enough; we don't
   maintain `2024-2026`-style ranges per file.
 - **Don't add headers to generated, vendored, or third-party files.**
   If we ever vendor external code, it keeps its original header and is
