@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-opencode-tier1.sh — OpenCode Tier 1 network access tests
 # Verifies: the configured OpenCode endpoint is reachable, api.openai.com /
 # api.anthropic.com / github.com / example.com are blocked.

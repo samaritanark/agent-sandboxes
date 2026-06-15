@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-profile.sh — Profile + overlay resolution tests
 # Verifies: is_numeric_profile, resolve_overlay_path (env vs config file),
 # find_profile_path (user wins over overlay), and the overlay-aware

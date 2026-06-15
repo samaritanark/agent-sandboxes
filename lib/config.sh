@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # lib/config.sh — Per-user / per-environment / per-repo configuration loading
 #
 # Operators can pre-approve extra egress domains so 'sandbox run' doesn't

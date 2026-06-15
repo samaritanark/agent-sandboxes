@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # lib/tier.sh — Tier definitions and domain lists
 set -euo pipefail
 

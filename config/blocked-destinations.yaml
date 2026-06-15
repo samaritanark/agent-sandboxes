@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # config/blocked-destinations.yaml
 # Destinations that may NEVER appear in --allow-domain or network policies.
 #

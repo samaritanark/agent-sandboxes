@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-agents.sh — lib/agents.sh helper tests
 # Verifies the per-agent launch-flag helpers, focusing on
 # get_agent_sandbox_flags: Codex disables its inner bwrap OS-sandbox at launch

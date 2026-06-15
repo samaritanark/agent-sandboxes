@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # bin/sandbox — Agent Sandbox CLI
 # See PRINCIPLES.md for the design intent (threat model, tier model,
 # credential isolation, default-deny egress, filesystem masking).

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-codex-tier1.sh — Codex Tier 1 network access tests
 # Verifies: api.openai.com reachable, github.com blocked
 set -euo pipefail

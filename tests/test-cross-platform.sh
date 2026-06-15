@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-cross-platform.sh — Cross-platform parity tests
 # Verifies: sandbox CLI works on both Linux and macOS
 set -euo pipefail

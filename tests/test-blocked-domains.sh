@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-blocked-domains.sh — Blocked destination rejection tests
 # Verifies: blocked domains from config/blocked-destinations.yaml
 # are rejected at CLI validation level (not just network level)

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # lib/certs.sh — Extract a corporate TLS-intercept proxy's root CA from
 # the host's trust store (or directly from the wire), so users can drop
 # it into config/extra-ca-certs/ without hand-rolling platform-specific

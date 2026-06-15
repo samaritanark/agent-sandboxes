@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-allow.sh — 'sandbox allow' hot-reload tests (cluster-free parts)
 #
 # The kubectl apply path needs a live cluster and is exercised manually.

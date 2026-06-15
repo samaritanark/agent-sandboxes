@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # config/workspace-audit.yaml
 # Directories pruned during workspace audit (baseline + diff capture).
 #

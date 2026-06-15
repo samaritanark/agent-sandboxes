@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # lib/network.sh — Host network interface detection + Cilium device wiring.
 #
 # Sandbox pods need to reach two distinct address spaces:

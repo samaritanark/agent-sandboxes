@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # docker/Dockerfile.opencode
 # sandbox:opencode — OpenCode agent image
 # - Installs OpenCode binary from GitHub releases

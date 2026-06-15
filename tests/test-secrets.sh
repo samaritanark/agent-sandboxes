@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-secrets.sh — Host-side secret store tests
 # Verifies: name validation, set from stdin, set from file, list, delete,
 # secret_get_value error on missing, idempotent re-create from cmd_secret.

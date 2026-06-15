@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-gvisor.sh — Verify gVisor is active inside sandbox pods
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"

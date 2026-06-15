@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-tier3-network.sh — Tier 3 dynamic endpoint network tests
 # Verifies: dynamic --infra-endpoint is reachable, other endpoints blocked
 set -euo pipefail

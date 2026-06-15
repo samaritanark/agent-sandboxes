@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # lib/onboard.sh — One-time host-to-sandbox credential staging
 #
 # 'sandbox onboard' copies an operator's existing host-side agent CLI

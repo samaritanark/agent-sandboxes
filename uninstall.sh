@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # uninstall.sh — Remove the AI Agent Sandbox and all its components
 # Mirrors setup.sh in reverse: Kubernetes resources → platform runtime → host artifacts
 set -euo pipefail

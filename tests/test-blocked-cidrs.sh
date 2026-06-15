@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-blocked-cidrs.sh — Blocked-CIDR parsing, validation, and the
 # Cilium egressDeny rendering in build_cilium_policy. Verifies that a forbidden
 # IP range is turned into a deny rule (deny beats allow in Cilium), so an

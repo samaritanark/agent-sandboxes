@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-claude-tier1.sh — Claude Tier 1 network access tests
 # Verifies: api.anthropic.com reachable, github.com blocked
 set -euo pipefail

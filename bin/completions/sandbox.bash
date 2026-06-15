@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # bin/completions/sandbox.bash — Bash completion for sandbox CLI
 #
 # Source in your .bashrc:
