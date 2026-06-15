@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # setup/macos.sh — macOS-specific sandbox setup (Lima VM)
 set -euo pipefail
 

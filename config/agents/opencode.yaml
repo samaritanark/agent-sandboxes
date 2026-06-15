@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # config/agents/opencode.yaml
 # OpenCode agent profile (descriptive — runtime config lives in lib/agents.sh
 # and lib/credentials.sh; this file documents the contract).

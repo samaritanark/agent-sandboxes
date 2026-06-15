@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # setup/common.sh — Common setup tasks for all platforms
 set -euo pipefail
 

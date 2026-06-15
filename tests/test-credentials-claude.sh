@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-credentials-claude.sh — Claude credential isolation
 # Verifies: ANTHROPIC_API_KEY is NOT present inside pod; OAuth only
 set -euo pipefail

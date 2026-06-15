@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-credentials-opencode.sh — OpenCode credential injection tests
 # Verifies: OPENAI_API_KEY is present for opencode; no host env leaks;
 # OPENAI_BASE_URL matches the operator-supplied OPENCODE_BASE_URL.

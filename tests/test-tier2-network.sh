@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-tier2-network.sh — Tier 2 network access tests (Claude agent)
 # Verifies: project domains reachable, example.com blocked
 set -euo pipefail

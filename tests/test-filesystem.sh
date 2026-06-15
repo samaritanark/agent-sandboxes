@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-filesystem.sh — Filesystem isolation tests
 # Verifies: .env and credential files are masked inside Tier 2 pods
 set -euo pipefail

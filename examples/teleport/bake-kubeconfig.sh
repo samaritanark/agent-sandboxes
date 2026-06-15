@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # examples/teleport/bake-kubeconfig.sh — Convert a Teleport-managed kube
 # context into a static kubeconfig suitable for `sandbox run --infra-kubeconfig`.
 #

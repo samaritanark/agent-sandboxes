@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-default-deny.sh — Verify default deny for unlabeled pods
 # An unlabeled pod (no sandbox-session label) should have zero network access
 set -euo pipefail

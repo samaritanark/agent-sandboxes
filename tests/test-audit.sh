@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-audit.sh — Audit log tests
 # Verifies: session.json is written, contains required fields, end_time is set on exit
 set -euo pipefail

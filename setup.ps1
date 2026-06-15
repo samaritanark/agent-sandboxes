@@ -1,4 +1,6 @@
 ﻿#Requires -Version 5.1
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 <#
 .SYNOPSIS
   Agent Sandbox setup for Windows hosts.

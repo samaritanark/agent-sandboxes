@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/helpers.sh — Shared boilerplate for all sandbox test scripts
 # Source this at the top of every test: source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"
 set -euo pipefail

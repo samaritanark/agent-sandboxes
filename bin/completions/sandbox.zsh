@@ -1,4 +1,6 @@
 #compdef sandbox
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # bin/completions/sandbox.zsh — Zsh completion for sandbox CLI
 #
 # Source in your .zshrc:

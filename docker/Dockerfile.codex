@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # docker/Dockerfile.codex
 # sandbox:codex — OpenAI Codex CLI agent image
 # - Installs @openai/codex globally

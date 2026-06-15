@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-serviceaccount.sh — ServiceAccount lockdown tests
 # Verifies: SA has no RBAC bindings; pods cannot query Kubernetes API
 set -euo pipefail

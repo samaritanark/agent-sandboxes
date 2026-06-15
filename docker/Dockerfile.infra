@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # docker/Dockerfile.infra
 # sandbox:*-infra — Infra tooling layer (for Tier 3 sessions)
 # - Adds kubectl, helm, openstack CLI, ansible

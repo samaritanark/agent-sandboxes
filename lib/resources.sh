@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # lib/resources.sh — Sandbox resource sizing.
 #
 # Single source of truth for per-pod resource requests/limits and for the

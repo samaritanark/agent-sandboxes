@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-onboard.sh — Host-to-sandbox credential staging tests
 # Verifies: stage_file copy + chmod 0600 + idempotency, force overwrite,
 # missing-source handling, opencode refusal, forbidden env-var warning,

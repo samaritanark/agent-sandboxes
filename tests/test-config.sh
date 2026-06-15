@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 # tests/test-config.sh — YAML helper + persistent-extras loader tests
 # Verifies: extract_yaml_{scalar,list}_from_file parse the formats we
 # document; load_extra_allowed_domains_from_file wraps the list helper
