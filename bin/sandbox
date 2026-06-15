@@ -912,8 +912,14 @@ cmd_run() {
     "${opt_repos[@]+"${opt_repos[@]}"}"
   echo ""
 
-  # Build the agent launch command, pinning the conversation ID when supported.
+  # Build the agent launch command, pinning the conversation ID when supported
+  # and disabling any broken inner OS-sandbox (Codex's bwrap; see
+  # get_agent_sandbox_flags) at launch so it doesn't depend on onboard staging.
   local -a agent_cmd=("${opt_agent}")
+  local sandbox_flags; local -a _sbf=()
+  sandbox_flags="$(get_agent_sandbox_flags "${opt_agent}")"
+  [[ -n "${sandbox_flags}" ]] && read -ra _sbf <<< "${sandbox_flags}" \
+    && agent_cmd+=("${_sbf[@]}")
   if [[ -n "${agent_session_id}" ]]; then
     agent_cmd+=("$(get_agent_session_id_flag "${opt_agent}")" "${agent_session_id}")
   fi
@@ -1206,8 +1212,13 @@ cmd_resume() {
   echo ""
 
   # Re-attach to the same conversation when the agent supports resume-by-ID,
-  # so the reconnect continues this session's existing transcript file.
+  # so the reconnect continues this session's existing transcript file. Pin the
+  # inner OS-sandbox the same way 'run' does (see get_agent_sandbox_flags).
   local -a agent_cmd=("${agent}")
+  local sandbox_flags; local -a _sbf=()
+  sandbox_flags="$(get_agent_sandbox_flags "${agent}")"
+  [[ -n "${sandbox_flags}" ]] && read -ra _sbf <<< "${sandbox_flags}" \
+    && agent_cmd+=("${_sbf[@]}")
   local resume_flag
   resume_flag="$(get_agent_resume_flag "${agent}")"
   if [[ -n "${agent_session_id}" ]] && [[ -n "${resume_flag}" ]]; then
@@ -1616,6 +1627,12 @@ WHAT IT DOES:
   session uses already-authenticated tokens. Skips conversation history.
   Refuses to ingest long-lived API keys (PRINCIPLES.md rule 1) — for
   opencode, point users at 'sandbox secret' (Phase 4) instead.
+
+  For codex, also ensures the staged config.toml sets
+  sandbox_mode = "danger-full-access" — Codex's own bubblewrap sandbox
+  can't start under gVisor and blocks apply_patch; the pod already
+  provides isolation. Re-run any time to apply this to an existing
+  agent-home (an operator's own sandbox_mode, if set, is left alone).
 
   Also writes a starter ~/.sandbox/config.yaml if absent.
 EOF
