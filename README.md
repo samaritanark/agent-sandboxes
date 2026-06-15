@@ -1356,3 +1356,11 @@ If your takeaway is "I like the stronger boundary Apple Containers
 offers" — good instinct, and noted. The point of this section is just
 that the boundary is one ingredient, and on its own it leaves the egress
 and credential controls described in **PRINCIPLES.md** on the table.
+
+## License
+
+Copyright 2026 Samaritan's Purse
+
+The code authored by Samaritan's Purse in this repository is licensed under
+the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for the full
+terms and the [NOTICE](NOTICE) file for third-party attributions.
