@@ -1,41 +1,52 @@
 ---
 # yaml-language-server:$schema=https://json.schemastore.org/github-workflow.json
 #
-# Publish a GitHub Release when a vX.Y.Z tag arrives.
+# Build, tag, and publish a GitHub Release on every merge to master.
 #
-# This workflow does NOT compute version numbers. The internal Gitea
-# release workflow is the single source of truth for versioning: it
-# bumps the version, tags the commit, and (when GITHUB_MIRROR_TOKEN is
-# configured on the Gitea side) pushes the tag and master to this
-# repository. This workflow then picks up the tag and publishes the
-# matching GitHub Release.
+# GitHub is the single source of truth for versioning. This workflow
+# computes the next version from existing tags plus a marker in the merged
+# PR's title, builds the source tarball, then creates the tag and Release
+# together via `gh release create`.
 #
-# Effect: GitHub release versions always match Gitea release versions,
-# no race conditions, no divergence.
+# Versioning:
+#   - Patch bump by default (vX.Y.Z -> vX.Y.(Z+1)).
+#   - Override via a marker in the merged PR's title:
+#       [bump:minor]  -> vX.(Y+1).0
+#       [bump:major]  -> v(X+1).0.0
+#   - With no tags yet, the first release is v0.0.1 — or v1.0.0 if the
+#     merged PR's title contains [bump:major].
 #
-# Artifact: source tarball produced by `task release VERSION=...`. The
-# version stamps into the packaged bin/sandbox so `sandbox version`
+# Artifact: a source tarball (agent-sandboxes-vX.Y.Z.tar.gz). `task release`
+# stamps the version into the packaged bin/sandbox, so `sandbox version`
 # reports the release tag.
 
 on:  # yamllint disable-line rule:truthy
   push:
-    tags:
-      - 'v*'
+    branches:
+      - master
+
+# Serialize releases so two quick merges can't race on version computation
+# (both reading the same "latest tag" and computing the same next version).
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     name: Release
-    # Only run on github.com. This file lives at .github/workflows/, which
-    # Gitea Actions also reads by default — without this guard, every Gitea
-    # tag push would trigger this workflow and fail at `gh release create`.
-    # On Gitea, github.server_url is the Gitea server URL, so the condition
-    # is false and the job is skipped silently.
+    # Gitea now only mirrors GitHub — GitHub owns versioning and releases.
+    # But this file lives at .github/workflows/, which Gitea Actions also
+    # reads by default, so if Gitea Actions is enabled a mirror push to
+    # master would run this job there too and fail at `gh release create`.
+    # On Gitea, github.server_url is the Gitea server URL, so this guard is
+    # false and the job is skipped — releases only ever happen on github.com.
     if: github.server_url == 'https://github.com'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write        # create tags and releases
+      pull-requests: read     # read the merged PR title for the bump marker
     steps:
-      - name: Checkout
+      - name: Checkout (full history + tags for version computation)
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -47,26 +58,50 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve version from tag
+      - name: Compute next version from tags + PR title marker
         id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # GITHUB_REF_NAME is the tag name (e.g. v2.0.3) when the workflow
-          # was triggered by a tag push.
-          version="${GITHUB_REF_NAME}"
-          if [[ ! "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "ERROR: tag '${version}' does not look like vX.Y.Z." >&2
-            exit 1
+
+          # Look up the PR that produced this merge commit. Squash and
+          # merge-commit strategies both yield exactly one PR per master
+          # commit. If the API returns nothing (e.g. a direct push to
+          # master), fall back to a patch bump silently.
+          pr_title=$(gh api "repos/${REPO}/commits/${SHA}/pulls" \
+            --jq '.[0].title // ""' 2>/dev/null || echo "")
+          echo "PR title: ${pr_title}"
+
+          latest=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          if [[ -z "${latest}" ]]; then
+            latest="v0.0.0"
           fi
-          echo "Resolved version: ${version}"
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "Latest tag: ${latest}"
+
+          ver="${latest#v}"
+          IFS=. read -r major minor patch <<< "${ver}"
+
+          if [[ "${pr_title}" == *"[bump:major]"* ]]; then
+            major=$((major + 1)); minor=0; patch=0
+          elif [[ "${pr_title}" == *"[bump:minor]"* ]]; then
+            minor=$((minor + 1)); patch=0
+          else
+            patch=$((patch + 1))
+          fi
+
+          next="v${major}.${minor}.${patch}"
+          echo "Next version: ${next}"
+          echo "version=${next}" >> "${GITHUB_OUTPUT}"
 
       - name: Build release artifact
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: task release VERSION="${VERSION}"
 
-      - name: Publish GitHub Release with assets
+      - name: Create tag and publish GitHub Release with assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.ver.outputs.version }}
@@ -81,7 +116,11 @@ jobs:
             [[ -f "${asset}" ]] && assets+=("${asset}")
           done
 
+          # `gh release create` creates the tag at --target if it does not
+          # already exist, then publishes the release — tag and release in
+          # one atomic step, pointed at the exact commit that was built.
           gh release create "${VERSION}" \
+            --target "${SHA}" \
             --title "${VERSION}" \
             --notes "${body}" \
             "${assets[@]}"

@@ -1,8 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
 ---
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
 #
-# Release packaging for the agent-sandboxes tool. The Gitea Actions
-# release workflow (.gitea/workflows/release.yaml) computes the version
+# Release packaging for the agent-sandboxes tool. The GitHub Actions
+# release workflow (.github/workflows/release.yaml) computes the version
 # and invokes `task release VERSION=vX.Y.Z`.
 version: 3
 
@@ -50,9 +52,11 @@ tasks:
 
       # Pull tracked release files at HEAD into the staging dir. tests/ is
       # intentionally excluded — end users don't need the test suite.
+      # LICENSE and NOTICE are required in any Apache-2.0 distribution
+      # (License §4: recipients get the License; the NOTICE is retained).
       git archive HEAD -- \
         bin lib setup config manifests docker lima examples \
-        setup.sh uninstall.sh README.md PRINCIPLES.md \
+        setup.sh uninstall.sh README.md PRINCIPLES.md LICENSE NOTICE \
         | tar -x -C "${pkgdir}"
 
       # Stamp the release version into the packaged CLI. The source tree
