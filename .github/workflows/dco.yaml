@@ -1,0 +1,79 @@
+---
+# yaml-language-server:$schema=https://json.schemastore.org/github-workflow.json
+#
+# Enforce the Developer Certificate of Origin (DCO) on pull requests.
+#
+# CONTRIBUTING.md requires every commit to be signed off (`git commit -s`),
+# which adds a `Signed-off-by: Name <email>` trailer. This job fails the PR
+# if any non-merge commit lacks a sign-off whose email matches the commit's
+# author or committer. Merge commits are exempt — GitHub creates them and
+# they carry no authored content.
+#
+# Self-contained (no third-party action) so the check has no supply-chain
+# surface of its own, matching the posture in security.yaml.
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    # Careful: branch protection rules may key off this name.
+    name: DCO
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history to walk the PR commit range)
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify Signed-off-by on every commit
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          commits=$(git rev-list --no-merges "${BASE}..${HEAD}")
+          if [[ -z "${commits}" ]]; then
+            echo "No non-merge commits to check."
+            exit 0
+          fi
+
+          fail=0
+          while read -r sha; do
+            [[ -z "${sha}" ]] && continue
+            subject=$(git show -s --format='%s' "${sha}")
+            author_email=$(git show -s --format='%ae' "${sha}")
+            committer_email=$(git show -s --format='%ce' "${sha}")
+
+            # Emails from every Signed-off-by trailer in the commit message.
+            signoff_emails=$(git show -s --format='%B' "${sha}" \
+              | sed -n 's/^[Ss]igned-off-by:.*<\(.*\)>[[:space:]]*$/\1/p')
+
+            # A sign-off counts if it matches the author OR committer email
+            # (the committer fallback covers web/UI commits and rebases).
+            if grep -qiFx "${author_email}" <<< "${signoff_emails}" \
+               || grep -qiFx "${committer_email}" <<< "${signoff_emails}"; then
+              echo "ok    ${sha:0:12}  ${subject}"
+            else
+              echo "FAIL  ${sha:0:12}  ${subject}"
+              echo "        expected: Signed-off-by: <name> <${author_email}>"
+              fail=1
+            fi
+          done <<< "${commits}"
+
+          if [[ "${fail}" -ne 0 ]]; then
+            echo ""
+            echo "One or more commits are missing a matching Signed-off-by trailer."
+            echo "See CONTRIBUTING.md. Sign off new commits with:  git commit -s"
+            echo "To fix existing commits on this branch:  git rebase --signoff ${BASE}"
+            echo "then force-push your feature branch."
+            exit 1
+          fi
+
+          echo ""
+          echo "All commits are signed off."
