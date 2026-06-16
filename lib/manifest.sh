@@ -101,6 +101,19 @@ spec:
   hostname: sandbox
 ${host_aliases_block}
   restartPolicy: Always
+  # ndots:1 so external FQDN lookups (api.anthropic.com, chatgpt.com, …) are
+  # tried as absolute names FIRST, before the cluster search-domain
+  # permutations ("<fqdn>.<ns>.svc.cluster.local", "<fqdn>.cluster.local", …).
+  # The session policy scopes the L7 DNS proxy to the FQDN allowlist
+  # (lib/policy.sh), so under the cluster-default ndots:5 the resolver would
+  # emit those permutations first, the proxy would refuse them (not in the
+  # allowlist), and resolution of even allow-listed domains would stall or fail
+  # — breaking agent auth/MCP. With ndots:1 the absolute, allow-listed name
+  # resolves on the first query and the permutations are never sent.
+  dnsConfig:
+    options:
+      - name: ndots
+        value: "1"
   securityContext:
     runAsUser: 1000
     runAsGroup: 1000
