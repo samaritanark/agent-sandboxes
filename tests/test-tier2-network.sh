@@ -44,8 +44,22 @@ spec:
             - port: "53"
               protocol: TCP
           rules:
+            # L7 DNS filter mirrors the toFQDNs allowlist below — names the
+            # session may resolve == domains it may dial. A wildcard here would
+            # be a DNS-tunnel exfil channel outside the 443 allow rule (see
+            # lib/policy.sh / build_cilium_policy).
             dns:
-              - matchPattern: "*"
+              - matchName: "claude.ai"
+              - matchName: "api.anthropic.com"
+              - matchName: "console.anthropic.com"
+              - matchName: "statsig.anthropic.com"
+              - matchName: "sentry.io"
+              - matchName: "github.com"
+              - matchName: "api.github.com"
+              - matchName: "pypi.org"
+              - matchName: "files.pythonhosted.org"
+              - matchName: "registry.npmjs.org"
+              - matchName: "registry.terraform.io"
     - toFQDNs:
         # Claude agent domains
         - matchName: "claude.ai"

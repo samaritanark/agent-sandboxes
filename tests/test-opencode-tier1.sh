@@ -55,8 +55,10 @@ spec:
             - port: "53"
               protocol: TCP
           rules:
+            # DNS filter mirrors the toFQDNs allowlist (no wildcard) — see
+            # lib/policy.sh: a wildcard DNS rule is a tunnelling exfil channel.
             dns:
-              - matchPattern: "*"
+              - matchName: "${OPENCODE_HOST}"
     - toFQDNs:
         - matchName: "${OPENCODE_HOST}"
       toPorts:

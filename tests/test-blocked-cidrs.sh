@@ -108,6 +108,39 @@ test_check_blocked_cidrs_valid() {
 }
 
 ###############################################################################
+# Completeness invariant — the SHIPPED default config (not a fixture) must
+# enforce the link-local / IMDS block. Per the M8 review finding, SSRF safety
+# reduces to blocked-CIDR completeness, so the load-bearing entries are a
+# tested invariant rather than prose: a future edit that narrows
+# 169.254.0.0/16 back to a single /32, or drops it, fails here. Broad RFC-1918
+# denial is deliberately NOT an invariant — it breaks Tier 3 (deny beats the
+# per-session kube-API allow); see config/blocked-destinations.yaml comments.
+###############################################################################
+test_blocked_cidrs_completeness() {
+  info "Testing shipped blocked-destinations completeness invariant..."
+  unset SANDBOX_OVERLAY
+
+  local default_config="${SANDBOX_ROOT}/config/blocked-destinations.yaml"
+  [[ -f "${default_config}" ]] || fail "default blocked-destinations.yaml missing at ${default_config}"
+
+  local cidrs
+  cidrs="$(BLOCKED_DESTINATIONS_CONFIG="${default_config}" get_blocked_cidrs)"
+
+  grep -qx '169.254.0.0/16' <<<"${cidrs}" \
+    || fail "link-local/IMDS invariant: default config must block 169.254.0.0/16 (got: ${cidrs//$'\n'/, })"
+  pass "default config blocks the full IPv4 link-local range (IMDS + metadata)"
+
+  # A typo'd block is a block that does not block: every shipped default entry
+  # must be a CIDR Cilium will accept.
+  local c
+  while IFS= read -r c; do
+    [[ -z "${c}" ]] && continue
+    validate_cidr "${c}" || fail "default config entry '${c}' is not a valid CIDR"
+  done <<<"${cidrs}"
+  pass "every shipped default blocked CIDR is well-formed"
+}
+
+###############################################################################
 # build_cilium_policy — egressDeny rendering
 ###############################################################################
 test_policy_egress_deny() {
@@ -159,6 +192,7 @@ main() {
   test_validate_cidr
   test_get_blocked_cidrs
   test_check_blocked_cidrs_valid
+  test_blocked_cidrs_completeness
   test_policy_egress_deny
 
   echo ""
