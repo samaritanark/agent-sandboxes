@@ -25,11 +25,19 @@ get_agent_domains() {
   local agent="$1"
   case "${agent}" in
     claude)
-      # *.claude.ai covers downloads.claude.ai (Claude Code update fetches)
-      # and any other claude.ai subdomain; matchName claude.ai keeps the apex.
+      # Claude Code spans claude.ai AND claude.com (endpoints are migrating to
+      # claude.com — login/OAuth uses platform.claude.com). The apex + wildcard
+      # pair for each covers the apex itself plus subdomains like
+      # downloads.claude.ai (update fetches) and platform.claude.com (login).
+      # Both wildcards previously "worked" only because the old wildcard DNS
+      # rule let claude.com resolve and it shares CDN IPs already cached from
+      # claude.ai; with the DNS proxy scoped to this allowlist, claude.com must
+      # be listed explicitly or login fails (no DNS resolution).
       cat <<'EOF'
 claude.ai
 *.claude.ai
+claude.com
+*.claude.com
 api.anthropic.com
 console.anthropic.com
 statsig.anthropic.com
