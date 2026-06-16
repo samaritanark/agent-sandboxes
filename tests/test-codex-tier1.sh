@@ -43,8 +43,14 @@ spec:
             - port: "53"
               protocol: TCP
           rules:
+            # DNS filter mirrors the toFQDNs allowlist (no wildcard) — see
+            # lib/policy.sh: a wildcard DNS rule is a tunnelling exfil channel.
             dns:
-              - matchPattern: "*"
+              - matchName: "api.openai.com"
+              - matchName: "auth.openai.com"
+              - matchName: "auth0.openai.com"
+              - matchName: "chatgpt.com"
+              - matchName: "cdn.openai.com"
     - toFQDNs:
         - matchName: "api.openai.com"
         - matchName: "auth.openai.com"

@@ -47,8 +47,21 @@ spec:
             - port: "53"
               protocol: TCP
           rules:
+            # DNS filter mirrors the toFQDNs allowlist (no wildcard) — see
+            # lib/policy.sh: a wildcard DNS rule is a tunnelling exfil channel.
             dns:
-              - matchPattern: "*"
+              - matchName: "claude.ai"
+              - matchName: "api.anthropic.com"
+              - matchName: "console.anthropic.com"
+              - matchName: "statsig.anthropic.com"
+              - matchName: "sentry.io"
+              - matchName: "github.com"
+              - matchName: "api.github.com"
+              - matchName: "pypi.org"
+              - matchName: "files.pythonhosted.org"
+              - matchName: "registry.npmjs.org"
+              - matchName: "registry.terraform.io"
+              - matchName: "${TEST_INFRA_ENDPOINT}"
     - toFQDNs:
         - matchName: "claude.ai"
         - matchName: "api.anthropic.com"
