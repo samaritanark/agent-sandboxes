@@ -42,15 +42,33 @@ blocked_cidrs:
   # the external/"world" identity only, so blocking a range that overlaps the
   # cluster's own service/pod CIDR does NOT break in-cluster DNS (verified).
   #
-  # The cloud metadata endpoint is a prime credential-exfiltration target for a
-  # sandboxed agent, so it's blocked by default:
-  - "169.254.169.254/32"     # AWS/GCP/Azure IMDS
+  # Link-local (169.254.0.0/16) is blocked as a whole, not just the well-known
+  # metadata IP. The cloud metadata service (169.254.169.254) is a prime
+  # credential-exfiltration target, but it is not the only address in this range
+  # an SSRF can aim at, and nothing a session legitimately reaches over egress
+  # lives in link-local. Load-bearing default — on bare-metal OpenStack the
+  # instance metadata service sits here. tests/test-blocked-cidrs.sh asserts
+  # this entry stays present (treat it as an invariant, not prose).
+  - "169.254.0.0/16"         # IPv4 link-local: IMDS + all metadata endpoints
+
   # Internal RFC-1918 ranges are left as commented examples and NOT enforced by
   # default: Tier 3 sessions routinely reach Kubernetes API servers inside
   # these ranges, and egressDeny beats the explicit per-session kube-API allow
-  # rule (deny wins in Cilium), so blocking them here would break Tier 3.
-  # Uncomment only the ranges your environment can safely forbid:
+  # rule (deny wins in Cilium), so blocking them here would break Tier 3. SSRF
+  # into sibling pods/services is instead foreclosed structurally — the session
+  # CNP grants no toEndpoints reach into the namespace at all (see lib/policy.sh
+  # and docs/design/phase5-mcp-dependencies.md §1.6). Uncomment only the ranges
+  # your environment can safely forbid:
   #   - "10.0.0.0/8"
   #   - "172.16.0.0/12"
   #   - "192.168.0.0/16"
+  #   - "100.64.0.0/10"       # CGNAT
+  #
+  # IPv6: enable only after confirming the cluster is dual-stack (Cilium IPv6).
+  # On an IPv4-only cluster these are harmless no-ops; on dual-stack an
+  # IPv4-only block leaves the v6 equivalents open. fe80::/10 is the v6
+  # counterpart to the 169.254.0.0/16 block above; fc00::/7 (ULA) carries the
+  # same Tier-3 caveat as RFC-1918 if the kube API has a ULA address.
+  #   - "fe80::/10"           # IPv6 link-local
   #   - "fd00:ec2::254/128"   # AWS IMDSv6
+  #   - "fc00::/7"            # IPv6 ULA (see Tier-3 caveat above)

@@ -30,18 +30,20 @@ get_tier_domains() {
       # invocation with --allow-domain <host>.
       #
       # codeload.github.com / objects.githubusercontent.com /
-      # release-assets.githubusercontent.com are siblings of github.com used
-      # whenever something downloads a GitHub source archive, an LFS object,
-      # or a release asset — Go modules, pip-from-git, npm-from-git, and
-      # terraform-from-git all hit them. go.dev + dl.google.com +
-      # proxy.golang.org + sum.golang.org are the standard set Go needs for
-      # `go install` / `go mod download` to work.
+      # release-assets.githubusercontent.com / raw.githubusercontent.com are
+      # siblings of github.com used whenever something downloads a GitHub source
+      # archive, an LFS object, a release asset, or a raw file (READMEs, install
+      # scripts, tool/plugin manifests fetched straight from a repo) — Go
+      # modules, pip-from-git, npm-from-git, and terraform-from-git all hit
+      # them. go.dev + dl.google.com + proxy.golang.org + sum.golang.org are the
+      # standard set Go needs for `go install` / `go mod download` to work.
       cat <<'EOF'
 github.com
 api.github.com
 codeload.github.com
 objects.githubusercontent.com
 release-assets.githubusercontent.com
+raw.githubusercontent.com
 pypi.org
 files.pythonhosted.org
 registry.npmjs.org

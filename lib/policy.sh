@@ -43,6 +43,22 @@ build_cilium_policy() {
     fqdn_block+="$(indent_fqdn_entry "${d}")"
   done
 
+  # Render the L7 DNS match entries — the SAME allowlist enforced on 443 below.
+  # toFQDNs only governs which resolved IPs the session may dial; it does not
+  # govern which names the session may *ask* about. With a wildcard DNS rule a
+  # mistaken or injected agent can tunnel data straight out the resolver as
+  # query labels ("<base64-secret>.attacker.tld") — the proxy forwards it
+  # upstream and the secret leaves over DNS, entirely outside the 443 allow
+  # rule. Coupling the DNS filter to the FQDN allowlist closes that channel;
+  # what remains is the in-allowlist residual (a wildcard-allowed domain is
+  # still a possible label sink), which is an accepted, documented cost.
+  local dns_block=""
+  for d in "${fqdn_domains[@]}"; do
+    [[ -z "${d}" ]] && continue
+    [[ -n "${dns_block}" ]] && dns_block+=$'\n'
+    dns_block+="$(indent_dns_entry "${d}")"
+  done
+
   # Tier 3 kube API server — allowed by IP (see kube_api_cidr note above).
   local kube_cidr_block=""
   if [[ -n "${kube_api_cidr}" ]]; then
@@ -114,7 +130,7 @@ spec:
               protocol: TCP
           rules:
             dns:
-              - matchPattern: "*"
+${dns_block}
     # HTTPS egress restricted to the per-agent + per-tier domain allowlist,
     # enforced via Cilium FQDN policy.
     - toFQDNs:
@@ -143,5 +159,18 @@ indent_fqdn_entry() {
     printf '        - matchPattern: "%s"\n' "${domain}"
   else
     printf '        - matchName: "%s"\n' "${domain}"
+  fi
+}
+
+# indent_dns_entry — emit a single L7 DNS match entry (14-space indented to sit
+# under egress[].toPorts[].rules.dns). Same matchName/matchPattern split as the
+# toFQDNs entries so the set of resolvable names equals the set of dialable
+# domains. Note printf has no trailing newline: callers join entries with '\n'.
+indent_dns_entry() {
+  local domain="$1"
+  if [[ "${domain}" == \** ]]; then
+    printf '              - matchPattern: "%s"' "${domain}"
+  else
+    printf '              - matchName: "%s"' "${domain}"
   fi
 }
