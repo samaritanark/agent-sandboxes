@@ -1,10 +1,18 @@
-# Agent Sandbox
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/agent-sandboxes-wide-dark.png" />
+    <img src="docs/images/agent-sandboxes-wide-light.png" alt="agent-sandboxes" width="440" />
+  </picture>
+</p>
 
-Sandboxed execution environment for AI coding agents
-(Claude Code, OpenAI Codex CLI, OpenCode).
-Provides kernel-level isolation (gVisor), network policy enforcement
-(Cilium), and filesystem masking. Design intent and operator guidance
-in PRINCIPLES.md.
+<p align="center">
+  <b>Sandboxed execution environment for AI coding agents</b>
+</p>
+
+Works with Claude Code, OpenAI Codex CLI, and OpenCode. Provides
+kernel-level isolation (gVisor), network policy enforcement (Cilium),
+and filesystem masking. Design intent and operator guidance in
+PRINCIPLES.md.
 
 ## When to use this
 
