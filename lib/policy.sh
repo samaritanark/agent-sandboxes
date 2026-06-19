@@ -28,9 +28,9 @@ build_cilium_policy() {
   # Full set of HTTPS-allowed FQDNs: per-agent + per-tier built-in lists,
   # plus any caller-supplied extras.
   local -a fqdn_domains=()
-  mapfile -t fqdn_domains < <(get_agent_domains "${agent}")
+  read_into_array fqdn_domains < <(get_agent_domains "${agent}")
   local -a tier_domains=()
-  mapfile -t tier_domains < <(get_tier_domains "${tier}")
+  read_into_array tier_domains < <(get_tier_domains "${tier}")
   fqdn_domains+=("${tier_domains[@]+"${tier_domains[@]}"}")
   fqdn_domains+=("${extra_allow_domains[@]+"${extra_allow_domains[@]}"}")
 
@@ -118,7 +118,7 @@ EOF
   # is governed by endpoint identities, so this never breaks cluster DNS.
   local egress_deny_block=""
   local -a blocked_cidrs=()
-  mapfile -t blocked_cidrs < <(get_blocked_cidrs)
+  read_into_array blocked_cidrs < <(get_blocked_cidrs)
   if [[ "${#blocked_cidrs[@]}" -gt 0 ]]; then
     local cidr_entries="" c
     for c in "${blocked_cidrs[@]}"; do
@@ -271,7 +271,7 @@ EOF
   # egressDeny to the blocked-CIDR list — identical backstop to the session.
   local egress_deny_block="" c cidr_entries=""
   local -a blocked_cidrs=()
-  mapfile -t blocked_cidrs < <(get_blocked_cidrs)
+  read_into_array blocked_cidrs < <(get_blocked_cidrs)
   for c in "${blocked_cidrs[@]+"${blocked_cidrs[@]}"}"; do
     [[ -z "${c}" ]] && continue
     cidr_entries+="        - \"${c}\""$'\n'

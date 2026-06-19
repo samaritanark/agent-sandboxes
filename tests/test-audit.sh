@@ -527,7 +527,7 @@ YAML
   USER_SANDBOX_CONFIG="${root}/user.yaml" \
   bash -c '
     printf "blocked_domains:\nblocked_cidrs:\n  - \"169.254.0.0/16\"\n" > "'"${root}"'/blocked.yaml"
-    for f in config checks profile catalogue agents tier policy resources filesystem manifest cluster secrets audit dependency; do
+    for f in platform config checks profile catalogue agents tier policy resources filesystem manifest cluster secrets audit dependency; do
       source "'"${SANDBOX_ROOT}"'/lib/${f}.sh"
     done
     export SESSION_PROFILE_MCPS="example-mcp" SESSION_PROFILE_SERVICES=""

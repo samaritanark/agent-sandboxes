@@ -234,22 +234,22 @@ audit_capture_transcript() {
     claude)
       # ~/.claude/projects/<project>/<uuid>.jsonl
       if [[ -n "${agent_session_id}" ]]; then
-        mapfile -t srcs < <(find "${agent_home}/projects" -type f \
+        read_into_array srcs < <(find "${agent_home}/projects" -type f \
           -name "${agent_session_id}.jsonl" 2>/dev/null || true)
       else
-        mapfile -t srcs < <(find "${agent_home}/projects" -type f -name '*.jsonl' \
+        read_into_array srcs < <(find "${agent_home}/projects" -type f -name '*.jsonl' \
           -newer "${session_json}" 2>/dev/null || true)
       fi
       ;;
     codex)
       # ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
-      mapfile -t srcs < <(find "${agent_home}/sessions" -type f -name '*.jsonl' \
+      read_into_array srcs < <(find "${agent_home}/sessions" -type f -name '*.jsonl' \
         -newer "${session_json}" 2>/dev/null || true)
       ;;
     opencode)
       # No single transcript file — best-effort copy of the storage subtree
       # modified during the session (session metadata, messages, diffs).
-      mapfile -t srcs < <(find "${agent_home}/storage" -type f \
+      read_into_array srcs < <(find "${agent_home}/storage" -type f \
         -newer "${session_json}" 2>/dev/null || true)
       ;;
     *)

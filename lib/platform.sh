@@ -44,6 +44,21 @@ require_commands() {
   done
 }
 
+# read_into_array <array_name> — portable `mapfile -t` replacement.
+# Reads every line of stdin into the named indexed array, one element per line.
+# macOS ships bash 3.2, which has no mapfile/readarray; this avoids them while
+# preserving `mapfile -t` semantics: a final line with no trailing newline is
+# kept, and empty input yields an empty array. The line is appended via a
+# quoted expansion evaluated at eval-time, so values containing spaces, quotes,
+# or glob characters are preserved literally (no word-splitting or injection).
+read_into_array() {
+  local __array_name="$1" __line
+  eval "${__array_name}=()"
+  while IFS= read -r __line || [[ -n "${__line}" ]]; do
+    eval "${__array_name}+=( \"\${__line}\" )"
+  done
+}
+
 # is_linux / is_macos — boolean helpers
 is_linux() {
   [[ "$(detect_platform)" == "linux" ]]

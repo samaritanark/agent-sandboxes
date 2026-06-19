@@ -132,8 +132,8 @@ EOF
   # neither, leaving the image's own ENTRYPOINT/CMD in force.
   local cmd_args_block=""
   local -a cmd_list=() arg_list=()
-  mapfile -t cmd_list < <(catalogue_list "${catalogue_path}" command)
-  mapfile -t arg_list < <(catalogue_list "${catalogue_path}" args)
+  read_into_array cmd_list < <(catalogue_list "${catalogue_path}" command)
+  read_into_array arg_list < <(catalogue_list "${catalogue_path}" args)
   local tok
   if [[ "${#cmd_list[@]}" -gt 0 ]]; then
     cmd_args_block+="      command:"$'\n'
@@ -316,10 +316,13 @@ resolve_session_dependencies() {
   local session_id="$1"
   local agent="$2"
 
-  declare -ga SESSION_DEP_NAMES=() SESSION_DEP_KINDS=() \
-              SESSION_DEP_RESOURCE_NAMES=() SESSION_DEP_PORTS=() \
-              SESSION_DEP_PATHS=() SESSION_DEP_ENDPOINTS_PENDING=() \
-              SESSION_DEP_SECRETS=() SESSION_MCP_SERVER_RECORDS=()
+  # Global arrays (consumed by manifest/secrets builders in other functions).
+  # Plain assignment to an un-'local'-ized name sets the global in bash 3.2+,
+  # so we avoid `declare -g` (bash 4.2+, absent from macOS's stock bash 3.2).
+  SESSION_DEP_NAMES=(); SESSION_DEP_KINDS=()
+  SESSION_DEP_RESOURCE_NAMES=(); SESSION_DEP_PORTS=()
+  SESSION_DEP_PATHS=(); SESSION_DEP_ENDPOINTS_PENDING=()
+  SESSION_DEP_SECRETS=(); SESSION_MCP_SERVER_RECORDS=()
   SESSION_HAS_DEPS="false"
   SESSION_HAS_MCPS="false"
   SESSION_MCP_CONFIGMAP=""
@@ -388,7 +391,7 @@ resolve_session_dependencies() {
     # a missing one fails the launch before any cluster object is created — the
     # same fail-fast the agent's own profile secrets get (bin/sandbox).
     local -a dep_secrets=()
-    mapfile -t dep_secrets < <(catalogue_list "${path}" secrets)
+    read_into_array dep_secrets < <(catalogue_list "${path}" secrets)
     local sname
     for sname in "${dep_secrets[@]+"${dep_secrets[@]}"}"; do
       [[ -z "${sname}" ]] && continue
@@ -513,7 +516,7 @@ bring_up_dependencies() {
 
     # The dependency's own egress allowlist from its catalogue entry.
     local -a egress=()
-    mapfile -t egress < <(catalogue_list "${catpath}" egress)
+    read_into_array egress < <(catalogue_list "${catpath}" egress)
 
     # Provision the dependency's secret bundle (if any) BEFORE its pod, so the
     # pod's envFrom can reference it. SESSION_DEP_SECRETS[i] is a comma-joined

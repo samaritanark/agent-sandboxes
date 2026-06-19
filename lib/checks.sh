@@ -110,8 +110,13 @@ get_blocked_cidrs() {
 # It is a shape check, not a full range validation — Cilium has the final say.
 validate_cidr() {
   local cidr="$1"
-  [[ "${cidr}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] && return 0
-  [[ "${cidr}" == *:* ]] && [[ "${cidr}" =~ ^[0-9A-Fa-f:]+/[0-9]{1,3}$ ]] && return 0
+  # Hold the regexes in variables: bash 3.2's [[ =~ ]] parser rejects an
+  # inline regex containing '(' (macOS ships 3.2). Reference unquoted so the
+  # RHS is treated as a regex, not a literal, on both 3.2 and 4+.
+  local _ipv4_re='^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+  local _ipv6_re='^[0-9A-Fa-f:]+/[0-9]{1,3}$'
+  [[ "${cidr}" =~ $_ipv4_re ]] && return 0
+  [[ "${cidr}" == *:* ]] && [[ "${cidr}" =~ $_ipv6_re ]] && return 0
   return 1
 }
 

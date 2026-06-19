@@ -586,7 +586,9 @@ cmd_run() {
   # host-side store, and surface them for the manifest builder. The
   # actual K8s Secret is created later (Step 4 area) once we know the
   # session ID. Validating up front fails fast before any cluster ops.
-  declare -ga SESSION_PROFILE_SECRETS_LIST=()
+  # Global array; plain assignment avoids `declare -g` (bash 4.2+) for macOS
+  # bash 3.2 compatibility. An un-'local'-ized name resolves to the global.
+  SESSION_PROFILE_SECRETS_LIST=()
   SESSION_HAS_SECRETS="false"
   if [[ -n "${SESSION_PROFILE_SECRETS:-}" ]]; then
     local _s _ifs="${IFS}"
@@ -783,9 +785,9 @@ cmd_run() {
 
   # Collect all domains for this session
   local -a agent_domains=()
-  mapfile -t agent_domains < <(get_agent_domains "${opt_agent}")
+  read_into_array agent_domains < <(get_agent_domains "${opt_agent}")
   local -a tier_domains=()
-  mapfile -t tier_domains < <(get_tier_domains "${opt_tier}")
+  read_into_array tier_domains < <(get_tier_domains "${opt_tier}")
   local -a all_domains=("${agent_domains[@]}" "${tier_domains[@]}" "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}")
   local domain_count="${#all_domains[@]}"
 
@@ -905,7 +907,7 @@ cmd_run() {
         _port="${SESSION_DEP_PORTS[$_i]}"
         _catpath="${SESSION_DEP_PATHS[$_i]}"
         _egress=()
-        mapfile -t _egress < <(catalogue_list "${_catpath}" egress)
+        read_into_array _egress < <(catalogue_list "${_catpath}" egress)
         echo "--- dependency '${_name}' policy/pod/service ---"
         build_dependency_policy "${session_id}" "${_rname}" "${_port}" "${_egress[@]+"${_egress[@]}"}"
         build_dependency_pod_manifest "${session_id}" "${opt_tier}" "${_name}" "${_rname}" "${_catpath}" "" "" ""
@@ -1065,7 +1067,7 @@ cmd_run() {
   # declared MCP dependencies (and, via --strict-mcp-config, nothing else).
   if [[ "${SESSION_HAS_MCPS:-false}" == "true" ]]; then
     local -a _mcp_args=()
-    mapfile -t _mcp_args < <(get_agent_mcp_launch_args "${opt_agent}")
+    read_into_array _mcp_args < <(get_agent_mcp_launch_args "${opt_agent}")
     [[ "${#_mcp_args[@]}" -gt 0 ]] && agent_cmd+=("${_mcp_args[@]}")
   fi
 
@@ -1226,7 +1228,7 @@ cmd_stop() {
     tier="$(jq -r '.tier // "1"' "${session_json}" 2>/dev/null || echo "1")"
     # Read `.repos` (array, new schema); fall back to `[.repo]` for old
     # session.json files written before the multi-repo refactor.
-    mapfile -t repos < <(jq -r '
+    read_into_array repos < <(jq -r '
       (.repos // [.repo])
       | map(select(. != null and . != ""))
       | .[]
@@ -2000,7 +2002,7 @@ cmd_allow() {
   # Rebuild and apply the policy. Same name as the original → kubectl
   # apply is a patch; the running pod is not disturbed.
   local -a extras_arr=()
-  mapfile -t extras_arr < <(jq -r '.[]' <<<"${merged_extras_json}")
+  read_into_array extras_arr < <(jq -r '.[]' <<<"${merged_extras_json}")
 
   # Phase 5: restore the session's dependency reach from session.json so the
   # hot-reload preserves the per-dependency toEndpoints + cluster-local DNS
@@ -2008,7 +2010,7 @@ cmd_allow() {
   # session from its declared dependencies. build_cilium_policy reads the
   # SESSION_DEP_ENDPOINTS global ("resource_name port" per dependency).
   SESSION_DEP_ENDPOINTS=()
-  mapfile -t SESSION_DEP_ENDPOINTS < <(jq -r \
+  read_into_array SESSION_DEP_ENDPOINTS < <(jq -r \
     '(.dependencies // [])[] | "\(.resource_name) \(.port)"' "${session_json}" 2>/dev/null || true)
 
   echo "==> Regenerating CiliumNetworkPolicy for ${session_id}..."
