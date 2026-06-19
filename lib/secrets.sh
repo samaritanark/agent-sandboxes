@@ -213,6 +213,45 @@ create_session_secrets() {
   echo "  Created session secrets: ${secret_name} (${#names[@]} key(s))"
 }
 
+# create_dependency_secrets <resource_name> <session_id> <NAME1> ... — create a
+# per-DEPENDENCY Secret bundle (Phase 5 §2.5). Identical mechanism to
+# create_session_secrets, but keyed to one dependency's resource name and
+# carrying the sandbox-session + sandbox-role=dependency labels so
+# teardown_dependencies (lib/dependency.sh) reaps it with the rest of the
+# dependency's objects. The dependency pod consumes it via envFrom (the
+# secret_bundle argument to build_dependency_pod_manifest). Values come from the
+# same host-side store as the agent's secrets — nothing long-lived in an image.
+#
+# Caller validates each NAME exists in the store first (resolve_session_dependencies
+# does this so a missing secret fails the launch before any cluster op).
+create_dependency_secrets() {
+  local resource_name="$1"
+  local session_id="$2"
+  shift 2
+  local -a names=("$@")
+
+  [[ "${#names[@]}" -eq 0 ]] && return 0
+
+  local secret_name="${resource_name}-secrets"
+  local -a kc_args=(create secret generic "${secret_name}"
+                    --namespace "${SANDBOX_NAMESPACE}")
+  local n value
+  for n in "${names[@]}"; do
+    value="$(secret_get_value "${n}")"
+    kc_args+=("--from-literal=${n}=${value}")
+  done
+  kc_args+=(--dry-run=client -o yaml)
+
+  kubectl "${kc_args[@]}" | kubectl apply -f - >/dev/null
+  # Label after apply (no yq dependency — yq is not a required runtime tool) so
+  # the dependency sweeper's label selector reaps this Secret.
+  kubectl label secret "${secret_name}" -n "${SANDBOX_NAMESPACE}" \
+    "sandbox-session=${session_id}" "sandbox-role=dependency" \
+    --overwrite >/dev/null 2>&1 || true
+
+  echo "    Dependency secret: ${secret_name} (${#names[@]} key(s))"
+}
+
 # delete_session_secrets <session_id> — remove the per-session Secret.
 # No-op if not present.
 delete_session_secrets() {

@@ -121,6 +121,73 @@ get_agent_sandbox_flags() {
   esac
 }
 
+# Where a per-session MCP config is mounted inside the pod. A dedicated dir
+# (NOT the shared agent-home hostPath) so the config is session-scoped: the
+# agent-home mount is reused across every session of an agent, and writing a
+# session's MCP servers there would race concurrent sessions and leak a
+# torn-down dependency's endpoint into the next session. The config lands here
+# via a per-session ConfigMap mounted read-only (lib/manifest.sh). (Phase 5)
+SANDBOX_MCP_CONFIG_DIR="/home/agent/.sandbox-mcp"
+SANDBOX_MCP_CONFIG_FILE="config.json"
+
+# agent_supports_mcp <agent> — return 0 if this CLI's per-session MCP wiring is
+# implemented. Claude is the reference. Codex (config.toml [mcp_servers]) and
+# opencode (mcp config) have native MCP support but are not wired here yet, so
+# they fail closed: a profile that declares mcps: for them is a hard error
+# rather than a silently-ignored dependency.
+agent_supports_mcp() {
+  case "$1" in
+    claude) return 0 ;;
+    *)      return 1 ;;
+  esac
+}
+
+# get_agent_mcp_launch_args <agent> — print the launch flags that load ONLY the
+# session MCP config file, one token per line (caller reads into an array). For
+# Claude: --mcp-config <file> --strict-mcp-config, where --strict-mcp-config
+# makes Claude ignore every other MCP source (project/user) and use exactly the
+# session-scoped file — so the agent sees the declared dependencies and nothing
+# else. Empty output for agents without MCP wiring.
+get_agent_mcp_launch_args() {
+  local agent="$1"
+  case "${agent}" in
+    claude)
+      printf '%s\n' "--mcp-config" "${SANDBOX_MCP_CONFIG_DIR}/${SANDBOX_MCP_CONFIG_FILE}" "--strict-mcp-config"
+      ;;
+    *) : ;;
+  esac
+}
+
+# render_agent_mcp_config <agent> <name|transport|url> [...] — print the MCP
+# config file content for the agent. Built with jq (a required tool, see
+# check_prerequisites) so names/URLs are safely JSON-encoded. For Claude the
+# shape is {"mcpServers": {"<name>": {"type": "http"|"sse", "url": "..."}}}.
+render_agent_mcp_config() {
+  local agent="$1"
+  shift
+
+  local servers="{}"
+  local rec name rest transport url
+  for rec in "$@"; do
+    [[ -z "${rec}" ]] && continue
+    name="${rec%%|*}"
+    rest="${rec#*|}"
+    transport="${rest%%|*}"
+    url="${rest#*|}"
+    servers="$(echo "${servers}" \
+      | jq --arg n "${name}" --arg t "${transport}" --arg u "${url}" \
+           '.[$n] = {type: $t, url: $u}')"
+  done
+
+  case "${agent}" in
+    claude) echo "${servers}" | jq '{mcpServers: .}' ;;
+    *)
+      echo "ERROR: render_agent_mcp_config: agent '${agent}' has no MCP wiring." >&2
+      return 1
+      ;;
+  esac
+}
+
 # get_agent_credential_type — returns "oauth" or "apikey"
 get_agent_credential_type() {
   local agent="$1"

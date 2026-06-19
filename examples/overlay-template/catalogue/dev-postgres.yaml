@@ -1,0 +1,28 @@
+# overlay-template/catalogue/dev-postgres.yaml
+#
+# Example plain-service catalogue entry (NOT an MCP — the session connects to it
+# directly). A profile requests it with:
+#   services:
+#     - dev-postgres
+#
+# A dev database has NO outbound need, so it ships no `egress:` — its policy is
+# DNS-only. It must never be restored from a prod snapshot (that is regulated-
+# data handling, out of scope; see PRINCIPLES.md "Never permitted" #6).
+
+name: dev-postgres
+kind: service
+
+# DIGEST-PINNED image — replace with your vetted Postgres image digest.
+image: docker.io/library/postgres@sha256:0000000000000000000000000000000000000000000000000000000000000000
+port: 5432
+version: "16-example"
+
+cpu_limit: "1"
+mem_limit: "512Mi"
+
+# No `egress:` — DNS-only. The session reaches it over its ClusterIP Service;
+# the DB reaches nothing outbound.
+
+# The DB's own password, session-scoped (declared in the host-side secret store).
+secrets:
+  - POSTGRES_PASSWORD

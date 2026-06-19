@@ -94,6 +94,65 @@ wait_for_pod() {
   done
 }
 
+# assert_session_identity_distinct — verify the session pod has a DISTINCT
+# Cilium security identity keyed on its session ID, BEFORE any dependency
+# toEndpoints/ingress rule is wired (§1.6). Everything that scopes a rule to
+# "the session pod" or "this dependency's pod" assumes each session pod carries
+# a distinct Cilium identity; Cilium derives identity from labels, and operators
+# are advised to *narrow* the identity-relevant label set at scale. If
+# 'sandbox-session' falls outside that set, every session collapses to one
+# identity and a dependency's "only from the session pod" rule silently matches
+# ALL sessions. Sessions share one namespace, so 'sandbox-session' is the only
+# discriminator — there is no namespace boundary doing the work for us.
+#
+# This reads the LIVE CiliumEndpoint (the labels Cilium actually fed into the
+# identity), so it is mechanism-agnostic: it catches a narrowed set whether it
+# came from cilium-config, an agent flag, or a mounted label-prefix-file. Fail
+# closed. Gate the call on sessions that actually declare dependencies — a
+# browserless session has nothing for it to protect.
+#
+# The check proves identity at launch, not that an operator won't narrow the set
+# mid-session; that TOCTOU is marginal (cilium-config changes are rare and
+# operator-driven) and is intentionally not re-checked.
+assert_session_identity_distinct() {
+  local pod_name="$1"
+  local max_wait="${2:-60}"
+  local interval=3
+  local elapsed=0
+
+  while true; do
+    local labels
+    labels="$(kubectl get ciliumendpoint -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+      -o jsonpath='{.status.identity.labels}' 2>/dev/null || true)"
+
+    if [[ -n "${labels}" ]]; then
+      if echo "${labels}" | grep -q 'sandbox-session'; then
+        return 0
+      fi
+      echo "ERROR: session pod '${pod_name}' Cilium identity does not include the" >&2
+      echo "       'sandbox-session' label, so per-session network isolation would" >&2
+      echo "       collapse — every session would share one identity and a" >&2
+      echo "       dependency's 'only from the session pod' rule would match ALL" >&2
+      echo "       sessions (§1.6). Refusing to wire dependencies." >&2
+      echo "       Cause: the identity-relevant label set was narrowed (cilium-config" >&2
+      echo "       'labels' / 'label-prefix-file', an agent flag, or a mounted file)." >&2
+      exit 1
+    fi
+
+    # The CiliumEndpoint lands a beat after the pod schedules — don't fail on the
+    # first empty read, only on timeout.
+    if [[ "${elapsed}" -ge "${max_wait}" ]]; then
+      echo "ERROR: CiliumEndpoint for '${pod_name}' did not report an identity" >&2
+      echo "       within ${max_wait}s; cannot verify per-session isolation." >&2
+      echo "       Refusing to wire dependencies (fail closed)." >&2
+      exit 1
+    fi
+
+    sleep "${interval}"
+    (( elapsed += interval )) || true
+  done
+}
+
 # create_infra_token_secret — create K8s Secret for Tier 3 infra token
 create_infra_token_secret() {
   local secret_name="$1"

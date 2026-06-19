@@ -59,6 +59,42 @@ build_cilium_policy() {
     dns_block+="$(indent_dns_entry "${d}")"
   done
 
+  # Phase 5 — per-dependency reach. For each declared dependency (read from the
+  # SESSION_DEP_ENDPOINTS global, entries "resource_name port") the session
+  # gains two things and nothing else (§2.4):
+  #   (a) a toEndpoints egress rule scoped to that dependency's pod identity and
+  #       its single port — the only in-cluster reach the session is granted;
+  #   (b) the dependency's cluster-local Service FQDN in the L7 DNS allow, so the
+  #       session can RESOLVE it. The toEndpoints rule opens the connection, but
+  #       the DNS proxy is scoped to the FQDN allowlist and refuses any name not
+  #       on the list — cluster-local names included — so without (b) the session
+  #       could reach the dependency's IP but never learn it.
+  # The dependency is reached by endpoint identity (ClusterIP→backend pod), so it
+  # needs NO toFQDNs entry — toFQDNs governs dialing external/world IPs. Allowing
+  # the cluster.local name does not reopen the DNS-exfil channel (§1.4 #9):
+  # kube-dns answers cluster.local authoritatively and never forwards it upstream,
+  # so an encoded <secret>.svc.cluster.local dead-ends at NXDOMAIN.
+  local dep_endpoints_block=""
+  local entry rname rport fqdn
+  for entry in "${SESSION_DEP_ENDPOINTS[@]+"${SESSION_DEP_ENDPOINTS[@]}"}"; do
+    [[ -z "${entry}" ]] && continue
+    rname="${entry%% *}"
+    rport="${entry##* }"
+    fqdn="${rname}.${SANDBOX_NAMESPACE}.svc.cluster.local"
+    [[ -n "${dns_block}" ]] && dns_block+=$'\n'
+    dns_block+="$(indent_dns_entry "${fqdn}")"
+    dep_endpoints_block+="$(cat <<EOF
+    - toEndpoints:
+        - matchLabels:
+            sandbox-dependency: "${rname}"
+      toPorts:
+        - ports:
+            - port: "${rport}"
+              protocol: TCP
+EOF
+)"$'\n'
+  done
+
   # Tier 3 kube API server — allowed by IP (see kube_api_cidr note above).
   local kube_cidr_block=""
   if [[ -n "${kube_api_cidr}" ]]; then
@@ -139,7 +175,7 @@ ${fqdn_block}
         - ports:
             - port: "443"
               protocol: TCP
-${kube_cidr_block}
+${dep_endpoints_block}${kube_cidr_block}
 ${egress_deny_block}
   ingress:
     # Allow return traffic for all outbound connections.
@@ -173,4 +209,123 @@ indent_dns_entry() {
   else
     printf '              - matchName: "%s"' "${domain}"
   fi
+}
+
+# build_dependency_policy — emit the CiliumNetworkPolicy for ONE dependency pod.
+# Args: session_id resource_name port [egress_domain ...]
+#
+# This is a clone-or-subset of the session's own egress (§1.6, generalised):
+#   - DNS to kube-dns, L7-scoped to the dependency's OWN egress allowlist (never
+#     a wildcard) — a dependency with no egress resolves nothing externally, so
+#     the DNS-tunnel channel (§1.4 #9) is closed for it too.
+#   - 443/TCP restricted to that same allowlist via toFQDNs (omitted entirely
+#     when the dependency declares no egress — a pure-internal dep like a DB).
+#   - egressDeny to the blocked-CIDR list (IMDS/link-local), same backstop the
+#     session carries, so a permitted FQDN that resolves inward is still denied.
+# Ingress is the discriminating control: the dependency accepts traffic ONLY
+# from the owning session pod ({sandbox-session, sandbox-role: session}) on its
+# one port — never from a sibling dependency, never from the namespace at large.
+# No dependency gets an unpoliced NIC (§2.2).
+build_dependency_policy() {
+  local session_id="$1"
+  local resource_name="$2"
+  local port="$3"
+  shift 3
+  local -a egress_domains=("$@")
+
+  # L7 DNS + toFQDNs entries over the dependency's own egress allowlist.
+  local dns_block="" fqdn_block="" d
+  for d in "${egress_domains[@]+"${egress_domains[@]}"}"; do
+    [[ -z "${d}" ]] && continue
+    [[ -n "${dns_block}" ]] && dns_block+=$'\n'
+    dns_block+="$(indent_dns_entry "${d}")"
+    [[ -n "${fqdn_block}" ]] && fqdn_block+=$'\n'
+    fqdn_block+="$(indent_fqdn_entry "${d}")"
+  done
+
+  # Render the L7 DNS rules. A dependency with no egress gets an explicit EMPTY
+  # list (dns: []) — not a bare `dns:` (which YAML reads as null = no L7 filter =
+  # unfiltered DNS, reopening the tunnel channel of §1.4 #9). Empty list = the
+  # proxy answers no external name, so a pure-internal dep resolves nothing.
+  local dns_rules_yaml
+  if [[ -n "${dns_block}" ]]; then
+    dns_rules_yaml="            dns:"$'\n'"${dns_block}"
+  else
+    dns_rules_yaml="            dns: []"
+  fi
+
+  # 443/TCP toFQDNs block only when the dependency has external egress.
+  local fqdn_egress_block=""
+  if [[ -n "${fqdn_block}" ]]; then
+    fqdn_egress_block="$(cat <<EOF
+    - toFQDNs:
+${fqdn_block}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+EOF
+)"
+  fi
+
+  # egressDeny to the blocked-CIDR list — identical backstop to the session.
+  local egress_deny_block="" c cidr_entries=""
+  local -a blocked_cidrs=()
+  mapfile -t blocked_cidrs < <(get_blocked_cidrs)
+  for c in "${blocked_cidrs[@]+"${blocked_cidrs[@]}"}"; do
+    [[ -z "${c}" ]] && continue
+    cidr_entries+="        - \"${c}\""$'\n'
+  done
+  if [[ -n "${cidr_entries}" ]]; then
+    egress_deny_block="$(cat <<EOF
+  egressDeny:
+    - toCIDR:
+${cidr_entries%$'\n'}
+EOF
+)"
+  fi
+
+  cat <<EOF
+---
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "policy-${resource_name}"
+  namespace: "${SANDBOX_NAMESPACE}"
+  labels:
+    sandbox-session: "${session_id}"
+    sandbox-dependency: "${resource_name}"
+    sandbox-role: "dependency"
+spec:
+  endpointSelector:
+    matchLabels:
+      sandbox-dependency: "${resource_name}"
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+${dns_rules_yaml}
+${fqdn_egress_block}
+${egress_deny_block}
+  ingress:
+    # The discriminating control: accept ONLY the owning session pod, on the one
+    # dependency port. No sibling dependency, no other session, no namespace
+    # reach. This — not a CIDR block — is what forecloses SSRF to siblings.
+    - fromEndpoints:
+        - matchLabels:
+            sandbox-session: "${session_id}"
+            sandbox-role: "session"
+      toPorts:
+        - ports:
+            - port: "${port}"
+              protocol: TCP
+EOF
 }

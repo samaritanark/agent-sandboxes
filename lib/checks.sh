@@ -147,6 +147,24 @@ check_no_privileged_flags() {
   fi
 }
 
+# check_dependency_no_host_mounts — refuse any host mount on a dependency pod
+# manifest. The dependency manifest builder (lib/dependency.sh) is
+# additive-from-empty and so should never emit a hostPath, but this is the
+# *checked* invariant behind that convention (§2.3) — the same move that made
+# blocked-CIDR completeness a test rather than prose. A dependency that carried
+# the agent's workspace or any host path would reopen the upload-exfil channel
+# the no-mount shape closes structurally (§2.2). Mirrors
+# check_no_privileged_flags: a grep over the rendered YAML, fail closed on hit.
+check_dependency_no_host_mounts() {
+  local manifest="$1"
+
+  if echo "${manifest}" | grep -q 'hostPath:'; then
+    echo "ERROR: dependency pod manifest contains a hostPath volume." >&2
+    echo "       Dependencies mount no workspace and no host path (§2.2/§2.3)." >&2
+    exit 1
+  fi
+}
+
 # check_prerequisites — verify all required tools are installed
 check_prerequisites() {
   local missing=0

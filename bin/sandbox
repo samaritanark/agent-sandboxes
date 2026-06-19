@@ -45,6 +45,10 @@ source "${SANDBOX_ROOT}/lib/checks.sh"
 source "${SANDBOX_ROOT}/lib/config.sh"
 # shellcheck source=../lib/profile.sh
 source "${SANDBOX_ROOT}/lib/profile.sh"
+
+source "${SANDBOX_ROOT}/lib/catalogue.sh"
+
+source "${SANDBOX_ROOT}/lib/dependency.sh"
 # shellcheck source=../lib/onboard.sh
 source "${SANDBOX_ROOT}/lib/onboard.sh"
 # shellcheck source=../lib/secrets.sh
@@ -453,10 +457,12 @@ cmd_run() {
         opt_allow_domains+=("${_profile_extra}")
       done < <(extract_yaml_list_from_file "${_profile_path}" extra_allowed_domains)
 
-      # Phase 4/5: secrets and mcps are read here so the audit record can
-      # see them; the actual injection wiring is added in those phases.
+      # Phase 4: secrets are read here so the audit record can see them.
+      # Phase 5: mcps + services are the per-session dependency declarations,
+      # resolved against the catalogue after the session ID is known (Step 3b).
       SESSION_PROFILE_SECRETS="$(extract_yaml_list_from_file "${_profile_path}" secrets | paste -sd, - 2>/dev/null || true)"
       SESSION_PROFILE_MCPS="$(extract_yaml_list_from_file "${_profile_path}" mcps | paste -sd, - 2>/dev/null || true)"
+      SESSION_PROFILE_SERVICES="$(extract_yaml_list_from_file "${_profile_path}" services | paste -sd, - 2>/dev/null || true)"
     fi
   fi
 
@@ -712,6 +718,19 @@ cmd_run() {
   session_id="$(generate_session_id)"
   echo "==> Session ID: ${session_id}"
 
+  ###########################################################################
+  # Step 3b: Resolve profile-declared dependencies (Phase 5)
+  ###########################################################################
+  # Resolve mcps:/services: against the catalogue and populate the SESSION_DEP_*
+  # globals the policy/manifest/launch paths consume. Cluster-independent and
+  # fail-closed: an unknown name, an invalid entry, an MCP for an unsupported
+  # agent, or a missing declared secret aborts here, before any object exists.
+  resolve_session_dependencies "${session_id}" "${opt_agent}" \
+    || die "Dependency resolution failed; aborting launch."
+  if [[ "${SESSION_HAS_DEPS:-false}" == "true" ]]; then
+    echo "==> Profile dependencies: ${SESSION_DEP_NAMES[*]}"
+  fi
+
   # Auto-generate a human-readable name if not supplied.
   # Single repo → "<repo-basename>/<agent>"; multi-repo → "multi/<agent>";
   # no repo (tier 1) → "<agent>".
@@ -875,6 +894,37 @@ cmd_run() {
     echo ""
     echo "==> DRY RUN — Pod manifest:"
     echo "${pod_yaml}"
+    if [[ "${SESSION_HAS_DEPS:-false}" == "true" ]]; then
+      echo ""
+      echo "==> DRY RUN — Dependencies (after identity assertion at launch):"
+      local _i _name _rname _port _catpath
+      local -a _egress=()
+      for _i in "${!SESSION_DEP_NAMES[@]}"; do
+        _name="${SESSION_DEP_NAMES[$_i]}"
+        _rname="${SESSION_DEP_RESOURCE_NAMES[$_i]}"
+        _port="${SESSION_DEP_PORTS[$_i]}"
+        _catpath="${SESSION_DEP_PATHS[$_i]}"
+        _egress=()
+        mapfile -t _egress < <(catalogue_list "${_catpath}" egress)
+        echo "--- dependency '${_name}' policy/pod/service ---"
+        build_dependency_policy "${session_id}" "${_rname}" "${_port}" "${_egress[@]+"${_egress[@]}"}"
+        build_dependency_pod_manifest "${session_id}" "${opt_tier}" "${_name}" "${_rname}" "${_catpath}" "" "" ""
+        build_dependency_service "${session_id}" "${_name}" "${_rname}" "${_port}" "" ""
+      done
+      echo ""
+      echo "==> DRY RUN — session policy WITH dependency reach (re-applied at launch):"
+      SESSION_DEP_ENDPOINTS=("${SESSION_DEP_ENDPOINTS_PENDING[@]}")
+      build_cilium_policy "${session_id}" "${opt_agent}" "${opt_tier}" \
+        "${kube_api_cidr}" "${kube_server_port:-443}" \
+        "${opt_infra_endpoints[@]+"${opt_infra_endpoints[@]}"}" \
+        "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}"
+      SESSION_DEP_ENDPOINTS=()
+      if [[ "${SESSION_HAS_MCPS:-false}" == "true" ]]; then
+        echo ""
+        echo "==> DRY RUN — MCP ConfigMap:"
+        render_mcp_configmap "${session_id}" "${opt_agent}"
+      fi
+    fi
     echo ""
     echo "Dry run complete. No resources applied."
     return 0
@@ -910,6 +960,16 @@ cmd_run() {
     create_opencode_apikey_secret "${session_id}"
   fi
 
+  # Phase 5: the per-session MCP ConfigMap is created BEFORE the pod, since the
+  # pod mounts it (lib/manifest.sh). The dependency Service URLs are
+  # deterministic from the session ID, so the config can be rendered before the
+  # dependency pods exist. The dependencies themselves come up after the session
+  # pod is Ready and its identity is asserted (Step 10b).
+  if [[ "${SESSION_HAS_MCPS:-false}" == "true" ]]; then
+    echo "==> Creating MCP config: ${SESSION_MCP_CONFIGMAP}..."
+    create_mcp_configmap "${session_id}" "${opt_agent}"
+  fi
+
   echo "==> Applying CiliumNetworkPolicy..."
   echo "${policy_yaml}" | kubectl apply -f - 2>&1
 
@@ -921,6 +981,59 @@ cmd_run() {
   ###########################################################################
   echo "==> Waiting for pod to become Ready..."
   wait_for_pod "${pod_name}"
+
+  ###########################################################################
+  # Step 10b: Bring up profile-declared dependencies (Phase 5)
+  ###########################################################################
+  # Order matters (§1.6): the session pod must be Ready and its per-session
+  # Cilium identity asserted BEFORE any dependency toEndpoints rule is wired —
+  # otherwise a collapsed identity would silently widen "only from the session
+  # pod" to "from any session". Fail-closed throughout: any failure tears down
+  # the partial session and aborts, because a profile asked for the dependency.
+  if [[ "${SESSION_HAS_DEPS:-false}" == "true" ]]; then
+    echo "==> Verifying per-session network identity..."
+    if ! ( assert_session_identity_distinct "${pod_name}" ); then
+      echo "==> Identity assertion failed; tearing down session ${session_id}." >&2
+      cmd_stop "${session_id}" >/dev/null 2>&1 || true
+      die "Per-session network identity could not be verified; aborted."
+    fi
+
+    # The session pod owns the dependency objects: Kubernetes GC reaps them if
+    # this CLI dies after the pod exists. teardown_dependencies (label-keyed) is
+    # the backstop for the window before the ownerRef is set.
+    local owner_uid
+    owner_uid="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+      -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+
+    echo "==> Bringing up ${#SESSION_DEP_NAMES[@]} dependency/dependencies..."
+    if ! bring_up_dependencies "${session_id}" "${opt_tier}" "${pod_name}" \
+         "${owner_uid}" "${log_dir}"; then
+      echo "==> Dependency startup failed; tearing down session ${session_id}." >&2
+      cmd_stop "${session_id}" >/dev/null 2>&1 || true
+      die "One or more dependencies failed to start; aborted."
+    fi
+
+    # Record the resolved dependencies (versions, egress allowlists, up-times)
+    # in the audit trail now that they are Ready (§2.6).
+    audit_record_dependencies "${log_dir}" \
+      "$(session_dependencies_audit_json "$(date -u '+%Y-%m-%dT%H:%M:%SZ')")"
+
+    # Identity is asserted and dependencies are Ready — now wire the session's
+    # reach to them (toEndpoints + cluster-local DNS) by re-applying the policy.
+    echo "==> Wiring session→dependency network reach..."
+    SESSION_DEP_ENDPOINTS=("${SESSION_DEP_ENDPOINTS_PENDING[@]}")
+    local dep_policy_yaml
+    dep_policy_yaml="$(build_cilium_policy \
+      "${session_id}" \
+      "${opt_agent}" \
+      "${opt_tier}" \
+      "${kube_api_cidr}" \
+      "${kube_server_port:-443}" \
+      "${opt_infra_endpoints[@]+"${opt_infra_endpoints[@]}"}" \
+      "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}")"
+    SESSION_DEP_ENDPOINTS=()
+    echo "${dep_policy_yaml}" | kubectl apply -f - 2>&1
+  fi
 
   ###########################################################################
   # Step 11: Show banner and attach
@@ -946,6 +1059,14 @@ cmd_run() {
     && agent_cmd+=("${_sbf[@]}")
   if [[ -n "${agent_session_id}" ]]; then
     agent_cmd+=("$(get_agent_session_id_flag "${opt_agent}")" "${agent_session_id}")
+  fi
+
+  # Phase 5: point the agent at the session-scoped MCP config so it registers the
+  # declared MCP dependencies (and, via --strict-mcp-config, nothing else).
+  if [[ "${SESSION_HAS_MCPS:-false}" == "true" ]]; then
+    local -a _mcp_args=()
+    mapfile -t _mcp_args < <(get_agent_mcp_launch_args "${opt_agent}")
+    [[ "${#_mcp_args[@]}" -gt 0 ]] && agent_cmd+=("${_mcp_args[@]}")
   fi
 
   echo "==> Attaching to session (Ctrl-D or 'exit' to end)..."
@@ -1144,6 +1265,13 @@ cmd_stop() {
   kubectl delete ciliumnetworkpolicy -n "${SANDBOX_NAMESPACE}" \
     "policy-${session_id}" --ignore-not-found=true 2>&1 || true
 
+  # Phase 5: reap per-session dependency objects (pods, Services, CNPs) and the
+  # MCP ConfigMap. Deleting the session pod above already triggers Kubernetes GC
+  # via ownerReferences; this label-keyed sweep is the backstop covering the
+  # window before an ownerRef was set and the case where the pod never existed.
+  # No-op when the session declared no dependencies.
+  teardown_dependencies "${session_id}"
+
   # Delete infra token secret if present (Tier 3)
   local infra_secret_name="infra-token-${session_id}"
   if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${infra_secret_name}" \
@@ -1174,6 +1302,9 @@ cmd_stop() {
     local end_time
     end_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     audit_update_end_time "${log_dir}" "${end_time}"
+    # Stamp the dependency down-times alongside the session end (§2.6). No-op
+    # when the session declared no dependencies.
+    audit_record_dependencies_down "${log_dir}" "${end_time}"
   fi
 
   echo ""
@@ -1871,6 +2002,15 @@ cmd_allow() {
   local -a extras_arr=()
   mapfile -t extras_arr < <(jq -r '.[]' <<<"${merged_extras_json}")
 
+  # Phase 5: restore the session's dependency reach from session.json so the
+  # hot-reload preserves the per-dependency toEndpoints + cluster-local DNS
+  # rules. Without this, regenerating the policy would silently sever the
+  # session from its declared dependencies. build_cilium_policy reads the
+  # SESSION_DEP_ENDPOINTS global ("resource_name port" per dependency).
+  SESSION_DEP_ENDPOINTS=()
+  mapfile -t SESSION_DEP_ENDPOINTS < <(jq -r \
+    '(.dependencies // [])[] | "\(.resource_name) \(.port)"' "${session_json}" 2>/dev/null || true)
+
   echo "==> Regenerating CiliumNetworkPolicy for ${session_id}..."
   local policy_yaml
   policy_yaml="$(build_cilium_policy \
@@ -1880,6 +2020,7 @@ cmd_allow() {
     "${kube_api_cidr}" \
     "${kube_api_port}" \
     "${extras_arr[@]+"${extras_arr[@]}"}")"
+  SESSION_DEP_ENDPOINTS=()
   echo "${policy_yaml}" | kubectl apply -f - >/dev/null
   echo "  Applied: $(( new_count - existing_count )) new domain(s)."
 
@@ -2394,12 +2535,9 @@ EOF
   elif [[ "${platform}" == "macos" ]]; then
     echo "==> Searching macOS System keychain for proxy CA (vendors: ${vendor_re})..."
     if ! extract_proxy_cert_macos "${vendor_re}" "${tmp_pem}"; then
-      die "$(cat <<EOF
-No matching cert in /Library/Keychains/System.keychain. If your org's
+      die "No matching cert in /Library/Keychains/System.keychain. If your org's
 MITM uses an unusual name, pass --vendor <substring>, or try
-  sandbox setup-proxy-cert --from-wire deb.nodesource.com
-EOF
-)"
+  sandbox setup-proxy-cert --from-wire deb.nodesource.com"
     fi
     source_desc="macOS System keychain"
   else
@@ -2410,22 +2548,16 @@ EOF
     elif is_wsl; then
       echo "  Nothing matched inside the WSL distro. Trying Windows trust store via PowerShell..."
       if ! extract_proxy_cert_windows "${vendor_re}" "${tmp_pem}"; then
-        die "$(cat <<EOF
-No matching cert in either the WSL distro trust store or the Windows
+        die "No matching cert in either the WSL distro trust store or the Windows
 LocalMachine\\Root store. Pass --vendor <substring> if your org uses a
 non-standard name, or try
-  sandbox setup-proxy-cert --from-wire deb.nodesource.com
-EOF
-)"
+  sandbox setup-proxy-cert --from-wire deb.nodesource.com"
       fi
       source_desc="Windows LocalMachine\\Root (via PowerShell)"
     else
-      die "$(cat <<EOF
-No matching cert in the host trust store. Pass --vendor <substring>
+      die "No matching cert in the host trust store. Pass --vendor <substring>
 if your org uses a non-standard name, or try
-  sandbox setup-proxy-cert --from-wire deb.nodesource.com
-EOF
-)"
+  sandbox setup-proxy-cert --from-wire deb.nodesource.com"
     fi
   fi
 

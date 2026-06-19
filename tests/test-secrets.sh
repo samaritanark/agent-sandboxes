@@ -235,6 +235,19 @@ test_session_secrets_name() {
   eq "name format" "session-secrets-ses-abc" "$(session_secrets_name ses-abc)"
 }
 
+###############################################################################
+# create_dependency_secrets — Phase 5 per-dependency bundle. The cluster path
+# needs a live k3s (covered by the cluster suite); here we exercise only the
+# zero-names no-op branch, which must return success WITHOUT calling kubectl.
+###############################################################################
+test_create_dependency_secrets_noop() {
+  info "Testing create_dependency_secrets no-op with zero names..."
+  # If this reached kubectl it would fail (no cluster); a clean rc=0 proves the
+  # early return fired.
+  create_dependency_secrets "dep-x-ses-abc" "ses-abc" || fail "zero-name bundle should be a no-op success"
+  pass "zero-name dependency bundle is a no-op"
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -255,6 +268,7 @@ main() {
   test_list_format
   test_list_empty
   test_session_secrets_name
+  test_create_dependency_secrets_noop
 
   echo ""
   echo "All secrets tests passed."

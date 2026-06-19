@@ -131,6 +131,49 @@ audit_record_agent_session_id() {
   mv "${tmp}" "${session_json}"
 }
 
+# audit_record_dependencies — store the resolved per-session dependency records
+# (Phase 5 §2.6) into session.json: which dependencies were brought up, their
+# resolved catalogue versions, their resolved egress allowlists, and their
+# up-timestamps. The down-timestamp is stamped at teardown
+# (audit_record_dependencies_down). Be precise about what the egress record
+# means for audit: Hubble sees DESTINATION granularity (FQDN/IP/port), not URL
+# paths or POST bodies inside TLS (§1.7) — the allowlist narrows WHERE traffic
+# can go, it is not a content-exfil record.
+#
+# <deps_json> is a JSON array built by session_dependencies_audit_json.
+audit_record_dependencies() {
+  local log_dir="$1"
+  local deps_json="$2"
+  local session_json="${log_dir}/session.json"
+
+  [[ -f "${session_json}" ]] || return 0
+
+  local tmp
+  tmp="$(mktemp)"
+  jq --argjson deps "${deps_json}" '.dependencies = $deps' \
+    "${session_json}" > "${tmp}"
+  mv "${tmp}" "${session_json}"
+}
+
+# audit_record_dependencies_down — stamp a down-timestamp on every recorded
+# dependency at teardown. No-op when the session declared none.
+audit_record_dependencies_down() {
+  local log_dir="$1"
+  local down_time="$2"
+  local session_json="${log_dir}/session.json"
+
+  [[ -f "${session_json}" ]] || return 0
+
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg dt "${down_time}" \
+    'if (.dependencies | type) == "array"
+       then .dependencies |= map(.down_time = $dt)
+       else . end' \
+    "${session_json}" > "${tmp}"
+  mv "${tmp}" "${session_json}"
+}
+
 # audit_log_event — append a structured event line to session.json events array
 audit_log_event() {
   local log_dir="$1"
