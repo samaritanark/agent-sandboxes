@@ -58,8 +58,30 @@ source "${SANDBOX_ROOT}/lib/certs.sh"
 # Utility helpers
 ###############################################################################
 
+# Color output — enabled only when stdout is a TTY and NO_COLOR is unset
+# (https://no-color.org/). When piped, redirected, or captured in logs the
+# variables are empty, so output stays plain and grep-friendly. die()/warn()
+# gate on stderr (fd 2) independently, since stdout and stderr can be
+# redirected separately.
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_RESET=$'\033[0m'
+else
+  C_RED=''; C_GREEN=''; C_YELLOW=''; C_RESET=''
+fi
+if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
+  C_RED_ERR=$'\033[31m'; C_YELLOW_ERR=$'\033[33m'; C_RESET_ERR=$'\033[0m'
+else
+  C_RED_ERR=''; C_YELLOW_ERR=''; C_RESET_ERR=''
+fi
+
+# Paint a status word for stdout. Used by cmd_status and friends so the
+# health verb (running / configured / not found) stands out at a glance.
+c_ok()   { printf '%s%s%s' "${C_GREEN}"  "$*" "${C_RESET}"; }
+c_warn() { printf '%s%s%s' "${C_YELLOW}" "$*" "${C_RESET}"; }
+c_err()  { printf '%s%s%s' "${C_RED}"    "$*" "${C_RESET}"; }
+
 die() {
-  echo "ERROR: $*" >&2
+  echo "${C_RED_ERR}ERROR:${C_RESET_ERR} $*" >&2
   exit 1
 }
 
@@ -68,7 +90,7 @@ info() {
 }
 
 warn() {
-  echo "WARN: $*" >&2
+  echo "${C_YELLOW_ERR}WARN:${C_RESET_ERR} $*" >&2
 }
 
 # Print usage and exit
@@ -1312,9 +1334,9 @@ cmd_status() {
   if [[ "${platform}" == "macos" ]]; then
     echo "Lima VM:"
     if lima_vm_running; then
-      echo "  Status: running"
+      echo "  Status: $(c_ok running)"
     else
-      echo "  Status: stopped (run 'sandbox setup' or 'limactl start sandbox-vm')"
+      echo "  Status: $(c_err stopped) (run 'sandbox setup' or 'limactl start sandbox-vm')"
     fi
     echo ""
   fi
@@ -1327,7 +1349,7 @@ cmd_status() {
     echo "Nodes:"
     kubectl get nodes -o wide 2>&1 || true
   else
-    echo "  (cluster not reachable)"
+    echo "  $(c_err "(cluster not reachable)")"
   fi
   echo ""
 
@@ -1335,32 +1357,32 @@ cmd_status() {
   echo "Cilium:"
   if kubectl get pods -n kube-system -l k8s-app=cilium \
        -o jsonpath='{.items[*].status.phase}' 2>/dev/null | grep -q Running; then
-    echo "  Status: running"
+    echo "  Status: $(c_ok running)"
     # Check policy enforcement mode
     if kubectl get configmap -n kube-system cilium-config \
          -o jsonpath='{.data.enable-policy}' 2>/dev/null | grep -q always; then
-      echo "  PolicyEnforcementMode: always (correct)"
+      echo "  PolicyEnforcementMode: $(c_ok always) (correct)"
     else
-      warn "PolicyEnforcementMode may not be 'always'"
+      echo "  PolicyEnforcementMode: $(c_warn "may not be 'always'")"
     fi
   else
-    echo "  Status: not running"
+    echo "  Status: $(c_err "not running")"
   fi
   echo ""
 
   # gVisor
   echo "gVisor RuntimeClass:"
   if kubectl get runtimeclass gvisor &>/dev/null 2>&1; then
-    echo "  Status: configured"
+    echo "  Status: $(c_ok configured)"
   else
-    echo "  Status: not found (run 'sandbox setup')"
+    echo "  Status: $(c_err "not found") (run 'sandbox setup')"
   fi
   echo ""
 
   # Sandbox namespace
   echo "Sandbox namespace:"
   if kubectl get namespace "${SANDBOX_NAMESPACE}" &>/dev/null 2>&1; then
-    echo "  Status: exists"
+    echo "  Status: $(c_ok exists)"
     local pod_count
     pod_count="$(kubectl get pods -n "${SANDBOX_NAMESPACE}" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
     echo "  Running sessions: ${pod_count}"
