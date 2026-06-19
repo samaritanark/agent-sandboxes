@@ -1480,7 +1480,7 @@ cmd_status() {
     echo "Nodes:"
     kubectl get nodes -o wide 2>&1 || true
   else
-    echo "  $(c_err "(cluster not reachable)")"
+    echo "  ${C_RED}(cluster not reachable)${C_RESET}"
   fi
   echo ""
 
@@ -1494,10 +1494,10 @@ cmd_status() {
          -o jsonpath='{.data.enable-policy}' 2>/dev/null | grep -q always; then
       echo "  PolicyEnforcementMode: $(c_ok always) (correct)"
     else
-      echo "  PolicyEnforcementMode: $(c_warn "may not be 'always'")"
+      echo "  PolicyEnforcementMode: ${C_YELLOW}may not be 'always'${C_RESET}"
     fi
   else
-    echo "  Status: $(c_err "not running")"
+    echo "  Status: ${C_RED}not running${C_RESET}"
   fi
   echo ""
 
@@ -1506,7 +1506,7 @@ cmd_status() {
   if kubectl get runtimeclass gvisor &>/dev/null 2>&1; then
     echo "  Status: $(c_ok configured)"
   else
-    echo "  Status: $(c_err "not found") (run 'sandbox setup')"
+    echo "  Status: ${C_RED}not found${C_RESET} (run 'sandbox setup')"
   fi
   echo ""
 
