@@ -48,7 +48,7 @@ eq() {
 }
 
 SID="ses-ab12"
-RNAME="dep-innkeeper-mcp-${SID}"
+RNAME="dep-example-mcp-${SID}"
 FQDN="${RNAME}.sandbox.svc.cluster.local"
 
 test_session_policy_with_dep() {

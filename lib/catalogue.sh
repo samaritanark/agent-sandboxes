@@ -25,9 +25,9 @@
 # existing org entry is intentionally out of scope for the first cut.
 #
 # Catalogue entry schema (flat — parses with the lib/config.sh YAML helpers):
-#   name: innkeeper-mcp                  # informational; filename is canonical
+#   name: example-mcp                  # informational; filename is canonical
 #   kind: mcp                            # required: mcp | service
-#   image: ghcr.io/org/innkeeper-mcp@sha256:<64hex>   # required, digest-pinned
+#   image: ghcr.io/example-org/example-mcp@sha256:<64hex>   # required, digest-pinned
 #   port: 8080                           # required: container port the dep serves
 #   version: "1.2.3"                     # optional; recorded in the audit trail
 #   # Resource limits — optional; defaults below. Full K8s quantity strings.

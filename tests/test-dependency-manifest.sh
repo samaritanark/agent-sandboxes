@@ -47,21 +47,21 @@ eq() {
 have_yq() { command -v yq >/dev/null 2>&1; }
 
 # A minimal MCP catalogue entry fixture.
-CAT="${TEST_DIR}/innkeeper-mcp.yaml"
+CAT="${TEST_DIR}/example-mcp.yaml"
 cat > "${CAT}" <<YAML
-name: innkeeper-mcp
+name: example-mcp
 kind: mcp
-image: ghcr.io/x/innkeeper@${DIGEST}
+image: ghcr.io/x/example@${DIGEST}
 port: 8080
 YAML
 
 SID="ses-ab12"
-RNAME="$(dependency_resource_name innkeeper-mcp "${SID}")"
+RNAME="$(dependency_resource_name example-mcp "${SID}")"
 
 test_resource_naming() {
   info "Testing dependency resource naming + FQDN..."
-  eq "resource name" "dep-innkeeper-mcp-ses-ab12" "${RNAME}"
-  eq "service FQDN" "dep-innkeeper-mcp-ses-ab12.sandbox.svc.cluster.local" \
+  eq "resource name" "dep-example-mcp-ses-ab12" "${RNAME}"
+  eq "service FQDN" "dep-example-mcp-ses-ab12.sandbox.svc.cluster.local" \
     "$(dependency_service_fqdn "${RNAME}")"
   # Catalogue name with caps/dots is sanitized to a DNS-1123 label.
   eq "sanitized name" "dep-my-dep-ses-ab12" \
@@ -71,7 +71,7 @@ test_resource_naming() {
 test_additive_from_empty() {
   info "Testing dependency pod is additive-from-empty (no mounts/volumes/secrets)..."
   local pod
-  pod="$(build_dependency_pod_manifest "${SID}" 2 innkeeper-mcp "${RNAME}" "${CAT}" "owner-pod" "uid-123" "")"
+  pod="$(build_dependency_pod_manifest "${SID}" 2 example-mcp "${RNAME}" "${CAT}" "owner-pod" "uid-123" "")"
 
   # No host mounts, ever.
   echo "${pod}" | grep -q 'hostPath' && fail "dependency pod must not contain hostPath"
@@ -103,7 +103,7 @@ test_additive_from_empty() {
 test_no_owner_dry_run() {
   info "Testing dry-run (no owner) omits ownerReferences..."
   local pod
-  pod="$(build_dependency_pod_manifest "${SID}" 1 innkeeper-mcp "${RNAME}" "${CAT}" "" "" "")"
+  pod="$(build_dependency_pod_manifest "${SID}" 1 example-mcp "${RNAME}" "${CAT}" "" "" "")"
   echo "${pod}" | grep -q 'ownerReferences' && fail "no owner should omit ownerReferences"
   pass "ownerReferences omitted without an owner"
 }
@@ -111,7 +111,7 @@ test_no_owner_dry_run() {
 test_secret_bundle() {
   info "Testing secret bundle adds envFrom..."
   local pod
-  pod="$(build_dependency_pod_manifest "${SID}" 2 innkeeper-mcp "${RNAME}" "${CAT}" "owner-pod" "uid-123" "dep-secrets-x")"
+  pod="$(build_dependency_pod_manifest "${SID}" 2 example-mcp "${RNAME}" "${CAT}" "owner-pod" "uid-123" "dep-secrets-x")"
   echo "${pod}" | grep -q 'dep-secrets-x' || fail "secret bundle name should appear in envFrom"
   pass "secret bundle wired into envFrom"
 }
@@ -119,7 +119,7 @@ test_secret_bundle() {
 test_service_manifest() {
   info "Testing Service manifest..."
   local svc
-  svc="$(build_dependency_service "${SID}" innkeeper-mcp "${RNAME}" 8080 "owner-pod" "uid-123")"
+  svc="$(build_dependency_service "${SID}" example-mcp "${RNAME}" 8080 "owner-pod" "uid-123")"
   if have_yq; then
     echo "${svc}" | yq e '.' >/dev/null || fail "service is not valid YAML"
     eq "ClusterIP" "ClusterIP" "$(echo "${svc}" | yq e '.spec.type' -)"
@@ -134,7 +134,7 @@ test_no_host_mounts_check() {
   info "Testing check_dependency_no_host_mounts fails closed on a hostPath..."
   # A clean manifest passes.
   local pod
-  pod="$(build_dependency_pod_manifest "${SID}" 1 innkeeper-mcp "${RNAME}" "${CAT}" "" "" "")"
+  pod="$(build_dependency_pod_manifest "${SID}" 1 example-mcp "${RNAME}" "${CAT}" "" "" "")"
   ( check_dependency_no_host_mounts "${pod}" ) || fail "clean manifest should pass the check"
   pass "clean manifest passes"
 
@@ -201,18 +201,18 @@ _write_resolve_entry() {
 
 test_resolve_and_ceiling() {
   info "Testing resolve_session_dependencies (kinds, mismatch, ceiling)..."
-  _write_resolve_entry innkeeper-mcp mcp "mcp_transport: http"
+  _write_resolve_entry example-mcp mcp "mcp_transport: http"
   _write_resolve_entry dev-postgres service ""
 
   # Happy path: one mcp + one service resolves, sets globals.
-  SANDBOX_ROOT="${RESOLVE_ROOT}" SESSION_PROFILE_MCPS="innkeeper-mcp" \
+  SANDBOX_ROOT="${RESOLVE_ROOT}" SESSION_PROFILE_MCPS="example-mcp" \
     SESSION_PROFILE_SERVICES="dev-postgres" \
     resolve_session_dependencies "ses-r1" claude \
     || fail "valid mcp+service should resolve"
   [[ "${SESSION_HAS_DEPS}" == "true" ]] && pass "HAS_DEPS set" || fail "HAS_DEPS not set"
   [[ "${SESSION_HAS_MCPS}" == "true" ]] && pass "HAS_MCPS set" || fail "HAS_MCPS not set"
   [[ "${#SESSION_DEP_NAMES[@]}" -eq 2 ]] && pass "two deps resolved" || fail "expected 2 deps"
-  [[ "${SESSION_MCP_SERVER_RECORDS[0]}" == innkeeper-mcp\|http\|http://* ]] \
+  [[ "${SESSION_MCP_SERVER_RECORDS[0]}" == example-mcp\|http\|http://* ]] \
     && pass "mcp server record built" || fail "mcp record wrong: ${SESSION_MCP_SERVER_RECORDS[0]:-}"
 
   # Kind mismatch: a service requested under mcps: is rejected.
@@ -224,7 +224,7 @@ test_resolve_and_ceiling() {
   pass "kind mismatch rejected"
 
   # MCP on an unsupported agent fails closed.
-  if SANDBOX_ROOT="${RESOLVE_ROOT}" SESSION_PROFILE_MCPS="innkeeper-mcp" \
+  if SANDBOX_ROOT="${RESOLVE_ROOT}" SESSION_PROFILE_MCPS="example-mcp" \
        SESSION_PROFILE_SERVICES="" \
        resolve_session_dependencies "ses-r3" codex 2>/dev/null; then
     fail "MCP on codex should be rejected"

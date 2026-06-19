@@ -54,12 +54,12 @@ write_org_entry() {
 ###############################################################################
 test_resolution_order() {
   info "Testing catalogue resolution order (org first, overlay adds)..."
-  write_org_entry innkeeper-mcp \
-    "name: innkeeper-mcp" "kind: mcp" "image: ghcr.io/x/innkeeper@${DIGEST}" "port: 8080"
+  write_org_entry example-mcp \
+    "name: example-mcp" "kind: mcp" "image: ghcr.io/x/example@${DIGEST}" "port: 8080"
 
   local path
-  path="$(catalogue_resolve innkeeper-mcp)"
-  eq "org entry resolves" "${SANDBOX_ROOT}/config/catalogue/innkeeper-mcp.yaml" "${path}"
+  path="$(catalogue_resolve example-mcp)"
+  eq "org entry resolves" "${SANDBOX_ROOT}/config/catalogue/example-mcp.yaml" "${path}"
 
   # A miss returns rc=1 with no output.
   if catalogue_resolve nonexistent >/dev/null 2>&1; then
@@ -76,15 +76,15 @@ test_resolution_order() {
     "${overlay}/catalogue/team-mcp.yaml" "$(SANDBOX_OVERLAY="${overlay}" catalogue_resolve team-mcp)"
 
   # Org wins on a name collision (overlay cannot override).
-  printf '%s\n' "name: innkeeper-mcp" "kind: mcp" "image: ghcr.io/EVIL/x@${DIGEST}" "port: 1" \
-    > "${overlay}/catalogue/innkeeper-mcp.yaml"
-  eq "org wins collision" "${SANDBOX_ROOT}/config/catalogue/innkeeper-mcp.yaml" \
-    "$(SANDBOX_OVERLAY="${overlay}" catalogue_resolve innkeeper-mcp)"
+  printf '%s\n' "name: example-mcp" "kind: mcp" "image: ghcr.io/EVIL/x@${DIGEST}" "port: 1" \
+    > "${overlay}/catalogue/example-mcp.yaml"
+  eq "org wins collision" "${SANDBOX_ROOT}/config/catalogue/example-mcp.yaml" \
+    "$(SANDBOX_OVERLAY="${overlay}" catalogue_resolve example-mcp)"
 }
 
 test_invalid_names() {
   info "Testing catalogue name validation (traversal etc.)..."
-  catalogue_is_valid_name "innkeeper-mcp" || fail "valid name rejected"
+  catalogue_is_valid_name "example-mcp" || fail "valid name rejected"
   for bad in "" "../escape" "a/b" ".hidden"; do
     if catalogue_is_valid_name "${bad}"; then
       fail "invalid name '${bad}' accepted"

@@ -397,8 +397,8 @@ test_session_json_profile_overlay_fields() {
 
   # With profile + overlay set
   (
-    export SESSION_PROFILE="innkeeper-dev"
-    export SESSION_OVERLAY="/home/jdoe/overlays/innkeeper"
+    export SESSION_PROFILE="example-dev"
+    export SESSION_OVERLAY="/home/jdoe/overlays/example"
     audit_write_session_json \
       "${log_dir}" "${session_id}" "claude" "2" "testuser" \
       "/tmp/repo" "" "sandbox-${session_id}" "2026-04-01T21:00:00Z" \
@@ -408,12 +408,12 @@ test_session_json_profile_overlay_fields() {
   local profile overlay
   profile="$(jq -r '.profile' "${log_dir}/session.json")"
   overlay="$(jq -r '.overlay' "${log_dir}/session.json")"
-  [[ "${profile}" == "innkeeper-dev" ]] \
+  [[ "${profile}" == "example-dev" ]] \
     && pass "profile field recorded" \
-    || fail "profile field expected 'innkeeper-dev', got '${profile}'"
-  [[ "${overlay}" == "/home/jdoe/overlays/innkeeper" ]] \
+    || fail "profile field expected 'example-dev', got '${profile}'"
+  [[ "${overlay}" == "/home/jdoe/overlays/example" ]] \
     && pass "overlay field recorded" \
-    || fail "overlay field expected '/home/jdoe/overlays/innkeeper', got '${overlay}'"
+    || fail "overlay field expected '/home/jdoe/overlays/example', got '${overlay}'"
 
   # Without either env var set — fields exist but empty
   local sid2="ses-20260401-210100-bare"
@@ -510,14 +510,14 @@ test_dependency_records() {
   local root="${TEST_LOG_DIR}/depaudit-root"
   mkdir -p "${root}/config/catalogue"
   local digest="sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  cat > "${root}/config/catalogue/innkeeper-mcp.yaml" <<YAML
-name: innkeeper-mcp
+  cat > "${root}/config/catalogue/example-mcp.yaml" <<YAML
+name: example-mcp
 kind: mcp
-image: ghcr.io/x/innkeeper@${digest}
+image: ghcr.io/x/example@${digest}
 port: 8080
 version: "1.2.3"
 egress:
-  - innkeeper-api.internal.example.com
+  - example-api.internal.example.com
 YAML
   # Resolve against this throwaway root so the catalogue + blocked-destinations
   # come from the fixture, not the repo.
@@ -530,7 +530,7 @@ YAML
     for f in config checks profile catalogue agents tier policy resources filesystem manifest cluster secrets audit dependency; do
       source "'"${SANDBOX_ROOT}"'/lib/${f}.sh"
     done
-    export SESSION_PROFILE_MCPS="innkeeper-mcp" SESSION_PROFILE_SERVICES=""
+    export SESSION_PROFILE_MCPS="example-mcp" SESSION_PROFILE_SERVICES=""
     resolve_session_dependencies "ses-dep01" claude
     log="'"${TEST_LOG_DIR}"'/ses-dep01"; mkdir -p "${log}"
     echo "{\"id\":\"ses-dep01\"}" > "${log}/session.json"
@@ -542,9 +542,9 @@ YAML
   [[ -f "${sj}" ]] || fail "session.json not written"
   local count; count="$(jq '.dependencies | length' "${sj}")"
   [[ "${count}" -eq 1 ]] && pass "dependencies recorded (1)" || fail "expected 1 dependency, got ${count}"
-  [[ "$(jq -r '.dependencies[0].name' "${sj}")" == "innkeeper-mcp" ]] && pass "dep name recorded" || fail "dep name wrong"
+  [[ "$(jq -r '.dependencies[0].name' "${sj}")" == "example-mcp" ]] && pass "dep name recorded" || fail "dep name wrong"
   [[ "$(jq -r '.dependencies[0].version' "${sj}")" == "1.2.3" ]] && pass "dep version recorded" || fail "dep version wrong"
-  [[ "$(jq -r '.dependencies[0].egress[0]' "${sj}")" == "innkeeper-api.internal.example.com" ]] && pass "dep egress recorded" || fail "dep egress wrong"
+  [[ "$(jq -r '.dependencies[0].egress[0]' "${sj}")" == "example-api.internal.example.com" ]] && pass "dep egress recorded" || fail "dep egress wrong"
   [[ "$(jq -r '.dependencies[0].up_time' "${sj}")" == "2026-06-18T00:00:00Z" ]] && pass "dep up_time recorded" || fail "dep up_time wrong"
   [[ "$(jq -r '.dependencies[0].down_time' "${sj}")" == "2026-06-18T01:00:00Z" ]] && pass "dep down_time stamped" || fail "dep down_time wrong"
 }

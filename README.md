@@ -384,15 +384,15 @@ live in `config/catalogue/`; a team overlay may add more under
 an org entry).
 
 ```yaml
-# config/catalogue/innkeeper-mcp.yaml   (an MCP server)
-name: innkeeper-mcp
+# config/catalogue/example-mcp.yaml   (an MCP server)
+name: example-mcp
 kind: mcp                              # mcp | service
-image: ghcr.io/org/innkeeper-mcp@sha256:<64hex>
+image: ghcr.io/example-org/example-mcp@sha256:<64hex>
 port: 8080
 mcp_transport: http                    # http | sse — how the agent connects
 mcp_path: /mcp
 egress:                                # the dependency's OWN egress (443). Omit
-  - innkeeper-api.internal.example.com #   entirely for a DNS-only dependency.
+  - example-api.internal.example.com #   entirely for a DNS-only dependency.
 secrets:                               # provisioned from the host-side store
   - INNKEEPER_TOKEN                    #   (see "Secret store"), session-scoped
 ```
@@ -402,12 +402,12 @@ agent (it can call their tools); `services:` entries are reachable by the
 session but not registered as agent tools:
 
 ```yaml
-# ~/.sandbox/profiles/innkeeper-dev.yaml
+# ~/.sandbox/profiles/example-dev.yaml
 tier: 2
 agent: claude          # MCP registration is wired for claude today; declaring
                        #   mcps for another agent fails the launch, by design
 mcps:
-  - innkeeper-mcp
+  - example-mcp
 services:
   - dev-postgres
 ```

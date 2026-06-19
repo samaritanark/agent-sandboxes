@@ -7,7 +7,7 @@
 # allowed domains, a default --repo, and (for later phases) lists of
 # secrets and MCPs to inject. They're sugar over the existing tier model:
 # `--profile 1|2|3` is a numeric alias for `--tier`, and a named profile
-# (`--profile innkeeper-dev`) resolves to a YAML file whose `tier:` field
+# (`--profile example-dev`) resolves to a YAML file whose `tier:` field
 # is still subject to the same governance checks as a literal --tier flag.
 #
 # Profiles live in:
@@ -21,16 +21,16 @@
 # remove an org-level block. See PRINCIPLES.md ("Default-deny egress").
 #
 # Profile YAML schema:
-#   profile: innkeeper-dev          # informational; the filename is canonical
+#   profile: example-dev          # informational; the filename is canonical
 #   tier: 2                         # required (1|2|3)
 #   agent: codex                    # optional; used when --agent is absent
 #                                   #   (run falls back to its own default,
 #                                   #    claude, when neither is set)
-#   default_repo: ~/repos/innkeeper # optional; used when --repo is absent
+#   default_repo: ~/repos/example # optional; used when --repo is absent
 #   extra_allowed_domains:          # optional; merged with --allow-domain
-#     - innkeeper-api.example.com
+#     - example-api.example.com
 #   secrets: [jira-pat]             # Phase 4 — injected as session Secrets
-#   mcps:    [innkeeper-mcp]        # Phase 5 — deployed alongside session
+#   mcps:    [example-mcp]        # Phase 5 — deployed alongside session
 #
 # Only `tier` is required; everything else (agent included) is optional, so a
 # profile can be as minimal as a single tier or as complete as a full launch.

@@ -27,9 +27,9 @@ property from `PRINCIPLES.md`.
 ## Entry schema
 
 ```yaml
-name: innkeeper-mcp                  # informational; filename is canonical
+name: example-mcp                  # informational; filename is canonical
 kind: mcp                           # required: mcp | service
-image: ghcr.io/org/innkeeper-mcp@sha256:<64hex>   # required, DIGEST-PINNED
+image: ghcr.io/example-org/example-mcp@sha256:<64hex>   # required, DIGEST-PINNED
 port: 8080                          # required: container port the dep serves
 version: "1.2.3"                    # optional; recorded in the audit trail
 
