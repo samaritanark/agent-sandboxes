@@ -85,9 +85,12 @@ lima_kubectl() {
 # macOS: create the VM-local working dir and chown it to 1000:1000 so the agent
 # owns every file it later writes. Seed it from the host staging dir (onboard's
 # output, visible inside the VM at the same absolute path via the 9p home mount)
-# — but only files the working copy does not already have, so a token refreshed
-# by an in-session /login (already in the working copy, which persists across
-# sessions on the VM disk) is never clobbered by older staged state.
+# with cp -u: a file is (re)seeded only when the working copy lacks it OR the
+# staged copy is newer. So `sandbox onboard --force` (which rewrites staging with
+# a fresh token) takes effect on the next launch, while a token refreshed by an
+# in-session /login — newer in the working copy, which persists on the VM disk —
+# is never clobbered by older staged state. Teardown sync-back preserves mtimes,
+# so staging and the working copy stay in step across sessions.
 #
 # Linux/WSL: the host dir IS the mount. chown to 1000:1000 where we are
 # privileged enough (root in a WSL distro; a harmless no-op for the uid-1000
@@ -107,9 +110,7 @@ prepare_agent_home() {
       mkdir -p "$mount_home"
       if [ -d "$staging" ]; then
         for f in .credentials.json settings.json .claude.json auth.json config.toml; do
-          if [ -f "$staging/$f" ] && [ ! -e "$mount_home/$f" ]; then
-            cp "$staging/$f" "$mount_home/$f"
-          fi
+          if [ -f "$staging/$f" ]; then cp -u "$staging/$f" "$mount_home/$f"; fi
         done
       fi
       chown -R 1000:1000 "$mount_home"
