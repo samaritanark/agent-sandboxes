@@ -1,0 +1,35 @@
+# config/catalogue/everything-mcp.yaml
+#
+# The Model Context Protocol "everything" reference server — the official demo
+# server that exercises the MCP protocol (sample tools like `echo` and `add`,
+# plus prompts and resources). It is the catalogue entry the MCP tutorial uses
+# (docs/tutorials/mcp-dependency.md) and a good first thing to point an agent at
+# when learning what MCP is. It needs no credentials and makes no outbound
+# network calls, so its dependency policy is DNS-only.
+#
+# Image: https://hub.docker.com/r/mcp/everything  (package
+# @modelcontextprotocol/server-everything). This build serves over SSE via
+# `node dist/sse.js` on port 3001, endpoint path /sse.
+
+name: everything-mcp
+kind: mcp
+
+# Digest-pinned (a mutable tag is rejected at validation). Resolved from
+# `docker inspect --format='{{index .RepoDigests 0}}' mcp/everything`.
+image: docker.io/mcp/everything@sha256:330885a0c4b2eed6f0cd3aae0f0b37152ccdf2852e2f6af6d616a5d5c1e9817d
+port: 3001
+version: "2025.4.25"
+
+# This server speaks SSE; the agent connects to http://<service>:3001/sse.
+mcp_transport: sse
+mcp_path: /sse
+
+# The image's default command is stdio (`node dist/index.js`); override the
+# args to start the SSE server instead. (command is left at the image's
+# entrypoint, which execs these args.)
+args:
+  - node
+  - dist/sse.js
+
+# No `egress:` — the demo server makes no outbound calls, so its policy is
+# DNS-only. No `secrets:` — it needs no credentials.

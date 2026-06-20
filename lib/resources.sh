@@ -41,6 +41,16 @@ HOST_RESERVE_MEM_GI="6"
 POD_CEILING_MIN="1"
 POD_CEILING_MAX="16"
 
+# --- Per-session dependency ceiling (Phase 5) -------------------------------
+# A session's dependency pods (MCP servers, services, a browser) count against
+# the namespace ResourceQuota like any pod — that is the hard node-level
+# backstop. This is the per-SESSION guard (§2.7 #5): a single multi-dependency
+# profile shouldn't be able to claim the whole namespace pod budget and starve
+# other sessions, and a profile asking for an absurd number of dependencies
+# should get a clear early error rather than a pod stuck Pending against the
+# quota. Overridable via the environment for unusual installs.
+SANDBOX_MAX_DEPS_PER_SESSION="${SANDBOX_MAX_DEPS_PER_SESSION:-6}"
+
 # _node_allocatable <kubeconfig> <cpu|memory> — raw allocatable quantity for
 # the (single-node) cluster. Empty string on failure.
 _node_allocatable() {

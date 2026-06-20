@@ -1,0 +1,77 @@
+# overlay-template/catalogue/playwright.yaml
+#
+# Example BROWSER (Playwright MCP) catalogue entry — the worked hard case from
+# docs/design/phase5-mcp-dependencies.md §1.8. A browser is a general-purpose
+# programmable egress engine; it is safe ONLY under the exact deployment shape
+# below. Enabling it for a profile is a reviewed decision that names the
+# residual, irreducible in-allowlist exfil cost (§1.7) — the CLI prints a
+# warning at launch. A profile requests it with:
+#   mcps:
+#     - playwright
+#
+# What makes this safe (all enforced by lib/dependency.sh + lib/policy.sh):
+#   - Separate gVisor pod (never a sidecar) — renderer RCE stays out of the
+#     agent's trust boundary; the dependency builder is additive-from-empty.
+#   - Its CiliumNetworkPolicy is a clone-or-subset of the session egress: DNS
+#     scoped to THIS allowlist, 443 limited to it, egressDeny over the blocked
+#     CIDRs (incl. 169.254.0.0/16 → IMDS/SSRF denied), ingress ONLY from the
+#     session pod. No toEndpoints reach into the namespace.
+#   - ALL capabilities dropped and never added. Chromium under gVisor uses
+#     --no-sandbox (a launch flag below), NEVER --cap-add=SYS_ADMIN.
+#   - No workspace and no secret mounts → upload-exfil via file-picker is
+#     structurally impossible; downloads land only on the pod's own emptyDir.
+#   - A RAM-backed /dev/shm (shm_size) so Chromium doesn't crash under 64Mi.
+
+name: playwright
+kind: mcp
+class: browser                 # triggers the §1.7 launch warning + signature gate
+
+# DIGEST-PINNED, and — because this is the highest-value supply-chain target in
+# the catalogue — signature-verified at admission (cosign), not pinned alone.
+image: mcr.microsoft.com/playwright/mcp@sha256:0000000000000000000000000000000000000000000000000000000000000000
+port: 8931
+version: "0.0.0-example"
+
+# Supply-chain gate (§2.7 #2). Keyless verification: replace with your image's
+# real signer identity + OIDC issuer (or use cosign_key for key-based).
+verify_signature: true
+cosign_identity: "https://github.com/microsoft/playwright-mcp/.github/workflows/.*"
+cosign_issuer: "https://token.actions.githubusercontent.com"
+
+# How the agent reaches the MCP over its in-cluster Service.
+mcp_transport: http
+mcp_path: /mcp
+
+# Pinned launch flags (§1.8). QUIC off (keeps UDP/443 shut), DoH off (every
+# resolution goes through the proxy the toFQDNs cache is built from),
+# --no-sandbox (Chromium's namespace sandbox conflicts with gVisor; gVisor is
+# the in-pod isolation layer), --allowed-origins mirroring the egress allowlist,
+# --block-service-workers, devtools capability left OFF. Adjust the command to
+# match the image's entrypoint; tokens are passed verbatim.
+args:
+  - "--port=8931"
+  - "--host=0.0.0.0"
+  - "--headless"
+  - "--no-sandbox"
+  - "--block-service-workers"
+  - "--allowed-origins=https://example.com;https://api.example.com"
+  - "--browser-arg=--disable-quic"
+  - "--browser-arg=--disable-features=DnsOverHttps"
+
+# RAM-backed /dev/shm so headless Chromium doesn't crash under the default 64Mi.
+# (Alternatively pass --browser-arg=--disable-dev-shm-usage and omit this.)
+shm_size: "512Mi"
+
+# Browsers are heavy — bound resources independently and strictly.
+cpu_request: "500m"
+cpu_limit: "2"
+mem_request: "512Mi"
+mem_limit: "2Gi"
+ephemeral_limit: "2Gi"
+
+# The browser's OWN egress allowlist (443/TCP). Keep this TIGHT — every entry is
+# a place data can go, and a wildcard here is an exfil sink to flag in review.
+# Checked against blocked-destinations exactly like --allow-domain.
+egress:
+  - example.com
+  - api.example.com

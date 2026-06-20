@@ -1,0 +1,32 @@
+# overlay-template/catalogue/example-mcp.yaml
+#
+# Example MCP-server catalogue entry. A profile requests it with:
+#   mcps:
+#     - example-mcp
+#
+# Filename is canonical — the `name:` key is informational. Overlay entries are
+# additive: they introduce new dependencies, never override an org entry.
+# See docs/design/phase5-mcp-dependencies.md and config/catalogue/README.md.
+
+name: example-mcp
+kind: mcp
+
+# DIGEST-PINNED image. Replace the example digest below with the real one for
+# the image your team has vetted — a mutable tag is rejected at validation.
+image: ghcr.io/example-org/example-mcp@sha256:0000000000000000000000000000000000000000000000000000000000000000
+port: 8080
+version: "0.0.0-example"
+
+# How the agent reaches the MCP over its in-cluster Service.
+mcp_transport: http
+mcp_path: /mcp
+
+# The MCP's own egress (it talks to one internal API). Checked against
+# blocked-destinations like --allow-domain. Omit entirely for a DNS-only dep.
+egress:
+  - example-api.internal.example.com
+
+# Session-scoped secret(s) the MCP needs; provisioned from the host-side store
+# (see `sandbox secret set`) into the dep pod, torn down with the session.
+secrets:
+  - INNKEEPER_TOKEN

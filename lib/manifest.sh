@@ -33,7 +33,8 @@ build_pod_manifest() {
   # Host-side persistent directory for agent config (auth tokens, session state).
   # Mounted at the agent's specific config subdirectory — NOT /home/agent — so
   # the installed binaries baked into the image are not shadowed.
-  local agent_home="${HOME}/.sandbox/agent-home/${agent}"
+  local agent_home
+  agent_home="$(resolve_agent_home "${agent}")"
   local agent_config_mount
   case "${agent}" in
     claude)   agent_config_mount="/home/agent/.claude" ;;
@@ -47,6 +48,27 @@ build_pod_manifest() {
   # Build volumeMounts block
   local mounts_block
   mounts_block="$(build_volume_mounts_block "${tier}" "${agent_home}" "${agent_config_mount}" "${infra_kubeconfig}" "${repos[@]+"${repos[@]}"}")"
+
+  # Phase 5 — per-session MCP config. When the profile declared MCP
+  # dependencies, mount the session-scoped ConfigMap (built by bin/sandbox after
+  # the dependency Services resolve) read-only at SANDBOX_MCP_CONFIG_DIR. The
+  # agent is then launched with --mcp-config pointing at it (lib/agents.sh).
+  # Mounted from a ConfigMap, NOT the shared agent-home hostPath, so it is
+  # session-scoped and reaped with the session.
+  if [[ "${SESSION_HAS_MCPS:-false}" == "true" ]] && [[ -n "${SESSION_MCP_CONFIGMAP:-}" ]]; then
+    volumes_block+=$'\n'"$(cat <<EOF
+    - name: mcp-config
+      configMap:
+        name: "${SESSION_MCP_CONFIGMAP}"
+EOF
+)"
+    mounts_block+=$'\n'"$(cat <<EOF
+        - name: mcp-config
+          mountPath: ${SANDBOX_MCP_CONFIG_DIR}
+          readOnly: true
+EOF
+)"
+  fi
 
   # envFrom: bundle infra-token (Tier 3 with --infra-token) and the
   # profile-declared session-secrets Secret (set via SESSION_HAS_SECRETS
@@ -90,6 +112,11 @@ metadata:
     sandbox-tier: "${tier}"
     sandbox-session: "${session_id}"
     sandbox-user: "${current_user}"
+    # Distinguishes the session pod from its dependency pods (which carry
+    # sandbox-role: dependency). A dependency's ingress rule (lib/policy.sh) is
+    # scoped to {sandbox-session, sandbox-role: session} so it accepts the
+    # owning session pod alone — never a sibling dependency. (Phase 5)
+    sandbox-role: "session"
   annotations:
     sandbox-session: "${session_id}"
     sandbox-agent: "${agent}"

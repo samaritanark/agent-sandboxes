@@ -338,7 +338,7 @@ _hash_workspace() {
   local workspace="$1"
 
   local -a prune_dirs=()
-  mapfile -t prune_dirs < <(_load_workspace_audit_prune_dirs)
+  read_into_array prune_dirs < <(_load_workspace_audit_prune_dirs)
 
   # find expression: prune .git/objects (always) + configured dirs (any depth),
   # then -type f -print0 the rest. Grouping with \( ... \) is required so the

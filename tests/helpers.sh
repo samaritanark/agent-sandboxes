@@ -17,6 +17,18 @@ kubectl() {
   command kubectl --kubeconfig "${SANDBOX_KUBECONFIG}" "$@"
 }
 
+# read_into_array — mirror of lib/platform.sh (keep in sync). Tests source a
+# minimal lib subset and not lib/platform.sh, so the lib functions under test
+# (dependency/policy/audit/filesystem) would otherwise hit an undefined
+# read_into_array. Portable `mapfile -t` replacement for macOS bash 3.2.
+read_into_array() {
+  local __array_name="$1" __line
+  eval "${__array_name}=()"
+  while IFS= read -r __line || [[ -n "${__line}" ]]; do
+    eval "${__array_name}+=( \"\${__line}\" )"
+  done
+}
+
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 info() { echo "INFO: $*"; }
