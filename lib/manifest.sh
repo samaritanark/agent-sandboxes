@@ -33,7 +33,8 @@ build_pod_manifest() {
   # Host-side persistent directory for agent config (auth tokens, session state).
   # Mounted at the agent's specific config subdirectory — NOT /home/agent — so
   # the installed binaries baked into the image are not shadowed.
-  local agent_home="${HOME}/.sandbox/agent-home/${agent}"
+  local agent_home
+  agent_home="$(resolve_agent_home "${agent}")"
   local agent_config_mount
   case "${agent}" in
     claude)   agent_config_mount="/home/agent/.claude" ;;

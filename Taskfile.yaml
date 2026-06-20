@@ -28,6 +28,7 @@ tasks:
       - bash tests/test-blocked-cidrs.sh
       - bash tests/test-onboard.sh
       - bash tests/test-agents.sh
+      - bash tests/test-agent-home.sh
       - bash tests/test-secrets.sh
       - bash tests/test-allow.sh
       - bash tests/test-audit.sh

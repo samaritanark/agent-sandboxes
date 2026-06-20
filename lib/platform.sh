@@ -77,3 +77,33 @@ is_wsl() {
   [[ -r /proc/sys/kernel/osrelease ]] \
     && grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease
 }
+
+# host_agent_home <agent> — the operator-home staging/persistence dir for an
+# agent's config (auth tokens, settings). 'sandbox onboard' writes here, and on
+# macOS the in-VM working copy is seeded from here. Always on the operator's
+# home, so it survives even a VM rebuild.
+host_agent_home() {
+  echo "${HOME}/.sandbox/agent-home/${1}"
+}
+
+# VM-local base for the agent-home the pod actually mounts on macOS. The pod's
+# hostPath must NOT be the 9p-shared Mac home: the gVisor gofer runs as root and,
+# over Lima's mapped-xattr 9p, presents every file the container creates as
+# root-owned. The agent runs as uid 1000, so it cannot write the nested dirs
+# Claude Code creates at runtime (session-env/, sessions/, projects/) and the
+# OAuth token written by /login silently fails to persist — the next request
+# reports "Not logged in". A VM-local ext4 path behaves like a native Linux host
+# (the gofer owns new files as the container's uid 1000), so writes succeed.
+SANDBOX_VM_AGENT_HOME_BASE="${SANDBOX_VM_AGENT_HOME_BASE:-/var/lib/sandbox/agent-home}"
+
+# resolve_agent_home <agent> — the path the NODE mounts as the agent-home
+# hostPath. On macOS this is the VM-local ext4 path (see above). On Linux/WSL
+# the CLI, k3s, and this directory all share one filesystem, so there is no
+# uid-remapping layer and the host path is mounted directly.
+resolve_agent_home() {
+  if is_macos; then
+    echo "${SANDBOX_VM_AGENT_HOME_BASE}/${1}"
+  else
+    host_agent_home "${1}"
+  fi
+}

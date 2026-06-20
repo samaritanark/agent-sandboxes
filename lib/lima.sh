@@ -78,6 +78,53 @@ lima_kubectl() {
   fi
 }
 
+# prepare_agent_home <agent> — ensure the agent-home directory the pod mounts
+# exists and is writable by the pod's uid 1000 BEFORE the pod starts (hostPath
+# type: Directory requires it to pre-exist on the node).
+#
+# macOS: create the VM-local working dir and chown it to 1000:1000 so the agent
+# owns every file it later writes. Seed it from the host staging dir (onboard's
+# output, visible inside the VM at the same absolute path via the 9p home mount)
+# — but only files the working copy does not already have, so a token refreshed
+# by an in-session /login (already in the working copy, which persists across
+# sessions on the VM disk) is never clobbered by older staged state.
+#
+# Linux/WSL: the host dir IS the mount. chown to 1000:1000 where we are
+# privileged enough (root in a WSL distro; a harmless no-op for the uid-1000
+# Linux operator) and fall back to the historical world-writable chmod for the
+# uncommon non-root, non-1000 operator.
+prepare_agent_home() {
+  local agent="$1"
+  local mount_home staging
+  mount_home="$(resolve_agent_home "${agent}")"
+  staging="$(host_agent_home "${agent}")"
+  mkdir -p "${staging}"
+
+  if is_macos; then
+    limactl shell "${LIMA_VM_NAME}" -- sudo sh -c '
+      set -e
+      mount_home="$1"; staging="$2"
+      mkdir -p "$mount_home"
+      if [ -d "$staging" ]; then
+        for f in .credentials.json settings.json .claude.json auth.json config.toml; do
+          if [ -f "$staging/$f" ] && [ ! -e "$mount_home/$f" ]; then
+            cp "$staging/$f" "$mount_home/$f"
+          fi
+        done
+      fi
+      chown -R 1000:1000 "$mount_home"
+      chmod 700 "$mount_home"
+      [ -f "$mount_home/.credentials.json" ] && chmod 600 "$mount_home/.credentials.json" || true
+      [ -f "$mount_home/auth.json" ] && chmod 600 "$mount_home/auth.json" || true
+    ' _ "${mount_home}" "${staging}" \
+      || die "Failed to prepare VM-local agent-home for '${agent}' inside ${LIMA_VM_NAME}."
+  else
+    chown -R 1000:1000 "${staging}" 2>/dev/null \
+      || find "${staging}" -exec chmod u+rwX,go+rwX {} + 2>/dev/null \
+      || true
+  fi
+}
+
 # stop_lima_vm — gracefully stop Lima VM
 stop_lima_vm() {
   if is_macos && lima_vm_running; then

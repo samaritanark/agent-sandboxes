@@ -762,22 +762,14 @@ cmd_run() {
   local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
   mkdir -p "${log_dir}"
 
-  # Ensure the persistent agent home directory exists on the host before the pod
-  # mounts it.  This is shared across sessions for the same agent so auth tokens
-  # (e.g. ~/.claude/) survive pod restarts without requiring re-authentication.
-  local agent_home="${HOME}/.sandbox/agent-home/${opt_agent}"
-  mkdir -p "${agent_home}"
-
-  # Lima/virtiofs translates the macOS user's UID (e.g. 501) into the VM and
-  # on into the pod's hostPath mount, but the pod runs as UID 1000. opencode
-  # in particular mkdirs new subdirs under its config root at startup (log/,
-  # repos/, others over time) — without making the tree writable by "other",
-  # those mkdirs EACCES and the agent bails before doing anything. Mode-only
-  # (no chown), so the host-side inode owner stays as the Mac user; what they
-  # see in ~/.sandbox/agent-home/ remains theirs. find -exec instead of
-  # chmod -R so symlinks aren't followed out of the tree. Harmless no-op on
-  # Linux where host UID typically matches the pod's UID 1000.
-  find "${agent_home}" -exec chmod u+rwX,go+rwX {} + 2>/dev/null || true
+  # Ensure the agent-home directory the pod mounts exists and is writable by the
+  # pod's uid 1000 before launch. It is shared across sessions so auth tokens
+  # (e.g. ~/.claude/) survive pod restarts without re-authentication. On macOS
+  # this is a VM-local ext4 dir — NOT the 9p-shared Mac home, where the gVisor
+  # gofer would present the agent's own files as root-owned and break credential
+  # persistence (login would report "Not logged in"). On Linux/WSL the host dir
+  # is mounted directly. See prepare_agent_home / resolve_agent_home.
+  prepare_agent_home "${opt_agent}"
 
   local current_user="${USER:-$(id -un)}"
   local start_time
@@ -788,7 +780,7 @@ cmd_run() {
   read_into_array agent_domains < <(get_agent_domains "${opt_agent}")
   local -a tier_domains=()
   read_into_array tier_domains < <(get_tier_domains "${opt_tier}")
-  local -a all_domains=("${agent_domains[@]}" "${tier_domains[@]}" "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}")
+  local -a all_domains=("${agent_domains[@]+"${agent_domains[@]}"}" "${tier_domains[@]+"${tier_domains[@]}"}" "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}")
   local domain_count="${#all_domains[@]}"
 
   # Pin the agent's conversation ID (when the agent supports it) so teardown
