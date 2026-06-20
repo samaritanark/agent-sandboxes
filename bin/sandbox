@@ -1235,11 +1235,15 @@ cmd_stop() {
     capture_workspace_diff "${log_dir}" "${repos[@]}"
   fi
 
-  # Capture the agent conversation transcript into the session log directory
+  # Capture the agent conversation transcript into the session log directory.
+  # On macOS the agent-home the pod wrote to is VM-local; sync it back to the
+  # host staging dir first so the capture (which reads the host path) and the
+  # durable token backup are current. No-op on Linux/WSL.
   if [[ -n "${agent}" ]]; then
+    sync_agent_home_back "${agent}"
     echo "==> Capturing conversation transcript..."
     audit_capture_transcript "${log_dir}" "${agent}" \
-      "${HOME}/.sandbox/agent-home/${agent}" "${agent_session_id}"
+      "$(host_agent_home "${agent}")" "${agent_session_id}"
   fi
 
   # Export Hubble flows

@@ -125,6 +125,32 @@ prepare_agent_home() {
   fi
 }
 
+# sync_agent_home_back <agent> — macOS only; best-effort. Copy the in-VM
+# working copy of the agent-home back to the host staging dir
+# (~/.sandbox/agent-home/<agent>) so host-side tooling sees current state: the
+# audit transcript capture (which reads the host path), and a durable backup of
+# the OAuth token that survives even a VM rebuild (prepare_agent_home re-seeds
+# from it). cp -au is incremental (only newer files) and preserves modes and
+# timestamps, so the transcript capture's -newer filter still works. Writes land
+# owned by the Mac user (the 9p server's uid), readable by host tooling. A no-op
+# on Linux/WSL, where the mount already IS the host staging dir.
+sync_agent_home_back() {
+  is_macos || return 0
+  local agent="$1"
+  local mount_home staging
+  mount_home="$(resolve_agent_home "${agent}")"
+  staging="$(host_agent_home "${agent}")"
+  mkdir -p "${staging}"
+
+  if ! limactl shell "${LIMA_VM_NAME}" -- sudo sh -c '
+    mount_home="$1"; staging="$2"
+    [ -d "$mount_home" ] || exit 0
+    cp -au "$mount_home/." "$staging/" 2>/dev/null || true
+  ' _ "${mount_home}" "${staging}" 2>/dev/null; then
+    warn "Could not sync agent-home back to ${staging} (VM stopped?); transcript/backup may be stale."
+  fi
+}
+
 # stop_lima_vm — gracefully stop Lima VM
 stop_lima_vm() {
   if is_macos && lima_vm_running; then
