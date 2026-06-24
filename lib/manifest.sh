@@ -338,14 +338,20 @@ EOF
   fi
 
   # Tier 2/3: one hostPath volume per --repo + shared tmp + conditional overlays.
-  local i r vname
+  # The hostPath is resolve_workspace_mount, not the raw repo path: on macOS that
+  # is the per-session VM-local ext4 copy Mutagen keeps in sync with the host
+  # repo (prepare_workspace in lib/lima.sh), because the agent (uid 1000) cannot
+  # write a repo mounted directly off the 9p Mac home. On Linux/WSL it resolves
+  # to the repo path itself, so nothing changes there.
+  local i r vname hpath
   for i in "${!repos[@]}"; do
     r="${repos[$i]}"
     vname="$(_workspace_volume_name "$i" "${total}")"
+    hpath="$(resolve_workspace_mount "${session_id}" "${r}")"
     cat <<EOF
     - name: ${vname}
       hostPath:
-        path: "${r}"
+        path: "${hpath}"
         type: Directory
 EOF
   done

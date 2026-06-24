@@ -107,3 +107,29 @@ resolve_agent_home() {
     host_agent_home "${1}"
   fi
 }
+
+# VM-local base for the tier 2/3 workspace copy the pod mounts on macOS. Same
+# rationale as SANDBOX_VM_AGENT_HOME_BASE: the agent (uid 1000) cannot write a
+# repo mounted directly off the 9p Mac home, because the gVisor gofer presents
+# the files it creates — new source files, build output, every object a
+# `git commit` writes into .git/ — as root-owned. The agent therefore works on
+# a VM-local ext4 copy, which an in-VM Mutagen daemon keeps in near-live two-way
+# sync with the host repo (see prepare_workspace / teardown_workspace_sync in
+# lib/lima.sh). Sessions are isolated under <base>/<session>/ so concurrent
+# sessions over the same repo never share a working copy.
+SANDBOX_VM_WORKSPACE_BASE="${SANDBOX_VM_WORKSPACE_BASE:-/var/lib/sandbox/workspaces}"
+
+# resolve_workspace_mount <session> <repo> — the path the NODE mounts as a tier
+# 2/3 repo's workspace hostPath. On macOS this is the per-session VM-local ext4
+# copy (see above). On Linux/WSL the host repo is mounted directly, exactly as
+# before — so this is the identity function off macOS and changes nothing there.
+# Single source of truth shared by the manifest builder (lib/manifest.sh) and
+# the prepare/teardown steps (lib/lima.sh); they must agree on the path.
+resolve_workspace_mount() {
+  local session="$1" repo="$2"
+  if is_macos; then
+    echo "${SANDBOX_VM_WORKSPACE_BASE}/${session}/$(basename "${repo}")"
+  else
+    echo "${repo}"
+  fi
+}

@@ -154,6 +154,12 @@ Allowlists are exact-match FQDNs — wildcard subdomains are not allowed. See
 Tier 3 also swaps in the `sandbox:<agent>-infra` image variant, which carries
 the infra tooling layer. See `lib/tier.sh` for the authoritative domain list.
 
+On Linux/WSL the tier 2/3 repo is bind-mounted into the pod directly, so the
+agent's edits land in your working tree live. On macOS the agent works on a
+VM-local copy that syncs back to your repo within a couple of seconds — same
+net effect, slightly different mechanism. See ["macOS workspace
+sync"](#macos-workspace-sync) for why.
+
 ## Persistent extras
 
 If your team always needs the same extra domain reachable (an internal Git
@@ -1258,6 +1264,46 @@ Homebrew, or other Lima VMs.
 Background on the trickier choices in the install. Operators don't
 need to read this to use the sandbox; it's here so that whoever has
 to debug an unfamiliar failure mode has the rationale on hand.
+
+### macOS workspace sync
+
+On Linux/WSL, a tier 2/3 `--repo` is bind-mounted straight into the pod and the
+agent reads and writes your working tree directly. macOS can't do that. The
+repo reaches the pod through Lima's 9p mount of your home directory, and over
+that mount the gVisor gofer (which runs as root) presents every file the
+container creates as root-owned — so the uid-1000 agent can't create or modify
+files, including the objects every `git commit` writes into `.git/`. (This is
+the same layer that previously broke agent credential persistence.) We mount
+the home share with 9p `securityModel: mapped-xattr` on purpose: it keeps the
+sandbox's file-ownership bookkeeping in xattrs instead of writing it through to
+your real files, which an earlier passthrough mount did — corrupting host file
+ownership during and after sessions. Switching to virtiofs would reintroduce
+that, so it's not an option.
+
+Instead, on macOS the agent works on a **per-session VM-local ext4 copy** of
+each repo (at `/var/lib/sandbox/workspaces/<session>/<repo>` inside the VM),
+which is genuinely writable by the agent. A [Mutagen](https://mutagen.io)
+daemon **running inside the VM** keeps that copy in near-live two-way sync with
+your host repo. Because your home directory is already visible inside the VM
+via the 9p mount, both sync endpoints are VM-local — there's no host-side
+agent and no SSH — and because Mutagen is an ordinary VM process rather than
+the gVisor gofer, it writes the 9p mount normally while mapped-xattr keeps your
+host file ownership intact. Mutagen is installed into the VM automatically on
+your first tier 2/3 session (a one-time download; no Homebrew dependency on the
+host).
+
+Practical notes:
+
+- Your host repo reflects the agent's edits within a couple of seconds, and the
+  agent picks up host-side edits just as quickly — close to the Linux feel.
+- The masked secret paths (`.env`, `kubeconfig`, `.kube/`, `*-openrc.sh`, etc.)
+  are excluded from the sync, so they never reach the VM-local copy — on top of
+  the existing mount-level masking.
+- Sync mode is `two-way-safe`: if the same file is changed on both sides at
+  once, Mutagen flags the conflict rather than silently picking a winner. Resolve
+  it on the host (or just let the agent rewrite the file).
+- On a large repo the first session pauses briefly while the initial copy
+  populates; subsequent edits are incremental.
 
 ### Cluster CIDRs
 

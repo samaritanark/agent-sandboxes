@@ -29,6 +29,7 @@ tasks:
       - bash tests/test-onboard.sh
       - bash tests/test-agents.sh
       - bash tests/test-agent-home.sh
+      - bash tests/test-workspace-mount.sh
       - bash tests/test-secrets.sh
       - bash tests/test-allow.sh
       - bash tests/test-audit.sh

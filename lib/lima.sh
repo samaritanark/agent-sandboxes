@@ -9,6 +9,12 @@ LIMA_VM_NAME="${LIMA_VM_NAME:-sandbox-vm}"
 LIMA_TEMPLATE="${SANDBOX_ROOT}/lima/sandbox-vm.yaml.tmpl"
 LIMA_CONFIG="${HOME}/.sandbox/lima-sandbox-vm.yaml"
 
+# HOME for the in-VM Mutagen daemon that keeps tier 2/3 workspaces in sync (see
+# prepare_workspace). Mutagen runs as uid 1000 so the VM-local ext4 copy it
+# writes is owned by the agent; this dir holds its daemon socket and session
+# state under <home>/.mutagen. Lives on VM-local ext4, owned 1000.
+SANDBOX_VM_MUTAGEN_HOME="${SANDBOX_VM_MUTAGEN_HOME:-/var/lib/sandbox/mutagen-home}"
+
 # lima_vm_running — returns 0 if VM is running
 lima_vm_running() {
   if ! command -v limactl &>/dev/null; then
@@ -150,6 +156,111 @@ sync_agent_home_back() {
   ' _ "${mount_home}" "${staging}" 2>/dev/null; then
     warn "Could not sync agent-home back to ${staging} (VM stopped?); transcript/backup may be stale."
   fi
+}
+
+# ensure_mutagen_in_vm — macOS only. Make the `mutagen` binary available inside
+# the Lima VM, installing it once if absent. Mutagen drives the tier 2/3
+# workspace sync (prepare_workspace); it runs in the VM, not on the host, so
+# adopting this feature needs no host-side Homebrew dependency and no VM
+# recreate. Idempotent: a no-op once installed. Mirrors install_lima_if_needed.
+ensure_mutagen_in_vm() {
+  is_macos || return 0
+  if limactl shell "${LIMA_VM_NAME}" -- sh -c 'command -v mutagen >/dev/null 2>&1'; then
+    return 0
+  fi
+  echo "==> Installing Mutagen into ${LIMA_VM_NAME} (one-time)..."
+  # Resolve the latest release tag via the GitHub redirect (same trick the Lima
+  # template uses for nerdctl), then fetch the linux asset for the VM's arch.
+  # Mutagen's release assets use Go-style arch names (amd64 / arm64). Only the
+  # `mutagen` binary is needed — the agent tarball is for remote endpoints, and
+  # our sync is local-to-local inside the VM.
+  limactl shell "${LIMA_VM_NAME}" -- sudo sh -c '
+    set -e
+    ver="$(curl -fsSL -o /dev/null -w "%{url_effective}" \
+      https://github.com/mutagen-io/mutagen/releases/latest | sed -E "s#.*/tag/##")"
+    arch="$(uname -m | sed "s/x86_64/amd64/; s/aarch64/arm64/")"
+    tmp="$(mktemp -d)"
+    curl -fsSL "https://github.com/mutagen-io/mutagen/releases/download/${ver}/mutagen_linux_${arch}_${ver}.tar.gz" \
+      | tar -xz -C "$tmp"
+    install -m 0755 "$tmp/mutagen" /usr/local/bin/mutagen
+    rm -rf "$tmp"
+  ' || die "Failed to install Mutagen inside ${LIMA_VM_NAME}."
+}
+
+# prepare_workspace <session> <repo>... — macOS only; a no-op on Linux/WSL,
+# where the repo is mounted directly and writes already work. For each tier 2/3
+# repo, create the per-session VM-local ext4 working copy the pod mounts
+# (resolve_workspace_mount) owned by uid 1000, then start an in-VM Mutagen
+# daemon (as uid 1000) that keeps that copy in near-live two-way sync with the
+# host repo. The host repo is reachable inside the VM at its own absolute path
+# via the writable 9p home mount, so both sync endpoints are VM-local — no
+# host-side Mutagen and no SSH. Because Mutagen is an ordinary VM process (not
+# the gVisor gofer), it writes the 9p mount normally and mapped-xattr keeps the
+# host's real file ownership intact (see [[project_macos_9p_over_virtiofs]]).
+#
+# The masked secret paths (lib/filesystem.sh) are excluded from the sync so
+# .env / kubeconfig / .kube/ / *-openrc.sh never reach the VM-local copy —
+# reinforcing the mount-layer masking. The initial sync is flushed (blocking)
+# before returning, because the pod's hostPath (type: Directory) must pre-exist
+# and be populated when the pod starts.
+prepare_workspace() {
+  is_macos || return 0
+  local session="$1"; shift
+  [[ "$#" -gt 0 ]] || return 0
+
+  ensure_mutagen_in_vm
+
+  # Build root-anchored ignore flags from the single source of truth so the sync
+  # exclusions cannot drift from the pod-level mask. `set -f` in the VM script
+  # below stops the shell from glob-expanding the *-openrc.sh pattern.
+  local ignore_flags="" f
+  for f in "${MASKED_FILE_PATHS[@]}"; do ignore_flags+=" --ignore=/${f}"; done
+  ignore_flags+=" --ignore=/${MASKED_DIR_PATH}/"
+  ignore_flags+=" --ignore=/${MASKED_OPENRC_PATTERN}"
+
+  local repo bname ext4
+  for repo in "$@"; do
+    bname="$(basename "${repo}")"
+    ext4="$(resolve_workspace_mount "${session}" "${repo}")"
+    limactl shell "${LIMA_VM_NAME}" -- sudo sh -c '
+      set -ef
+      ext4="$1"; repo_in_vm="$2"; session="$3"; bname="$4"; mhome="$5"; ignores="$6"
+      mkdir -p "$ext4" "$mhome"
+      chown 1000:1000 "$ext4" "$(dirname "$ext4")" "$mhome"
+      sudo -u "#1000" env HOME="$mhome" /usr/local/bin/mutagen sync create \
+        --label=sandbox-session="$session" \
+        --label=sandbox-repo="$bname" \
+        --sync-mode=two-way-safe \
+        $ignores \
+        "$repo_in_vm" "$ext4"
+    ' _ "${ext4}" "${repo}" "${session}" "${bname}" "${SANDBOX_VM_MUTAGEN_HOME}" "${ignore_flags}" \
+      || die "Failed to start workspace sync for '${bname}' inside ${LIMA_VM_NAME}."
+  done
+
+  # Block until every just-created session has completed one synchronization
+  # cycle, so the pod sees a fully populated workspace at start.
+  limactl shell "${LIMA_VM_NAME}" -- sudo -u "#1000" \
+    env HOME="${SANDBOX_VM_MUTAGEN_HOME}" /usr/local/bin/mutagen sync flush \
+    --label-selector="sandbox-session=${session}" \
+    || warn "Initial workspace sync did not flush cleanly for session ${session}; the workspace may be incomplete."
+}
+
+# teardown_workspace_sync <session> — macOS only; best-effort. Flush the final
+# agent edits back to the host repo (so capture_workspace_diff, which reads the
+# host path, sees them), terminate the session's Mutagen sessions, and remove
+# the VM-local working copy. Must run BEFORE the workspace-diff capture in
+# cmd_stop. A stopped VM or an already-gone session must not block teardown, so
+# every step is error-tolerant — matching sync_agent_home_back.
+teardown_workspace_sync() {
+  is_macos || return 0
+  local session="$1"
+  local sel="sandbox-session=${session}"
+  limactl shell "${LIMA_VM_NAME}" -- sudo -u "#1000" env HOME="${SANDBOX_VM_MUTAGEN_HOME}" \
+    /usr/local/bin/mutagen sync flush --label-selector="${sel}" 2>/dev/null \
+    || warn "Could not flush workspace sync for session ${session} (VM stopped?); host repo may be missing the agent's final edits."
+  limactl shell "${LIMA_VM_NAME}" -- sudo -u "#1000" env HOME="${SANDBOX_VM_MUTAGEN_HOME}" \
+    /usr/local/bin/mutagen sync terminate --label-selector="${sel}" 2>/dev/null || true
+  limactl shell "${LIMA_VM_NAME}" -- sudo rm -rf "${SANDBOX_VM_WORKSPACE_BASE}/${session}" 2>/dev/null || true
 }
 
 # stop_lima_vm — gracefully stop Lima VM

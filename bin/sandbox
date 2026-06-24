@@ -771,6 +771,14 @@ cmd_run() {
   # is mounted directly. See prepare_agent_home / resolve_agent_home.
   prepare_agent_home "${opt_agent}"
 
+  # Tier 2/3 on macOS: the agent works on a per-session VM-local ext4 copy of
+  # each repo (the gVisor gofer cannot give the uid-1000 agent write access to a
+  # repo mounted directly off the 9p Mac home). Create those copies and start
+  # the in-VM Mutagen daemon that keeps them in near-live two-way sync with the
+  # host repos, before the pod that hostPath-mounts them is applied. A no-op on
+  # Linux/WSL and for tier 1. See prepare_workspace / resolve_workspace_mount.
+  prepare_workspace "${session_id}" "${opt_repos[@]+"${opt_repos[@]}"}"
+
   local current_user="${USER:-$(id -un)}"
   local start_time
   start_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -1231,6 +1239,10 @@ cmd_stop() {
 
   # Workspace diff (Tier 2/3)
   if [[ "${tier}" -ge 2 ]] && [[ "${#repos[@]}" -gt 0 ]]; then
+    # macOS: flush the agent's final edits from the VM-local copy back to the
+    # host repos and tear down the Mutagen sessions FIRST, so the diff below
+    # (which reads the host paths) reflects the completed work. No-op elsewhere.
+    teardown_workspace_sync "${session_id}"
     echo "==> Capturing workspace diff..."
     capture_workspace_diff "${log_dir}" "${repos[@]}"
   fi
