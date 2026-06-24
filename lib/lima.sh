@@ -15,6 +15,14 @@ LIMA_CONFIG="${HOME}/.sandbox/lima-sandbox-vm.yaml"
 # state under <home>/.mutagen. Lives on VM-local ext4, owned 1000.
 SANDBOX_VM_MUTAGEN_HOME="${SANDBOX_VM_MUTAGEN_HOME:-/var/lib/sandbox/mutagen-home}"
 
+# Username the in-VM Mutagen process runs as. It must run as uid 1000 (so the
+# ext4 copy it writes is owned by the agent) AND under a real passwd entry:
+# `sudo -u '#1000'` fails on stock Ubuntu when no user owns that uid
+# ("sudo: unknown user #1000"), and the Lima guest user is not uid 1000.
+# _ensure_vm_sync_user creates this user with uid 1000 when the uid is free, or
+# reuses whatever user already owns uid 1000.
+SANDBOX_VM_SYNC_USER="${SANDBOX_VM_SYNC_USER:-sandbox-agent}"
+
 # lima_vm_running — returns 0 if VM is running
 lima_vm_running() {
   if ! command -v limactl &>/dev/null; then
@@ -203,12 +211,34 @@ ensure_mutagen_in_vm() {
 # reinforcing the mount-layer masking. The initial sync is flushed (blocking)
 # before returning, because the pod's hostPath (type: Directory) must pre-exist
 # and be populated when the pod starts.
+# _ensure_vm_sync_user — echo the VM username that owns uid 1000, creating a
+# dedicated SANDBOX_VM_SYNC_USER (uid 1000, no login) if the uid is free. The
+# in-VM Mutagen process runs as this user so the ext4 copy is owned by the same
+# uid the pod runs as. Idempotent; echoes the resolved username on stdout.
+_ensure_vm_sync_user() {
+  limactl shell "${LIMA_VM_NAME}" -- sudo sh -c '
+    set -e
+    want="$1"
+    u="$(getent passwd 1000 | cut -d: -f1)"
+    if [ -z "$u" ]; then
+      useradd -u 1000 -M -s /bin/sh "$want" >/dev/null 2>&1 || true
+      u="$(getent passwd 1000 | cut -d: -f1)"
+    fi
+    printf "%s" "$u"
+  ' _ "${SANDBOX_VM_SYNC_USER}"
+}
+
 prepare_workspace() {
   is_macos || return 0
   local session="$1"; shift
   [[ "$#" -gt 0 ]] || return 0
 
   ensure_mutagen_in_vm
+
+  local syncuser
+  syncuser="$(_ensure_vm_sync_user)"
+  [[ -n "${syncuser}" ]] \
+    || die "Could not resolve or create a uid-1000 sync user in ${LIMA_VM_NAME}."
 
   # Build root-anchored ignore flags from the single source of truth so the sync
   # exclusions cannot drift from the pod-level mask. `set -f` in the VM script
@@ -224,22 +254,22 @@ prepare_workspace() {
     ext4="$(resolve_workspace_mount "${session}" "${repo}")"
     limactl shell "${LIMA_VM_NAME}" -- sudo sh -c '
       set -ef
-      ext4="$1"; repo_in_vm="$2"; session="$3"; bname="$4"; mhome="$5"; ignores="$6"
+      ext4="$1"; repo_in_vm="$2"; session="$3"; bname="$4"; mhome="$5"; ignores="$6"; syncuser="$7"
       mkdir -p "$ext4" "$mhome"
       chown 1000:1000 "$ext4" "$(dirname "$ext4")" "$mhome"
-      sudo -u "#1000" env HOME="$mhome" /usr/local/bin/mutagen sync create \
+      sudo -u "$syncuser" env HOME="$mhome" /usr/local/bin/mutagen sync create \
         --label=sandbox-session="$session" \
         --label=sandbox-repo="$bname" \
         --sync-mode=two-way-safe \
         $ignores \
         "$repo_in_vm" "$ext4"
-    ' _ "${ext4}" "${repo}" "${session}" "${bname}" "${SANDBOX_VM_MUTAGEN_HOME}" "${ignore_flags}" \
+    ' _ "${ext4}" "${repo}" "${session}" "${bname}" "${SANDBOX_VM_MUTAGEN_HOME}" "${ignore_flags}" "${syncuser}" \
       || die "Failed to start workspace sync for '${bname}' inside ${LIMA_VM_NAME}."
   done
 
   # Block until every just-created session has completed one synchronization
   # cycle, so the pod sees a fully populated workspace at start.
-  limactl shell "${LIMA_VM_NAME}" -- sudo -u "#1000" \
+  limactl shell "${LIMA_VM_NAME}" -- sudo -u "${syncuser}" \
     env HOME="${SANDBOX_VM_MUTAGEN_HOME}" /usr/local/bin/mutagen sync flush \
     --label-selector="sandbox-session=${session}" \
     || warn "Initial workspace sync did not flush cleanly for session ${session}; the workspace may be incomplete."
@@ -255,10 +285,13 @@ teardown_workspace_sync() {
   is_macos || return 0
   local session="$1"
   local sel="sandbox-session=${session}"
-  limactl shell "${LIMA_VM_NAME}" -- sudo -u "#1000" env HOME="${SANDBOX_VM_MUTAGEN_HOME}" \
+  local syncuser
+  syncuser="$(_ensure_vm_sync_user)"
+  [[ -n "${syncuser}" ]] || syncuser="${SANDBOX_VM_SYNC_USER}"
+  limactl shell "${LIMA_VM_NAME}" -- sudo -u "${syncuser}" env HOME="${SANDBOX_VM_MUTAGEN_HOME}" \
     /usr/local/bin/mutagen sync flush --label-selector="${sel}" 2>/dev/null \
     || warn "Could not flush workspace sync for session ${session} (VM stopped?); host repo may be missing the agent's final edits."
-  limactl shell "${LIMA_VM_NAME}" -- sudo -u "#1000" env HOME="${SANDBOX_VM_MUTAGEN_HOME}" \
+  limactl shell "${LIMA_VM_NAME}" -- sudo -u "${syncuser}" env HOME="${SANDBOX_VM_MUTAGEN_HOME}" \
     /usr/local/bin/mutagen sync terminate --label-selector="${sel}" 2>/dev/null || true
   limactl shell "${LIMA_VM_NAME}" -- sudo rm -rf "${SANDBOX_VM_WORKSPACE_BASE}/${session}" 2>/dev/null || true
 }
