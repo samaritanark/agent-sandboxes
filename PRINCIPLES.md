@@ -206,7 +206,11 @@ The sandbox enforces three filesystem rules:
    Tier 1 gets an `emptyDir`; Tier 2/3 mount your repository
    read-write at `/workspace` (or `/workspace/<basename>` for
    multi-repo). Nothing else from the host is writable from inside the
-   pod.
+   pod. (On macOS the agent writes a VM-local copy that syncs back to
+   your repo, rather than the repo directly — same guarantee, see
+   "macOS workspace sync" in the README. The agent still sees exactly
+   one writable workspace and nothing else of the host; the sync runs
+   outside the pod.)
 
 2. **Sensitive paths in the workspace are masked**, even though the
    workspace itself is mounted from the host. The following are
