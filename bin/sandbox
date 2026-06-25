@@ -55,6 +55,8 @@ source "${SANDBOX_ROOT}/lib/onboard.sh"
 source "${SANDBOX_ROOT}/lib/secrets.sh"
 # shellcheck source=../lib/network.sh
 source "${SANDBOX_ROOT}/lib/network.sh"
+# shellcheck source=lib/dns.sh
+source "${SANDBOX_ROOT}/lib/dns.sh"
 # shellcheck source=../lib/certs.sh
 source "${SANDBOX_ROOT}/lib/certs.sh"
 
@@ -121,7 +123,8 @@ COMMANDS:
   secret       Manage host-side secret store (injected per-session by profile)
   profile      Create and manage launch profiles (save/list/show/delete)
   configure-network   Re-detect host network state and reconcile k3s/Cilium
-                      (run after a VPN reconnects or the host IP changes)
+                      and CoreDNS split-horizon DNS (run after a VPN reconnects
+                      or the host IP changes; --show-dns previews the DNS plan)
   setup-proxy-cert    Extract a corporate TLS-intercept proxy's root CA
                       from the host trust store and drop it in
                       config/extra-ca-certs/ for the image build
@@ -1758,15 +1761,60 @@ cmd_setup() {
 # Lima VM) is a different topology that this tool does not handle.
 ###############################################################################
 cmd_configure_network() {
+  local show_dns_only="false"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --show-dns)  show_dns_only="true" ;;
+      --help|-h)
+        cat <<EOF
+sandbox configure-network — re-detect host network state and reconcile k3s/Cilium
+
+USAGE:
+  sandbox configure-network [--show-dns]
+
+Run after a VPN reconnects or the host IP changes. Reconciles Cilium's device
+list, the node InternalIP, and CoreDNS split-horizon DNS (so internal VPN-routed
+names resolve via their dedicated servers instead of bouncing off a public
+resolver). Idempotent when nothing has drifted.
+
+OPTIONS:
+  --show-dns   Print the CoreDNS split-horizon ConfigMap that would be applied
+               (derived from systemd-resolved + ~/.sandbox/config.yaml) and
+               exit without touching the cluster.
+  --help       Show this help
+EOF
+        exit 0 ;;
+      *) die "Unknown option: $1. Run 'sandbox configure-network --help' for usage." ;;
+    esac
+    shift
+  done
+
   if [[ "$(detect_platform)" != "linux" ]]; then
     die "configure-network is Linux-only. On macOS the cluster runs inside the Lima VM and cannot see the host's VPN interfaces."
   fi
+
+  if [[ "${show_dns_only}" == "true" ]]; then
+    require_command jq "Install jq via your package manager."
+    echo "==> CoreDNS split-horizon DNS that would be applied:"
+    local zones
+    zones="$(dns_effective_zones)"
+    if [[ -z "${zones}" ]]; then
+      echo "  (none — no VPN routing domains in systemd-resolved and no"
+      echo "   internal_dns_zones in ${USER_SANDBOX_CONFIG})"
+      return 0
+    fi
+    printf '%s\n' "${zones}" | render_split_dns_configmap
+    return 0
+  fi
+
   require_command kubectl "Install kubectl: https://kubernetes.io/docs/tasks/tools/"
   require_command helm "Install helm: https://helm.sh/docs/intro/install/"
   require_command jq "Install jq via your package manager."
 
   echo "==> Re-detecting host network state..."
   reconcile_host_network "${SANDBOX_KUBECONFIG}"
+  echo "==> Reconciling CoreDNS split-horizon DNS..."
+  sync_split_dns "${SANDBOX_KUBECONFIG}"
 }
 
 ###############################################################################

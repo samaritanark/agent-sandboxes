@@ -15,6 +15,15 @@ SANDBOX_KUBECONFIG="${SANDBOX_KUBECONFIG:-${HOME}/.sandbox/kubeconfig}"
 # shellcheck source=../lib/network.sh
 source "${SANDBOX_ROOT}/lib/network.sh"
 
+# Platform helpers (is_linux) and YAML config readers (internal_dns_zones),
+# both used by the CoreDNS split-horizon reconcile in lib/dns.sh.
+# shellcheck source=../lib/platform.sh
+source "${SANDBOX_ROOT}/lib/platform.sh"
+# shellcheck source=../lib/config.sh
+source "${SANDBOX_ROOT}/lib/config.sh"
+# shellcheck source=../lib/dns.sh
+source "${SANDBOX_ROOT}/lib/dns.sh"
+
 # Per-pod resource constants + dynamic ResourceQuota sizing.
 # shellcheck source=../lib/resources.sh
 source "${SANDBOX_ROOT}/lib/resources.sh"
@@ -252,6 +261,13 @@ install_cilium_helm() {
   # reconnecting a VPN after setup run 'sandbox configure-network' to re-apply.
   echo "==> Verifying Cilium network configuration..."
   reconcile_host_network "${SANDBOX_KUBECONFIG}"
+
+  # Mirror the host's split-DNS routing into CoreDNS so internal (VPN-routed)
+  # names resolve via their dedicated servers instead of being load-balanced
+  # onto a public resolver that bounces NXDOMAIN. No-op when no internal
+  # routing domains are present. See lib/dns.sh.
+  echo "==> Configuring CoreDNS split-horizon DNS..."
+  sync_split_dns "${SANDBOX_KUBECONFIG}"
 
   echo "  Cilium installed."
 }
