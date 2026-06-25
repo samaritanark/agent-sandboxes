@@ -120,6 +120,17 @@ RUN curl -fsSL https://taskfile.dev/install.sh \
     | sh -s -- -b /usr/local/bin \
   && task --version
 
+# --- pre-commit ---
+# Installed system-wide (root layer) so the binary is on PATH for the agent
+# user without a per-user install. --break-system-packages is required on
+# Ubuntu 24.04's PEP-668 externally-managed Python; this is a container, so
+# there is no host Python environment to protect. NOTE: pre-commit fetches its
+# hook repos over the network on first run, so a session must allowlist those
+# hosts (GitHub, PyPI, ...) for `pre-commit run` to install hooks — baking in
+# the tool does not widen the per-session egress policy.
+RUN python3 -m pip install --no-cache-dir --break-system-packages pre-commit \
+  && pre-commit --version
+
 # --- Create non-root agent user ---
 # Ubuntu 24.04 ships with an 'ubuntu' user at UID/GID 1000; remove it first.
 RUN userdel -f ubuntu 2>/dev/null || true \
