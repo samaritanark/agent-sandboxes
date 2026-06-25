@@ -335,4 +335,8 @@ ensure_network_config_current() {
   command -v jq >/dev/null 2>&1 || return 0
   echo "==> Checking host network configuration..."
   reconcile_host_network "${kc}"
+  # Mirror the host's split-DNS routing into CoreDNS so internal (VPN-routed)
+  # names don't get load-balanced onto a public resolver and bounce NXDOMAIN.
+  # Self-contained and change-gated; sourced from lib/dns.sh.
+  sync_split_dns "${kc}"
 }
