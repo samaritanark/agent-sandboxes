@@ -11,7 +11,7 @@ new to you. Plan on about 15 minutes.
 Everything here uses the official Model Context Protocol **"everything" reference
 server** — the demo server the MCP project ships specifically to show what the
 protocol can do. It exposes sample tools (`echo`, `add`, `printEnv`,
-`longRunningOperation`, …), needs no credentials, and makes no outbound network
+`longRunningOperation`, ...), needs no credentials, and makes no outbound network
 calls, which makes it the ideal first dependency.
 
 ---
