@@ -24,6 +24,12 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - master
+  workflow_dispatch:
+    inputs:
+      bump:
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 # Serialize releases so two quick merges can't race on version computation
 # (both reading the same "latest tag" and computing the same next version).
