@@ -242,16 +242,22 @@ prepare_workspace() {
 
   # Build root-anchored ignore flags from the single source of truth so the sync
   # exclusions cannot drift from the pod-level mask. `set -f` in the VM script
-  # below stops the shell from glob-expanding the *-openrc.sh pattern.
-  local ignore_flags="" f
-  for f in "${MASKED_FILE_PATHS[@]}"; do ignore_flags+=" --ignore=/${f}"; done
-  ignore_flags+=" --ignore=/${MASKED_DIR_PATH}/"
-  ignore_flags+=" --ignore=/${MASKED_OPENRC_PATTERN}"
+  # below stops the shell from glob-expanding the *-openrc.sh pattern. The
+  # built-in flags are shared; per-repo configured masked_paths are appended
+  # inside the loop so each repo's mask matches its own config.
+  local base_ignore_flags="" f
+  for f in "${MASKED_FILE_PATHS[@]}"; do base_ignore_flags+=" --ignore=/${f}"; done
+  base_ignore_flags+=" --ignore=/${MASKED_DIR_PATH}/"
+  base_ignore_flags+=" --ignore=/${MASKED_OPENRC_PATTERN}"
 
-  local repo bname ext4
+  local repo bname ext4 ignore_flags mp
   for repo in "$@"; do
     bname="$(basename "${repo}")"
     ext4="$(resolve_workspace_mount "${session}" "${repo}")"
+    ignore_flags="${base_ignore_flags}"
+    while IFS= read -r mp; do
+      [[ -n "${mp}" ]] && ignore_flags+=" --ignore=/${mp}"
+    done < <(load_repo_masked_paths "${repo}")
     limactl shell "${LIMA_VM_NAME}" -- sudo sh -c '
       set -ef
       ext4="$1"; repo_in_vm="$2"; session="$3"; bname="$4"; mhome="$5"; ignores="$6"; syncuser="$7"

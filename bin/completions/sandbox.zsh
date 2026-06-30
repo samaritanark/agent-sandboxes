@@ -31,6 +31,7 @@ _sandbox() {
         'setup:Install/configure sandbox prerequisites'
         'onboard:Stage host-side agent OAuth state for first-run convenience'
         'secret:Manage host-side secret store (injected per-session by profile)'
+        'mask:Manage per-repo file masking (add/list masked_paths)'
         'profile:Create and manage launch profiles (save/list/show/delete)'
         'configure-network:Re-detect host interfaces and re-apply to Cilium (run after VPN reconnects)'
         'rebuild:Rebuild sandbox container image(s)'
@@ -52,6 +53,7 @@ _sandbox() {
         setup)  _sandbox_setup ;;
         onboard) _sandbox_onboard ;;
         secret) _sandbox_secret ;;
+        mask)   _sandbox_mask ;;
         profile) _sandbox_profile ;;
       esac
       ;;
@@ -96,6 +98,29 @@ _sandbox_secret() {
       ;;
     delete|rm|remove)
       _values 'secret name' "${stored[@]}"
+      ;;
+  esac
+}
+
+_sandbox_mask() {
+  if (( CURRENT == 2 )); then
+    _values 'subcommand' \
+      'add[Add path(s) to a repo''s masked_paths]' \
+      'list[Show built-in + configured masked paths for a repo]'
+    return
+  fi
+
+  case "${words[2]}" in
+    add)
+      _arguments \
+        '--repo[Repository whose .sandbox/config.yaml to update]:directory:_files -/' \
+        '--help[Show help]' \
+        '*:relative path:_files'
+      ;;
+    list)
+      _arguments \
+        '--repo[Repository to inspect]:directory:_files -/' \
+        '--help[Show help]'
       ;;
   esac
 }
@@ -186,6 +211,7 @@ _sandbox_run() {
     '--dry-run[Print manifests without applying]' \
     '--name[Human-readable session name]:name:' \
     '--keep-alive[Leave the pod running after disconnect (default: tear down)]' \
+    '--i-accept-unmasked-secrets[Launch despite unmasked secrets (agent will see them)]' \
     '--help[Show help]'
 }
 

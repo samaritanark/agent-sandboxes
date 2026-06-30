@@ -198,6 +198,38 @@ All three sources are subject to the same blocked-destinations check as
 `--allow-domain`, so an entry that matches `config/blocked-destinations.yaml`
 is still rejected.
 
+### Never-allow: a personal block list
+
+The allow-list isn't purely manual — `--infra-kubeconfig` and `--infra-endpoint`
+auto-allowlist their destination as part of spinning up a Tier 3 session. To
+stop that convenience from quietly punching a hole in default-deny (say, an
+accidentally-supplied **production** kubeconfig), you can keep your own block
+list in the same `~/.sandbox/config.yaml`, using the same keys as
+`config/blocked-destinations.yaml`:
+
+```yaml
+# ~/.sandbox/config.yaml
+blocked_domains:
+  - "*.prod.internal"        # never let a sandbox reach prod, even if a token says so
+blocked_cidrs:
+  - 10.0.0.0/8               # …including endpoints given as a bare IP
+```
+
+This is **deny-only and additive**: your entries are unioned with the org and
+overlay block lists and can never weaken them (a block always beats an allow).
+The check runs at `sandbox run` **before any cluster resource is created**, and
+covers every egress target — including ones auto-derived from a kubeconfig or
+`--infra-endpoint`, and IP-literal endpoints matched against `blocked_cidrs`. So
+a kubeconfig whose API server is `https://10.0.3.7:6443` fails fast:
+
+```
+ERROR: 10.0.3.7 falls inside blocked CIDR '10.0.0.0/8'.
+```
+
+instead of launching and leaving you to discover at runtime that egress is
+blocked. (IPv6-literal endpoints are matched only by Cilium's runtime
+`egressDeny`, not at create time.)
+
 ### Live-updating a running session
 
 If a session hits a domain that's not in its allowlist, you don't have
@@ -471,6 +503,8 @@ sandbox run [OPTIONS]
   --name <name>                      human-readable label (auto-set if omitted)
   --keep-alive                       leave pod running after disconnect
                                      (default: tear down to free cluster resources)
+  --i-accept-unmasked-secrets        launch despite secrets the mask won't
+                                     hide (printed; the agent will see them)
 
 sandbox resume <SESSION_ID> [--keep-alive]
 sandbox list
@@ -491,6 +525,8 @@ sandbox secret set <NAME> [--from-file PATH | --from-env[=VAR]]  # else reads st
                      # the source var to NAME; use =VAR to override.
 sandbox secret list                           # names + sizes + mtimes; values never printed
 sandbox secret delete <NAME>
+sandbox mask add --repo <PATH> <RELPATH>...    # hide file(s) from the agent (per-repo)
+sandbox mask list --repo <PATH>               # built-in + configured masked paths
 sandbox cleanup [--older-than DAYS]            default: 90
 sandbox check <WORKSPACE_PATH>
 sandbox status
@@ -511,9 +547,10 @@ sandbox version
   wrong, or right after `./setup.sh` to confirm install succeeded.
 - **`sandbox check <PATH>`** — dry-run of the pre-session workspace
   scan. Reports which files in the directory would be masked
-  (`.env`, `.npmrc`, `kubeconfig`, `*.pem`, …) before you actually
-  launch a Tier 2/3 session against it. Useful for catching credentials
-  in a repo you've never sandboxed before.
+  (`.env`, `.npmrc`, `kubeconfig`, `*.pem`, …) and previews the
+  betterleaks secret gate (which **unmasked** secrets would block a real
+  `sandbox run`) before you actually launch a Tier 2/3 session against it.
+  Useful for catching credentials in a repo you've never sandboxed before.
 - **`sandbox flows <SESSION_ID>`** — dumps the Hubble network flow
   records captured for that session (`~/.sandbox/logs/<id>/flows.json`,
   or live from Hubble if the pod is still running). Use this when a
@@ -553,7 +590,11 @@ and can be combined:
   mounted read-only at `/home/agent/.kube/config`; `$KUBECONFIG` is set
   inside the pod. The API server's hostname and port (extracted from
   `clusters[].cluster.server`) are auto-added to the egress allowlist, so
-  you don't also need `--infra-endpoint` for the cluster itself.
+  you don't also need `--infra-endpoint` for the cluster itself. This
+  auto-add is still checked against the block list (org + overlay + your
+  `~/.sandbox/config.yaml`) before launch — including the server's IP against
+  `blocked_cidrs` — so an accidentally-supplied production cluster fails fast
+  rather than being silently allowlisted. See [Never-allow](#never-allow-a-personal-block-list).
 
 Example:
 
@@ -862,6 +903,33 @@ Retention: 90 days (Tier 1/2), 180 days (Tier 3).
   ever enters the pod is one explicitly passed via `--infra-kubeconfig`, which
   is minified to a single context, mounted as a K8s Secret at
   `/home/agent/.kube/config`, and deleted on teardown.
+- **Secret gate**: before every Tier 2/3 launch each `--repo` is scanned
+  with [betterleaks](https://github.com/betterleaks/betterleaks). A secret
+  found in a file the mask would **not** hide aborts the launch — the agent
+  never sees a workspace secret you forgot about. The error names the
+  offending path and gives a `sandbox mask add` command to hide it (see
+  "Extending the mask" below). betterleaks is required for Tier 2/3; if it
+  is missing, the launch fails closed. `--i-accept-unmasked-secrets` on
+  `sandbox run` prints the findings and launches anyway.
+
+### Extending the mask
+
+The built-in mask covers a fixed root-level set (`.env`, `.env.local`,
+`.npmrc`, `clouds.yaml`, `kubeconfig`, `.kube/`, `*-openrc.sh`). To hide
+additional files — including nested ones — add them per-repo:
+
+```bash
+# Hide a nested config the secret gate flagged
+sandbox mask add --repo ~/repos/app config/prod/secrets.yaml
+
+# See the effective mask (built-in + configured) for a repo
+sandbox mask list --repo ~/repos/app
+```
+
+`mask add` records each path under `masked_paths:` in
+`<repo>/.sandbox/config.yaml`; at launch those paths are mounted as empty
+overlays exactly like the built-in set (and excluded from the macOS
+workspace sync). Re-running `sandbox run` then passes the gate.
 - **Credentials**: claude/codex use OAuth (no API key injection);
   opencode key via K8s Secret; tier 3 infra creds via per-session Secrets
   (`--infra-token` → `$INFRA_TOKEN`; `--infra-kubeconfig` → mounted file)
@@ -963,7 +1031,8 @@ the ServiceAccount-token recipe above.
 ## Platform Requirements
 
 **Linux**: k3s, gVisor, Cilium, kubectl, helm, jq, xxd, sha256sum,
-curl, git
+curl, git, betterleaks (required for Tier 2/3 — the pre-launch secret
+gate fails closed without it)
 
 **macOS**: Lima (`brew install lima`) — provisions an Ubuntu 24.04 VM
 with identical stack
