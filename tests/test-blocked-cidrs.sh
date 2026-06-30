@@ -183,6 +183,111 @@ test_policy_egress_deny() {
   fi
 }
 
+###############################################################################
+# ip_in_cidr — IPv4 membership math (bash 3.2-safe)
+###############################################################################
+test_ip_in_cidr() {
+  info "Testing ip_in_cidr..."
+  local spec ip cidr want got
+  # (ip, cidr, expected) — ranges, host route, match-all, leading-zero octet
+  # (must not be read as octal), IPv6 (unhandled → false), and garbage.
+  for spec in \
+    "10.0.3.7 10.0.0.0/8 in" \
+    "11.0.0.1 10.0.0.0/8 out" \
+    "169.254.169.254 169.254.0.0/16 in" \
+    "192.168.1.5 192.168.1.0/24 in" \
+    "192.168.2.5 192.168.1.0/24 out" \
+    "1.2.3.4 0.0.0.0/0 in" \
+    "10.0.0.1 10.0.0.1/32 in" \
+    "10.0.0.2 10.0.0.1/32 out" \
+    "010.0.0.1 10.0.0.0/8 in" \
+    "fd00::1 fd00::/8 out" \
+    "notanip 10.0.0.0/8 out" \
+    "10.0.0.1 10.0.0.0/33 out" \
+    "10.0.0.1 10.0.0.0 out" \
+  ; do
+    # shellcheck disable=SC2086  # intentional word-split of the spec triple
+    set -- ${spec}; ip="$1"; cidr="$2"; want="$3"
+    if ip_in_cidr "${ip}" "${cidr}"; then got="in"; else got="out"; fi
+    [[ "${got}" == "${want}" ]] \
+      || fail "ip_in_cidr ${ip} ${cidr}: expected ${want}, got ${got}"
+  done
+  pass "membership: ranges, /32, /0, leading-zero octet, IPv6 skip, garbage"
+}
+
+###############################################################################
+# check_ip_not_in_blocked_cidrs — dies on an IP inside a blocked range
+###############################################################################
+test_check_ip_not_in_blocked_cidrs() {
+  info "Testing check_ip_not_in_blocked_cidrs..."
+  unset SANDBOX_OVERLAY
+  rm -f "${USER_SANDBOX_CONFIG}"
+  write_blocked "blocked_cidrs:" "  - 10.0.0.0/8" "  - 169.254.0.0/16"
+
+  ( check_ip_not_in_blocked_cidrs 10.0.3.7 >/dev/null 2>&1 ) \
+    && fail "10.0.3.7 ∈ 10.0.0.0/8 should be rejected" \
+    || pass "in-range IP rejected"
+
+  ( check_ip_not_in_blocked_cidrs 8.8.8.8 >/dev/null 2>&1 ) \
+    && pass "out-of-range IP allowed" \
+    || fail "8.8.8.8 is in no blocked range and should pass"
+
+  # IPv6 literal: skipped at create time (Cilium enforces at runtime) → no die.
+  ( check_ip_not_in_blocked_cidrs "fd00::1" >/dev/null 2>&1 ) \
+    && pass "IPv6 literal skipped, not rejected" \
+    || fail "IPv6 literal should be skipped, not rejected"
+
+  # Non-IP target is a no-op here (the domain check handles names).
+  ( check_ip_not_in_blocked_cidrs "api.example.com" >/dev/null 2>&1 ) \
+    && pass "non-IP target is a no-op" \
+    || fail "non-IP target should be a no-op"
+}
+
+###############################################################################
+# Per-user block layer — ~/.sandbox/config.yaml additions are unioned in, and
+# bounded reads mean extra_allowed_domains in the SAME file is NOT misread as a
+# block (the reason _check_domain_against_blocked_file reads via the key-bounded
+# extractor rather than an unbounded grep).
+###############################################################################
+test_user_block_layer() {
+  info "Testing per-user block layer (~/.sandbox/config.yaml)..."
+  unset SANDBOX_OVERLAY
+  mkdir -p "$(dirname "${USER_SANDBOX_CONFIG}")"
+
+  # Org blocks nothing relevant; the user file adds domains + a CIDR, and also
+  # carries an unrelated extra_allowed_domains list.
+  write_blocked "blocked_domains:" "  - pastebin.com" "blocked_cidrs:"
+  printf '%s\n' \
+    "extra_allowed_domains:" \
+    "  - allowed.example.com" \
+    "blocked_domains:" \
+    "  - secret.internal" \
+    "  - '*.prod.example.com'" \
+    "blocked_cidrs:" \
+    "  - 172.16.0.0/12" \
+    > "${USER_SANDBOX_CONFIG}"
+
+  grep -qx '172.16.0.0/12' <<<"$(get_blocked_cidrs)" \
+    || fail "user blocked_cidrs not unioned into get_blocked_cidrs"
+  pass "user blocked_cidrs unioned into the deny set"
+
+  ( check_domain_not_blocked "allowed.example.com" >/dev/null 2>&1 ) \
+    || fail "user extra_allowed_domains bled into the block list (bounded-read regression)"
+  pass "extra_allowed_domains in the same file is not misread as a block"
+
+  ( check_domain_not_blocked "secret.internal" >/dev/null 2>&1 ) \
+    && fail "user-blocked 'secret.internal' should be rejected" || true
+  ( check_domain_not_blocked "api.prod.example.com" >/dev/null 2>&1 ) \
+    && fail "user-blocked '*.prod.example.com' should reject subdomains" || true
+  pass "user-level blocked_domains (exact + wildcard) rejected"
+
+  ( check_egress_target_not_blocked "172.16.5.5" >/dev/null 2>&1 ) \
+    && fail "user-blocked CIDR 172.16.0.0/12 should reject 172.16.5.5" || true
+  pass "user-level blocked_cidrs rejects a matching IP via the combiner"
+
+  rm -f "${USER_SANDBOX_CONFIG}"
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -194,6 +299,9 @@ main() {
   test_check_blocked_cidrs_valid
   test_blocked_cidrs_completeness
   test_policy_egress_deny
+  test_ip_in_cidr
+  test_check_ip_not_in_blocked_cidrs
+  test_user_block_layer
 
   echo ""
   echo "All blocked-CIDR tests passed."

@@ -198,6 +198,38 @@ All three sources are subject to the same blocked-destinations check as
 `--allow-domain`, so an entry that matches `config/blocked-destinations.yaml`
 is still rejected.
 
+### Never-allow: a personal block list
+
+The allow-list isn't purely manual — `--infra-kubeconfig` and `--infra-endpoint`
+auto-allowlist their destination as part of spinning up a Tier 3 session. To
+stop that convenience from quietly punching a hole in default-deny (say, an
+accidentally-supplied **production** kubeconfig), you can keep your own block
+list in the same `~/.sandbox/config.yaml`, using the same keys as
+`config/blocked-destinations.yaml`:
+
+```yaml
+# ~/.sandbox/config.yaml
+blocked_domains:
+  - "*.prod.internal"        # never let a sandbox reach prod, even if a token says so
+blocked_cidrs:
+  - 10.0.0.0/8               # …including endpoints given as a bare IP
+```
+
+This is **deny-only and additive**: your entries are unioned with the org and
+overlay block lists and can never weaken them (a block always beats an allow).
+The check runs at `sandbox run` **before any cluster resource is created**, and
+covers every egress target — including ones auto-derived from a kubeconfig or
+`--infra-endpoint`, and IP-literal endpoints matched against `blocked_cidrs`. So
+a kubeconfig whose API server is `https://10.0.3.7:6443` fails fast:
+
+```
+ERROR: 10.0.3.7 falls inside blocked CIDR '10.0.0.0/8'.
+```
+
+instead of launching and leaving you to discover at runtime that egress is
+blocked. (IPv6-literal endpoints are matched only by Cilium's runtime
+`egressDeny`, not at create time.)
+
 ### Live-updating a running session
 
 If a session hits a domain that's not in its allowlist, you don't have
@@ -558,7 +590,11 @@ and can be combined:
   mounted read-only at `/home/agent/.kube/config`; `$KUBECONFIG` is set
   inside the pod. The API server's hostname and port (extracted from
   `clusters[].cluster.server`) are auto-added to the egress allowlist, so
-  you don't also need `--infra-endpoint` for the cluster itself.
+  you don't also need `--infra-endpoint` for the cluster itself. This
+  auto-add is still checked against the block list (org + overlay + your
+  `~/.sandbox/config.yaml`) before launch — including the server's IP against
+  `blocked_cidrs` — so an accidentally-supplied production cluster fails fast
+  rather than being silently allowlisted. See [Never-allow](#never-allow-a-personal-block-list).
 
 Example:
 
