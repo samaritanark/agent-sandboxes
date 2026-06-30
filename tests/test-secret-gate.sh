@@ -166,6 +166,62 @@ test_gate() {
 }
 
 ###############################################################################
+# .git/config — a credential in the repo's git config is readable in the pod
+# (the mount includes .git, which the mask cannot empty) and betterleaks skips
+# .git in a directory walk, so it must be scanned explicitly and gated.
+###############################################################################
+test_gitconfig_secret() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing .git/config secret detection..."
+
+  # A clean repo (no planted .env/nested secrets) whose only secret is a
+  # credential embedded in a remote URL inside .git/config.
+  local repo="${TEST_DIR}/gitcfg"
+  mkdir -p "${repo}"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  git -C "${repo}" remote add origin \
+    "https://u:ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z@github.com/x/y.git"
+
+  local out="${TEST_DIR}/gitcfg.out"
+  scan_repo_secrets "${repo}" > "${out}"
+
+  grep -q "$(printf '^gitconfig\t.git/config\t')" "${out}" \
+    && pass ".git/config secret classified gitconfig" \
+    || fail ".git/config secret should be a gitconfig finding"
+
+  # The whole-repo directory scan must not also surface it (betterleaks skips
+  # .git), so the only line is the explicit gitconfig one — and it's redacted.
+  if grep -q "ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z" "${out}"; then
+    fail "raw .git/config secret leaked into scan output (should be redacted)"
+  fi
+  pass ".git/config secret value redacted"
+
+  # The gate refuses on it...
+  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "gate should refuse on a .git/config secret"
+  fi
+  pass "gate refuses on .git/config secret"
+
+  # ...the override proceeds...
+  if ( secret_gate_repos "true" "${repo}" >/dev/null 2>&1 ); then
+    pass "override proceeds despite .git/config secret"
+  else
+    fail "override should proceed"
+  fi
+
+  # ...and masking does NOT help (an empty .git/config overlay would break git,
+  # so the gitconfig scan ignores masked_paths and the gate still refuses).
+  config_add_masked_path "${repo}/.sandbox/config.yaml" ".git/config"
+  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "masking .git/config must not bypass the gate"
+  fi
+  pass "masking .git/config does not bypass the gate"
+}
+
+###############################################################################
 # Fail closed on scanner failure — a betterleaks runtime error must NOT look
 # like "no secrets found". Uses a stub betterleaks that exits non-zero without
 # writing a report (the nastiest case: exit 1 is also the leaks-found code).
@@ -244,6 +300,7 @@ main() {
   test_manifest_mount
   test_scan_classification
   test_gate
+  test_gitconfig_secret
   test_scan_failure_fails_closed
 
   echo ""

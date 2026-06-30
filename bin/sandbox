@@ -1484,7 +1484,7 @@ cmd_check() {
       [[ -z "${_rel}" ]] && continue
       if [[ "${_m}" == "error" ]]; then
         _scan_failed=true
-      elif [[ "${_m}" == "no" ]]; then
+      elif [[ "${_m}" == "no" || "${_m}" == "gitconfig" ]]; then
         (( _unmasked++ )) || true
         echo "  UNMASKED: ${_rel}  [${_rule}, line ${_ln}]"
       fi
