@@ -181,6 +181,21 @@ is_path_masked() {
 # TSV line per finding: "<masked yes|no>\t<relpath>\t<RuleID>\t<line>\t<match>".
 # Secret values are redacted (--redact). .git/ matches are skipped (the mask
 # does not empty .git and history scanning is out of scope for this gate).
+#
+# Fail closed on scanner failure: a betterleaks runtime error (panic, bad
+# config, OOM, truncated report) must NOT look like "no secrets found", or the
+# gate would silently let a workspace through. We cannot rely on the exit code
+# alone — betterleaks returns 1 both for leaks-found and for some errors — so
+# the report is the discriminator:
+#   rc 0                       -> clean run (report is `null`/empty)
+#   rc 1 + valid JSON array    -> leaks found, parse the report
+#   anything else              -> failure: emit an `error` sentinel line.
+# The caller (secret_gate_repos) aborts on the sentinel. A bare return/exit
+# here would be swallowed by the process substitution it reads us through.
+#
+# --validation=false: never let the scanner reach out to live APIs to validate
+# a secret found in an untrusted workspace (it is the betterleaks default, but
+# we pin it so a future default flip or repo-local config cannot enable it).
 scan_repo_secrets() {
   local repo="$1"
   local real_repo
@@ -189,8 +204,19 @@ scan_repo_secrets() {
   local report
   report="$(mktemp "${TMPDIR:-/tmp}/sandbox-leakscan-XXXXXX")"
 
+  local rc=0
   betterleaks dir "${real_repo}" --no-banner -f json -r "${report}" \
-    --exit-code 0 --redact >/dev/null 2>&1 || true
+    --validation=false --redact >/dev/null 2>&1 || rc=$?
+
+  if [[ "${rc}" == 0 ]]; then
+    :  # clean; report is `null`, the parse below yields no findings.
+  elif [[ "${rc}" == 1 ]] && jq -e 'type == "array"' "${report}" >/dev/null 2>&1; then
+    :  # leaks found; a valid JSON array report to parse below.
+  else
+    printf 'error\tbetterleaks scan failed (exit %s)\n' "${rc}"
+    rm -f "${report}"
+    return 0
+  fi
 
   local file ruleid line match relpath
   while IFS=$'\t' read -r file ruleid line match; do
@@ -270,6 +296,19 @@ secret_gate_repos() {
   for repo in "${repos[@]}"; do
     while IFS=$'\t' read -r m relpath ruleid ln match; do
       [[ -z "${relpath}" ]] && continue
+      # An `error` sentinel means betterleaks could not be trusted to have
+      # scanned this workspace. Fail closed: refuse the launch rather than
+      # risk passing a repo whose secrets were never inspected. The override
+      # does not apply here — it accepts *known* secrets, not an unknown scan.
+      if [[ "${m}" == "error" ]]; then
+        echo "" >&2
+        echo "ERROR: betterleaks failed to scan ${repo} (${relpath})." >&2
+        echo "       The workspace could not be verified free of unmasked" >&2
+        echo "       secrets, so the launch is refused. Re-run, or check the" >&2
+        echo "       betterleaks installation and any repo-local config." >&2
+        echo "" >&2
+        exit 1
+      fi
       if [[ "${m}" == "yes" ]]; then
         (( total_masked++ )) || true
       else

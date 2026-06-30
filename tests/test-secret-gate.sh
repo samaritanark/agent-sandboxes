@@ -166,6 +166,50 @@ test_gate() {
 }
 
 ###############################################################################
+# Fail closed on scanner failure — a betterleaks runtime error must NOT look
+# like "no secrets found". Uses a stub betterleaks that exits non-zero without
+# writing a report (the nastiest case: exit 1 is also the leaks-found code).
+###############################################################################
+test_scan_failure_fails_closed() {
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing fail-closed on betterleaks scan failure..."
+
+  local repo="${TEST_DIR}/scanfail"
+  make_repo "${repo}"
+
+  # Stub that mimics a crash: exit 1, leave the report path empty/unwritten.
+  local stub="${TEST_DIR}/stubbin"
+  mkdir -p "${stub}"
+  cat > "${stub}/betterleaks" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "${stub}/betterleaks"
+
+  # scan_repo_secrets emits an `error` sentinel rather than zero findings.
+  local out
+  out="$(PATH="${stub}:${PATH}" scan_repo_secrets "${repo}")"
+  if printf '%s\n' "${out}" | grep -q "$(printf '^error\t')"; then
+    pass "scan emits error sentinel on scanner failure"
+  else
+    fail "expected an 'error' sentinel line, got: ${out}"
+  fi
+
+  # The gate refuses the launch (exit non-zero) on that sentinel...
+  if ( PATH="${stub}:${PATH}" secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "gate should refuse when the scanner fails"
+  fi
+  pass "gate refuses on scanner failure"
+
+  # ...and the override does NOT bypass a failed scan (it accepts known
+  # secrets, not an uninspected workspace).
+  if ( PATH="${stub}:${PATH}" secret_gate_repos "true" "${repo}" >/dev/null 2>&1 ); then
+    fail "override should not bypass a failed scan"
+  fi
+  pass "override does not bypass a failed scan"
+}
+
+###############################################################################
 # build_volume_mounts_block — a configured masked_path becomes an overlay mount
 ###############################################################################
 test_manifest_mount() {
@@ -200,6 +244,7 @@ main() {
   test_manifest_mount
   test_scan_classification
   test_gate
+  test_scan_failure_fails_closed
 
   echo ""
   echo "All secret-gate tests passed."
