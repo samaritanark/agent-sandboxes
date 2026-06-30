@@ -10,8 +10,9 @@ _sandbox_complete() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="run resume allow list logs flows stop cleanup check status setup onboard secret profile configure-network rebuild version"
-  local run_opts="--agent --tier --profile --repo --allow-domain --base-url --infra-token --infra-kubeconfig --infra-kube-context --allow-exec-plugin --infra-endpoint --dry-run --name --keep-alive --help"
+  local commands="run resume allow list logs flows stop cleanup check status setup onboard secret mask profile configure-network rebuild version"
+  local run_opts="--agent --tier --profile --repo --allow-domain --base-url --infra-token --infra-kubeconfig --infra-kube-context --allow-exec-plugin --infra-endpoint --dry-run --name --keep-alive --i-accept-unmasked-secrets --help"
+  local mask_subs="add list"
   local rebuild_opts="--agent --tier3 --no-cache --codex-version --opencode-version --help"
   local setup_opts="--pod-cidr --service-cidr --apiserver-port"
   local onboard_opts="--agent --skip-config --dry-run --force --help"
@@ -161,6 +162,24 @@ _sandbox_complete() {
           COMPREPLY=($(compgen -W "${stored}" -- "${cur}"))
           ;;
       esac
+      ;;
+    mask)
+      # First positional after 'mask' is the sub-subcommand.
+      if [[ "${cword}" -eq 2 ]]; then
+        # shellcheck disable=SC2207
+        COMPREPLY=($(compgen -W "${mask_subs}" -- "${cur}"))
+        return
+      fi
+      case "${prev}" in
+        --repo) _filedir -d; return ;;
+      esac
+      if [[ "${cur}" == --* ]]; then
+        # shellcheck disable=SC2207
+        COMPREPLY=($(compgen -W "--repo --help" -- "${cur}"))
+      else
+        # Positional relative paths for 'mask add'.
+        _filedir
+      fi
       ;;
     profile)
       # First positional after 'profile' is the sub-subcommand.

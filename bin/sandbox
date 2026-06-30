@@ -121,6 +121,7 @@ COMMANDS:
   setup        Install/configure sandbox prerequisites
   onboard      Stage host-side agent OAuth state for first-run convenience
   secret       Manage host-side secret store (injected per-session by profile)
+  mask         Manage per-repo file masking (add/list masked_paths)
   profile      Create and manage launch profiles (save/list/show/delete)
   configure-network   Re-detect host network state and reconcile k3s/Cilium
                       and CoreDNS split-horizon DNS (run after a VPN reconnects
@@ -197,6 +198,11 @@ OPTIONS:
                                     resources; conversation history persists in
                                     ~/.sandbox/agent-home/<agent>/ and can be
                                     restored via the agent's /resume command)
+  --i-accept-unmasked-secrets       Launch even if betterleaks finds a secret
+                                    in a workspace file the mask won't hide.
+                                    The findings are printed; the agent WILL
+                                    be able to read them. Without this flag
+                                    such a finding aborts the launch.
   --help                            Show this help
 
 TIERS:
@@ -212,6 +218,13 @@ PERSISTENT EXTRAS:
     \$SANDBOX_EXTRA_ALLOWED_DOMAINS comma-separated env var
     <repo>/.sandbox/config.yaml    per-repo extras (one per --repo)
   All three are subject to the blocked-destinations check.
+
+SECRET GATE (tier 2/3):
+  Before launch, each --repo is scanned with betterleaks. A secret in a
+  file the mask would NOT hide aborts the launch with the offending path(s)
+  and a 'sandbox mask add' command to mask them. betterleaks is required;
+  its absence fails the launch closed. Override with
+  --i-accept-unmasked-secrets. See 'sandbox mask --help'.
 
 OVERLAYS:
   Teams can ship a directory of profiles, GOVERNANCE.md, an additive
@@ -351,6 +364,7 @@ cmd_run() {
   local opt_allow_exec_plugin="false"
   local opt_dry_run="false"
   local opt_keep_alive="false"
+  local opt_accept_unmasked_secrets="false"
   local opt_base_url=""
   local -a opt_allow_domains=()
   local -a opt_infra_endpoints=()
@@ -384,6 +398,7 @@ cmd_run() {
       --name)                  opt_name="${2:?--name requires a value}"; shift ;;
       --name=*)                opt_name="${1#--name=}" ;;
       --keep-alive)            opt_keep_alive="true" ;;
+      --i-accept-unmasked-secrets) opt_accept_unmasked_secrets="true" ;;
       *)                       die "Unknown option: $1. Run 'sandbox run --help' for usage." ;;
     esac
     shift
@@ -714,6 +729,10 @@ cmd_run() {
       workspace_prescan "${_r}"
     done
     check_masking_paths "${opt_repos[@]}"
+    # Gate the launch on secrets the mask would not hide. Fails closed if
+    # betterleaks is absent; --i-accept-unmasked-secrets downgrades the
+    # refusal to a printed warning.
+    secret_gate_repos "${opt_accept_unmasked_secrets}" "${opt_repos[@]}"
   fi
 
   ###########################################################################
@@ -1456,6 +1475,28 @@ cmd_check() {
   validate_repo_path "${workspace}"
   workspace_prescan "${workspace}"
 
+  # Preview the secret gate: report unmasked findings but never fail —
+  # 'check' is informational. 'sandbox run' applies the real gate.
+  if command -v betterleaks &>/dev/null; then
+    echo "  Scanning for unmasked secrets with betterleaks (preview)..."
+    local _m _rel _rule _ln _match _unmasked=0
+    while IFS=$'\t' read -r _m _rel _rule _ln _match; do
+      [[ -z "${_rel}" ]] && continue
+      if [[ "${_m}" == "no" ]]; then
+        (( _unmasked++ )) || true
+        echo "  UNMASKED: ${_rel}  [${_rule}, line ${_ln}]"
+      fi
+    done < <(scan_repo_secrets "${workspace}")
+    if [[ "${_unmasked}" -gt 0 ]]; then
+      echo "  ${_unmasked} unmasked secret(s) would block 'sandbox run'."
+      echo "  Mask them: sandbox mask add --repo ${workspace} <RELPATH>..."
+    else
+      echo "  betterleaks: no unmasked secrets."
+    fi
+  else
+    echo "  WARN: betterleaks not found; 'sandbox run' would refuse to launch (fail closed)."
+  fi
+
   echo ""
   echo "Workspace check passed."
 }
@@ -2100,6 +2141,125 @@ cmd_allow() {
 }
 
 ###############################################################################
+# cmd_mask — manage per-repo file masking (masked_paths in .sandbox/config.yaml)
+###############################################################################
+usage_mask() {
+  cat <<EOF
+sandbox mask — Manage per-repo file masking
+
+USAGE:
+  sandbox mask add --repo <PATH> <RELPATH>...
+  sandbox mask list --repo <PATH>
+  sandbox mask --help
+
+Files in a Tier 2/3 workspace are mounted read-write for the agent. A
+built-in set of root-level paths (.env, .npmrc, kubeconfig, .kube/,
+*-openrc.sh, ...) is replaced with empty overlays so the agent can't read
+them. 'mask add' extends that set per-repo: each RELPATH (relative to the
+repo root) is recorded under masked_paths: in <repo>/.sandbox/config.yaml
+and mounted as an empty overlay at launch.
+
+This is what 'sandbox run' suggests when its betterleaks scan finds a
+secret in a file the mask would not otherwise hide.
+
+EXAMPLES:
+  # Mask a nested config file flagged by the secret gate
+  sandbox mask add --repo ~/repos/app config/prod/secrets.yaml
+
+  # Show the effective masked set (built-in + configured) for a repo
+  sandbox mask list --repo ~/repos/app
+EOF
+  exit 0
+}
+
+cmd_mask() {
+  if [[ $# -eq 0 ]]; then
+    usage_mask
+  fi
+
+  local sub="$1"
+  shift
+
+  case "${sub}" in
+    --help|-h|help)
+      usage_mask
+      ;;
+    add)
+      local repo=""
+      local -a relpaths=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo)    repo="${2:?--repo requires a value}"; shift ;;
+          --repo=*)  repo="${1#--repo=}" ;;
+          --help|-h) usage_mask ;;
+          -*)        die "Unknown option for 'mask add': $1" ;;
+          *)         relpaths+=("$1") ;;
+        esac
+        shift
+      done
+      [[ -n "${repo}" ]] || die "Usage: sandbox mask add --repo <PATH> <RELPATH>..."
+      [[ "${#relpaths[@]}" -gt 0 ]] || die "mask add: at least one RELPATH is required."
+      repo="${repo/#\~/${HOME}}"
+      validate_repo_path "${repo}"
+
+      local config_file="${repo}/.sandbox/config.yaml"
+      local rel
+      for rel in "${relpaths[@]}"; do
+        # Reject absolute paths and parent-escapes — masks are repo-relative.
+        if [[ "${rel}" == /* ]] || [[ "${rel}" == ../* ]] || [[ "${rel}" == */../* ]]; then
+          die "mask add: RELPATH must be relative to the repo root and inside it: ${rel}"
+        fi
+        if [[ ! -e "${repo}/${rel}" ]]; then
+          warn "Path does not exist in repo (masking it anyway): ${rel}"
+        elif [[ ! -f "${repo}/${rel}" ]]; then
+          die "mask add: only regular files can be masked (found a non-file): ${rel}"
+        fi
+        config_add_masked_path "${config_file}" "${rel}"
+        echo "Masked '${rel}' in $(basename "${repo}") (${config_file/#${HOME}/\~})."
+      done
+      ;;
+    list)
+      local repo=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo)    repo="${2:?--repo requires a value}"; shift ;;
+          --repo=*)  repo="${1#--repo=}" ;;
+          --help|-h) usage_mask ;;
+          -*)        die "Unknown option for 'mask list': $1" ;;
+          *)         die "Unexpected argument for 'mask list': $1" ;;
+        esac
+        shift
+      done
+      [[ -n "${repo}" ]] || die "Usage: sandbox mask list --repo <PATH>"
+      repo="${repo/#\~/${HOME}}"
+      validate_repo_path "${repo}"
+
+      echo "Built-in masked paths (root-level):"
+      local p
+      for p in "${MASKED_FILE_PATHS[@]}"; do echo "  ${p}"; done
+      echo "  ${MASKED_DIR_PATH}/  (directory)"
+      echo "  ${MASKED_OPENRC_PATTERN}"
+      echo ""
+      echo "Configured masked_paths for $(basename "${repo}"):"
+      local any=false
+      while IFS= read -r p; do
+        [[ -z "${p}" ]] && continue
+        any=true
+        if [[ -f "${repo}/${p}" ]]; then
+          echo "  ${p}"
+        else
+          echo "  ${p}  (not present in repo)"
+        fi
+      done < <(load_repo_masked_paths "${repo}")
+      [[ "${any}" == false ]] && echo "  (none)"
+      ;;
+    *)
+      die "Unknown 'mask' subcommand: ${sub}. Run 'sandbox mask --help'."
+      ;;
+  esac
+}
+
+###############################################################################
 # cmd_secret — manage host-side secret store, injected per-session by profile
 ###############################################################################
 usage_secret() {
@@ -2680,6 +2840,7 @@ main() {
     setup)      cmd_setup "$@" ;;
     onboard)    cmd_onboard "$@" ;;
     secret)     cmd_secret "$@" ;;
+    mask)       cmd_mask "$@" ;;
     profile)    cmd_profile "$@" ;;
     configure-network) cmd_configure_network "$@" ;;
     setup-proxy-cert) cmd_setup_proxy_cert "$@" ;;

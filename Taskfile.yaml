@@ -23,6 +23,7 @@ tasks:
       run manually.
     cmds:
       - bash tests/test-config.sh
+      - bash tests/test-secret-gate.sh
       - bash tests/test-dns.sh
       - bash tests/test-profile.sh
       - bash tests/test-blocked-domains.sh
