@@ -471,6 +471,8 @@ sandbox run [OPTIONS]
   --name <name>                      human-readable label (auto-set if omitted)
   --keep-alive                       leave pod running after disconnect
                                      (default: tear down to free cluster resources)
+  --i-accept-unmasked-secrets        launch despite secrets the mask won't
+                                     hide (printed; the agent will see them)
 
 sandbox resume <SESSION_ID> [--keep-alive]
 sandbox list
@@ -491,6 +493,8 @@ sandbox secret set <NAME> [--from-file PATH | --from-env[=VAR]]  # else reads st
                      # the source var to NAME; use =VAR to override.
 sandbox secret list                           # names + sizes + mtimes; values never printed
 sandbox secret delete <NAME>
+sandbox mask add --repo <PATH> <RELPATH>...    # hide file(s) from the agent (per-repo)
+sandbox mask list --repo <PATH>               # built-in + configured masked paths
 sandbox cleanup [--older-than DAYS]            default: 90
 sandbox check <WORKSPACE_PATH>
 sandbox status
@@ -511,9 +515,10 @@ sandbox version
   wrong, or right after `./setup.sh` to confirm install succeeded.
 - **`sandbox check <PATH>`** — dry-run of the pre-session workspace
   scan. Reports which files in the directory would be masked
-  (`.env`, `.npmrc`, `kubeconfig`, `*.pem`, …) before you actually
-  launch a Tier 2/3 session against it. Useful for catching credentials
-  in a repo you've never sandboxed before.
+  (`.env`, `.npmrc`, `kubeconfig`, `*.pem`, …) and previews the
+  betterleaks secret gate (which **unmasked** secrets would block a real
+  `sandbox run`) before you actually launch a Tier 2/3 session against it.
+  Useful for catching credentials in a repo you've never sandboxed before.
 - **`sandbox flows <SESSION_ID>`** — dumps the Hubble network flow
   records captured for that session (`~/.sandbox/logs/<id>/flows.json`,
   or live from Hubble if the pod is still running). Use this when a
@@ -862,6 +867,33 @@ Retention: 90 days (Tier 1/2), 180 days (Tier 3).
   ever enters the pod is one explicitly passed via `--infra-kubeconfig`, which
   is minified to a single context, mounted as a K8s Secret at
   `/home/agent/.kube/config`, and deleted on teardown.
+- **Secret gate**: before every Tier 2/3 launch each `--repo` is scanned
+  with [betterleaks](https://github.com/betterleaks/betterleaks). A secret
+  found in a file the mask would **not** hide aborts the launch — the agent
+  never sees a workspace secret you forgot about. The error names the
+  offending path and gives a `sandbox mask add` command to hide it (see
+  "Extending the mask" below). betterleaks is required for Tier 2/3; if it
+  is missing, the launch fails closed. `--i-accept-unmasked-secrets` on
+  `sandbox run` prints the findings and launches anyway.
+
+### Extending the mask
+
+The built-in mask covers a fixed root-level set (`.env`, `.env.local`,
+`.npmrc`, `clouds.yaml`, `kubeconfig`, `.kube/`, `*-openrc.sh`). To hide
+additional files — including nested ones — add them per-repo:
+
+```bash
+# Hide a nested config the secret gate flagged
+sandbox mask add --repo ~/repos/app config/prod/secrets.yaml
+
+# See the effective mask (built-in + configured) for a repo
+sandbox mask list --repo ~/repos/app
+```
+
+`mask add` records each path under `masked_paths:` in
+`<repo>/.sandbox/config.yaml`; at launch those paths are mounted as empty
+overlays exactly like the built-in set (and excluded from the macOS
+workspace sync). Re-running `sandbox run` then passes the gate.
 - **Credentials**: claude/codex use OAuth (no API key injection);
   opencode key via K8s Secret; tier 3 infra creds via per-session Secrets
   (`--infra-token` → `$INFRA_TOKEN`; `--infra-kubeconfig` → mounted file)
@@ -963,7 +995,8 @@ the ServiceAccount-token recipe above.
 ## Platform Requirements
 
 **Linux**: k3s, gVisor, Cilium, kubectl, helm, jq, xxd, sha256sum,
-curl, git
+curl, git, betterleaks (required for Tier 2/3 — the pre-launch secret
+gate fails closed without it)
 
 **macOS**: Lima (`brew install lima`) — provisions an Ubuntu 24.04 VM
 with identical stack

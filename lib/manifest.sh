@@ -372,13 +372,16 @@ EOF
 
   # The overlay-empty-file host volume is shared across every repo's file
   # overlays; emit it once if ANY repo has any masked file.
-  local has_any_masked_file=false f
+  local has_any_masked_file=false f mp
   for r in "${repos[@]}"; do
     for f in "${MASKED_FILE_PATHS[@]}"; do
       [[ -f "${r}/${f}" ]] && has_any_masked_file=true
     done
     [[ -n "$(find "${r}" -maxdepth 1 -name "${MASKED_OPENRC_PATTERN}" -type f -print -quit 2>/dev/null)" ]] \
       && has_any_masked_file=true
+    while IFS= read -r mp; do
+      [[ -n "${mp}" ]] && [[ -f "${r}/${mp}" ]] && has_any_masked_file=true
+    done < <(load_repo_masked_paths "${r}")
   done
   if [[ "${has_any_masked_file}" == true ]]; then
     cat <<EOF
@@ -477,6 +480,15 @@ EOF
       printf '        - name: overlay-empty-file\n          mountPath: %s/%s\n          readOnly: true\n' \
         "${mpath}" "$(basename "${openrc_file}")"
     done < <(find "${r}" -maxdepth 1 -name "${MASKED_OPENRC_PATTERN}" -type f -print 2>/dev/null | sort)
+    # Per-repo configured masked_paths: each existing one is a file overlay
+    # (type-validated by lib/filesystem.sh:check_masking_paths before launch).
+    local configured_mp
+    while IFS= read -r configured_mp; do
+      [[ -z "${configured_mp}" ]] && continue
+      [[ -f "${r}/${configured_mp}" ]] || continue
+      printf '        - name: overlay-empty-file\n          mountPath: %s/%s\n          readOnly: true\n' \
+        "${mpath}" "${configured_mp}"
+    done < <(load_repo_masked_paths "${r}")
     if [[ -d "${r}/${MASKED_DIR_PATH}" ]]; then
       kdname="$(_kube_overlay_volume_name "$i" "${total}")"
       printf '        - name: %s\n          mountPath: %s/%s\n' "${kdname}" "${mpath}" "${MASKED_DIR_PATH}"
