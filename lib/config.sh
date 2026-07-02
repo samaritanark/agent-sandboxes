@@ -135,6 +135,22 @@ config_add_masked_path() {
   fi
 }
 
+# load_user_blocked_domains / load_user_blocked_cidrs — print the per-user
+# block-list additions from ~/.sandbox/config.yaml, one per line. These reuse
+# the same keys as config/blocked-destinations.yaml (blocked_domains /
+# blocked_cidrs) so there is one schema across the org, overlay, and user
+# layers. They are deny-only: lib/checks.sh unions them with the org + overlay
+# blocks (it can never weaken a block), giving an operator a personal
+# "never let a sandbox reach this" backstop — e.g. so an accidentally-supplied
+# production kubeconfig fails fast at create instead of being auto-allowlisted.
+load_user_blocked_domains() {
+  extract_yaml_list_from_file "${USER_SANDBOX_CONFIG}" "blocked_domains"
+}
+
+load_user_blocked_cidrs() {
+  extract_yaml_list_from_file "${USER_SANDBOX_CONFIG}" "blocked_cidrs"
+}
+
 # load_user_extra_allowed_domains — print newline-separated list of domains
 # the operator has pre-approved via the per-user config file and/or the env
 # var. Per-repo configs are loaded separately in bin/sandbox so their

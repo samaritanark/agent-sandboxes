@@ -16,6 +16,20 @@
 # Matching is on label boundaries, so 'notslack.com' is NOT caught by
 # '*.slack.com'. List both the apex and the wildcard only if you want to be
 # explicit; '*.example.com' alone already covers the apex.
+#
+# Three layers contribute to the block list, and they are UNIONED — each may
+# only ADD blocks, never weaken them (a block always beats an allow):
+#   1. this org-shipped file;
+#   2. a team overlay's blocked-destinations.yaml (see lib/profile.sh);
+#   3. a per-operator ~/.sandbox/config.yaml, using these same keys
+#      (blocked_domains / blocked_cidrs) — a personal "never let a sandbox
+#      reach this" backstop.
+# All three are checked at `sandbox run` BEFORE any cluster resource is created,
+# including destinations auto-derived from --infra-kubeconfig / --infra-endpoint
+# and IP-literal endpoints (matched against blocked_cidrs). So an accidentally
+# supplied production kubeconfig fails fast instead of being auto-allowlisted.
+# (IPv6-literal endpoints are matched only by Cilium's runtime egressDeny, not
+# at create time.)
 
 blocked_domains:
   # Operators: add your internal SSO / identity-provider hosts here so an

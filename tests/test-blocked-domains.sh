@@ -12,8 +12,11 @@ TEST_NAME="test-blocked-domains"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-# Source the checks library to test directly
+# Source the checks library to test directly. checks.sh reads the block lists
+# via lib/config.sh's bounded YAML extractor, so config.sh must be sourced too.
 source "${SANDBOX_ROOT}/lib/platform.sh"
+source "${SANDBOX_ROOT}/lib/config.sh"
+source "${SANDBOX_ROOT}/lib/profile.sh"
 source "${SANDBOX_ROOT}/lib/checks.sh"
 
 ###############################################################################
@@ -71,6 +74,49 @@ test_cli_rejects_blocked_domain() {
   fi
 }
 
+# check_egress_target_not_blocked is the entry point all egress destinations now
+# go through. For an IP literal it must also run the blocked-CIDR membership
+# check — that is what catches a kube API server given as a bare IP (the common
+# case), which matches no blocked_domains pattern. 169.254.0.0/16 is a shipped
+# block, so a literal inside it must be rejected.
+test_combiner_ip_routes_to_cidr() {
+  info "Testing check_egress_target_not_blocked routes IP literals to the CIDR check..."
+  if ( check_egress_target_not_blocked "169.254.169.254" ) 2>/dev/null; then
+    fail "IP-literal 169.254.169.254 should be rejected (inside blocked 169.254.0.0/16)"
+  else
+    pass "IP-literal in a blocked CIDR is rejected by the combiner"
+  fi
+  if ( check_egress_target_not_blocked "8.8.8.8" ) 2>/dev/null \
+     && ( check_egress_target_not_blocked "github.com" ) 2>/dev/null; then
+    pass "allowed IP + domain still pass the combiner"
+  else
+    fail "allowed IP/domain should not be rejected"
+  fi
+}
+
+###############################################################################
+# Test: --infra-endpoint with a blocked host is rejected at the CLI.
+# Regression for the bypass where --infra-endpoint URLs were handed straight to
+# the policy builder and never block-checked. Tier 1 reaches validation without
+# a cluster or --repo, so this fails fast at input validation.
+###############################################################################
+test_cli_rejects_blocked_infra_endpoint() {
+  info "Testing CLI rejects --infra-endpoint with a blocked host..."
+  local output
+  if output="$("${SANDBOX_ROOT}/bin/sandbox" run \
+    --agent claude --tier 1 \
+    --infra-endpoint https://slack.com \
+    --dry-run 2>&1)"; then
+    fail "CLI should have rejected --infra-endpoint https://slack.com but exited 0"
+  else
+    if echo "${output}" | grep -qi "block\|forbidden\|not allowed"; then
+      pass "CLI rejects a blocked --infra-endpoint (bypass closed)"
+    else
+      fail "CLI rejected the endpoint but error message was unclear: ${output}"
+    fi
+  fi
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -105,8 +151,12 @@ main() {
   test_domain_allowed "notslack.com"        "substring-not-overmatched"
   test_domain_allowed "myteams.microsoft.example.com" "label-boundary-respected"
 
+  # Combiner: IP-literal targets route to the blocked-CIDR check.
+  test_combiner_ip_routes_to_cidr
+
   # Test CLI integration
   test_cli_rejects_blocked_domain
+  test_cli_rejects_blocked_infra_endpoint
 
   echo ""
   echo "All blocked domain tests passed."

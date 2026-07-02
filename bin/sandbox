@@ -589,9 +589,22 @@ cmd_run() {
     fi
   done
 
-  # Validate allowed domains against blocked list
+  # Validate allowed domains against the block list. check_egress_target_not_blocked
+  # also runs the blocked-CIDR membership check when an entry is an IP literal,
+  # so an --allow-domain'd IP can't slip past the (domain-only) name match.
   for domain in "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}"; do
-    check_domain_not_blocked "${domain}"
+    check_egress_target_not_blocked "${domain}"
+  done
+
+  # --infra-endpoint URLs are handed straight to the policy builder and never
+  # enter opt_allow_domains, so validate their hosts here too — otherwise a
+  # blocked (or accidentally-production) endpoint bypasses the block list
+  # entirely. Known at parse time, so this still fails fast before any cluster ops.
+  local _ep _ep_host
+  for _ep in "${opt_infra_endpoints[@]+"${opt_infra_endpoints[@]}"}"; do
+    _ep_host="$(url_host "${_ep}")"
+    [[ -z "${_ep_host}" ]] && continue
+    check_egress_target_not_blocked "${_ep_host}"
   done
 
   # Fail fast on a malformed blocked_cidrs entry, before any cluster ops —
@@ -717,6 +730,17 @@ cmd_run() {
       else
         echo "  Pinning hostAlias: ${kube_server_host} → ${kube_server_ip}"
       fi
+    fi
+
+    # Close the auto-allowlist bypass: the API host was appended to
+    # opt_allow_domains AFTER the block-validation loop above ran, so it would
+    # otherwise never be checked. Validate it now — and the resolved IP too, so
+    # a production hostname that resolves into a blocked CIDR is caught even
+    # though the name itself matches no blocked_domains pattern. Still fails
+    # fast, before any policy/pod/Secret is created (Step 6+).
+    check_egress_target_not_blocked "${kube_server_host}"
+    if [[ -n "${kube_server_ip}" ]]; then
+      check_ip_not_in_blocked_cidrs "${kube_server_ip}"
     fi
   fi
 
