@@ -126,23 +126,9 @@ workspace_prescan() {
     fi
   done
 
-  # Run gitleaks if available
-  if command -v gitleaks &>/dev/null; then
-    echo "  Running gitleaks scan..."
-    if ! gitleaks detect \
-         --source "${workspace}" \
-         --no-git \
-         --quiet \
-         --exit-code 0 \
-         2>/dev/null; then
-      echo "  WARN: gitleaks detected potential secrets in workspace."
-      (( issues_found++ )) || true
-    else
-      echo "  gitleaks: no secrets detected."
-    fi
-  else
-    echo "  WARN: gitleaks not found; skipping secret scan."
-  fi
+  # NOTE: the betterleaks secret scan that *gates* the launch lives in
+  # secret_gate_repos (below), called from bin/sandbox's pre-session step.
+  # workspace_prescan stays warn-only for the filename heuristics above.
 
   if [[ "${issues_found}" -gt 0 ]]; then
     echo ""
@@ -154,6 +140,270 @@ workspace_prescan() {
   else
     echo "  Pre-scan passed with no concerns."
   fi
+}
+
+# is_path_masked <repo> <relpath> — return 0 if a workspace-relative path is
+# hidden from the agent by the sandbox mask, 1 otherwise. The masked set is
+# the built-in constants above (root-level files, the .kube directory, the
+# root *-openrc.sh glob) plus the repo's configured masked_paths: list
+# (lib/config.sh:load_repo_masked_paths). Single source of truth for "would
+# the agent be able to read this file?", consumed by the secret gate.
+is_path_masked() {
+  local repo="$1" relpath="$2"
+
+  local p
+  for p in "${MASKED_FILE_PATHS[@]}"; do
+    [[ "${relpath}" == "${p}" ]] && return 0
+  done
+
+  # .kube directory: the dir itself or anything under it.
+  [[ "${relpath}" == "${MASKED_DIR_PATH}" ]] && return 0
+  [[ "${relpath}" == "${MASKED_DIR_PATH}/"* ]] && return 0
+
+  # Root-level *-openrc.sh only (the mask is maxdepth 1). Guard against the
+  # glob matching a slash, which [[ == ]] would otherwise allow. The unquoted
+  # RHS is an intentional glob match against the pattern.
+  # shellcheck disable=SC2053
+  if [[ "${relpath}" != */* ]] && [[ "${relpath}" == ${MASKED_OPENRC_PATTERN} ]]; then
+    return 0
+  fi
+
+  # Configured masked_paths (exact workspace-relative match).
+  while IFS= read -r p; do
+    [[ -z "${p}" ]] && continue
+    [[ "${relpath}" == "${p}" ]] && return 0
+  done < <(load_repo_masked_paths "${repo}")
+
+  return 1
+}
+
+# _betterleaks_run <target> <report> — run one trustworthy betterleaks scan of
+# <target> into <report>. Returns 0 if the run can be trusted (a clean run, or
+# leaks-found with a valid JSON-array report); returns 1 if it failed and the
+# caller must fail closed. The exit code is left in LEAKSCAN_RC for the error
+# message.
+#
+# Fail closed on scanner failure: a betterleaks runtime error (panic, bad
+# config, OOM, truncated report) must NOT look like "no secrets found", or the
+# gate would silently let a workspace through. The exit code alone is not
+# enough — betterleaks returns 1 both for leaks-found and for some errors — so
+# the report is the discriminator:
+#   rc 0                    -> clean run (report is `null`/empty)
+#   rc 1 + valid JSON array -> leaks found, parse the report
+#   anything else           -> failure.
+#
+# --validation=false: never let the scanner reach out to live APIs to validate
+# a secret found in an untrusted workspace (it is the betterleaks default, but
+# we pin it so a future default flip or repo-local config cannot enable it).
+_betterleaks_run() {
+  local target="$1" report="$2"
+  LEAKSCAN_RC=0
+  betterleaks dir "${target}" --no-banner -f json -r "${report}" \
+    --validation=false --redact >/dev/null 2>&1 || LEAKSCAN_RC=$?
+  [[ "${LEAKSCAN_RC}" == 0 ]] && return 0
+  [[ "${LEAKSCAN_RC}" == 1 ]] && jq -e 'type == "array"' "${report}" >/dev/null 2>&1 && return 0
+  return 1
+}
+
+# scan_repo_secrets <repo> — scan a workspace with betterleaks and emit one TSV
+# line per finding: "<class>\t<relpath>\t<RuleID>\t<line>\t<match>", where class
+# is one of: yes (secret in a masked path, hidden from the agent), no (secret in
+# an unmasked path), gitconfig (secret in .git/config), or error (scan failed).
+# Secret values are redacted (--redact).
+#
+# Two scans run. (1) A whole-workspace directory scan — betterleaks excludes
+# .git/ from directory walks, so this never sees anything under .git. (2) An
+# explicit scan of .git/config: the repo is mounted into the pod *including*
+# .git, the mask does not (and cannot — emptying it breaks git) hide it, and it
+# commonly carries credentials in remote URLs and http.<url>.extraheader. Such a
+# finding cannot be masked, so it gets its own `gitconfig` class for tailored
+# remediation. Git history/objects remain out of scope for this gate.
+#
+# On scanner failure either scan emits an `error` sentinel line; the caller
+# (secret_gate_repos) aborts on it. A bare return/exit here would be swallowed
+# by the process substitution the caller reads us through.
+scan_repo_secrets() {
+  local repo="$1"
+  local real_repo
+  real_repo="$(realpath "${repo}")"
+
+  local report
+  report="$(mktemp "${TMPDIR:-/tmp}/sandbox-leakscan-XXXXXX")"
+
+  local file ruleid line match relpath
+
+  # (1) Whole-workspace scan.
+  if ! _betterleaks_run "${real_repo}" "${report}"; then
+    printf 'error\tbetterleaks scan failed (exit %s)\n' "${LEAKSCAN_RC}"
+    rm -f "${report}"
+    return 0
+  fi
+  while IFS=$'\t' read -r file ruleid line match; do
+    [[ -z "${file}" ]] && continue
+    relpath="${file#${real_repo}/}"
+    [[ "${relpath}" == .git/* ]] && continue
+    if is_path_masked "${repo}" "${relpath}"; then
+      printf 'yes\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
+    else
+      printf 'no\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
+    fi
+  done < <(jq -r '.[] | [.File, .RuleID, (.StartLine|tostring), .Match] | @tsv' \
+             "${report}" 2>/dev/null)
+
+  # (2) .git/config — readable in the pod, unmaskable, common credential home.
+  local gitcfg="${real_repo}/.git/config"
+  if [[ -f "${gitcfg}" ]]; then
+    : > "${report}"
+    if ! _betterleaks_run "${gitcfg}" "${report}"; then
+      printf 'error\tbetterleaks scan of .git/config failed (exit %s)\n' "${LEAKSCAN_RC}"
+      rm -f "${report}"
+      return 0
+    fi
+    while IFS=$'\t' read -r file ruleid line match; do
+      [[ -z "${file}" ]] && continue
+      printf 'gitconfig\t.git/config\t%s\t%s\t%s\n' "${ruleid}" "${line}" "${match}"
+    done < <(jq -r '.[] | [.File, .RuleID, (.StartLine|tostring), .Match] | @tsv' \
+               "${report}" 2>/dev/null)
+  fi
+
+  rm -f "${report}"
+}
+
+# _print_unmasked_findings <entry>... — render "repo<TAB>relpath<TAB>rule<TAB>
+# line<TAB>match" entries to stderr as a human-readable list.
+_print_unmasked_findings() {
+  local entry repo relpath ruleid ln match
+  for entry in "$@"; do
+    IFS=$'\t' read -r repo relpath ruleid ln match <<<"${entry}"
+    echo "    ${relpath}  [${ruleid}, line ${ln}]" >&2
+    [[ -n "${match}" ]] && echo "        match: ${match}" >&2
+  done
+}
+
+# _print_mask_add_commands <entry>... — emit one ready-to-run
+# `sandbox mask add` command per repo, listing that repo's unmasked paths.
+_print_mask_add_commands() {
+  local entry repo relpath rr rp r found e
+  local -a seen_repos=()
+  for entry in "$@"; do
+    IFS=$'\t' read -r repo relpath _ _ _ <<<"${entry}"
+    found=false
+    for r in ${seen_repos[@]+"${seen_repos[@]}"}; do
+      [[ "${r}" == "${repo}" ]] && { found=true; break; }
+    done
+    [[ "${found}" == true ]] && continue
+    seen_repos+=("${repo}")
+
+    local cmd="        sandbox mask add --repo ${repo}"
+    for e in "$@"; do
+      IFS=$'\t' read -r rr rp _ _ _ <<<"${e}"
+      [[ "${rr}" == "${repo}" ]] && cmd+=" $(printf '%q' "${rp}")"
+    done
+    echo "${cmd}" >&2
+  done
+}
+
+# secret_gate_repos <accept_flag> <repo>... — scan every workspace with
+# betterleaks and refuse the launch if any secret lives in a file the mask
+# would not hide. Fail closed: a missing betterleaks aborts. With
+# accept_flag == "true" (the --i-accept-unmasked-secrets override) the
+# findings are printed but the launch proceeds.
+secret_gate_repos() {
+  local accept="$1"; shift
+  local -a repos=("$@")
+  [[ "${#repos[@]}" -gt 0 ]] || return 0
+
+  if ! command -v betterleaks &>/dev/null; then
+    echo "" >&2
+    echo "ERROR: betterleaks is required to scan workspaces for secrets, but it" >&2
+    echo "       was not found on PATH. Tier 2/3 launches are gated on it so a" >&2
+    echo "       workspace secret the mask would not hide cannot silently reach" >&2
+    echo "       the agent. Install betterleaks and re-run." >&2
+    echo "" >&2
+    exit 1
+  fi
+
+  echo "  Scanning workspace(s) for secrets with betterleaks..."
+
+  local -a unmasked=()
+  local -a gitconfig=()
+  local total_masked=0
+  local repo m relpath ruleid ln match
+  for repo in "${repos[@]}"; do
+    while IFS=$'\t' read -r m relpath ruleid ln match; do
+      [[ -z "${relpath}" ]] && continue
+      # An `error` sentinel means betterleaks could not be trusted to have
+      # scanned this workspace. Fail closed: refuse the launch rather than
+      # risk passing a repo whose secrets were never inspected. The override
+      # does not apply here — it accepts *known* secrets, not an unknown scan.
+      if [[ "${m}" == "error" ]]; then
+        echo "" >&2
+        echo "ERROR: betterleaks failed to scan ${repo} (${relpath})." >&2
+        echo "       The workspace could not be verified free of unmasked" >&2
+        echo "       secrets, so the launch is refused. Re-run, or check the" >&2
+        echo "       betterleaks installation and any repo-local config." >&2
+        echo "" >&2
+        exit 1
+      fi
+      case "${m}" in
+        yes) (( total_masked++ )) || true ;;
+        gitconfig) gitconfig+=("${repo}"$'\t'"${relpath}"$'\t'"${ruleid}"$'\t'"${ln}"$'\t'"${match}") ;;
+        *) unmasked+=("${repo}"$'\t'"${relpath}"$'\t'"${ruleid}"$'\t'"${ln}"$'\t'"${match}") ;;
+      esac
+    done < <(scan_repo_secrets "${repo}")
+  done
+
+  if [[ "${total_masked}" -gt 0 ]]; then
+    echo "  ${total_masked} secret finding(s) reside in masked paths (hidden from the agent)."
+  fi
+
+  if [[ "${#unmasked[@]}" -eq 0 && "${#gitconfig[@]}" -eq 0 ]]; then
+    echo "  betterleaks: no unmasked secrets."
+    return 0
+  fi
+
+  if [[ "${accept}" == "true" ]]; then
+    echo "" >&2
+    echo "  NOTICE: $(( ${#unmasked[@]} + ${#gitconfig[@]} )) unmasked secret(s) found. Proceeding anyway" >&2
+    echo "  because --i-accept-unmasked-secrets was given — the agent WILL read these:" >&2
+    [[ "${#unmasked[@]}" -gt 0 ]] && _print_unmasked_findings "${unmasked[@]}"
+    [[ "${#gitconfig[@]}" -gt 0 ]] && _print_unmasked_findings "${gitconfig[@]}"
+    echo "" >&2
+    return 0
+  fi
+
+  echo "" >&2
+  echo "ERROR: betterleaks found secret(s) the sandbox mask will NOT hide. The" >&2
+  echo "       agent would be able to read them, so the launch is refused:" >&2
+
+  if [[ "${#unmasked[@]}" -gt 0 ]]; then
+    echo "" >&2
+    _print_unmasked_findings "${unmasked[@]}"
+    echo "" >&2
+    echo "  Resolve this in one of these ways:" >&2
+    echo "    - Remove or relocate the secret(s) above, or" >&2
+    echo "    - Mask the file(s) so the agent sees an empty overlay (adds them to" >&2
+    echo "      <repo>/.sandbox/config.yaml masked_paths:):" >&2
+    echo "" >&2
+    _print_mask_add_commands "${unmasked[@]}"
+  fi
+
+  if [[ "${#gitconfig[@]}" -gt 0 ]]; then
+    echo "" >&2
+    echo "  Secret(s) in .git/config (the agent can read .git in the workspace):" >&2
+    _print_unmasked_findings "${gitconfig[@]}"
+    echo "" >&2
+    echo "  .git/config cannot be masked (an empty overlay would break git). Scrub" >&2
+    echo "  the credential instead — e.g. set a credential-less remote URL and let" >&2
+    echo "  a credential helper supply the secret:" >&2
+    echo "        git -C <repo> remote set-url origin <https-url-without-credentials>" >&2
+  fi
+
+  echo "" >&2
+  echo "    - Or launch anyway, accepting that the agent will see these secrets:" >&2
+  echo "        re-run 'sandbox run' with --i-accept-unmasked-secrets" >&2
+  echo "" >&2
+  exit 1
 }
 
 # _path_type — return file / directory / symlink / other for a path.
@@ -243,6 +493,23 @@ _classify_one_repo_for_masking() {
       MASKING_MISMATCH+=("${full}|file|$(_path_type "${full}")")
     fi
   done < <(find "${repo}" -maxdepth 1 -name "${MASKED_OPENRC_PATTERN}" -print0 2>/dev/null)
+
+  # Configured masked_paths are file overlays (FileOrCreate). Validate each
+  # that exists is a regular file, mirroring the built-in file checks above,
+  # so the type-mismatch guard refuses a launch that would crash gVisor.
+  local rel
+  while IFS= read -r rel; do
+    [[ -z "${rel}" ]] && continue
+    full="${repo}/${rel}"
+    [[ -e "${full}" ]] || continue
+    if _is_likely_mount_detritus "${full}"; then
+      MASKING_DETRITUS+=("${full}")
+      continue
+    fi
+    if [[ ! -f "${full}" ]]; then
+      MASKING_MISMATCH+=("${full}|file|$(_path_type "${full}")")
+    fi
+  done < <(load_repo_masked_paths "${repo}")
 }
 
 # check_masking_paths — orchestrate masking-path sanity. Detect detritus,

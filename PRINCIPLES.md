@@ -227,9 +227,20 @@ The sandbox enforces three filesystem rules:
    | `.vscode/`, `.idea/`           | Read-only                                       |
    | `.devcontainer/`               | Read-only                                       |
 
+   The built-in set is extensible per-repo: `sandbox mask add --repo
+   <PATH> <RELPATH>` records additional paths (including nested ones)
+   under `masked_paths:` in `<repo>/.sandbox/config.yaml`, and they are
+   masked at launch exactly like the built-in set.
+
    The masking is defense in depth — operators should also confirm
    their workspace does not contain real secrets before launch. The
-   `sandbox check` command surfaces what would be masked.
+   `sandbox check` command surfaces what would be masked. As a backstop,
+   every Tier 2/3 launch is **gated** on a betterleaks scan of each
+   `--repo`: a secret in a file the mask would not hide refuses the
+   launch (fail closed; betterleaks is required), naming the path and the
+   `sandbox mask add` command to hide it. The operator can override with
+   `--i-accept-unmasked-secrets`, which prints the findings and proceeds —
+   an explicit, audited acceptance of the risk.
 
 3. **Nothing else on the host is visible.** Other repositories, your
    home directory, system directories, the container runtime socket,

@@ -182,7 +182,16 @@ check_prerequisites() {
     fi
   done
 
-  local optional_tools=("gitleaks" "hubble" "helm")
+  # betterleaks gates Tier 2/3 launches (the secret scan in lib/filesystem.sh
+  # fails closed without it), so flag it more loudly than the truly optional
+  # tools — but don't make it a hard prerequisite for Tier 1, which has no
+  # workspace to scan.
+  if ! command -v betterleaks &>/dev/null; then
+    echo "WARN: betterleaks not found — Tier 2/3 'sandbox run' will refuse to" >&2
+    echo "      launch (fail closed) until it is installed." >&2
+  fi
+
+  local optional_tools=("hubble" "helm")
   for tool in "${optional_tools[@]}"; do
     if ! command -v "${tool}" &>/dev/null; then
       echo "INFO: Optional tool not found: ${tool} (some features disabled)" >&2
