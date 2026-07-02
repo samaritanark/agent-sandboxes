@@ -275,6 +275,11 @@ write_starter_user_config() {
 # examples/overlay-template/. Overlays can only ADD restrictions; they
 # cannot weaken org-level controls or the tier model.
 # overlay: ~/overlays/myteam
+#
+# If your team's overlay lives in a (private) git repo, don't set 'overlay:'
+# by hand — run 'sandbox link <git-url>' and it will clone the repo, pin it
+# to a ref, and manage the overlay/link_url/link_ref/link_commit keys here
+# for you. See 'sandbox link --help'.
 YAML
   chmod 0600 "${dst}"
   echo "  config: wrote starter ${dst/#${HOME}/\~}"

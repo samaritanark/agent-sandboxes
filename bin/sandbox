@@ -59,6 +59,8 @@ source "${SANDBOX_ROOT}/lib/network.sh"
 source "${SANDBOX_ROOT}/lib/dns.sh"
 # shellcheck source=../lib/certs.sh
 source "${SANDBOX_ROOT}/lib/certs.sh"
+# shellcheck source=../lib/link.sh
+source "${SANDBOX_ROOT}/lib/link.sh"
 
 ###############################################################################
 # Utility helpers
@@ -122,6 +124,7 @@ COMMANDS:
   onboard      Stage host-side agent OAuth state for first-run convenience
   secret       Manage host-side secret store (injected per-session by profile)
   profile      Create and manage launch profiles (save/list/show/delete)
+  link         Link a git-backed team overlay and keep it pinned (status/sync/unlink)
   configure-network   Re-detect host network state and reconcile k3s/Cilium
                       and CoreDNS split-horizon DNS (run after a VPN reconnects
                       or the host IP changes; --show-dns previews the DNS plan)
@@ -397,6 +400,12 @@ cmd_run() {
   if [[ -n "${opt_infra_kubeconfig}" ]]; then
     opt_infra_kubeconfig="${opt_infra_kubeconfig/#\~/${HOME}}"
   fi
+
+  # If a git-linked team overlay is configured, do a cached, rate-limited
+  # fetch and hint (once, to stderr) when it's behind its pinned ref. This is
+  # notify-only: it never mutates the overlay mid-launch. Skipped entirely by
+  # SANDBOX_NO_LINK_CHECK=1 and non-fatal on any failure.
+  link_notify_if_behind || true
 
   # Profile resolution. Numeric profiles ('1'|'2'|'3') are pure aliases for
   # --tier <N>. Named profiles resolve to a YAML in ~/.sandbox/profiles or
@@ -2245,6 +2254,278 @@ cmd_secret() {
 }
 
 ###############################################################################
+# cmd_link — link a git-backed team overlay and keep it pinned
+###############################################################################
+usage_link() {
+  cat <<EOF
+sandbox link — Link a git-backed team overlay (profiles, policies, catalogue)
+
+USAGE:
+  sandbox link <GIT-URL> [--name <NAME>] [--ref <TAG|BRANCH|COMMIT>]
+  sandbox link status
+  sandbox link sync [--ref <TAG|BRANCH|COMMIT>]
+  sandbox link unlink [--keep-clone] [--yes]
+  sandbox link --help
+
+An overlay is a directory a team version-controls (see
+examples/overlay-template/) that layers ADDITIONAL profiles, blocked
+destinations, a vetted MCP/service catalogue, and CA certs on top of the
+org install. 'link' clones that (typically private) repo into
+~/.sandbox/overlays/<name>/, PINS it to a ref, validates its shape, and
+points ~/.sandbox/config.yaml's 'overlay:' key at it.
+
+Overlays are additive-only on the safety side: nothing in one can weaken
+the org's controls or the tier model (enforced at consume time — see
+PRINCIPLES.md, "Default-deny egress").
+
+A link never advances on its own. 'sandbox run' does a cached, rate-limited
+fetch and only HINTS when the overlay is behind its ref; 'sandbox link sync'
+is the one deliberate step that moves the checked-out commit — it shows a
+diff of what changes and re-validates before applying.
+
+LINK OPTIONS:
+  --name <NAME>   Directory name under ~/.sandbox/overlays/ (default: derived
+                  from the repo URL). Letters, digits, '.', '_', '-'.
+  --ref <REF>     Tag, branch, or commit to pin. Default: the remote's
+                  default branch. sync tracks this ref until you change it.
+
+SYNC OPTIONS:
+  --ref <REF>     Change the pinned ref before advancing to its tip.
+
+UNLINK OPTIONS:
+  --keep-clone    Leave the cloned directory on disk; only clear the pointer.
+  --yes, -y       Don't prompt for confirmation.
+
+ENV:
+  SANDBOX_NO_LINK_CHECK=1   Disable the run-path behind-ref check (CI/air-gap).
+
+EXAMPLES:
+  sandbox link git@github.com:acme/sandbox-overlay.git --ref v1.4.0
+  sandbox link status
+  sandbox link sync --ref v1.5.0
+  sandbox link unlink
+EOF
+  exit 0
+}
+
+# _link_clone — clone a new git-backed overlay and wire the pointer.
+_link_clone() {
+  local url="" opt_name="" opt_ref=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)  usage_link ;;
+      --name)     opt_name="${2:?--name requires a value}"; shift ;;
+      --name=*)   opt_name="${1#--name=}" ;;
+      --ref)      opt_ref="${2:?--ref requires a value}"; shift ;;
+      --ref=*)    opt_ref="${1#--ref=}" ;;
+      -*)         die "Unknown option for 'link': $1. Run 'sandbox link --help'." ;;
+      *)          [[ -z "${url}" ]] || die "Unexpected argument: $1"; url="$1" ;;
+    esac
+    shift
+  done
+  [[ -n "${url}" ]] || die "Usage: sandbox link <GIT-URL> [--name <NAME>] [--ref <REF>]"
+  _link_require_git
+
+  if link_is_active; then
+    die "A link is already active ($(link_url_config)). Run 'sandbox link unlink' first, or 'sandbox link sync' to update it."
+  fi
+
+  local name="${opt_name}"
+  if [[ -z "${name}" ]]; then
+    name="$(link_name_from_url "${url}")"
+    [[ -n "${name}" ]] || die "Could not derive a link name from '${url}'. Pass --name <NAME>."
+  fi
+  link_is_valid_name "${name}" \
+    || die "Invalid link name '${name}'. Use letters, digits, '.', '_', '-'; no '/', no leading '.'."
+
+  local dir; dir="$(link_managed_dir "${name}")"
+  [[ -e "${dir}" ]] && die "${dir/#${HOME}/\~} already exists. Choose another --name or remove it."
+
+  # Warn (don't block) if the operator already had a hand-set overlay pointer —
+  # linking takes over that pointer.
+  local existing_overlay
+  existing_overlay="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" overlay)"
+  [[ -n "${existing_overlay}" ]] \
+    && warn "existing 'overlay: ${existing_overlay}' will be repointed at the linked clone."
+
+  echo "==> Cloning ${url}"
+  mkdir -p "${LINK_OVERLAYS_DIR}"
+  if ! git clone --quiet "${url}" "${dir}"; then
+    rm -rf "${dir}"
+    die "git clone failed. Check the URL and your git credentials for private repos."
+  fi
+
+  local ref="${opt_ref}"
+  if [[ -n "${ref}" ]]; then
+    if ! git -C "${dir}" checkout --quiet "${ref}" 2>/dev/null; then
+      rm -rf "${dir}"
+      die "ref '${ref}' not found in ${url}."
+    fi
+  else
+    ref="$(git -C "${dir}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+  fi
+
+  local commit; commit="$(_link_head_commit "${dir}")"
+
+  echo "==> Validating overlay shape"
+  if ! link_validate_shape "${dir}"; then
+    rm -rf "${dir}"
+    die "overlay at '${url}' (${ref}) failed validation; nothing was linked."
+  fi
+
+  link_write_config "${dir}" "${url}" "${ref}" "${commit}"
+  echo "Linked overlay '${name}' → ${dir/#${HOME}/\~}"
+  echo "  ref:    ${ref}"
+  echo "  commit: ${commit:0:12}"
+  echo "  pointer written to ${USER_SANDBOX_CONFIG/#${HOME}/\~} (overlay:)"
+}
+
+# _link_status — show the active link and whether it's behind its ref.
+_link_status() {
+  case "${1:-}" in --help|-h) usage_link ;; "") ;; *) die "Unexpected argument: $1" ;; esac
+  if ! link_is_active; then
+    echo "No linked overlay. Link one with: sandbox link <GIT-URL>"
+    return 0
+  fi
+  _link_require_git
+
+  local url ref dir
+  url="$(link_url_config)"
+  ref="$(link_ref_config)"
+  dir="$(link_active_dir)"
+
+  echo "Linked overlay"
+  printf "  %-8s %s\n" "url:" "${url}"
+  printf "  %-8s %s\n" "ref:" "${ref}"
+  printf "  %-8s %s\n" "commit:" "$(link_commit_config)"
+  if [[ -z "${dir}" ]]; then
+    warn "recorded overlay pointer is not a git clone; the link record may be stale."
+    return 0
+  fi
+  printf "  %-8s %s\n" "path:" "${dir/#${HOME}/\~}"
+
+  if _link_fetch "${dir}" >/dev/null 2>&1; then
+    local head target behind
+    head="$(_link_head_commit "${dir}")"
+    target="$(_link_target_commit "${dir}" "${ref}")"
+    if [[ -n "${target}" && "${head}" != "${target}" ]]; then
+      behind="$(git -C "${dir}" rev-list --count "${head}..${target}" 2>/dev/null || echo '?')"
+      echo "  status:  $(c_warn "${behind} commit(s) behind '${ref}'") — run 'sandbox link sync'."
+    else
+      echo "  status:  $(c_ok "up to date") with '${ref}'."
+    fi
+  else
+    echo "  status:  $(c_warn "could not fetch") — offline or credentials unavailable."
+  fi
+}
+
+# _link_sync — advance the pinned commit to the ref's current tip (or a new
+# --ref). Deliberate, reviewed, and shape-validated; refuses on local edits.
+_link_sync() {
+  local opt_ref=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)  usage_link ;;
+      --ref)      opt_ref="${2:?--ref requires a value}"; shift ;;
+      --ref=*)    opt_ref="${1#--ref=}" ;;
+      -*)         die "Unknown option for 'link sync': $1" ;;
+      *)          die "Unexpected argument: $1" ;;
+    esac
+    shift
+  done
+  link_is_active || die "No linked overlay to sync. Link one with: sandbox link <GIT-URL>"
+  _link_require_git
+
+  local dir; dir="$(link_active_dir)"
+  [[ -n "${dir}" ]] || die "Linked overlay directory is missing or not a git clone; re-run 'sandbox link <GIT-URL>'."
+
+  if _link_worktree_dirty "${dir}"; then
+    die "Linked overlay has local uncommitted changes at ${dir/#${HOME}/\~}; refusing to overwrite them. Commit, stash, or discard them first."
+  fi
+
+  local ref; ref="${opt_ref:-$(link_ref_config)}"
+  [[ -n "${ref}" ]] || die "No ref recorded for the link; pass --ref <TAG|BRANCH|COMMIT>."
+
+  echo "==> Fetching"
+  _link_fetch "${dir}" >/dev/null 2>&1 || die "git fetch failed (offline or credentials unavailable)."
+
+  local old target
+  old="$(_link_head_commit "${dir}")"
+  target="$(_link_target_commit "${dir}" "${ref}")"
+  [[ -n "${target}" ]] || die "ref '${ref}' did not resolve to a commit after fetch."
+
+  if [[ "${old}" == "${target}" ]]; then
+    # Still re-pin the ref/commit in case only --ref changed to an equal tip.
+    link_write_config "${dir}" "$(link_url_config)" "${ref}" "${target}"
+    echo "Already up to date with '${ref}' (${target:0:12})."
+    return 0
+  fi
+
+  echo "==> Changes from ${old:0:12} to ${target:0:12} (${ref}):"
+  git -C "${dir}" --no-pager diff --stat "${old}" "${target}" 2>/dev/null || true
+
+  # Apply, then validate; roll back to the previous commit if the new tree
+  # fails the shape gate so a bad ref can never become the active overlay.
+  git -C "${dir}" checkout --quiet "${ref}" 2>/dev/null || true
+  if ! git -C "${dir}" reset --hard --quiet "${target}"; then
+    git -C "${dir}" reset --hard --quiet "${old}" 2>/dev/null || true
+    die "Failed to advance the overlay to ${target:0:12}; left at ${old:0:12}."
+  fi
+
+  echo "==> Validating overlay shape"
+  if ! link_validate_shape "${dir}"; then
+    git -C "${dir}" reset --hard --quiet "${old}" 2>/dev/null || true
+    die "New overlay tree (${ref} @ ${target:0:12}) failed validation; rolled back to ${old:0:12}."
+  fi
+
+  link_write_config "${dir}" "$(link_url_config)" "${ref}" "${target}"
+  : > "$(_link_fetch_stamp "${dir}")" 2>/dev/null || true
+  echo "Updated overlay to '${ref}' (${target:0:12})."
+}
+
+# _link_unlink — clear the link pointer, optionally keeping the clone.
+_link_unlink() {
+  local opt_keep="false" opt_yes="false"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)     usage_link ;;
+      --keep-clone)  opt_keep="true" ;;
+      --yes|-y)      opt_yes="true" ;;
+      -*)            die "Unknown option for 'link unlink': $1" ;;
+      *)             die "Unexpected argument: $1" ;;
+    esac
+    shift
+  done
+  link_is_active || { echo "No linked overlay to remove."; return 0; }
+
+  local dir; dir="$(link_active_dir)"
+  if [[ "${opt_yes}" != "true" ]]; then
+    printf "Unlink overlay '%s'%s? [y/N] " "$(link_url_config)" \
+      "$([[ "${opt_keep}" == "true" ]] && echo "" || echo " and delete its clone")"
+    local reply; read -r reply
+    case "${reply}" in y|Y|yes|YES) ;; *) echo "Aborted."; return 0 ;; esac
+  fi
+
+  link_clear_config "${dir}"
+  if [[ "${opt_keep}" != "true" ]] && [[ -n "${dir}" ]] && [[ -d "${dir}" ]]; then
+    rm -rf "${dir}"
+    echo "Removed clone ${dir/#${HOME}/\~}."
+  fi
+  echo "Unlinked. The 'overlay:'/link keys were cleared from ${USER_SANDBOX_CONFIG/#${HOME}/\~}."
+}
+
+cmd_link() {
+  [[ $# -gt 0 ]] || usage_link
+  case "$1" in
+    --help|-h|help)  usage_link ;;
+    status)          shift; _link_status "$@" ;;
+    sync)            shift; _link_sync "$@" ;;
+    unlink)          shift; _link_unlink "$@" ;;
+    *)               _link_clone "$@" ;;   # first arg is the git URL
+  esac
+}
+
+###############################################################################
 # cmd_profile — create and manage launch profiles
 ###############################################################################
 usage_profile() {
@@ -2681,6 +2962,7 @@ main() {
     onboard)    cmd_onboard "$@" ;;
     secret)     cmd_secret "$@" ;;
     profile)    cmd_profile "$@" ;;
+    link)       cmd_link "$@" ;;
     configure-network) cmd_configure_network "$@" ;;
     setup-proxy-cert) cmd_setup_proxy_cert "$@" ;;
     rebuild)    cmd_rebuild "$@" ;;

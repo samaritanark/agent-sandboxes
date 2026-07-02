@@ -10,7 +10,7 @@ _sandbox_complete() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="run resume allow list logs flows stop cleanup check status setup onboard secret profile configure-network rebuild version"
+  local commands="run resume allow list logs flows stop cleanup check status setup onboard secret profile link configure-network rebuild version"
   local run_opts="--agent --tier --profile --repo --allow-domain --base-url --infra-token --infra-kubeconfig --infra-kube-context --allow-exec-plugin --infra-endpoint --dry-run --name --keep-alive --help"
   local rebuild_opts="--agent --tier3 --no-cache --codex-version --opencode-version --help"
   local setup_opts="--pod-cidr --service-cidr --apiserver-port"
@@ -19,6 +19,7 @@ _sandbox_complete() {
   local secret_set_opts="--from-file --help"
   local profile_subs="save list show delete"
   local profile_save_opts="--tier --agent --repo --allow-domain --name --force --dry-run --help"
+  local link_subs="status sync unlink"
   local agents="claude codex opencode"
   local onboard_agents="claude codex opencode all"
   local rebuild_agents="claude codex opencode shell base all"
@@ -189,6 +190,37 @@ _sandbox_complete() {
           [[ -d "${pdir}" ]] && pnames="$(cd "${pdir}" && ls -1 ./*.yaml 2>/dev/null | sed 's#.*/##;s/\.yaml$//' || true)"
           # shellcheck disable=SC2207
           COMPREPLY=($(compgen -W "${pnames} --yes" -- "${cur}"))
+          ;;
+      esac
+      ;;
+    link)
+      # First positional after 'link' is either a subcommand or a git URL.
+      if [[ "${cword}" -eq 2 ]]; then
+        # shellcheck disable=SC2207
+        COMPREPLY=($(compgen -W "${link_subs}" -- "${cur}"))
+        return
+      fi
+      local link_sub="${words[2]}"
+      case "${link_sub}" in
+        sync)
+          if [[ "${cur}" == --* ]]; then
+            # shellcheck disable=SC2207
+            COMPREPLY=($(compgen -W "--ref --help" -- "${cur}"))
+          fi
+          ;;
+        unlink)
+          if [[ "${cur}" == --* ]]; then
+            # shellcheck disable=SC2207
+            COMPREPLY=($(compgen -W "--keep-clone --yes --help" -- "${cur}"))
+          fi
+          ;;
+        status) ;;
+        *)
+          # 'link <URL> ...' form.
+          if [[ "${cur}" == --* ]]; then
+            # shellcheck disable=SC2207
+            COMPREPLY=($(compgen -W "--name --ref --help" -- "${cur}"))
+          fi
           ;;
       esac
       ;;
