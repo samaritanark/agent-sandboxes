@@ -33,6 +33,7 @@ _sandbox() {
         'secret:Manage host-side secret store (injected per-session by profile)'
         'mask:Manage per-repo file masking (add/list masked_paths)'
         'profile:Create and manage launch profiles (save/list/show/delete)'
+        'link:Link a git-backed team overlay and keep it pinned (status/sync/unlink)'
         'configure-network:Re-detect host interfaces and re-apply to Cilium (run after VPN reconnects)'
         'rebuild:Rebuild sandbox container image(s)'
         'version:Print version'
@@ -55,6 +56,7 @@ _sandbox() {
         secret) _sandbox_secret ;;
         mask)   _sandbox_mask ;;
         profile) _sandbox_profile ;;
+        link)   _sandbox_link ;;
       esac
       ;;
   esac
@@ -160,6 +162,37 @@ _sandbox_profile() {
       _arguments \
         '--yes[Skip the confirmation prompt]' \
         "*:profile name:(${pnames[*]})"
+      ;;
+  esac
+}
+
+_sandbox_link() {
+  if (( CURRENT == 2 )); then
+    _values 'subcommand or git URL' \
+      'status[Show the active link and whether it is behind its ref]' \
+      'sync[Advance the pinned commit to the ref tip (or a new --ref)]' \
+      'unlink[Clear the link pointer, optionally deleting the clone]'
+    return
+  fi
+
+  case "${words[2]}" in
+    sync)
+      _arguments \
+        '--ref[Change the pinned tag/branch/commit before advancing]:ref:' \
+        '--help[Show help]'
+      ;;
+    unlink)
+      _arguments \
+        '--keep-clone[Leave the cloned directory on disk]' \
+        '--yes[Skip the confirmation prompt]' \
+        '--help[Show help]'
+      ;;
+    status) ;;
+    *)
+      _arguments \
+        '--name[Directory name under ~/.sandbox/overlays/]:name:' \
+        '--ref[Tag, branch, or commit to pin]:ref:' \
+        '--help[Show help]'
       ;;
   esac
 }

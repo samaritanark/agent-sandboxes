@@ -77,6 +77,47 @@ extract_yaml_scalar_from_file() {
   ' "${path}" 2>/dev/null || true
 }
 
+# upsert_yaml_scalar_in_file <path> <key> <value> — set a top-level
+# "<key>: <value>" line in a flat YAML config file. Replaces the first
+# ACTIVE (uncommented) "<key>:" line if present, otherwise appends. Commented
+# example lines ("# key: ...") are left untouched — they don't match "^key:"
+# and the reader (extract_yaml_scalar_from_file) skips them too, so appending
+# a live line beside a commented example is correct. Creates the parent dir
+# and file if absent. bash 3.2 safe (no mapfile / declare -g). The file is
+# rewritten atomically via a temp file in the same dir.
+upsert_yaml_scalar_in_file() {
+  local path="$1" key="$2" value="$3"
+  mkdir -p "$(dirname "${path}")"
+  [[ -f "${path}" ]] || : > "${path}"
+
+  local tmp="${path}.tmp.$$"
+  if grep -q "^${key}:" "${path}" 2>/dev/null; then
+    awk -v key="${key}" -v val="${value}" '
+      !done && $0 ~ "^"key":" { print key": "val; done=1; next }
+      { print }
+    ' "${path}" > "${tmp}"
+  else
+    cat "${path}" > "${tmp}"
+    printf '%s: %s\n' "${key}" "${value}" >> "${tmp}"
+  fi
+  # Preserve the original file's mode where possible; new files get 0600 since
+  # ~/.sandbox/config.yaml can carry an overlay path / link URL.
+  mv "${tmp}" "${path}"
+  chmod 0600 "${path}" 2>/dev/null || true
+}
+
+# remove_yaml_scalar_from_file <path> <key> — delete every top-level ACTIVE
+# "<key>:" line from a flat YAML config file. Commented lines are left as-is.
+# No-op if the file or key is absent. bash 3.2 safe.
+remove_yaml_scalar_from_file() {
+  local path="$1" key="$2"
+  [[ -f "${path}" ]] || return 0
+  local tmp="${path}.tmp.$$"
+  awk -v key="${key}" '$0 ~ "^"key":" { next } { print }' "${path}" > "${tmp}"
+  mv "${tmp}" "${path}"
+  chmod 0600 "${path}" 2>/dev/null || true
+}
+
 # load_extra_allowed_domains_from_file <path> — print the
 # `extra_allowed_domains:` list from a YAML file, one domain per line.
 load_extra_allowed_domains_from_file() {
