@@ -142,12 +142,49 @@ _link_worktree_dirty() {
   [[ -n "$(git -C "$1" status --porcelain 2>/dev/null)" ]]
 }
 
+# _link_default_repo_is_sensitive <value> — true when a profile's default_repo
+# points at a location no legitimate repo lives in and that would hand the
+# agent host credentials or kernel/system state. Shape validation alone lets a
+# linked overlay ship `default_repo: ~/.ssh`, which the run path tilde-expands
+# and mounts into the sandbox when the user passes no --repo (bin/sandbox); at
+# tier 1 there is no secret scan to catch it. So we reject the value itself,
+# not just the filename. The `~` is expanded exactly as the run path expands it
+# (${default_repo/#~/$HOME}) so validation matches consumption. Rejects: the
+# whole home dir or filesystem root; any hidden path component (~/.ssh, ~/.aws,
+# ~/.config, .., …); and sensitive absolute system dirs. bash 3.2-safe.
+_link_default_repo_is_sensitive() {
+  local val="$1"
+  val="${val/#\~/${HOME}}"
+  [[ "${val}" != "/" ]] && val="${val%/}"
+
+  # Whole home or filesystem root — mounting either exposes everything.
+  [[ "${val}" == "/" || "${val}" == "${HOME}" ]] && return 0
+
+  # A hidden component anywhere in the path (leading, or after any slash).
+  # `.?*` requires a dot plus at least one more char, so a bare "." (./x) and
+  # a plain slash are unaffected, but ".ssh"/".aws"/".config"/".." all match —
+  # catching both ~/.ssh and a hard-coded /home/<user>/.ssh.
+  case "${val}" in
+    .?*|*/.?*) return 0 ;;
+  esac
+
+  # Sensitive absolute system locations: host credentials / kernel state.
+  local d
+  for d in /etc /root /proc /sys /boot; do
+    [[ "${val}" == "${d}" || "${val}" == "${d}/"* ]] && return 0
+  done
+  return 1
+}
+
 # link_validate_shape <dir> — the safety gate, run on clone AND every sync.
 # Pinning defends against silent drift but not against a bad pinned commit, so
 # we re-check structure every time the checked-out tree changes. Hard failures
 # (return 1): a profile/catalogue filename that isn't a valid name, a profile
-# missing/!valid tier, or a symlink escaping the overlay dir. Unknown top-level
-# entries only warn. Prints a one-line content summary to stderr on success.
+# missing/!valid tier, or a default_repo pointing at a sensitive path, or a
+# symlink escaping the overlay dir. Unknown top-level entries only warn. Any
+# profile-requested extra egress domains are surfaced (non-fatal) so the
+# operator reviews them before they widen the sandbox allow-list. Prints a
+# one-line content summary to stderr on success.
 link_validate_shape() {
   local dir="$1"
   local -a problems=()
@@ -163,8 +200,10 @@ link_validate_shape() {
     esac
   done < <(cd "${dir}" && find . -type l 2>/dev/null | sed 's|^\./||')
 
-  # profiles/*.yaml — valid name + a valid tier.
-  local p name tier count_profiles=0
+  # profiles/*.yaml — valid name + a valid tier + a non-sensitive default_repo.
+  # extra_allowed_domains are collected (not rejected) for operator review.
+  local p name tier repo dom count_profiles=0
+  local -a extra_domains=()
   if [[ -d "${dir}/profiles" ]]; then
     for p in "${dir}/profiles"/*.yaml; do
       [[ -e "${p}" ]] || continue
@@ -179,6 +218,21 @@ link_validate_shape() {
         1|2|3) ;;
         *) problems+=("profile '${name}' has invalid/missing tier: '${tier:-<none>}'") ;;
       esac
+
+      # default_repo is mounted into the sandbox on a --repo-less run; reject a
+      # value that would expose credentials or host/system state.
+      repo="$(extract_yaml_scalar_from_file "${p}" default_repo)"
+      if [[ -n "${repo}" ]] && _link_default_repo_is_sensitive "${repo}"; then
+        problems+=("profile '${name}' default_repo points at a sensitive path: '${repo}'")
+      fi
+
+      # Collect extra_allowed_domains for the review notice below. These widen
+      # the egress allow-list at consume time and pass unless explicitly
+      # blocked (lib/checks.sh), so the operator must see them before use.
+      while IFS= read -r dom; do
+        [[ -z "${dom}" ]] && continue
+        extra_domains+=("${name}: ${dom}")
+      done < <(extract_yaml_list_from_file "${p}" extra_allowed_domains)
     done
   fi
 
@@ -215,6 +269,16 @@ link_validate_shape() {
       echo "         - ${msg}" >&2
     done
     return 1
+  fi
+
+  # Non-fatal: surface every extra egress domain the overlay's profiles grant,
+  # so the operator reviews new allow-list entries at link/sync time rather
+  # than discovering them silently applied on a later run.
+  if [[ "${#extra_domains[@]}" -gt 0 ]]; then
+    warn "overlay profiles request ${#extra_domains[@]} extra allowed egress domain(s) — review before use:"
+    for dom in "${extra_domains[@]}"; do
+      echo "         - ${dom}" >&2
+    done
   fi
 
   echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )" >&2

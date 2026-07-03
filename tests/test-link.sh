@@ -179,6 +179,56 @@ test_validation_rejects() {
 }
 
 ###############################################################################
+# Integration: profile value validation — sensitive default_repo is rejected
+# (on clone AND sync), and extra_allowed_domains are surfaced for review.
+###############################################################################
+test_value_validation() {
+  info "Testing profile value validation (default_repo + domain surfacing)..."
+
+  # A profile whose default_repo resolves to ~/.ssh is rejected on clone; the
+  # shape gate would otherwise pass it (valid name, valid tier, no symlink).
+  local danger="${TEST_DIR}/up-danger"
+  mkdir -p "${danger}/profiles"
+  printf 'profile: eng\ntier: 1\ndefault_repo: ~/.ssh\n' > "${danger}/profiles/eng.yaml"
+  git -c init.defaultBranch=main init -q "${danger}"
+  git -C "${danger}" add -A; git -C "${danger}" commit -qm danger
+  if "${SB}" link "${danger}" --name danger >/dev/null 2>&1; then
+    fail "link should reject a profile with a sensitive default_repo"
+  fi
+  [[ -d "${LINK_OVERLAYS_DIR}/danger" ]] && fail "clone left behind after sensitive default_repo rejection"
+  pass "profile with sensitive default_repo (~/.ssh) is rejected on clone"
+
+  # A benign default_repo links fine, and its extra_allowed_domains are
+  # surfaced to the operator for review (non-fatal).
+  local ok="${TEST_DIR}/up-domains"
+  mkdir -p "${ok}/profiles"
+  printf 'profile: eng\ntier: 1\ndefault_repo: ~/repos/app\nextra_allowed_domains:\n  - api.internal.example\n' \
+    > "${ok}/profiles/eng.yaml"
+  git -c init.defaultBranch=main init -q "${ok}"
+  git -C "${ok}" add -A; git -C "${ok}" commit -qm ok
+  local out
+  out="$("${SB}" link "${ok}" --name domains 2>&1)" || fail "benign overlay should link"
+  echo "${out}" | grep -q "api.internal.example" \
+    || fail "extra_allowed_domains not surfaced on link, got: ${out}"
+  pass "benign default_repo links and extra_allowed_domains are surfaced for review"
+
+  # sync must re-validate values too: advancing upstream into a sensitive
+  # default_repo is rejected and the checked-out tree rolls back.
+  printf 'profile: eng\ntier: 1\ndefault_repo: ~/.aws\n' > "${ok}/profiles/eng.yaml"
+  git -C "${ok}" commit -qam poisoned
+  if "${SB}" link sync >/dev/null 2>&1; then
+    fail "sync should reject an upstream that adds a sensitive default_repo"
+  fi
+  # The profile stores the unexpanded tilde form, so match it literally.
+  # shellcheck disable=SC2088  # literal string in the YAML, not a path to expand
+  grep -q '~/repos/app' "${LINK_OVERLAYS_DIR}/domains/profiles/eng.yaml" \
+    || fail "clone did not roll back to the pre-sync tree after failed validation"
+  pass "sync re-validates default_repo and rolls back a poisoned tree"
+
+  "${SB}" link unlink --yes >/dev/null 2>&1 || fail "unlink failed"
+}
+
+###############################################################################
 # Integration: sync refuses to clobber local uncommitted edits
 ###############################################################################
 test_sync_refuses_dirty() {
@@ -250,6 +300,7 @@ test_config_helpers
 test_link_and_track_branch
 test_tag_pin_is_stable
 test_validation_rejects
+test_value_validation
 test_sync_refuses_dirty
 test_notify_hook
 test_unlink
