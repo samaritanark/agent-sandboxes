@@ -436,38 +436,66 @@ assert_core_boundary() {
   # human review in each tier's caller instead.
 }
 
+# probe_file_state <pod_name> <path> — classify a path INSIDE the pod as
+# MISSING (not present at all), EMPTY (present and zero-length), or NONEMPTY
+# (present with content). Prints EXECFAIL if the exec could not run. This is
+# what lets the masking asserts tell "masked to empty" apart from "never
+# there": a bare `cat` whose error is swallowed reads empty in BOTH cases, so
+# a mount/staging regression that dropped the file would pass the mask check
+# for the wrong reason. See the loop below.
+probe_file_state() {
+  kubectl exec -n "${NAMESPACE}" "$1" -- sh -c '
+    if [ ! -e "$1" ]; then echo MISSING
+    elif [ -s "$1" ]; then echo NONEMPTY
+    else echo EMPTY; fi' _ "$2" 2>/dev/null || echo EXECFAIL
+}
+
 # assert_repo_masking <pod_name> <label> — the runtime control the old fixture
 # never exercised. The mounted repo's secrets must read EMPTY inside the pod
 # (overlay-empty-file / .kube emptyDir), a normal file must survive, and the
 # operator's ~/.gitconfig mount must be read-only. Uses direct exec, so it does
 # not depend on any probe heuristic.
 assert_repo_masking() {
-  local pod_name="$1" label="$2" f content
+  local pod_name="$1" label="$2" f leaked content
 
   for f in "${MASKED_FILE_PATHS[@]}"; do
-    # File only exists in the pod if we staged+mounted it; all MASKED_FILE_PATHS
-    # were staged. An empty read means the overlay masked the host secret.
-    content="$(kubectl exec -n "${NAMESPACE}" "${pod_name}" -- \
-      cat "/workspace/${f}" 2>/dev/null || true)"
-    [[ -z "${content}" ]] \
-      && pass "${label}: masked file /workspace/${f} reads empty (host secret hidden)" \
-      || fail "${label}: masked file /workspace/${f} leaked host content: ${content}"
+    # All MASKED_FILE_PATHS were staged, so each MUST exist in the pod; an empty
+    # read only proves masking if the file is actually present. MISSING means
+    # the mount/overlay never placed it — a regression, not a successful mask —
+    # so we fail loudly instead of inferring a mask from an absent file.
+    case "$(probe_file_state "${pod_name}" "/workspace/${f}")" in
+      EMPTY)    pass "${label}: masked file /workspace/${f} exists and reads empty (host secret hidden)" ;;
+      NONEMPTY) leaked="$(kubectl exec -n "${NAMESPACE}" "${pod_name}" -- cat "/workspace/${f}" 2>/dev/null || true)"
+                fail "${label}: masked file /workspace/${f} leaked host content: ${leaked}" ;;
+      MISSING)  fail "${label}: masked file /workspace/${f} is absent — mount/staging regression, mask NOT verified" ;;
+      *)        fail "${label}: could not read /workspace/${f} inside the pod" ;;
+    esac
   done
 
   # openrc script (matched by pattern, not a fixed name).
-  content="$(kubectl exec -n "${NAMESPACE}" "${pod_name}" -- \
-    cat /workspace/cloud-openrc.sh 2>/dev/null || true)"
-  [[ -z "${content}" ]] \
-    && pass "${label}: masked /workspace/cloud-openrc.sh reads empty" \
-    || fail "${label}: openrc script leaked host content: ${content}"
+  case "$(probe_file_state "${pod_name}" /workspace/cloud-openrc.sh)" in
+    EMPTY)    pass "${label}: masked /workspace/cloud-openrc.sh exists and reads empty" ;;
+    NONEMPTY) leaked="$(kubectl exec -n "${NAMESPACE}" "${pod_name}" -- cat /workspace/cloud-openrc.sh 2>/dev/null || true)"
+              fail "${label}: openrc script leaked host content: ${leaked}" ;;
+    MISSING)  fail "${label}: /workspace/cloud-openrc.sh is absent — mount/staging regression, mask NOT verified" ;;
+    *)        fail "${label}: could not read /workspace/cloud-openrc.sh inside the pod" ;;
+  esac
 
-  # .kube directory must be an empty overlay, not the host's secret config.
-  local kube_entries
-  kube_entries="$(kubectl exec -n "${NAMESPACE}" "${pod_name}" -- \
-    sh -c "ls -A /workspace/${MASKED_DIR_PATH} 2>/dev/null | wc -l" 2>/dev/null | tr -d '[:space:]' || true)"
-  [[ "${kube_entries}" == "0" ]] \
-    && pass "${label}: /workspace/${MASKED_DIR_PATH} is an empty overlay (host kube config hidden)" \
-    || fail "${label}: /workspace/${MASKED_DIR_PATH} exposed ${kube_entries:-?} entr(y/ies) from the host"
+  # .kube directory must be an empty overlay, not the host's secret config — and
+  # it must actually EXIST as a directory. A missing dir also lists zero
+  # entries, which the old `wc -l == 0` mistook for a successful mask.
+  local kube_state
+  kube_state="$(kubectl exec -n "${NAMESPACE}" "${pod_name}" -- sh -c '
+    if [ ! -d "$1" ]; then echo MISSING
+    elif [ -n "$(ls -A "$1" 2>/dev/null)" ]; then echo NONEMPTY
+    else echo EMPTY; fi' _ "/workspace/${MASKED_DIR_PATH}" 2>/dev/null || echo EXECFAIL)"
+  case "${kube_state}" in
+    EMPTY)    pass "${label}: /workspace/${MASKED_DIR_PATH} exists and is an empty overlay (host kube config hidden)" ;;
+    NONEMPTY) leaked="$(kubectl exec -n "${NAMESPACE}" "${pod_name}" -- ls -A "/workspace/${MASKED_DIR_PATH}" 2>/dev/null | tr '\n' ' ' || true)"
+              fail "${label}: /workspace/${MASKED_DIR_PATH} exposed host entr(y/ies): ${leaked}" ;;
+    MISSING)  fail "${label}: /workspace/${MASKED_DIR_PATH} is absent — mount/staging regression, empty overlay NOT verified" ;;
+    *)        fail "${label}: could not inspect /workspace/${MASKED_DIR_PATH} inside the pod" ;;
+  esac
 
   # A normal source file must NOT be masked.
   content="$(kubectl exec -n "${NAMESPACE}" "${pod_name}" -- \
