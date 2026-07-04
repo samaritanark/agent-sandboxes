@@ -1296,6 +1296,12 @@ bash tests/test-filesystem.sh
 bash tests/test-credentials-claude.sh
 bash tests/test-credentials-opencode.sh
 bash tests/test-serviceaccount.sh
+
+# Inside-out boundary measurement with controlplaneio/sandbox-probe.
+# Needs `go` (to build the probe) or a prebuilt binary via SANDBOX_PROBE_BIN.
+# Runs the probe inside Tier 1/2 pods and diffs against a host baseline to
+# confirm credentials, host sockets, and the host process table stay hidden.
+bash tests/test-probe.sh
 ```
 
 ## Uninstalling
