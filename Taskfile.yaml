@@ -26,6 +26,7 @@ tasks:
       - bash tests/test-secret-gate.sh
       - bash tests/test-dns.sh
       - bash tests/test-profile.sh
+      - bash tests/test-link.sh
       - bash tests/test-blocked-domains.sh
       - bash tests/test-blocked-cidrs.sh
       - bash tests/test-onboard.sh

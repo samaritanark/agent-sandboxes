@@ -15,12 +15,29 @@ BLOCKED_DESTINATIONS_CONFIG="${BLOCKED_DESTINATIONS_CONFIG:-${SANDBOX_ROOT}/conf
 # exactly that — the functions are only called later, once both are loaded).
 USER_SANDBOX_CONFIG="${USER_SANDBOX_CONFIG:-${HOME}/.sandbox/config.yaml}"
 
+# _normalize_domain <name> — canonicalize a DNS name for comparison the way the
+# egress enforcement layer normalizes it. DNS names are case-insensitive, and a
+# trailing "." (the FQDN root label) denotes the same host — so 'evil.com',
+# 'EVIL.COM', and 'evil.com.' are one destination. Cilium lowercases and
+# trailing-dot-normalizes the toFQDNs/matchName rules the allow-list becomes,
+# so a case-sensitive block check let '--allow-domain EVIL.COM' (or a trailing
+# dot) walk straight past a blocked 'evil.com' and land in the allow rule as
+# the very host the org meant to block. Normalizing both the checked name and
+# each block pattern closes that gap. bash 3.2-safe (no ${x,,} / no mapfile).
+_normalize_domain() {
+  local d="$1"
+  d="$(printf '%s' "${d}" | tr '[:upper:]' '[:lower:]')"
+  while [[ "${d}" == *. ]]; do d="${d%.}"; done   # strip trailing root dot(s)
+  printf '%s\n' "${d}"
+}
+
 # check_domain_not_blocked — die if domain matches the org-level blocked
 # destinations list OR any overlay-supplied additions. Overlays are
 # additive-only: they can extend the block list but cannot weaken it.
 # See PRINCIPLES.md "Default-deny egress" and lib/profile.sh.
 check_domain_not_blocked() {
-  local domain="$1"
+  local domain
+  domain="$(_normalize_domain "$1")"
 
   if [[ ! -f "${BLOCKED_DESTINATIONS_CONFIG}" ]]; then
     echo "WARN: blocked-destinations.yaml not found; skipping block check." >&2
@@ -57,7 +74,11 @@ check_domain_not_blocked() {
 #   *suffix        legacy bare-leading-'*' suffix match, kept as-is.
 #   example.com    exact match.
 _domain_matches_block_pattern() {
-  local domain="$1" pattern="$2"
+  # The domain arrives already normalized (check_domain_not_blocked); normalize
+  # the pattern too so a block entry written 'EVIL.COM' or 'evil.com.' still
+  # matches. The '*' grammar markers are unaffected by lowercasing/dot-strip.
+  local domain="$1" pattern
+  pattern="$(_normalize_domain "$2")"
   case "${pattern}" in
     "*."*)
       local apex="${pattern#\*.}"
