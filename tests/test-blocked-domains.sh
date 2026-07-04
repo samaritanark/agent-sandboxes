@@ -141,6 +141,18 @@ main() {
   test_domain_blocked "smtp.example.com"     "smtp-prefix-wildcard"
   test_domain_blocked "mail.example.org"     "mail-prefix-wildcard"
 
+  # DNS names are case-insensitive and a trailing '.' is the same host. A block
+  # check that compared them literally let '--allow-domain SLACK.COM' / 'slack.com.'
+  # walk past a blocked 'slack.com' and land verbatim in the Cilium allow rule
+  # (which lowercases/dot-normalizes it) — reaching the very host meant to be
+  # blocked. These must all be rejected exactly like their canonical form.
+  test_domain_blocked "SLACK.COM"            "slack-apex-uppercase"
+  test_domain_blocked "Slack.Com"            "slack-apex-mixedcase"
+  test_domain_blocked "slack.com."           "slack-apex-trailing-dot"
+  test_domain_blocked "SLACK.COM."           "slack-apex-upper-and-dot"
+  test_domain_blocked "SomeCompany.Slack.Com" "slack-wildcard-mixedcase"
+  test_domain_blocked "raw.PASTEBIN.com."    "pastebin-wildcard-upper-and-dot"
+
   # Test allowed domains (not in blocklist)
   test_domain_allowed "api.anthropic.com"   "anthropic-not-blocked"
   test_domain_allowed "github.com"          "github-not-blocked"
@@ -150,6 +162,10 @@ main() {
   # (e.g. 'slack.com.evil.test' or 'notslack.com' are not blocked).
   test_domain_allowed "notslack.com"        "substring-not-overmatched"
   test_domain_allowed "myteams.microsoft.example.com" "label-boundary-respected"
+  # Normalization must not over-block: a non-blocked host in any case / with a
+  # trailing dot still passes.
+  test_domain_allowed "GitHub.com"          "allowed-mixedcase-passes"
+  test_domain_allowed "github.com."         "allowed-trailing-dot-passes"
 
   # Combiner: IP-literal targets route to the blocked-CIDR check.
   test_combiner_ip_routes_to_cidr

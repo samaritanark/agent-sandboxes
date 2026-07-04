@@ -84,6 +84,40 @@ test_valid_name() {
 }
 
 ###############################################################################
+# Unit: default_repo sensitivity check canonicalizes before matching
+###############################################################################
+test_default_repo_sensitivity() {
+  info "Testing _link_default_repo_is_sensitive path canonicalization..."
+
+  # Every one of these resolves to $HOME or / or a hidden/system dir. A literal
+  # string compare misses them; canonicalization must not. (Regression for the
+  # slash/dot-noise bypass: ~/. , ~/./ , ~// , /. , /./ , <home>/. , <home>// .)
+  local v
+  for v in \
+    "~" "~/" "~/." "~/./" "~//" "~/.//" \
+    "${HOME}" "${HOME}/" "${HOME}/." "${HOME}//" "${HOME}/./" \
+    "/" "/." "/./" "//" \
+    "~/.ssh" "~/.ssh/" "~/.ssh/." "~/./.ssh" "${HOME}/.aws" "~/.config/gcloud" \
+    ".." "~/.." "~/../.." "~/foo/../.bar" \
+    "/etc" "/etc/" "/etc/." "/etc//ssl" "/root/.ssh" "/proc/1" "/sys/kernel" "/boot"; do
+    _link_default_repo_is_sensitive "${v}" \
+      || fail "sensitive default_repo not flagged: '${v}' (normalized: '$(_link_normalize_path "${v}")')"
+  done
+
+  # Legitimate repo paths must still pass — including a benign "." *component*
+  # in the middle, which the old glob wrongly flagged (a false positive) because
+  # its `?` matched the slash.
+  for v in \
+    "~/repos/app" "~/./repos/app" "~/repos/./app" "${HOME}/src/project" \
+    "/srv/git/app" "/var/lib/repos/x" "/opt/work/app//src" "/mnt/data/repo"; do
+    _link_default_repo_is_sensitive "${v}" \
+      && fail "benign default_repo wrongly flagged: '${v}' (normalized: '$(_link_normalize_path "${v}")')"
+  done
+
+  pass "default_repo sensitivity check canonicalizes slash/dot noise before matching"
+}
+
+###############################################################################
 # Unit: config upsert / remove helpers
 ###############################################################################
 test_config_helpers() {
@@ -198,6 +232,19 @@ test_value_validation() {
   [[ -d "${LINK_OVERLAYS_DIR}/danger" ]] && fail "clone left behind after sensitive default_repo rejection"
   pass "profile with sensitive default_repo (~/.ssh) is rejected on clone"
 
+  # End-to-end: the reported slash/dot-noise bypass ("~/." resolves to $HOME)
+  # must be rejected at link time, not just by the unit test above.
+  local bypass="${TEST_DIR}/up-bypass"
+  mkdir -p "${bypass}/profiles"
+  printf 'profile: eng\ntier: 1\ndefault_repo: ~/.\n' > "${bypass}/profiles/eng.yaml"
+  git -c init.defaultBranch=main init -q "${bypass}"
+  git -C "${bypass}" add -A; git -C "${bypass}" commit -qm bypass
+  if "${SB}" link "${bypass}" --name bypass >/dev/null 2>&1; then
+    fail "link should reject a default_repo that resolves to \$HOME via slash/dot noise"
+  fi
+  [[ -d "${LINK_OVERLAYS_DIR}/bypass" ]] && fail "clone left behind after bypass-variant rejection"
+  pass "default_repo '~/.' (resolves to \$HOME) is rejected on clone"
+
   # A benign default_repo links fine, and its extra_allowed_domains are
   # surfaced to the operator for review (non-fatal).
   local ok="${TEST_DIR}/up-domains"
@@ -296,6 +343,7 @@ test_unlink() {
 
 test_name_from_url
 test_valid_name
+test_default_repo_sensitivity
 test_config_helpers
 test_link_and_track_branch
 test_tag_pin_is_stable

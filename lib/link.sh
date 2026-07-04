@@ -142,28 +142,66 @@ _link_worktree_dirty() {
   [[ -n "$(git -C "$1" status --porcelain 2>/dev/null)" ]]
 }
 
+# _link_normalize_path <path> — lexically canonicalize a path the way the
+# kernel resolves it at mount time, WITHOUT touching the filesystem. The value
+# is validated on the operator's machine where it need not exist, and realpath
+# is neither reliably present nor consistent across GNU/BSD, so we normalize by
+# hand: expand a leading `~` (exactly as the run path does), collapse runs of
+# slashes, and drop bare "." components. A trailing slash is likewise dropped
+# ("/" itself excepted). We deliberately do NOT resolve ".." — a legitimate
+# default_repo never contains one, and _link_default_repo_is_sensitive treats
+# any "." component (including "..") as sensitive, so leaving it in place keeps
+# it caught rather than silently collapsed. This is what closes the reported
+# bypass: `~/.`, `~//`, `/.`, `/home/u/.`, `/home/u//` all normalize to their
+# true sensitive target instead of slipping past a literal string compare.
+# bash 3.2-safe (no arrays needed; parameter expansion only, no word-splitting
+# so a glob char in a component can never be expanded).
+_link_normalize_path() {
+  local path="${1/#\~/${HOME}}"
+  local absolute=0
+  case "${path}" in /*) absolute=1 ;; esac
+
+  local rest="${path}" comp out=""
+  while [[ -n "${rest}" ]]; do
+    comp="${rest%%/*}"                       # first path component
+    if [[ "${rest}" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+    case "${comp}" in
+      ''|.) ;;                               # empty (// or leading/trailing /) or "." → drop
+      *) out="${out}/${comp}" ;;
+    esac
+  done
+
+  if [[ "${absolute}" -eq 1 ]]; then
+    printf '%s\n' "${out:-/}"
+  else
+    out="${out#/}"; printf '%s\n' "${out:-.}"
+  fi
+}
+
 # _link_default_repo_is_sensitive <value> — true when a profile's default_repo
 # points at a location no legitimate repo lives in and that would hand the
 # agent host credentials or kernel/system state. Shape validation alone lets a
 # linked overlay ship `default_repo: ~/.ssh`, which the run path tilde-expands
 # and mounts into the sandbox when the user passes no --repo (bin/sandbox); at
 # tier 1 there is no secret scan to catch it. So we reject the value itself,
-# not just the filename. The `~` is expanded exactly as the run path expands it
-# (${default_repo/#~/$HOME}) so validation matches consumption. Rejects: the
-# whole home dir or filesystem root; any hidden path component (~/.ssh, ~/.aws,
-# ~/.config, .., …); and sensitive absolute system dirs. bash 3.2-safe.
+# not just the filename. The value is normalized the way the run path expands
+# and the kernel resolves it (see _link_normalize_path) so a caller cannot slip
+# a sensitive path past this with slash/dot noise (~/. , ~// , /home/u/. , …).
+# Rejects: the whole home dir or filesystem root; any hidden path component
+# (~/.ssh, ~/.aws, ~/.config, .., …); and sensitive absolute system dirs.
+# bash 3.2-safe.
 _link_default_repo_is_sensitive() {
-  local val="$1"
-  val="${val/#\~/${HOME}}"
-  [[ "${val}" != "/" ]] && val="${val%/}"
+  local val
+  val="$(_link_normalize_path "$1")"
 
   # Whole home or filesystem root — mounting either exposes everything.
   [[ "${val}" == "/" || "${val}" == "${HOME}" ]] && return 0
 
   # A hidden component anywhere in the path (leading, or after any slash).
-  # `.?*` requires a dot plus at least one more char, so a bare "." (./x) and
-  # a plain slash are unaffected, but ".ssh"/".aws"/".config"/".." all match —
-  # catching both ~/.ssh and a hard-coded /home/<user>/.ssh.
+  # `.?*` requires a dot plus at least one more char, so a bare "." has already
+  # been normalized away and a plain slash is unaffected, but ".ssh"/".aws"/
+  # ".config"/".." all match — catching both ~/.ssh and a hard-coded
+  # /home/<user>/.ssh.
   case "${val}" in
     .?*|*/.?*) return 0 ;;
   esac
