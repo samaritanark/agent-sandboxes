@@ -20,9 +20,9 @@ RUN npm install -g "@github/copilot@${COPILOT_CLI_VERSION}" \
   && copilot --version
 
 # Fail the build if any GitHub token bled into the image. Copilot honors
-# COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN over its stored OAuth token,
-# and these are full-scope GitHub tokens (push, PRs, every readable repo), so
-# they must never be baked in — see PRINCIPLES.md ("Credential isolation").
+# COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN over its stored OAuth token — an
+# env token silently overrides OAuth and may carry broader GitHub privileges than
+# intended, so it must never be baked in (see PRINCIPLES.md, "Credential isolation").
 RUN test -z "${COPILOT_GITHUB_TOKEN:-}" || \
     (echo "ERROR: COPILOT_GITHUB_TOKEN must not be set in image" && exit 1)
 RUN test -z "${GH_TOKEN:-}" || \

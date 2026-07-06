@@ -8,11 +8,13 @@ set -euo pipefail
 #
 # The three GitHub tokens are Copilot's env-var auth path (it honors
 # COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN over its stored OAuth token).
-# Unlike an LLM API key these are full-scope GitHub tokens — they can push code,
-# open PRs, and read every repo the operator can — so Copilot is onboarded via
-# OAuth device flow only (lib/onboard.sh) and these never enter the pod. Listed
-# as exact names rather than a "GITHUB_" prefix pattern to avoid sweeping up
-# benign GITHUB_COPILOT_* / GITHUB_* config vars.
+# An env token silently overrides the stored OAuth credential and may carry
+# broader GitHub privileges than intended (a fine-grained PAT with only the
+# Copilot Requests scope is possible, but GH_TOKEN/GITHUB_TOKEN in practice are
+# often whatever broad token the operator's shell already has). So Copilot is
+# onboarded via OAuth device flow only (lib/onboard.sh) and these never enter the
+# pod. Listed as exact names rather than a "GITHUB_" prefix pattern to avoid
+# sweeping up benign GITHUB_COPILOT_* / GITHUB_* config vars.
 HOST_ENV_BLOCKLIST=(
   "KUBECONFIG"
   "SSH_AUTH_SOCK"
