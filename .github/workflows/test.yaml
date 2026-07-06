@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
       - name: Install Taskfile
-        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52
         with:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
