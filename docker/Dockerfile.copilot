@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
+# docker/Dockerfile.copilot
+# sandbox:copilot — GitHub Copilot CLI agent image
+# - Installs @github/copilot globally (the standalone agentic CLI, NOT the
+#   older `gh copilot` extension and NOT the cloud coding agent)
+# - NO GitHub token baked in — authentication is OAuth device-flow only,
+#   staged into agent-home by 'sandbox onboard' (lib/onboard.sh)
+# - NO tsh, docker CLI, or SSH client
+
+FROM sandbox:base
+
+# Install GitHub Copilot CLI.
+#
+# COPILOT_CLI_VERSION pins the npm version; bump it (or pass
+# `--build-arg COPILOT_CLI_VERSION=<v>`) via `sandbox rebuild` to refresh on
+# your own cadence without editing this file. `copilot` is the binary name.
+ARG COPILOT_CLI_VERSION=latest
+RUN npm install -g "@github/copilot@${COPILOT_CLI_VERSION}" \
+  && copilot --version
+
+# Fail the build if any GitHub token bled into the image. Copilot honors
+# COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN over its stored OAuth token,
+# and these are full-scope GitHub tokens (push, PRs, every readable repo), so
+# they must never be baked in — see PRINCIPLES.md ("Credential isolation").
+RUN test -z "${COPILOT_GITHUB_TOKEN:-}" || \
+    (echo "ERROR: COPILOT_GITHUB_TOKEN must not be set in image" && exit 1)
+RUN test -z "${GH_TOKEN:-}" || \
+    (echo "ERROR: GH_TOKEN must not be set in image" && exit 1)
+RUN test -z "${GITHUB_TOKEN:-}" || \
+    (echo "ERROR: GITHUB_TOKEN must not be set in image" && exit 1)
+
+ENTRYPOINT ["copilot"]
+CMD []

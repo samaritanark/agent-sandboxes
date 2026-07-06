@@ -289,6 +289,53 @@ test_capture_transcript_opencode() {
 }
 
 ###############################################################################
+# Test: copilot session-state subtree is captured with its layout preserved,
+# and the token store (config.json) + SQLite index (session-store.db), which
+# live OUTSIDE session-state/, are never captured.
+###############################################################################
+test_capture_transcript_copilot() {
+  info "Testing transcript capture (copilot)..."
+
+  local session_id="ses-20260401-173000-trcp"
+  local log_dir="${TEST_LOG_DIR}/${session_id}"
+  local agent_home="${TEST_LOG_DIR}/home-copilot"
+  mkdir -p "${log_dir}" "${agent_home}/session-state/sess_abc"
+
+  audit_write_session_json \
+    "${log_dir}" "${session_id}" "copilot" "1" "testuser" "" "" "sandbox-copilot-trcp" \
+    "2026-04-01T17:30:00Z" "api.github.com"
+  touch -d "2026-04-01T17:30:00" "${log_dir}/session.json"
+
+  # In-window session artifacts (must be captured, layout preserved).
+  local events="${agent_home}/session-state/sess_abc/events.jsonl"
+  local wsyaml="${agent_home}/session-state/sess_abc/workspace.yaml"
+  echo '{"copilot":true}' > "${events}"
+  echo 'cwd: /workspace'  > "${wsyaml}"
+  touch -d "2026-04-01T17:40:00" "${events}" "${wsyaml}"
+
+  # The token store and SQLite index live OUTSIDE session-state/ — even though
+  # they're modified in-window, they must NOT be captured.
+  echo '{"oauth_token":"gho_secret"}' > "${agent_home}/config.json"
+  echo 'sqlite'                        > "${agent_home}/session-store.db"
+  touch -d "2026-04-01T17:41:00" "${agent_home}/config.json" "${agent_home}/session-store.db"
+
+  audit_capture_transcript "${log_dir}" "copilot" "${agent_home}"
+
+  [[ -f "${log_dir}/transcript/sess_abc/events.jsonl" ]] \
+    && pass "captured copilot events.jsonl with layout preserved" \
+    || fail "copilot session-state subtree was not captured correctly"
+  [[ -f "${log_dir}/transcript/sess_abc/workspace.yaml" ]] \
+    && pass "captured copilot workspace.yaml" \
+    || fail "copilot workspace.yaml was not captured"
+  [[ ! -e "${log_dir}/transcript/config.json" ]] \
+    && pass "token store (config.json) not captured" \
+    || fail "token store leaked into the transcript capture!"
+  [[ ! -e "${log_dir}/transcript/session-store.db" ]] \
+    && pass "SQLite index (session-store.db) not captured" \
+    || fail "session-store.db leaked into the transcript capture"
+}
+
+###############################################################################
 # Test: a session with no in-window transcript produces no transcript dir and
 # does not error.
 ###############################################################################
@@ -564,6 +611,7 @@ main() {
   test_capture_transcript_claude
   test_capture_transcript_codex
   test_capture_transcript_opencode
+  test_capture_transcript_copilot
   test_capture_transcript_no_match
   test_record_agent_session_id
   test_capture_transcript_claude_pinned

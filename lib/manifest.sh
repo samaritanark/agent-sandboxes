@@ -40,6 +40,11 @@ build_pod_manifest() {
     claude)   agent_config_mount="/home/agent/.claude" ;;
     codex)    agent_config_mount="/home/agent/.codex" ;;
     opencode) agent_config_mount="/home/agent/.local/share/opencode" ;;
+    # Copilot's default config dir is ~/.copilot (= /home/agent/.copilot), so no
+    # COPILOT_HOME override is needed — the mount lands where the CLI already
+    # looks, and its in-pod 'copilot login' persists the token there. Contrast
+    # with claude, which needs CLAUDE_CONFIG_DIR (see build_env_block).
+    copilot)  agent_config_mount="/home/agent/.copilot" ;;
     *)        agent_config_mount="/home/agent/.${agent}" ;;
   esac
   local volumes_block

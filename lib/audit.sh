@@ -252,6 +252,14 @@ audit_capture_transcript() {
       read_into_array srcs < <(find "${agent_home}/storage" -type f \
         -newer "${session_json}" 2>/dev/null || true)
       ;;
+    copilot)
+      # ~/.copilot/session-state/<session>/{events.jsonl,workspace.yaml}. No
+      # session-id flag is wired (get_agent_session_id_flag), so correlate by
+      # mtime like codex/opencode. session-store.db (a SQLite index) and the
+      # token in config.json live OUTSIDE session-state/, so neither is copied.
+      read_into_array srcs < <(find "${agent_home}/session-state" -type f \
+        -newer "${session_json}" 2>/dev/null || true)
+      ;;
     *)
       warn "Transcript capture not supported for agent '${agent}'."
       return 0
@@ -263,11 +271,19 @@ audit_capture_transcript() {
     return 0
   fi
 
+  # Agents whose transcript is a per-session subtree (not a single flat file)
+  # keep their directory layout under transcript/; strip the agent-home-relative
+  # base so the copied tree starts at the session root. Empty base = flat copy.
+  local subtree_base=""
+  case "${agent}" in
+    opencode) subtree_base="${agent_home}/storage/" ;;
+    copilot)  subtree_base="${agent_home}/session-state/" ;;
+  esac
+
   mkdir -p "${dest}"
   for f in "${srcs[@]}"; do
-    # Preserve the storage/ subtree layout for opencode; flat copy otherwise.
-    if [[ "${agent}" == "opencode" ]]; then
-      local rel="${f#"${agent_home}/storage/"}"
+    if [[ -n "${subtree_base}" ]]; then
+      local rel="${f#"${subtree_base}"}"
       mkdir -p "${dest}/$(dirname "${rel}")"
       cp -p "${f}" "${dest}/${rel}"
     else

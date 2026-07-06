@@ -190,6 +190,46 @@ test_onboard_agent_claude_no_host_state() {
     || fail "destination file appeared with no source"
 }
 
+test_onboard_agent_copilot_real() {
+  info "Testing onboard_agent copilot (real run with config.json present)..."
+
+  local h
+  h="$(new_home copilot-real)"
+  load_onboard_with_home "${h}"
+
+  mkdir -p "${h}/.copilot"
+  echo '{"oauth_token":"gho_fake"}' > "${h}/.copilot/config.json"
+  chmod 0644 "${h}/.copilot/config.json"
+
+  onboard_agent copilot false false >/dev/null
+
+  local cfg="${h}/.sandbox/agent-home/copilot/config.json"
+  [[ -f "${cfg}" ]] && pass "config.json staged for copilot" \
+    || fail "copilot config.json missing"
+  eq "copilot config.json mode 0600" "600" "$(stat -c '%a' "${cfg}")"
+}
+
+test_onboard_agent_copilot_no_host_state() {
+  info "Testing onboard_agent copilot when no host state exists (keychain case)..."
+
+  local h
+  h="$(new_home copilot-empty)"
+  load_onboard_with_home "${h}"
+
+  # No ~/.copilot/config.json — e.g. the host keeps its token in the keychain.
+  local out
+  out="$(onboard_agent copilot false false)"
+  if echo "${out}" | grep -q "no host-side state"; then
+    pass "missing host state is reported, not fatal"
+  else
+    fail "expected 'no host-side state' message; got: ${out}"
+  fi
+
+  [[ ! -f "${h}/.sandbox/agent-home/copilot/config.json" ]] \
+    && pass "no destination file created when source absent" \
+    || fail "destination file appeared with no source"
+}
+
 test_onboard_agent_opencode_refusal() {
   info "Testing onboard_agent opencode refusal..."
 
@@ -325,7 +365,8 @@ test_warn_forbidden_env() {
   load_onboard_with_home "${h}"
 
   # No forbidden vars set
-  unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN OPENAI_API_KEY
+  unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN OPENAI_API_KEY \
+        COPILOT_GITHUB_TOKEN GH_TOKEN GITHUB_TOKEN
   local out count
   out="$(warn_forbidden_env 2>&1)"
   count="$(echo "${out}" | tail -1)"
@@ -339,6 +380,17 @@ test_warn_forbidden_env() {
     pass "warning names the offending env var"
   else
     fail "warning did not name the env var"
+  fi
+
+  # A GitHub token is forbidden too — Copilot's env-var auth path must not be
+  # allowed to substitute for OAuth device flow.
+  out="$(GH_TOKEN=gho_x warn_forbidden_env 2>&1)"
+  count="$(echo "${out}" | tail -1)"
+  eq "GH_TOKEN forbidden → count 1" "1" "${count}"
+  if echo "${out}" | grep -q "GH_TOKEN"; then
+    pass "warning names GH_TOKEN"
+  else
+    fail "warning did not name GH_TOKEN"
   fi
 }
 
@@ -403,6 +455,8 @@ main() {
   test_stage_file_missing_source
   test_onboard_agent_claude_real
   test_onboard_agent_claude_no_host_state
+  test_onboard_agent_copilot_real
+  test_onboard_agent_copilot_no_host_state
   test_onboard_agent_opencode_refusal
   test_onboard_codex_sandbox_mode_fresh
   test_onboard_codex_sandbox_mode_prepended

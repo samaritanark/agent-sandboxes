@@ -13,7 +13,7 @@ _sandbox_complete() {
   local commands="run resume allow list logs flows stop cleanup check status setup onboard secret mask profile link configure-network rebuild version"
   local run_opts="--agent --tier --profile --repo --allow-domain --base-url --infra-token --infra-kubeconfig --infra-kube-context --allow-exec-plugin --infra-endpoint --dry-run --name --keep-alive --i-accept-unmasked-secrets --help"
   local mask_subs="add list"
-  local rebuild_opts="--agent --tier3 --no-cache --codex-version --opencode-version --help"
+  local rebuild_opts="--agent --tier3 --no-cache --codex-version --opencode-version --copilot-version --help"
   local setup_opts="--pod-cidr --service-cidr --apiserver-port"
   local onboard_opts="--agent --skip-config --dry-run --force --help"
   local secret_subs="set list delete"
@@ -21,9 +21,9 @@ _sandbox_complete() {
   local profile_subs="save list show delete"
   local profile_save_opts="--tier --agent --repo --allow-domain --name --force --dry-run --help"
   local link_subs="status sync unlink"
-  local agents="claude codex opencode"
-  local onboard_agents="claude codex opencode all"
-  local rebuild_agents="claude codex opencode shell base all"
+  local agents="claude codex opencode copilot"
+  local onboard_agents="claude codex opencode copilot all"
+  local rebuild_agents="claude codex opencode copilot shell base all"
   local tiers="1 2 3"
 
   if [[ "${cword}" -eq 1 ]]; then
@@ -249,7 +249,7 @@ _sandbox_complete() {
           # shellcheck disable=SC2207
           COMPREPLY=($(compgen -W "${rebuild_agents}" -- "${cur}"))
           return ;;
-        --codex-version|--opencode-version)
+        --codex-version|--opencode-version|--copilot-version)
           return ;;
       esac
       if [[ "${cur}" == --* ]]; then

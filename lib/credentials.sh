@@ -5,12 +5,23 @@
 set -euo pipefail
 
 # HOST_ENV_BLOCKLIST — host env vars that must NEVER be passed to pods
+#
+# The three GitHub tokens are Copilot's env-var auth path (it honors
+# COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN over its stored OAuth token).
+# Unlike an LLM API key these are full-scope GitHub tokens — they can push code,
+# open PRs, and read every repo the operator can — so Copilot is onboarded via
+# OAuth device flow only (lib/onboard.sh) and these never enter the pod. Listed
+# as exact names rather than a "GITHUB_" prefix pattern to avoid sweeping up
+# benign GITHUB_COPILOT_* / GITHUB_* config vars.
 HOST_ENV_BLOCKLIST=(
   "KUBECONFIG"
   "SSH_AUTH_SOCK"
   "DOCKER_HOST"
   "KUBERNETES_SERVICE_HOST"
   "KUBERNETES_SERVICE_PORT"
+  "COPILOT_GITHUB_TOKEN"
+  "GH_TOKEN"
+  "GITHUB_TOKEN"
 )
 
 # HOST_ENV_BLOCKLIST_PATTERNS — prefix patterns (all vars matching blocked)
