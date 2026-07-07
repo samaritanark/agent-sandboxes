@@ -21,6 +21,13 @@ allowed_domains:
   - github.com
   - api.github.com
   - "*.githubcopilot.com"
+  # Per-plan namespaces: a Cilium DNS wildcard matches a single label (no dot),
+  # so *.githubcopilot.com does NOT cover the two-label api.<plan>.githubcopilot.com
+  # hosts the model API and bundled github-mcp-server route through. One wildcard
+  # per plan namespace, per GitHub's firewall docs.
+  - "*.individual.githubcopilot.com"
+  - "*.business.githubcopilot.com"
+  - "*.enterprise.githubcopilot.com"
   - copilot-proxy.githubusercontent.com
   - origin-tracker.githubusercontent.com
   - copilot-telemetry.githubusercontent.com

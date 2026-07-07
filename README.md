@@ -140,11 +140,15 @@ sandbox resume ses-20260401-143022-a7b3
 | claude   | sandbox:claude   | OAuth   | `claude.ai`, `api.anthropic.com`, `console.anthropic.com`, `statsig.anthropic.com`, `sentry.io`  |
 | codex    | sandbox:codex    | OAuth   | `api.openai.com`, `auth.openai.com`, `auth0.openai.com`, `cdn.openai.com`, `chatgpt.com`         |
 | opencode | sandbox:opencode | API key | hostname of `OPENCODE_BASE_URL` (any OpenAI-compatible endpoint; operator chooses)               |
-| copilot  | sandbox:copilot  | OAuth   | `github.com`, `api.github.com`, `*.githubcopilot.com`, `copilot-proxy.githubusercontent.com` (+ attribution/telemetry) |
+| copilot  | sandbox:copilot  | OAuth   | `github.com`, `api.github.com`, `*.githubcopilot.com`, `*.{individual,business,enterprise}.githubcopilot.com`, `copilot-proxy.githubusercontent.com` (+ attribution/telemetry) |
 
 Allowlists are mostly exact-match FQDNs; an entry may be an explicit wildcard
 pattern (e.g. `*.githubcopilot.com`) when a provider fans out across
-per-plan subdomains. See `lib/agents.sh` for the authoritative list.
+per-plan subdomains. A Cilium DNS wildcard matches a single label only (it does
+not cross a dot), so Copilot's two-label per-plan hosts
+(`api.individual.githubcopilot.com`, etc.) each need their own
+`*.<plan>.githubcopilot.com` entry — the bare `*.githubcopilot.com` does not
+reach them. See `lib/agents.sh` for the authoritative list.
 
 > **copilot users:** Copilot's control plane is `github.com`/`api.github.com` —
 > the same hosts a Tier 2 session uses for git — so a Tier 1 copilot sandbox is

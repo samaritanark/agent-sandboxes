@@ -71,6 +71,11 @@ test_domains() {
   contains_line "control plane github.com listed"     "github.com"          <<< "${domains}"
   contains_line "api.github.com listed"               "api.github.com"      <<< "${domains}"
   contains_line "model API wildcard listed"           "*.githubcopilot.com" <<< "${domains}"
+  # Per-plan namespaces are two labels deep; a single-label Cilium wildcard does
+  # not reach them, so each plan gets its own wildcard (GitHub firewall docs).
+  contains_line "individual plan wildcard listed"     "*.individual.githubcopilot.com" <<< "${domains}"
+  contains_line "business plan wildcard listed"       "*.business.githubcopilot.com"   <<< "${domains}"
+  contains_line "enterprise plan wildcard listed"     "*.enterprise.githubcopilot.com" <<< "${domains}"
   contains_line "completions proxy listed" "copilot-proxy.githubusercontent.com" <<< "${domains}"
 }
 
@@ -111,6 +116,15 @@ test_policy_wildcard_coupling() {
   local wild_name
   wild_name="$(grep -c 'matchName: "\*.githubcopilot.com"' <<< "${pol}" || true)"
   eq "wildcard never rendered as matchName" "0" "${wild_name}"
+
+  # The per-plan namespace (two labels deep) must ALSO render as a matchPattern in
+  # both blocks — a matchName there would silently not match the api.<plan> host,
+  # which is exactly the DNS-resolution failure this rule exists to prevent.
+  local plan_pattern plan_name
+  plan_pattern="$(grep -c 'matchPattern: "\*.individual.githubcopilot.com"' <<< "${pol}" || true)"
+  eq "per-plan wildcard rendered as matchPattern twice (DNS + FQDN)" "2" "${plan_pattern}"
+  plan_name="$(grep -c 'matchName: "\*.individual.githubcopilot.com"' <<< "${pol}" || true)"
+  eq "per-plan wildcard never rendered as matchName" "0" "${plan_name}"
 
   # An exact host is a matchName, also in both blocks.
   local exact

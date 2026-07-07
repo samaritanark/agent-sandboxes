@@ -65,9 +65,22 @@ EOF
       #
       #   github.com                       login + /copilot/* control paths
       #   api.github.com                   /user + /copilot_internal/* token+config
-      #   *.githubcopilot.com              model API/proxy (covers the
-      #                                    individual/business/enterprise plan
-      #                                    subdomains in one matchPattern)
+      #   *.githubcopilot.com              model API/proxy for the plan-agnostic
+      #                                    hosts (e.g. api.githubcopilot.com)
+      #   *.individual.githubcopilot.com   Free/Pro (individual) plan namespace
+      #   *.business.githubcopilot.com     Business plan namespace
+      #   *.enterprise.githubcopilot.com   Enterprise plan namespace
+      #
+      # The per-plan namespaces are REQUIRED and cannot be folded into the bare
+      # *.githubcopilot.com pattern: a Cilium DNS matchPattern turns '*' into
+      # [-a-zA-Z0-9_]* (a single label — it does not cross a dot), so
+      # *.githubcopilot.com matches api.githubcopilot.com but never the two-label
+      # api.individual.githubcopilot.com the Free/Pro plan actually routes model
+      # traffic AND the bundled github-mcp-server through. Each plan namespace has
+      # multiple subdomains (api, proxy, telemetry, ...), so GitHub's own firewall
+      # docs prescribe a per-plan wildcard rather than enumerated hosts:
+      # https://docs.github.com/en/copilot/reference/copilot-allowlist-reference
+      #
       #   copilot-proxy.githubusercontent.com   completions proxy
       #   origin-tracker.githubusercontent.com  content attribution
       #   copilot-telemetry.githubusercontent.com  telemetry
@@ -77,6 +90,9 @@ EOF
 github.com
 api.github.com
 *.githubcopilot.com
+*.individual.githubcopilot.com
+*.business.githubcopilot.com
+*.enterprise.githubcopilot.com
 copilot-proxy.githubusercontent.com
 origin-tracker.githubusercontent.com
 copilot-telemetry.githubusercontent.com
