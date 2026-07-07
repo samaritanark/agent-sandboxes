@@ -690,7 +690,7 @@ cmd_run() {
       warn "  it were, its host-side config (e.g. ~/.tsh/, ~/.aws/) is not"
       warn "  mounted. Every kubectl call inside the sandbox WILL FAIL at auth."
       warn "  Bake a static kubeconfig before mounting — see examples/ in the"
-      warn "  repo, or README §'Tier 3 Infra Credentials'."
+      warn "  repo, or docs/how-to/tier3-infra-credentials.md."
       if [[ "${opt_allow_exec_plugin}" == "true" ]]; then
         warn "  --allow-exec-plugin set; continuing anyway."
       elif [[ "${opt_dry_run}" == "true" ]]; then
