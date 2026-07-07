@@ -58,8 +58,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 
 # --- Node.js LTS (via NodeSource) ---
-# Pin to Node.js 20 LTS
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+# Pin to Node.js 22 LTS. Node 20 reached end-of-life in April 2026, and the
+# GitHub Copilot CLI (npm install -g @github/copilot) requires Node.js 22+;
+# the other Node-based agent (codex) runs fine on 22 as well.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get install -y --no-install-recommends nodejs \
   && rm -rf /var/lib/apt/lists/*
 

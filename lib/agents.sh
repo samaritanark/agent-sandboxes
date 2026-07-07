@@ -5,15 +5,15 @@
 set -euo pipefail
 
 # VALID_AGENTS — supported agent identifiers
-VALID_AGENTS=("claude" "codex" "opencode")
+VALID_AGENTS=("claude" "codex" "opencode" "copilot")
 
 # validate_agent — die if agent is not supported
 validate_agent() {
   local agent="$1"
   case "${agent}" in
-    claude|codex|opencode) return 0 ;;
+    claude|codex|opencode|copilot) return 0 ;;
     *)
-      echo "ERROR: Unknown agent '${agent}'. Valid agents: claude, codex, opencode." >&2
+      echo "ERROR: Unknown agent '${agent}'. Valid agents: claude, codex, opencode, copilot." >&2
       echo " " >&2
       exit 1
       ;;
@@ -51,6 +51,53 @@ auth.openai.com
 auth0.openai.com
 chatgpt.com
 cdn.openai.com
+EOF
+      ;;
+    copilot)
+      # GitHub Copilot CLI (@github/copilot). Unlike claude/codex, whose control
+      # planes are narrow SaaS hostnames, Copilot's control plane IS github.com +
+      # api.github.com — the same hosts a Tier 2 session uses for git. So a Tier 1
+      # Copilot sandbox is inherently less isolated than a Tier 1 Claude sandbox:
+      # the agent cannot reach its brain without github.com being resolvable. That
+      # is an accepted, documented cost of this agent (see README / PRINCIPLES.md);
+      # the FQDN allowlist still forecloses arbitrary egress, and the coupled L7
+      # DNS filter (lib/policy.sh) still closes the resolver-tunnel channel.
+      #
+      #   github.com                       login + /copilot/* control paths
+      #   api.github.com                   /user + /copilot_internal/* token+config
+      #   *.githubcopilot.com              model API/proxy for the plan-agnostic
+      #                                    hosts (e.g. api.githubcopilot.com)
+      #   *.individual.githubcopilot.com   Free/Pro (individual) plan namespace
+      #   *.business.githubcopilot.com     Business plan namespace
+      #   *.enterprise.githubcopilot.com   Enterprise plan namespace
+      #
+      # The per-plan namespaces are REQUIRED and cannot be folded into the bare
+      # *.githubcopilot.com pattern: a Cilium DNS matchPattern turns '*' into
+      # [-a-zA-Z0-9_]* (a single label — it does not cross a dot), so
+      # *.githubcopilot.com matches api.githubcopilot.com but never the two-label
+      # api.individual.githubcopilot.com the Free/Pro plan actually routes model
+      # traffic AND the bundled github-mcp-server through. Each plan namespace has
+      # multiple subdomains (api, proxy, telemetry, ...), so GitHub's own firewall
+      # docs prescribe a per-plan wildcard rather than enumerated hosts:
+      # https://docs.github.com/en/copilot/reference/copilot-allowlist-reference
+      #
+      #   copilot-proxy.githubusercontent.com   completions proxy
+      #   origin-tracker.githubusercontent.com  content attribution
+      #   copilot-telemetry.githubusercontent.com  telemetry
+      #   collector.github.com             analytics
+      #   default.exp-tas.com              feature experimentation
+      cat <<'EOF'
+github.com
+api.github.com
+*.githubcopilot.com
+*.individual.githubcopilot.com
+*.business.githubcopilot.com
+*.enterprise.githubcopilot.com
+copilot-proxy.githubusercontent.com
+origin-tracker.githubusercontent.com
+copilot-telemetry.githubusercontent.com
+collector.github.com
+default.exp-tas.com
 EOF
       ;;
     opencode)
@@ -192,8 +239,8 @@ render_agent_mcp_config() {
 get_agent_credential_type() {
   local agent="$1"
   case "${agent}" in
-    claude|codex)  echo "oauth" ;;
-    opencode)      echo "apikey" ;;
-    *)             echo "unknown" ;;
+    claude|codex|copilot)  echo "oauth" ;;
+    opencode)              echo "apikey" ;;
+    *)                     echo "unknown" ;;
   esac
 }

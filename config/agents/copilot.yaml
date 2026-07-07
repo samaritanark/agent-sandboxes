@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
+# config/agents/copilot.yaml
+# GitHub Copilot CLI agent profile
+#
+# Descriptive contract only — runtime config lives in lib/agents.sh and
+# lib/onboard.sh; this file documents the contract.
+
+agent: copilot
+display_name: "GitHub Copilot CLI"
+image_base: "sandbox:copilot"
+image_infra: "sandbox:copilot-infra"
+credential_type: oauth  # OAuth device flow — NO token injection (PRINCIPLES.md)
+entrypoint: copilot
+
+# Allowed egress domains — Tier 1 only (Tier 2/3 add tier_domains on top).
+# NOTE: unlike other agents, Copilot's control plane is github.com itself, so a
+# Tier 1 Copilot sandbox is inherently less isolated than a Tier 1 Claude one.
+# See the comment in lib/agents.sh:get_agent_domains.
+allowed_domains:
+  - github.com
+  - api.github.com
+  - "*.githubcopilot.com"
+  # Per-plan namespaces: a Cilium DNS wildcard matches a single label (no dot),
+  # so *.githubcopilot.com does NOT cover the two-label api.<plan>.githubcopilot.com
+  # hosts the model API and bundled github-mcp-server route through. One wildcard
+  # per plan namespace, per GitHub's firewall docs.
+  - "*.individual.githubcopilot.com"
+  - "*.business.githubcopilot.com"
+  - "*.enterprise.githubcopilot.com"
+  - copilot-proxy.githubusercontent.com
+  - origin-tracker.githubusercontent.com
+  - copilot-telemetry.githubusercontent.com
+  - collector.github.com
+  - default.exp-tas.com
+
+# Environment variables injected into pod
+env:
+  HOME: /home/agent
+  TERM: xterm-256color
+  # No COPILOT_HOME override: the credential mount lands at /home/agent/.copilot,
+  # Copilot's default config dir (lib/manifest.sh). GitHub tokens are forbidden —
+  # authentication is OAuth device flow only.
+
+# Forbidden env vars — must not appear in pod spec. These are Copilot's env-var
+# auth path (COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN); an env token
+# silently overrides the stored OAuth credential and may carry broader GitHub
+# privileges than intended, so they are blocked at onboard and launch
+# (lib/credentials.sh, lib/onboard.sh) to keep OAuth device flow the only path in.
+forbidden_env:
+  - COPILOT_GITHUB_TOKEN
+  - GH_TOKEN
+  - GITHUB_TOKEN

@@ -490,12 +490,14 @@ build_images() {
   _build_image "docker.io/library/sandbox:claude"   "Dockerfile.claude"
   _build_image "docker.io/library/sandbox:codex"    "Dockerfile.codex"
   _build_image "docker.io/library/sandbox:opencode" "Dockerfile.opencode"
+  _build_image "docker.io/library/sandbox:copilot"  "Dockerfile.copilot"
   _build_image "docker.io/library/sandbox:shell"    "Dockerfile.shell"
 
   # Tier 3 infra variants — one per agent
   _build_image "docker.io/library/sandbox:claude-infra"   "Dockerfile.infra" --build-arg "BASE_IMAGE=docker.io/library/sandbox:claude"
   _build_image "docker.io/library/sandbox:codex-infra"    "Dockerfile.infra" --build-arg "BASE_IMAGE=docker.io/library/sandbox:codex"
   _build_image "docker.io/library/sandbox:opencode-infra" "Dockerfile.infra" --build-arg "BASE_IMAGE=docker.io/library/sandbox:opencode"
+  _build_image "docker.io/library/sandbox:copilot-infra"  "Dockerfile.infra" --build-arg "BASE_IMAGE=docker.io/library/sandbox:copilot"
 
   # k3s uses its own containerd instance; Docker-built images are not visible
   # to it until explicitly imported.
@@ -577,12 +579,14 @@ build_images_macos() {
   _vm_build_image "docker.io/library/sandbox:claude"   "Dockerfile.claude"
   _vm_build_image "docker.io/library/sandbox:codex"    "Dockerfile.codex"
   _vm_build_image "docker.io/library/sandbox:opencode" "Dockerfile.opencode"
+  _vm_build_image "docker.io/library/sandbox:copilot"  "Dockerfile.copilot"
   _vm_build_image "docker.io/library/sandbox:shell"    "Dockerfile.shell"
 
   # Tier 3 infra variants — one per agent
   _vm_build_image "docker.io/library/sandbox:claude-infra"   "Dockerfile.infra" --build-arg "BASE_IMAGE=sandbox:claude"
   _vm_build_image "docker.io/library/sandbox:codex-infra"    "Dockerfile.infra" --build-arg "BASE_IMAGE=sandbox:codex"
   _vm_build_image "docker.io/library/sandbox:opencode-infra" "Dockerfile.infra" --build-arg "BASE_IMAGE=sandbox:opencode"
+  _vm_build_image "docker.io/library/sandbox:copilot-infra"  "Dockerfile.infra" --build-arg "BASE_IMAGE=sandbox:copilot"
 
   echo "  Image build complete (images are in the VM's k3s containerd)."
 }

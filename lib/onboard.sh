@@ -28,8 +28,19 @@
 #   codex   ~/.codex/auth.json            → ~/.sandbox/agent-home/codex/auth.json
 #           ~/.codex/config.toml          → ~/.sandbox/agent-home/codex/config.toml
 #
-# Conversation history (~/.claude/projects/, ~/.codex/sessions/) is
-# intentionally NOT copied — the sandbox is meant to start fresh.
+#   copilot ~/.copilot/config.json        → ~/.sandbox/agent-home/copilot/config.json
+#
+# Copilot onboard is best-effort by nature: the CLI stores its OAuth token in
+# the OS keychain when one is available (typical on a macOS/Linux-desktop host),
+# in which case ~/.copilot/config.json holds no token and there is nothing to
+# copy. That is fine — the pod has no keychain/libsecret, so the first in-pod
+# 'copilot login' (device flow) writes the token to the plaintext config.json in
+# the mounted agent-home, where it then persists across sessions. Onboard only
+# short-circuits that first login when the host already keeps a plaintext token
+# (headless Linux host, or one without libsecret).
+#
+# Conversation history (~/.claude/projects/, ~/.codex/sessions/,
+# ~/.copilot/history/) is intentionally NOT copied — the sandbox starts fresh.
 set -euo pipefail
 
 ONBOARD_AGENT_HOME_BASE="${HOME}/.sandbox/agent-home"
@@ -41,6 +52,9 @@ ONBOARD_FORBIDDEN_ENV=(
   "ANTHROPIC_API_KEY"
   "ANTHROPIC_AUTH_TOKEN"
   "OPENAI_API_KEY"
+  "COPILOT_GITHUB_TOKEN"
+  "GH_TOKEN"
+  "GITHUB_TOKEN"
 )
 
 # warn_forbidden_env — emit a warning for each forbidden var that's
@@ -126,6 +140,9 @@ onboard_agent() {
       ;;
     codex)
       _onboard_codex "${dry_run}" "${force}"
+      ;;
+    copilot)
+      _onboard_copilot "${dry_run}" "${force}"
       ;;
     opencode)
       _onboard_opencode_refuse
@@ -226,6 +243,26 @@ TOML
   fi
   chmod 0600 "${cfg}"
   echo "  codex: set sandbox_mode=\"danger-full-access\" in ${cfg_disp}"
+}
+
+_onboard_copilot() {
+  local dry_run="$1" force="$2"
+  local agent_home="${ONBOARD_AGENT_HOME_BASE}/copilot"
+  mkdir -p "${agent_home}"
+
+  # Only config.json (the plaintext-token store) is staged. When the host keeps
+  # its token in the keychain instead, this is a no-op ("missing-src") and the
+  # first in-pod 'copilot login' establishes the token durably in the mounted
+  # agent-home — see the file-header note.
+  local src dst result
+  for pair in \
+    "${HOME}/.copilot/config.json|${agent_home}/config.json"
+  do
+    src="${pair%|*}"
+    dst="${pair##*|}"
+    result="$(stage_file "${src}" "${dst}" "${dry_run}" "${force}")"
+    print_stage_result copilot "${src}" "${dst}" "${result}"
+  done
 }
 
 _onboard_opencode_refuse() {
