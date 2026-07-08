@@ -40,6 +40,7 @@ tasks:
       - bash tests/test-catalogue.sh
       - bash tests/test-dependency-manifest.sh
       - bash tests/test-policy-deps.sh
+      - bash tests/test-infra-versions.sh
 
   release:
     desc: Build the release tarball. Pass VERSION=vX.Y.Z (defaults to "dev").
@@ -68,11 +69,22 @@ tasks:
         setup.sh uninstall.sh README.md PRINCIPLES.md LICENSE NOTICE \
         | tar -x -C "${pkgdir}"
 
-      # Stamp the release version into the packaged CLI. The source tree
-      # keeps SANDBOX_VERSION="dev"; only the shipped artifact is pinned.
-      sed -i "s/^SANDBOX_VERSION=.*/SANDBOX_VERSION=\"${version}\"/" \
-        "${pkgdir}/bin/sandbox"
+      # Resolve the version identity ONCE, here in CI (which has full git
+      # history), and embed it as .version in the shipped artifact. bin/sandbox
+      # only reads that file at runtime — it never recomputes from git. The
+      # source tree carries no .version (gitignored), so a fresh checkout
+      # honestly reports "dev" until 'sandbox install' or 'task stamp' runs.
+      STAMP_VERSION_OUT="${pkgdir}/.version" \
+        bash scripts/stamp-version.sh "${version}"
 
       tar -czf "${tarball}" -C "${stage}" "${prefix}"
       rm -rf "${stage}"
       echo ">> Built ${tarball}"
+
+  stamp:
+    desc: >-
+      Re-embed this checkout's version identity into .version (git-derived) so
+      `sandbox version` reflects the current commit. Runs automatically during
+      `sandbox install`; use this to refresh after committing or switching
+      branches without reinstalling.
+    cmd: bash scripts/stamp-version.sh

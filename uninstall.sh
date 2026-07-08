@@ -442,16 +442,13 @@ fi
 if [[ "${OPT_KEEP_IMAGES}" == "false" ]]; then
   step "Removing sandbox container images..."
 
-  SANDBOX_IMAGES=(
-    sandbox:base
-    sandbox:claude
-    sandbox:codex
-    sandbox:opencode
-    sandbox:shell
-    sandbox:claude-infra
-    sandbox:codex-infra
-    sandbox:opencode-infra
-  )
+  # Derived from the canonical build list in setup/common.sh (sourced above) so
+  # this can never drift out of sync with what setup actually builds. Populated
+  # with a read loop rather than mapfile for macOS bash 3.2 compatibility.
+  SANDBOX_IMAGES=()
+  while IFS= read -r _img; do
+    [[ -n "${_img}" ]] && SANDBOX_IMAGES+=("${_img}")
+  done < <(sandbox_image_tags)
 
   # On Linux, images live in k3s containerd; we use k3s ctr to remove them
   # before k3s itself is uninstalled. On macOS, images are inside the Lima VM

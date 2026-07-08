@@ -8,6 +8,9 @@
 ./uninstall.sh --keep-logs   # Remove everything except ~/.sandbox/logs/
 ```
 
+`sandbox uninstall` is the equivalent once the CLI is on your PATH (same flags);
+`./uninstall.sh` continues to work.
+
 | Option             | Effect                                          |
 |--------------------|-------------------------------------------------|
 | `--yes` / `-y`     | Skip all confirmation prompts                   |

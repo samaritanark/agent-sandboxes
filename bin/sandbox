@@ -9,8 +9,31 @@ set -euo pipefail
 ###############################################################################
 # Constants & paths
 ###############################################################################
-SANDBOX_VERSION="dev"  # stamped to the release tag by 'task release'
 SANDBOX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Version identity is resolved ONCE at build/release/install time by
+# scripts/stamp-version.sh and embedded in ${SANDBOX_ROOT}/.version — the
+# runtime only READS it, never invoking git (whose `describe` output depends on
+# which tags a clone happens to have fetched, so two clones of the same commit
+# could disagree). A checkout that has never been installed has no .version and
+# honestly reports "dev". Parsed (not sourced) so a malformed file can't execute.
+SANDBOX_VERSION="dev"
+SANDBOX_COMMIT=""
+SANDBOX_COMMIT_DATE=""
+SANDBOX_BUILD_DATE=""
+SANDBOX_TREE_STATE=""
+if [[ -f "${SANDBOX_ROOT}/.version" ]]; then
+  while IFS='=' read -r _vkey _vval; do
+    case "${_vkey}" in
+      VERSION)     SANDBOX_VERSION="${_vval}" ;;
+      COMMIT)      SANDBOX_COMMIT="${_vval}" ;;
+      COMMIT_DATE) SANDBOX_COMMIT_DATE="${_vval}" ;;
+      BUILD_DATE)  SANDBOX_BUILD_DATE="${_vval}" ;;
+      TREE_STATE)  SANDBOX_TREE_STATE="${_vval}" ;;
+    esac
+  done < "${SANDBOX_ROOT}/.version"
+  unset _vkey _vval
+fi
 SANDBOX_LOGS_DIR="${SANDBOX_LOGS_DIR:-${HOME}/.sandbox/logs}"
 SANDBOX_NAMESPACE="sandbox"
 SANDBOX_RUNTIME_CLASS="gvisor"
@@ -61,6 +84,13 @@ source "${SANDBOX_ROOT}/lib/dns.sh"
 source "${SANDBOX_ROOT}/lib/certs.sh"
 # shellcheck source=../lib/link.sh
 source "${SANDBOX_ROOT}/lib/link.sh"
+
+# Pinned infra component versions (k3s/Cilium/gVisor/helm/nerdctl). Pure variable
+# defaults, no side effects — used by `status` (pinned-vs-installed) and `upgrade`.
+# shellcheck source=../setup/versions.sh
+source "${SANDBOX_ROOT}/setup/versions.sh"
+# Where setup/upgrade record what the cluster was provisioned with.
+SANDBOX_INFRA_VERSIONS_FILE="${SANDBOX_INFRA_VERSIONS_FILE:-${HOME}/.sandbox/infra-versions}"
 
 ###############################################################################
 # Utility helpers
@@ -119,8 +149,11 @@ COMMANDS:
   stop         Stop a session and run teardown
   cleanup      Remove old session logs
   check        Pre-flight workspace check
-  status       Show cluster and sandbox status
-  setup        Install/configure sandbox prerequisites
+  status       Show cluster and sandbox status (incl. infra versions vs pins)
+  install      Install/configure sandbox prerequisites (cluster, CNI, gVisor)
+  uninstall    Tear down the sandbox cluster and host artifacts
+  upgrade      Move pinned infra components (k3s/Cilium/gVisor) forward
+  setup        Alias of 'install' (retained for compatibility)
   onboard      Stage host-side agent OAuth state for first-run convenience
   secret       Manage host-side secret store (injected per-session by profile)
   mask         Manage per-repo file masking (add/list masked_paths)
@@ -1542,6 +1575,63 @@ cmd_check() {
 ###############################################################################
 # cmd_status — cluster and sandbox status
 ###############################################################################
+# --- infra version inspection (shared by `status` and `upgrade`) -------------
+
+# infra_provisioned_version KEY — read a value (e.g. K3S_VERSION) from the
+# manifest setup/upgrade wrote. Empty if unrecorded.
+infra_provisioned_version() {
+  local key="$1"
+  [[ -f "${SANDBOX_INFRA_VERSIONS_FILE}" ]] || return 0
+  local line
+  line="$(grep -m1 "^${key}=" "${SANDBOX_INFRA_VERSIONS_FILE}" 2>/dev/null || true)"
+  echo "${line#*=}"
+}
+
+# infra_installed_k3s — the k3s/Kubernetes version actually running, from the
+# node's kubeletVersion (e.g. v1.31.4+k3s1). Cross-platform via the sandbox
+# kubeconfig; empty if the cluster is unreachable.
+infra_installed_k3s() {
+  kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}' 2>/dev/null || true
+}
+
+# infra_installed_cilium — the running Cilium version, parsed from the agent
+# DaemonSet image tag (…/cilium:vX.Y.Z@sha256:…) → bare vX.Y.Z.
+infra_installed_cilium() {
+  local image
+  image="$(kubectl -n kube-system get ds cilium \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+  [[ -n "${image}" ]] || return 0
+  # Image is repo[:tag][@sha256:digest]. Strip the @digest FIRST (its own colon
+  # would otherwise defeat ##*:), then take the tag after the final colon.
+  local no_digest="${image%%@*}"
+  echo "${no_digest##*:}"
+}
+
+# infra_installed_gvisor — the runsc release from `runsc --version` (first line:
+# "runsc version release-YYYYMMDD.N"). Host-local: meaningful on Linux; on macOS
+# runsc lives in the VM, so this prints empty.
+infra_installed_gvisor() {
+  command -v runsc &>/dev/null || return 0
+  runsc --version 2>/dev/null | head -1 | sed -E 's/.*release-?//; s/[[:space:]].*//' || true
+}
+
+# infra_version_line LABEL PINNED INSTALLED — one aligned status row with a drift
+# flag. Comparison strips a leading 'v' so chart "1.16.5" matches image "v1.16.5".
+# Empty installed (unreachable / in-VM) is reported as unknown, not drift.
+infra_version_line() {
+  local label="$1" pinned="$2" installed="$3"
+  local note
+  if [[ -z "${installed}" ]]; then
+    note="${C_YELLOW}(installed unknown)${C_RESET}"
+  elif [[ -z "${pinned}" || "${pinned}" == "latest" || "${pinned#v}" == "${installed#v}" ]]; then
+    note="$(c_ok ok)"
+  else
+    note="${C_YELLOW}drift: pinned ${pinned}, installed ${installed}${C_RESET}"
+  fi
+  printf '  %-8s pinned %-14s installed %-14s %s\n' \
+    "${label}:" "${pinned:--}" "${installed:--}" "${note}"
+}
+
 cmd_status() {
   echo "=== Sandbox Status ==="
   echo ""
@@ -1599,6 +1689,22 @@ cmd_status() {
     echo "  Status: $(c_ok configured)"
   else
     echo "  Status: ${C_RED}not found${C_RESET} (run 'sandbox setup')"
+  fi
+  echo ""
+
+  # Infra component versions (pinned in setup/versions.sh vs what's live).
+  # Drift here means someone ran an older setup, or an upgrade is available —
+  # this is the CVE/EOL view. 'sandbox upgrade' moves the live cluster to pins.
+  echo "Infra versions:"
+  infra_version_line "k3s"    "${SANDBOX_K3S_VERSION}"    "$(infra_installed_k3s)"
+  infra_version_line "Cilium" "${SANDBOX_CILIUM_VERSION}" "$(infra_installed_cilium)"
+  infra_version_line "gVisor" "${SANDBOX_GVISOR_RELEASE}" "$(infra_installed_gvisor)"
+  local provisioned_at
+  provisioned_at="$(infra_provisioned_version RECORDED_AT)"
+  if [[ -n "${provisioned_at}" ]]; then
+    echo "  (provisioned ${provisioned_at}; pins from setup/versions.sh)"
+  else
+    echo "  (no provisioning record yet — run 'sandbox install')"
   fi
   echo ""
 
@@ -1834,11 +1940,177 @@ cmd_rebuild() {
 }
 
 ###############################################################################
-# cmd_setup — install prerequisites
+# cmd_setup — install/configure prerequisites (exposed as both `install` and
+# `setup`). Thin wrapper over setup.sh; all flags (--pod-cidr, --service-cidr,
+# --apiserver-port, --dns) pass straight through.
 ###############################################################################
 cmd_setup() {
-  echo "==> Running sandbox setup..."
+  echo "==> Running sandbox install..."
   bash "${SANDBOX_ROOT}/setup.sh" "$@"
+}
+
+###############################################################################
+# cmd_uninstall — tear down the cluster and host artifacts. Thin wrapper over
+# uninstall.sh; flags (--yes, --keep-logs, --keep-images, --keep-lima,
+# --keep-kubetools) pass straight through.
+###############################################################################
+cmd_uninstall() {
+  bash "${SANDBOX_ROOT}/uninstall.sh" "$@"
+}
+
+###############################################################################
+# cmd_upgrade — move pinned host-level infra components forward
+###############################################################################
+usage_upgrade() {
+  cat <<EOF
+sandbox upgrade — move pinned infrastructure components forward
+
+USAGE:
+  sandbox upgrade [COMPONENTS] [OPTIONS]
+
+COMPONENTS (default: all):
+  --k3s                Upgrade k3s
+  --cilium             Upgrade Cilium
+  --gvisor             Upgrade gVisor (runsc)
+  --all                Upgrade all of the above (default when none given)
+
+OPTIONS:
+  --to-k3s <ver>       Override the k3s target (else setup/versions.sh pin)
+  --to-cilium <ver>    Override the Cilium chart target
+  --to-gvisor <rel>    Override the gVisor release id (YYYYMMDD.N)
+  --dry-run            Show the plan (pinned vs installed) and exit
+  --force              Proceed even if sessions are running (they may be killed)
+  -y, --yes            Skip the confirmation prompt
+  -h, --help           Show this help
+
+Targets default to the pins in setup/versions.sh (which Renovate keeps current).
+An upgrade re-runs the component installers, which restarts k3s and can briefly
+disrupt the Cilium datapath — hence the running-session guard. On macOS the
+k3s/Cilium/gVisor stack lives inside the Lima VM and is not upgraded in place
+yet; re-provision the VM instead (the command prints how).
+EOF
+  exit 0
+}
+
+cmd_upgrade() {
+  local do_k3s=false do_cilium=false do_gvisor=false any=false
+  local to_k3s="" to_cilium="" to_gvisor=""
+  local force=false assume_yes=false dry_run=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --k3s)          do_k3s=true;    any=true; shift ;;
+      --cilium)       do_cilium=true; any=true; shift ;;
+      --gvisor)       do_gvisor=true; any=true; shift ;;
+      --all)          do_k3s=true; do_cilium=true; do_gvisor=true; any=true; shift ;;
+      --to-k3s)       to_k3s="$2";    shift 2 ;;
+      --to-k3s=*)     to_k3s="${1#*=}";    shift ;;
+      --to-cilium)    to_cilium="$2"; shift 2 ;;
+      --to-cilium=*)  to_cilium="${1#*=}"; shift ;;
+      --to-gvisor)    to_gvisor="$2"; shift 2 ;;
+      --to-gvisor=*)  to_gvisor="${1#*=}"; shift ;;
+      --dry-run)      dry_run=true;   shift ;;
+      --force)        force=true;     shift ;;
+      -y|--yes)       assume_yes=true; shift ;;
+      -h|--help)      usage_upgrade ;;
+      *) die "Unknown flag for 'upgrade': $1 (see 'sandbox upgrade --help')" ;;
+    esac
+  done
+
+  # Naming a --to-X selects that component; no flags at all == upgrade all.
+  [[ -n "${to_k3s}"    ]] && { do_k3s=true;    any=true; }
+  [[ -n "${to_cilium}" ]] && { do_cilium=true; any=true; }
+  [[ -n "${to_gvisor}" ]] && { do_gvisor=true; any=true; }
+  if ! ${any}; then do_k3s=true; do_cilium=true; do_gvisor=true; fi
+
+  # macOS: the isolation stack is inside the Lima VM. In-place VM upgrades are
+  # out of scope for now — re-provisioning is the supported path.
+  local platform
+  platform="$(detect_platform)"
+  if [[ "${platform}" == "macos" ]]; then
+    warn "On macOS the k3s/Cilium/gVisor stack runs inside the Lima VM."
+    echo "  In-place VM upgrades aren't supported yet. To move the stack forward,"
+    echo "  bump the pins in setup/versions.sh (or let Renovate open a PR), then"
+    echo "  re-provision the VM:"
+    echo ""
+    echo "    limactl delete --force ${LIMA_VM_NAME:-sandbox-vm}"
+    echo "    sandbox install"
+    echo ""
+    exit 1
+  fi
+
+  # Targets: explicit override, else the pin from setup/versions.sh.
+  local tgt_k3s="${to_k3s:-${SANDBOX_K3S_VERSION}}"
+  local tgt_cilium="${to_cilium:-${SANDBOX_CILIUM_VERSION}}"
+  local tgt_gvisor="${to_gvisor:-${SANDBOX_GVISOR_RELEASE}}"
+
+  echo "=== sandbox upgrade (host-level infra) ==="
+  echo "Plan (target vs installed):"
+  ${do_k3s}    && infra_version_line "k3s"    "${tgt_k3s}"    "$(infra_installed_k3s)"
+  ${do_cilium} && infra_version_line "Cilium" "${tgt_cilium}" "$(infra_installed_cilium)"
+  ${do_gvisor} && infra_version_line "gVisor" "${tgt_gvisor}" "$(infra_installed_gvisor)"
+  echo ""
+
+  if ${dry_run}; then
+    echo "(dry run — no changes made)"
+    return 0
+  fi
+
+  # Running-session guard: an upgrade restarts k3s and can blip the Cilium
+  # datapath, which kills live agent sessions. Refuse unless forced.
+  local pod_count
+  pod_count="$(kubectl get pods -n "${SANDBOX_NAMESPACE}" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+  pod_count="${pod_count:-0}"
+  if [[ "${pod_count}" -gt 0 ]]; then
+    if ! ${force}; then
+      die "${pod_count} running session(s). An upgrade restarts k3s and can drop live sessions. Stop them ('sandbox stop' / 'sandbox cleanup'), or re-run with --force to override."
+    fi
+    warn "${pod_count} running session(s) will likely be disrupted by this upgrade (--force)."
+  fi
+
+  if ! ${assume_yes}; then
+    printf 'Proceed with upgrade? [y/N] '
+    local reply; read -r reply
+    [[ "${reply}" =~ ^[Yy] ]] || die "Aborted."
+  fi
+
+  # Run the actual upgrade in a subshell so sourcing the setup scripts doesn't
+  # leak their globals/functions into the CLI process. The setup installers are
+  # reused verbatim (targets passed via the SANDBOX_*_VERSION env they read).
+  (
+    set -euo pipefail
+    export SANDBOX_ROOT
+    export SANDBOX_K3S_VERSION="${tgt_k3s}"
+    export SANDBOX_CILIUM_VERSION="${tgt_cilium}"
+    export SANDBOX_GVISOR_RELEASE="${tgt_gvisor}"
+    # shellcheck source=../setup/common.sh
+    source "${SANDBOX_ROOT}/setup/common.sh"
+    # shellcheck source=../setup/linux.sh
+    source "${SANDBOX_ROOT}/setup/linux.sh"
+
+    if ${do_k3s}; then
+      echo "==> Upgrading k3s..."
+      upgrade_k3s_linux
+    fi
+    if ${do_cilium}; then
+      echo "==> Upgrading Cilium..."
+      install_cilium_helm   # helm upgrade --install --version <target>
+    fi
+    if ${do_gvisor}; then
+      echo "==> Upgrading gVisor..."
+      install_gvisor_linux  # re-downloads the pinned runsc + shim
+      echo "  Restarting k3s to load the new runsc..."
+      sudo systemctl restart k3s
+      wait_for_k3s 30
+    fi
+
+    # Persist what we moved to, so 'sandbox status' reflects it.
+    record_infra_versions
+  ) || die "Upgrade failed — see output above. The cluster may be partially upgraded; re-run to retry."
+
+  echo ""
+  echo "=== upgrade complete ==="
+  echo "Verify with: sandbox status"
 }
 
 ###############################################################################
@@ -3132,12 +3404,42 @@ if your org uses a non-standard name, or try
 }
 
 ###############################################################################
-# cmd_version — print version
+# cmd_version — print the embedded version identity (read from .version at
+# startup; see the reader near the top). Pure formatter — no git, no recompute.
 ###############################################################################
 cmd_version() {
+  local mode="full"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --short)   mode="short"; shift ;;
+      --json)    mode="json";  shift ;;
+      -h|--help) echo "Usage: sandbox version [--short|--json]"; return 0 ;;
+      *) die "Unknown flag for 'version': $1 (see 'sandbox version --help')" ;;
+    esac
+  done
+
+  if [[ "${mode}" == "short" ]]; then
+    echo "${SANDBOX_VERSION}"
+    return 0
+  fi
+
+  if [[ "${mode}" == "json" ]]; then
+    printf '{"version":"%s","commit":"%s","commitDate":"%s","buildDate":"%s","treeState":"%s","bash":"%s","root":"%s"}\n' \
+      "${SANDBOX_VERSION}" "${SANDBOX_COMMIT}" "${SANDBOX_COMMIT_DATE}" \
+      "${SANDBOX_BUILD_DATE}" "${SANDBOX_TREE_STATE}" \
+      "${BASH_VERSION%%(*}" "${SANDBOX_ROOT}"
+    return 0
+  fi
+
+  # Human-readable block. Provenance lines appear only when embedded (a fresh,
+  # never-installed checkout has just the version line and reports "dev").
   echo "sandbox ${SANDBOX_VERSION}"
-  echo "Runtime: bash ${BASH_VERSION}"
-  echo "Root:    ${SANDBOX_ROOT}"
+  [[ -n "${SANDBOX_COMMIT}" ]] && \
+    echo "  commit:  ${SANDBOX_COMMIT}${SANDBOX_COMMIT_DATE:+ (${SANDBOX_COMMIT_DATE})}"
+  [[ -n "${SANDBOX_BUILD_DATE}" ]] && \
+    echo "  built:   ${SANDBOX_BUILD_DATE}${SANDBOX_TREE_STATE:+ (${SANDBOX_TREE_STATE})}"
+  echo "  runtime: bash ${BASH_VERSION%%(*}"
+  echo "  root:    ${SANDBOX_ROOT}"
 }
 
 ###############################################################################
@@ -3162,7 +3464,10 @@ main() {
     cleanup)    cmd_cleanup "$@" ;;
     check)      cmd_check "$@" ;;
     status)     cmd_status "$@" ;;
+    install)    cmd_setup "$@" ;;
     setup)      cmd_setup "$@" ;;
+    uninstall)  cmd_uninstall "$@" ;;
+    upgrade)    cmd_upgrade "$@" ;;
     onboard)    cmd_onboard "$@" ;;
     secret)     cmd_secret "$@" ;;
     mask)       cmd_mask "$@" ;;
@@ -3177,4 +3482,8 @@ main() {
   esac
 }
 
-main "$@"
+# Run main only when executed directly, not when sourced (e.g. by the test
+# suite, which exercises the pure helpers like infra_version_line in isolation).
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

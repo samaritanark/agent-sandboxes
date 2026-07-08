@@ -105,6 +105,83 @@ wait_for_k3s() {
   done
 }
 
+# _k3s_install_exec — echo the INSTALL_K3S_EXEC flag string for the get.k3s.io
+# installer, performing the resolv.conf selection (WSL2 guard + SANDBOX_DNS
+# rendering) as a side effect. All human-facing messages go to stderr so the
+# captured stdout is exactly the flag string.
+#
+# Shared by the fresh install and `sandbox upgrade` (upgrade_k3s_linux): an
+# in-place k3s upgrade re-runs the installer, which REGENERATES the systemd
+# unit's ExecStart from INSTALL_K3S_EXEC. Re-running without these flags would
+# drop --flannel-backend=none / --disable=* and break the Cilium datapath, so
+# both paths must pass the identical string.
+_k3s_install_exec() {
+  # --resolv-conf: on Ubuntu, /etc/resolv.conf symlinks to systemd-resolved's
+  # stub at 127.0.0.53, unreachable from inside pod network namespaces. Point
+  # k3s at the upstream resolv.conf so CoreDNS forwards to real DNS servers.
+  local resolv_conf="/etc/resolv.conf"
+  if [[ -f /run/systemd/resolve/resolv.conf ]]; then
+    resolv_conf="/run/systemd/resolve/resolv.conf"
+  fi
+
+  # WSL2 special case: the host resolv.conf points at a DNS-tunnel sentinel
+  # (10.255.255.254) that WSL only answers in the host network namespace, so
+  # CoreDNS (a pod netns) can never reach it. The operator must name a
+  # pod-reachable resolver via --dns / SANDBOX_DNS.
+  if [[ -z "${SANDBOX_DNS}" ]] && grep -qi microsoft /proc/version 2>/dev/null; then
+    echo "ERROR: WSL2 detected. Its host DNS resolver is unreachable from pod" >&2
+    echo "       network namespaces, so CoreDNS cannot resolve any names and" >&2
+    echo "       agents will fail to reach their APIs." >&2
+    echo "" >&2
+    echo "       Set a pod-reachable DNS resolver and re-run setup:" >&2
+    echo "         PowerShell:  .\\setup.ps1 -Dns 1.1.1.1,8.8.8.8" >&2
+    echo "         WSL/bash:    ./setup.sh --dns 1.1.1.1,8.8.8.8" >&2
+    echo "" >&2
+    echo "       Use a public resolver, or your organization's internal DNS" >&2
+    echo "       IP if pods need to resolve internal names." >&2
+    exit 1
+  fi
+
+  # An explicit resolver overrides the auto-detected host resolv.conf, rendered
+  # into a dedicated file k3s owns so we neither fight WSL's resolv.conf
+  # regeneration nor clobber the host's.
+  if [[ -n "${SANDBOX_DNS}" ]]; then
+    resolv_conf="/etc/rancher/k3s/sandbox-resolv.conf"
+    sudo mkdir -p /etc/rancher/k3s
+    printf '%s\n' "${SANDBOX_DNS//,/ }" | tr ' ' '\n' | grep -v '^$' \
+      | sed 's/^/nameserver /' | sudo tee "${resolv_conf}" > /dev/null
+    echo "  CoreDNS will forward to ${SANDBOX_DNS} (--resolv-conf ${resolv_conf})" >&2
+  fi
+
+  # --cluster-cidr aligns k3s' controller-manager with Cilium's IPAM pool so the
+  # Node's .spec.podCIDR matches; --service-cidr is passed explicitly so the
+  # value is visible/overridable in one place. See setup/common.sh.
+  echo "--flannel-backend=none --disable-network-policy --disable=servicelb --disable=traefik --disable=metrics-server --resolv-conf=${resolv_conf} --cluster-cidr=${SANDBOX_POD_CIDR} --service-cidr=${SANDBOX_SERVICE_CIDR}"
+}
+
+# upgrade_k3s_linux — move an existing k3s install to ${SANDBOX_K3S_VERSION} in
+# place by re-running the installer with the same ExecStart flags (see
+# _k3s_install_exec). Called by `sandbox upgrade`. install_k3s_linux
+# deliberately short-circuits when k3s is already present, so upgrades cannot go
+# through it.
+upgrade_k3s_linux() {
+  if ! command -v k3s &>/dev/null; then
+    echo "ERROR: k3s is not installed — run 'sandbox install' first." >&2
+    exit 1
+  fi
+  local k3s_exec
+  k3s_exec="$(_k3s_install_exec)"
+  echo "  Upgrading k3s to ${SANDBOX_K3S_VERSION:-(latest stable channel)}..."
+  curl -sfL https://get.k3s.io | \
+    INSTALL_K3S_VERSION="${SANDBOX_K3S_VERSION:-}" \
+    INSTALL_K3S_EXEC="${k3s_exec}" \
+    sh -
+  echo "  Restarting k3s..."
+  sudo systemctl restart k3s
+  wait_for_k3s 30
+  copy_k3s_kubeconfig
+}
+
 install_k3s_linux() {
   if command -v k3s &>/dev/null; then
     echo "  k3s already installed: $(k3s --version | head -1)"
@@ -142,58 +219,16 @@ install_k3s_linux() {
   # API server listen port — written before the installer runs so k3s honours
   # it on first start. See write_k3s_apiserver_config.
   write_k3s_apiserver_config
-  # --resolv-conf: on Ubuntu, /etc/resolv.conf symlinks to systemd-resolved's
-  # stub at 127.0.0.53, which is unreachable from inside pod network namespaces.
-  # Pointing k3s at the upstream resolv.conf causes CoreDNS to forward to real
-  # DNS servers rather than the loopback stub, preventing SERVFAIL for all pods.
-  local resolv_conf="/etc/resolv.conf"
-  if [[ -f /run/systemd/resolve/resolv.conf ]]; then
-    resolv_conf="/run/systemd/resolve/resolv.conf"
-  fi
-
-  # WSL2 special case: the host resolv.conf points at a DNS-tunnel sentinel
-  # (10.255.255.254) that WSL only answers in the host network namespace.
-  # CoreDNS runs in a pod netns, so every forward to it times out and all
-  # in-pod resolution fails (agents see "could not resolve host" / socket
-  # errors reaching their APIs). There is no auto-discoverable pod-reachable
-  # resolver — the corporate one behind the tunnel is unreachable too — so the
-  # operator must name one via --dns / SANDBOX_DNS. Required on WSL2; optional
-  # everywhere else.
-  if [[ -z "${SANDBOX_DNS}" ]] && grep -qi microsoft /proc/version 2>/dev/null; then
-    echo "ERROR: WSL2 detected. Its host DNS resolver is unreachable from pod" >&2
-    echo "       network namespaces, so CoreDNS cannot resolve any names and" >&2
-    echo "       agents will fail to reach their APIs." >&2
-    echo "" >&2
-    echo "       Set a pod-reachable DNS resolver and re-run setup:" >&2
-    echo "         PowerShell:  .\\setup.ps1 -Dns 1.1.1.1,8.8.8.8" >&2
-    echo "         WSL/bash:    ./setup.sh --dns 1.1.1.1,8.8.8.8" >&2
-    echo "" >&2
-    echo "       Use a public resolver, or your organization's internal DNS" >&2
-    echo "       IP if pods need to resolve internal names." >&2
-    exit 1
-  fi
-
-  # An explicit resolver overrides the auto-detected host resolv.conf on any
-  # Linux host (opt-in — e.g. a bare-Linux operator behind their own split-DNS
-  # who wants to pin CoreDNS's upstream); on WSL2 it is the only workable
-  # option. Rendered into a dedicated file k3s owns, so we neither fight WSL's
-  # resolv.conf regeneration nor clobber the host's.
-  if [[ -n "${SANDBOX_DNS}" ]]; then
-    resolv_conf="/etc/rancher/k3s/sandbox-resolv.conf"
-    sudo mkdir -p /etc/rancher/k3s
-    printf '%s\n' "${SANDBOX_DNS//,/ }" | tr ' ' '\n' | grep -v '^$' \
-      | sed 's/^/nameserver /' | sudo tee "${resolv_conf}" > /dev/null
-    echo "  CoreDNS will forward to ${SANDBOX_DNS} (--resolv-conf ${resolv_conf})"
-  fi
-  # --cluster-cidr: align k3s' built-in controller-manager with Cilium's IPAM
-  # pool so the Node's .spec.podCIDR matches the range pods are actually
-  # allocated from. Cilium ignores .spec.podCIDR (k8s-require-ipv4-pod-cidr=
-  # false) but operators still see the value and have wasted triage time on
-  # the resulting phantom mismatch.
-  # --service-cidr: passed explicitly so the value is visible/overridable in
-  # one place rather than relying on k3s' default.
+  # Resolve the ExecStart flags (incl. --resolv-conf / WSL2 / SANDBOX_DNS
+  # handling); shared with upgrade_k3s_linux so both paths stay identical.
+  local k3s_exec
+  k3s_exec="$(_k3s_install_exec)"
+  # INSTALL_K3S_VERSION pins the release; empty == the installer's default
+  # (latest stable channel). See setup/versions.sh.
+  echo "  k3s version: ${SANDBOX_K3S_VERSION:-(latest stable channel)}"
   curl -sfL https://get.k3s.io | \
-    INSTALL_K3S_EXEC="--flannel-backend=none --disable-network-policy --disable=servicelb --disable=traefik --disable=metrics-server --resolv-conf=${resolv_conf} --cluster-cidr=${SANDBOX_POD_CIDR} --service-cidr=${SANDBOX_SERVICE_CIDR}" \
+    INSTALL_K3S_VERSION="${SANDBOX_K3S_VERSION:-}" \
+    INSTALL_K3S_EXEC="${k3s_exec}" \
     sh -
 
   echo "  Waiting for k3s API server to start..."

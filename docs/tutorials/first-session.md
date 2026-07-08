@@ -35,6 +35,10 @@ installed automatically if missing).
 See [Cluster CIDRs](../explanation/architecture.md#cluster-cidrs) and [API
 server port](../explanation/architecture.md#api-server-port) for the reasoning.
 
+Once the CLI is on your PATH (step 2), `sandbox install` is the exact equivalent
+of `./setup.sh` (same flags), and `sandbox uninstall` tears everything back
+down. `./setup.sh` still works — use whichever you prefer.
+
 ## 2. Put the CLI on PATH
 
 Add `bin/` to PATH and load completions for this shell. To make it permanent,
@@ -47,8 +51,9 @@ source bin/completions/sandbox.bash   # or sandbox.zsh
 
 ## 3. Smoke-test the install
 
-Cluster, Cilium, gVisor, and namespace should all be green. If any are missing,
-re-run `./setup.sh` before continuing.
+Cluster, Cilium, gVisor, and namespace should all be green (and an **Infra
+versions** section shows what's installed vs pinned). If any are missing, re-run
+`./setup.sh` (or `sandbox install`) before continuing.
 
 ```bash
 sandbox status
