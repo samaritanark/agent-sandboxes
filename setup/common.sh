@@ -345,7 +345,7 @@ tls_intercept_check() {
   echo "" >&2
   echo "    ./bin/sandbox setup-proxy-cert --help" >&2
   echo "" >&2
-  echo "  Full details: README §'Corporate TLS-intercept proxies'." >&2
+  echo "  Full details: docs/how-to/tls-intercept-proxies.md" >&2
   echo "" >&2
   exit 1
 }

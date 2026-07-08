@@ -296,8 +296,8 @@ write_starter_user_config() {
   cat > "${dst}" <<'YAML'
 # ~/.sandbox/config.yaml
 #
-# Per-user defaults for sandbox sessions. See README's "Persistent
-# extras" and "Profiles and overlays" sections for the full schema.
+# Per-user defaults for sandbox sessions. See docs/how-to/persistent-domains.md
+# and docs/how-to/profiles-and-overlays.md for the full schema.
 # All keys below are optional.
 
 # Extra allowed egress domains, merged with the tier defaults on every

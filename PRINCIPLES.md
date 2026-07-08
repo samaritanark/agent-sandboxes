@@ -146,8 +146,8 @@ Five rules govern what credentials can enter the sandbox:
    tokens, internal API keys). They live in the host-side store at
    `~/.sandbox/secrets/` (mode 0600) and only enter the cluster as a
    session-scoped Secret when a profile declares them — created at
-   launch, deleted at teardown. See `sandbox secret --help` and the
-   "Secret store" section of the README.
+   launch, deleted at teardown. See `sandbox secret --help` and
+   `docs/how-to/secrets.md`.
 
 3. **Auth-provider sessions never enter the sandbox.** If your
    organization uses Teleport, Okta, AWS SSO, GCP IAM exec plugins,
@@ -179,8 +179,8 @@ tier, plus any explicit additions:
 - Per-invocation additions: `--allow-domain <DOMAIN>` (repeatable).
 - Persistent operator-supplied extras: `~/.sandbox/config.yaml`,
   `SANDBOX_EXTRA_ALLOWED_DOMAINS`, or `<repo>/.sandbox/config.yaml`
-  (loaded for each `--repo`). See the README's "Persistent extras"
-  section. The per-repo source's additions are banner-printed on every
+  (loaded for each `--repo`). See `docs/how-to/persistent-domains.md`.
+  The per-repo source's additions are banner-printed on every
   session start so a slipped-in domain stays visible to the operator
   launching the session.
 
