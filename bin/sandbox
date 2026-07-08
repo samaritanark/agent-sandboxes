@@ -68,6 +68,8 @@ source "${SANDBOX_ROOT}/lib/checks.sh"
 source "${SANDBOX_ROOT}/lib/config.sh"
 # shellcheck source=../lib/profile.sh
 source "${SANDBOX_ROOT}/lib/profile.sh"
+# shellcheck source=../lib/vetting.sh
+source "${SANDBOX_ROOT}/lib/vetting.sh"
 
 source "${SANDBOX_ROOT}/lib/catalogue.sh"
 
@@ -157,6 +159,7 @@ COMMANDS:
   onboard      Stage host-side agent OAuth state for first-run convenience
   secret       Manage host-side secret store (injected per-session by profile)
   mask         Manage per-repo file masking (add/list masked_paths)
+  vet          Attest a repo as cleared for agent use (signed tag; see run gate)
   profile      Create and manage launch profiles (save/list/show/delete)
   link         Link a git-backed team overlay and keep it pinned (status/sync/unlink)
   configure-network   Re-detect host network state and reconcile k3s/Cilium
@@ -239,6 +242,10 @@ OPTIONS:
                                     The findings are printed; the agent WILL
                                     be able to read them. Without this flag
                                     such a finding aborts the launch.
+  --i-accept-unvetted-repo          Launch even when 'vetting: required' and a
+                                    --repo has no verified attestation at HEAD.
+                                    The unvetted repo(s) are printed and the
+                                    acceptance is recorded in the audit log.
   --help                            Show this help
 
 TIERS:
@@ -261,6 +268,16 @@ SECRET GATE (tier 2/3):
   and a 'sandbox mask add' command to mask them. betterleaks is required;
   its absence fails the launch closed. Override with
   --i-accept-unmasked-secrets. See 'sandbox mask --help'.
+
+VETTING GATE (tier 2/3):
+  Each --repo is checked for a signed attestation that a trusted reviewer
+  cleared its current HEAD for agent use. Posture is operator-controlled via
+  'vetting:' in ~/.sandbox/config.yaml (an overlay may ratchet it up):
+    off       no gate.
+    advisory  print status and proceed (default).
+    required  refuse launch unless every --repo carries a verified attestation
+              at HEAD; override with --i-accept-unvetted-repo.
+  Attest a repo with 'sandbox vet --repo <PATH>'. See 'sandbox vet --help'.
 
 OVERLAYS:
   Teams can ship a directory of profiles, GOVERNANCE.md, an additive
@@ -402,6 +419,7 @@ cmd_run() {
   local opt_dry_run="false"
   local opt_keep_alive="false"
   local opt_accept_unmasked_secrets="false"
+  local opt_accept_unvetted_repo="false"
   local opt_base_url=""
   local -a opt_allow_domains=()
   local -a opt_infra_endpoints=()
@@ -436,6 +454,7 @@ cmd_run() {
       --name=*)                opt_name="${1#--name=}" ;;
       --keep-alive)            opt_keep_alive="true" ;;
       --i-accept-unmasked-secrets) opt_accept_unmasked_secrets="true" ;;
+      --i-accept-unvetted-repo) opt_accept_unvetted_repo="true" ;;
       *)                       die "Unknown option: $1. Run 'sandbox run --help' for usage." ;;
     esac
     shift
@@ -800,6 +819,11 @@ cmd_run() {
     # betterleaks is absent; --i-accept-unmasked-secrets downgrades the
     # refusal to a printed warning.
     secret_gate_repos "${opt_accept_unmasked_secrets}" "${opt_repos[@]}"
+    # Gate the launch on whether each workspace has been vetted for agent use.
+    # Posture (off/advisory/required) is operator-controlled; advisory only
+    # prints status, required refuses unless a signed attestation verifies at
+    # HEAD. --i-accept-unvetted-repo downgrades a required refusal to a warning.
+    vetting_gate_repos "$(resolve_vetting_posture)" "${opt_accept_unvetted_repo}" "${opt_repos[@]}"
   fi
 
   ###########################################################################
@@ -917,6 +941,12 @@ cmd_run() {
 
   if [[ -n "${agent_session_id}" ]]; then
     audit_record_agent_session_id "${log_dir}" "${agent_session_id}"
+  fi
+
+  # Record the vetting-gate outcome now that session.json exists (the gate in
+  # Step 2 runs before it, so it stashed the summary in SESSION_VETTING_SUMMARY).
+  if [[ -n "${SESSION_VETTING_SUMMARY:-}" ]]; then
+    audit_log_event "${log_dir}" "vetting" "${SESSION_VETTING_SUMMARY}"
   fi
 
   ###########################################################################
@@ -2639,6 +2669,100 @@ EOF
   exit 0
 }
 
+usage_vet() {
+  cat <<EOF
+sandbox vet — Attest that a repo is cleared for use with an AI agent
+
+USAGE:
+  sandbox vet --repo <PATH> [--message <MSG>]
+  sandbox vet --status --repo <PATH>
+  sandbox vet --help
+
+A trusted reviewer signs a git tag at the repo's current HEAD to record that
+they reviewed that exact tree and cleared it for agent use. 'sandbox run'
+consults this attestation before a Tier 2/3 launch: with 'vetting: required'
+(in ~/.sandbox/config.yaml or a team overlay) a repo without a current,
+verified attestation is refused.
+
+The signature is verified host-side against an operator-held trust root — an
+SSH allowed_signers file by default (vetting_trust_root:), or a GnuPG home when
+vetting_trust_format: gpg. The tag is named 'agent-vetted/<sha>'. A dirty
+working tree is refused: an attestation covers a commit, not uncommitted edits.
+
+  --repo <PATH>       Repository to attest (or inspect with --status).
+  --status            Print the repo's current vetting state instead of signing.
+  --message <MSG>     Tag message (default: "vetted for agent use").
+  --help              Show this help
+
+EXAMPLES:
+  # Attest the current HEAD, then push the tag so others can verify
+  sandbox vet --repo ~/repos/app
+  git -C ~/repos/app push origin agent-vetted/\$(git -C ~/repos/app rev-parse HEAD)
+
+  # Check whether a repo would pass the gate
+  sandbox vet --status --repo ~/repos/app
+EOF
+  exit 0
+}
+
+cmd_vet() {
+  if [[ $# -eq 0 ]]; then
+    usage_vet
+  fi
+
+  local action="attest" repo="" msg="vetted for agent use"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h|help) usage_vet ;;
+      --status)       action="status" ;;
+      --repo)         repo="${2:?--repo requires a value}"; shift ;;
+      --repo=*)       repo="${1#--repo=}" ;;
+      --message)      msg="${2:?--message requires a value}"; shift ;;
+      --message=*)    msg="${1#--message=}" ;;
+      -*)             die "Unknown option for 'vet': $1" ;;
+      *)              die "Unexpected argument for 'vet': $1" ;;
+    esac
+    shift
+  done
+
+  [[ -n "${repo}" ]] || die "Usage: sandbox vet --repo <PATH> [--status] [--message <MSG>]"
+  repo="${repo/#\~/${HOME}}"
+  validate_repo_path "${repo}"
+
+  if [[ "${action}" == "status" ]]; then
+    local line status f2 f3 f4
+    line="$(vetting_status_repo "${repo}")"
+    IFS=$'\t' read -r status f2 f3 f4 <<<"${line}"
+    case "${status}" in
+      vetted)
+        echo "vetted:   ${repo}"
+        echo "  HEAD:   ${f2}"
+        echo "  tag:    ${f3}"
+        echo "  signer: ${f4:-unknown}"
+        ;;
+      unvetted)
+        echo "UNVETTED: ${repo}"
+        echo "  HEAD:   ${f2}"
+        echo "  reason: ${f3}"
+        ;;
+      dirty)
+        echo "DIRTY:    ${repo} (HEAD ${f2})"
+        echo "  Commit or stash the working tree, then attest."
+        ;;
+      error)
+        echo "ERROR:    ${f2}" >&2
+        exit 1
+        ;;
+      *)
+        echo "${status}: ${f2}"
+        ;;
+    esac
+    return 0
+  fi
+
+  vetting_attest_repo "${repo}" "${msg}"
+}
+
 cmd_secret() {
   if [[ $# -eq 0 ]]; then
     usage_secret
@@ -3471,6 +3595,7 @@ main() {
     onboard)    cmd_onboard "$@" ;;
     secret)     cmd_secret "$@" ;;
     mask)       cmd_mask "$@" ;;
+    vet)        cmd_vet "$@" ;;
     profile)    cmd_profile "$@" ;;
     link)       cmd_link "$@" ;;
     configure-network) cmd_configure_network "$@" ;;

@@ -24,6 +24,7 @@ tasks:
     cmds:
       - bash tests/test-config.sh
       - bash tests/test-secret-gate.sh
+      - bash tests/test-vetting.sh
       - bash tests/test-dns.sh
       - bash tests/test-profile.sh
       - bash tests/test-link.sh

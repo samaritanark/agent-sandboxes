@@ -32,6 +32,7 @@ _sandbox() {
         'onboard:Stage host-side agent OAuth state for first-run convenience'
         'secret:Manage host-side secret store (injected per-session by profile)'
         'mask:Manage per-repo file masking (add/list masked_paths)'
+        'vet:Attest a repo as cleared for agent use (signed tag; see run gate)'
         'profile:Create and manage launch profiles (save/list/show/delete)'
         'link:Link a git-backed team overlay and keep it pinned (status/sync/unlink)'
         'configure-network:Re-detect host interfaces and re-apply to Cilium (run after VPN reconnects)'
@@ -55,6 +56,7 @@ _sandbox() {
         onboard) _sandbox_onboard ;;
         secret) _sandbox_secret ;;
         mask)   _sandbox_mask ;;
+        vet)    _sandbox_vet ;;
         profile) _sandbox_profile ;;
         link)   _sandbox_link ;;
       esac
@@ -246,6 +248,15 @@ _sandbox_run() {
     '--name[Human-readable session name]:name:' \
     '--keep-alive[Leave the pod running after disconnect (default: tear down)]' \
     '--i-accept-unmasked-secrets[Launch despite unmasked secrets (agent will see them)]' \
+    '--i-accept-unvetted-repo[Launch despite an unvetted repo when vetting is required]' \
+    '--help[Show help]'
+}
+
+_sandbox_vet() {
+  _arguments \
+    '--repo[Repository to attest (or inspect with --status)]:directory:_files -/' \
+    '--status[Print the repo''s vetting state instead of signing]' \
+    '--message[Tag message]:message:' \
     '--help[Show help]'
 }
 
