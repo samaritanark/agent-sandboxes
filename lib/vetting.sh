@@ -121,6 +121,74 @@ _vetting_extract_signer() {
   fi
 }
 
+# _vetting_git <repo> <git-args>... — run git inside an UNTRUSTED workspace with
+# repo-local config that could execute an attacker-named program neutralized.
+# A workspace author controls the repo's .git/config, and several innocuous-
+# looking git operations will exec a program it names (core.fsmonitor on an
+# index refresh, hooks). Command-line `-c` outranks the repo's .git/config, so
+# these pins hold regardless of what the workspace commits. Signature-program
+# and trust-file pins are layered on top by _vetting_verify_tag.
+_vetting_git() {
+  local repo="$1"; shift
+  git -C "${repo}" -c core.fsmonitor= -c core.hooksPath=/dev/null "$@"
+}
+
+# _vetting_verify_tag <repo> <tag> <trust_root> <format> — verify one tag's
+# signature against the OPERATOR's trust root, hermetically with respect to the
+# untrusted repo's own git config. On success prints the signer principal and
+# returns 0; otherwise returns non-zero.
+#
+# `git tag -v` runs inside the repo, so without pinning a workspace author could
+# (a) point gpg.ssh.program / gpg.program at a script in the tree — arbitrary
+# code execution on the host, as the operator, before the pod exists — and/or
+# (b) swap gpg.ssh.allowedSignersFile / the keyring to forge a "Good signature".
+# git also AUTO-DETECTS the signature format on the verify path (gpg.format only
+# governs signing), so BOTH backends must be locked, not just the configured
+# one. We therefore, via command-line `-c` (which beats repo .git/config):
+#   - pin both verifier programs to trusted absolute binaries, or to `false`
+#     when a backend is absent, so repo config can never choose the program;
+#   - pin the selected format's trust source to the operator's trust root and
+#     neutralize the other format's (empty GNUPGHOME in ssh mode so a planted
+#     OpenPGP tag has no key; empty allowedSignersFile in gpg mode so a planted
+#     SSH tag has no signer), so a cross-format planted tag cannot verify.
+# Runs in a subshell so the throwaway GNUPGHOME is always cleaned up.
+_vetting_verify_tag() (
+  local repo="$1" tag="$2" trust_root="$3" fmt="$4"
+
+  local false_bin ssh_keygen gpg_bin
+  false_bin="$(command -v false 2>/dev/null || echo /bin/false)"
+  ssh_keygen="$(command -v ssh-keygen 2>/dev/null || echo "${false_bin}")"
+  gpg_bin="$(command -v gpg 2>/dev/null || command -v gpg2 2>/dev/null || echo "${false_bin}")"
+
+  # A private empty GnuPG home: in ssh mode it denies any OpenPGP-signed tag a
+  # trusted key; created even in gpg mode but overridden below.
+  local empty_gnupg
+  empty_gnupg="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-vet-gnupg-XXXXXX")" || return 2
+  chmod 700 "${empty_gnupg}" 2>/dev/null || true
+  trap 'rm -rf "${empty_gnupg}"' EXIT
+
+  local -a hard=(
+    -c core.fsmonitor= -c core.hooksPath=/dev/null
+    -c "gpg.ssh.program=${ssh_keygen}" -c "gpg.program=${gpg_bin}"
+  )
+
+  local vout rc
+  if [[ "${fmt}" == "gpg" ]]; then
+    vout="$(GNUPGHOME="${trust_root}" git -C "${repo}" "${hard[@]}" \
+              -c gpg.format=openpgp \
+              -c gpg.ssh.allowedSignersFile=/dev/null \
+              tag -v "${tag}" 2>&1)" && rc=0 || rc=$?
+  else
+    vout="$(GNUPGHOME="${empty_gnupg}" git -C "${repo}" "${hard[@]}" \
+              -c gpg.format=ssh \
+              -c gpg.ssh.allowedSignersFile="${trust_root}" \
+              tag -v "${tag}" 2>&1)" && rc=0 || rc=$?
+  fi
+
+  [[ "${rc}" -eq 0 ]] && _vetting_extract_signer "${vout}" "${fmt}"
+  return "${rc}"
+)
+
 # vetting_status_repo <repo> — classify a workspace's vetting state and print a
 # single TSV line the gate consumes:
 #   vetted<TAB>sha<TAB>tag<TAB>signer
@@ -136,15 +204,15 @@ vetting_status_repo() {
   real_repo="$(cd "${repo}" 2>/dev/null && pwd -P)" || {
     printf 'error\tcannot access %s\n' "${repo}"; return 0; }
 
-  if ! git -C "${real_repo}" rev-parse --git-dir >/dev/null 2>&1; then
+  if ! _vetting_git "${real_repo}" rev-parse --git-dir >/dev/null 2>&1; then
     printf 'not-git\t%s is not a git repository\n' "${repo}"; return 0
   fi
 
   local head_sha
-  head_sha="$(git -C "${real_repo}" rev-parse HEAD 2>/dev/null)" || {
+  head_sha="$(_vetting_git "${real_repo}" rev-parse HEAD 2>/dev/null)" || {
     printf 'error\t%s has no HEAD commit (empty repository?)\n' "${repo}"; return 0; }
 
-  if [[ -n "$(git -C "${real_repo}" status --porcelain 2>/dev/null)" ]]; then
+  if [[ -n "$(_vetting_git "${real_repo}" status --porcelain 2>/dev/null)" ]]; then
     printf 'dirty\t%s\n' "${head_sha}"; return 0
   fi
 
@@ -156,24 +224,17 @@ vetting_status_repo() {
   fi
 
   local -a tags=()
-  read_into_array tags < <(git -C "${real_repo}" tag --points-at HEAD \
+  read_into_array tags < <(_vetting_git "${real_repo}" tag --points-at HEAD \
                              --list "${SANDBOX_VETTING_TAG_PREFIX}*" 2>/dev/null || true)
   if [[ "${#tags[@]}" -eq 0 ]]; then
     printf 'unvetted\t%s\tno %s* tag at HEAD\n' "${head_sha}" "${SANDBOX_VETTING_TAG_PREFIX}"
     return 0
   fi
 
-  local tag vout rc signer
+  local tag signer
   for tag in "${tags[@]}"; do
     [[ -z "${tag}" ]] && continue
-    if [[ "${trust_format}" == "gpg" ]]; then
-      vout="$(GNUPGHOME="${trust_root}" git -C "${real_repo}" tag -v "${tag}" 2>&1)" && rc=0 || rc=$?
-    else
-      vout="$(git -C "${real_repo}" -c gpg.format=ssh \
-                -c gpg.ssh.allowedSignersFile="${trust_root}" tag -v "${tag}" 2>&1)" && rc=0 || rc=$?
-    fi
-    if [[ "${rc}" -eq 0 ]]; then
-      signer="$(_vetting_extract_signer "${vout}" "${trust_format}")"
+    if signer="$(_vetting_verify_tag "${real_repo}" "${tag}" "${trust_root}" "${trust_format}")"; then
       printf 'vetted\t%s\t%s\t%s\n' "${head_sha}" "${tag}" "${signer:-unknown}"
       return 0
     fi
@@ -306,28 +367,36 @@ vetting_attest_repo() {
   local real_repo
   real_repo="$(cd "${repo}" 2>/dev/null && pwd -P)" || { echo "ERROR: cannot access ${repo}" >&2; return 1; }
 
-  if ! git -C "${real_repo}" rev-parse --git-dir >/dev/null 2>&1; then
+  if ! _vetting_git "${real_repo}" rev-parse --git-dir >/dev/null 2>&1; then
     echo "ERROR: ${repo} is not a git repository — nothing to attest." >&2; return 1
   fi
-  if [[ -n "$(git -C "${real_repo}" status --porcelain 2>/dev/null)" ]]; then
+  if [[ -n "$(_vetting_git "${real_repo}" status --porcelain 2>/dev/null)" ]]; then
     echo "ERROR: ${repo} has uncommitted changes. Commit or stash first — an" >&2
     echo "       attestation covers a specific commit, not a dirty tree." >&2
     return 1
   fi
 
   local head_sha tag fmt
-  head_sha="$(git -C "${real_repo}" rev-parse HEAD)"
+  head_sha="$(_vetting_git "${real_repo}" rev-parse HEAD)"
   tag="${SANDBOX_VETTING_TAG_PREFIX}${head_sha}"
-  if git -C "${real_repo}" rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+  if _vetting_git "${real_repo}" rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
     echo "  ${repo}: already attested — tag ${tag} exists."
     return 0
   fi
 
+  # Sign inside a repo whose .git/config is not yet reviewed, so pin the signing
+  # program to a trusted binary (repo-local gpg.ssh.program / gpg.program would
+  # otherwise run an attacker script on the operator's host — see
+  # _vetting_verify_tag). The signing key stays the operator's own.
   fmt="$(vetting_trust_format)"
-  local -a gitopts=()
-  [[ "${fmt}" == "ssh" ]] && gitopts=(-c gpg.format=ssh)
+  local false_bin ssh_keygen gpg_bin
+  false_bin="$(command -v false 2>/dev/null || echo /bin/false)"
+  ssh_keygen="$(command -v ssh-keygen 2>/dev/null || echo "${false_bin}")"
+  gpg_bin="$(command -v gpg 2>/dev/null || command -v gpg2 2>/dev/null || echo "${false_bin}")"
+  local -a gitopts=(-c "gpg.ssh.program=${ssh_keygen}" -c "gpg.program=${gpg_bin}")
+  [[ "${fmt}" == "ssh" ]] && gitopts+=(-c gpg.format=ssh)
 
-  if git -C "${real_repo}" ${gitopts[@]+"${gitopts[@]}"} tag -s "${tag}" -m "${msg}"; then
+  if _vetting_git "${real_repo}" "${gitopts[@]}" tag -s "${tag}" -m "${msg}"; then
     echo "  ${repo}: created signed attestation tag ${tag}"
     echo "  Push it so other operators can verify:"
     echo "        git -C ${repo} push origin ${tag}"

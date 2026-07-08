@@ -213,6 +213,83 @@ test_gate_required_passes_when_vetted() {
 }
 
 ###############################################################################
+# Hermetic verification — a repo-local gpg.ssh.program must NOT be able to (a)
+# forge a 'vetted' verdict or (b) execute on the host. This is the trust
+# boundary the gate exists to hold. Needs SSH signing to produce the tag.
+###############################################################################
+test_verify_hermetic_against_program_hijack() {
+  info "Testing verification is hermetic against repo-local gpg.ssh.program..."
+  write_trust_config
+
+  local repo="${TEST_DIR}/hijack-prog"
+  make_repo "${repo}"
+  # Commit the fake verifier so the tree stays CLEAN (otherwise the dirty-check
+  # short-circuits before verification and this test wouldn't exercise it). It
+  # always "succeeds" and records that it ran.
+  local sentinel="${TEST_DIR}/hijack-prog-RAN"
+  local evil="${repo}/evil-verify.sh"
+  cat > "${evil}" <<EOF
+#!/usr/bin/env bash
+: > "${sentinel}"
+echo 'Good "git" signature for ${SIGNER_EMAIL}'
+exit 0
+EOF
+  chmod +x "${evil}"
+  git -C "${repo}" add evil-verify.sh
+  git -C "${repo}" commit -q -m "evil"
+  # Attacker signs an attestation tag at (the now-clean) HEAD with a key NOT in
+  # the trust root, and points repo-local git config at the planted verifier —
+  # a vulnerable gate would run it (host RCE) and trust its output (forged).
+  attest_repo "${repo}" "${TEST_DIR}/id-untrusted" || { warn "signing failed; skipping"; return 0; }
+  git -C "${repo}" config gpg.ssh.program "${evil}"
+
+  local status
+  status="$(vetting_status_repo "${repo}" | cut -f1)"
+  [[ "${status}" != "vetted" ]] \
+    && pass "planted verifier cannot forge a 'vetted' verdict (got ${status})" \
+    || fail "SECURITY: repo-local gpg.ssh.program forged a 'vetted' verdict"
+  [[ ! -e "${sentinel}" ]] \
+    && pass "planted verifier program was never executed (no host RCE)" \
+    || fail "SECURITY: repo-local gpg.ssh.program executed on the host"
+}
+
+###############################################################################
+# Hermetic status — a repo-local core.fsmonitor must NOT be executed during the
+# dirty-tree check. Differential: only meaningful where this git execs it.
+###############################################################################
+test_status_hermetic_against_fsmonitor() {
+  info "Testing dirty-check neutralizes repo-local core.fsmonitor..."
+  write_trust_config
+
+  local repo="${TEST_DIR}/hijack-fsmon"
+  make_repo "${repo}"
+  local sentinel="${TEST_DIR}/fsmon-RAN"
+  local evil="${repo}/evil-fsmon.sh"
+  cat > "${evil}" <<EOF
+#!/usr/bin/env bash
+: > "${sentinel}"
+exit 1
+EOF
+  chmod +x "${evil}"
+  git -C "${repo}" config core.fsmonitor "${evil}"
+
+  # Confirm the vector is real for this git build: an unhardened status runs it.
+  ( cd "${repo}" && git status --porcelain >/dev/null 2>&1 || true )
+  if [[ ! -e "${sentinel}" ]]; then
+    warn "this git does not exec core.fsmonitor on status; vector N/A, skipping"
+    return 0
+  fi
+  pass "confirmed: unhardened git status executes core.fsmonitor"
+
+  rm -f "${sentinel}"
+  # The hardened wrapper (as used by the gate) must NOT execute it.
+  _vetting_git "${repo}" status --porcelain >/dev/null 2>&1 || true
+  [[ ! -e "${sentinel}" ]] \
+    && pass "hardened status does not execute core.fsmonitor (no host RCE)" \
+    || fail "SECURITY: core.fsmonitor executed via the hardened status check"
+}
+
+###############################################################################
 # Missing trust root — fails closed under 'required', regardless of override.
 ###############################################################################
 test_missing_trust_root_fails_closed() {
@@ -257,11 +334,13 @@ main() {
   test_status_classification
   test_gate_posture
   test_missing_trust_root_fails_closed
+  test_status_hermetic_against_fsmonitor
   if [[ "${SSH_SIGNING}" -eq 1 ]]; then
     test_status_vetted
     test_gate_required_passes_when_vetted
+    test_verify_hermetic_against_program_hijack
   else
-    echo "SKIP: signature cases (test_status_vetted, test_gate_required_passes_when_vetted) — SSH signing unavailable"
+    echo "SKIP: signature cases (test_status_vetted, test_gate_required_passes_when_vetted, test_verify_hermetic_against_program_hijack) — SSH signing unavailable"
   fi
 
   echo ""
