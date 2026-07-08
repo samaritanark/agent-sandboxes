@@ -2138,8 +2138,18 @@ cmd_upgrade() {
     record_infra_versions
   ) || die "Upgrade failed — see output above. The cluster may be partially upgraded; re-run to retry."
 
+  # Keep `sandbox version` accurate now that the operator has refreshed their
+  # install: re-embed the git-derived identity (no-op outside a git work tree).
+  # SANDBOX_VERSION in this process was read at startup, so report the freshly
+  # stamped value rather than the stale one.
+  stamp_version_if_git
+  local _stamped=""
+  [[ -f "${SANDBOX_ROOT}/.version" ]] && \
+    _stamped="$(awk -F= '$1=="VERSION"{print $2; exit}' "${SANDBOX_ROOT}/.version")"
+
   echo ""
   echo "=== upgrade complete ==="
+  [[ -n "${_stamped}" ]] && echo "Version:     ${_stamped}"
   echo "Verify with: sandbox status"
 }
 
