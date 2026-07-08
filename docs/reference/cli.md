@@ -57,21 +57,51 @@ sandbox mask list --repo <PATH>               # built-in + configured masked pat
 sandbox cleanup [--older-than DAYS]            default: 90
 sandbox check <WORKSPACE_PATH>
 sandbox status
-sandbox setup [--pod-cidr CIDR] [--service-cidr CIDR] [--apiserver-port PORT]
+sandbox install [--pod-cidr CIDR] [--service-cidr CIDR] [--apiserver-port PORT] [--dns IPS]
+sandbox setup   [...]                           # alias of `install` (compat)
+sandbox uninstall [--yes] [--keep-logs] [--keep-images]
+                  [--keep-lima] [--keep-kubetools]
+sandbox upgrade [--k3s] [--cilium] [--gvisor] [--all]
+                [--to-k3s VER] [--to-cilium VER] [--to-gvisor REL]
+                [--dry-run] [--force] [--yes]
 sandbox configure-network                       # Linux only; re-detect host
                                                 # interfaces, re-apply to Cilium
                                                 # (also auto-run by `sandbox run`)
 sandbox rebuild [--agent NAME] [--tier3] [--no-cache]
                 [--codex-version VER] [--opencode-version VER]
-sandbox version
+                [--copilot-version VER]
+sandbox version [--short | --json]              # reads the identity embedded at
+                                                # release/install time; a fresh,
+                                                # never-installed checkout: "dev"
 ```
+
+## Versioning
+
+`sandbox version` reports an identity that is **resolved once and embedded**, never
+recomputed from git at runtime (so two clones of the same commit can't disagree
+because one hasn't fetched tags):
+
+- **Released tarball** — `task release` stamps the exact release version into a
+  `.version` file in the artifact.
+- **Source checkout** — `sandbox install` runs `scripts/stamp-version.sh`, which
+  derives the version from git (`describe --tags --always --dirty`) and writes
+  `.version` (gitignored). Re-run it any time with `task stamp` — e.g. after
+  committing or switching branches.
+- **Fresh checkout, never installed** — no `.version`, so it honestly reports
+  `dev`.
+
+Because the stamp is frozen at install time, `sandbox version` won't reflect
+edits made afterward until you re-stamp (`task stamp`); use `git status` for the
+live working-tree state.
 
 ## Diagnostic subcommands
 
 - **`sandbox status`** — single-screen health check: cluster reachable,
   Cilium policy mode, gVisor RuntimeClass present, sandbox namespace
-  exists, running session count. Run this first when anything looks
-  wrong, or right after `./setup.sh` to confirm install succeeded.
+  exists, running session count. Also shows an **Infra versions** section —
+  the k3s / Cilium / gVisor versions pinned in `setup/versions.sh` next to
+  what is actually running, flagging drift. Run this first when anything looks
+  wrong, or right after `sandbox install` to confirm install succeeded.
 - **`sandbox check <PATH>`** — dry-run of the pre-session workspace
   scan. Reports which files in the directory would be masked
   (`.env`, `.npmrc`, `kubeconfig`, `*.pem`, …) and previews the
@@ -83,6 +113,28 @@ sandbox version
   or live from Hubble if the pod is still running). Use this when a
   network request from inside the pod is silently failing — flow records
   show whether the packet was allowed, dropped by policy, or never sent.
+
+## Lifecycle subcommands
+
+- **`sandbox install`** — installs and configures everything a host needs to
+  run sessions: the k3s cluster, Cilium (CNI + network policy), the gVisor
+  runtime, and the container images. Idempotent — safe to re-run to reconcile.
+  Thin wrapper over `setup.sh`; `sandbox setup` is a retained alias, and running
+  `./setup.sh` directly still works. Component versions come from
+  `setup/versions.sh` (see [Upgrading infrastructure](../how-to/upgrading-infra.md)).
+- **`sandbox uninstall`** — tears the cluster and host artifacts back down
+  (mirror of install). `--yes` skips the prompt; `--keep-logs` / `--keep-images`
+  / `--keep-lima` / `--keep-kubetools` preserve individual pieces. Wrapper over
+  `uninstall.sh`.
+- **`sandbox upgrade`** — moves the pinned isolation components forward to the
+  versions in `setup/versions.sh` (which Renovate keeps current), or to an
+  explicit `--to-*` target. Select components with `--k3s` / `--cilium` /
+  `--gvisor` (default: all). It restarts k3s and can briefly disrupt the Cilium
+  datapath, so it **refuses to run while sessions are active** unless `--force`;
+  `--dry-run` shows the plan without changing anything. On macOS the stack runs
+  inside the Lima VM and is not upgraded in place yet — the command prints the
+  re-provisioning steps instead. See
+  [Upgrading infrastructure](../how-to/upgrading-infra.md).
 
 ## Session naming
 

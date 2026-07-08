@@ -17,8 +17,10 @@
 #     merged PR's title contains [bump:major].
 #
 # Artifact: a source tarball (agent-sandboxes-vX.Y.Z.tar.gz). `task release`
-# stamps the version into the packaged bin/sandbox, so `sandbox version`
-# reports the release tag.
+# resolves the version once (here, with full git history) and embeds it in a
+# .version file inside the tarball; the packaged bin/sandbox only reads that
+# file at runtime, so `sandbox version` reports the release tag without ever
+# recomputing from git.
 
 on:  # yamllint disable-line rule:truthy
   push:
@@ -114,6 +116,9 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          # Short provenance intro; --generate-notes appends the changelog
+          # (merged PRs since the previous release, contributors, and a
+          # "Full Changelog" compare link) beneath it.
           body=$(printf 'Automated release built from %s.\n' "${SHA}")
 
           # Collect asset paths into an array so paths with spaces are safe.
@@ -125,8 +130,13 @@ jobs:
           # `gh release create` creates the tag at --target if it does not
           # already exist, then publishes the release — tag and release in
           # one atomic step, pointed at the exact commit that was built.
+          # --generate-notes builds the changelog from PRs merged since the
+          # previous release (auto-detected, so the very first release just
+          # summarizes from the beginning). Grouping can be tuned later by
+          # adding .github/release.yml.
           gh release create "${VERSION}" \
             --target "${SHA}" \
             --title "${VERSION}" \
             --notes "${body}" \
+            --generate-notes \
             "${assets[@]}"

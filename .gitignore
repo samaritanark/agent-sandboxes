@@ -28,3 +28,6 @@ __pycache__/
 # not project content. The directories themselves are kept via .gitkeep.
 config/extra-ca-certs/*.crt
 docker/extra-ca-certs/*.crt
+
+# Generated version stamp (scripts/stamp-version.sh)
+/.version

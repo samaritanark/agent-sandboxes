@@ -1,0 +1,40 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: ['config:recommended'],
+
+  // Division of labor with Dependabot (.github/dependabot.yml):
+  //   - Dependabot owns github-actions + the Docker FROM lines.
+  //   - Renovate owns ONLY the shell-variable infra pins in setup/versions.sh,
+  //     which Dependabot cannot parse. enabledManagers keeps the two from
+  //     opening duplicate PRs for the same thing.
+  enabledManagers: ['custom.regex'],
+
+  // Match the machine-readable `# renovate:` annotation immediately above each
+  // SANDBOX_*_VERSION assignment, capturing the default after `:-` as the
+  // current value. Optional annotation fields (registryUrl / extractVersion /
+  // versioning) are captured when present and rendered empty (ignored) when not.
+  customManagers: [
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^setup/versions\\.sh$/'],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: registryUrl=(?<registryUrl>\\S+))?(?: extractVersion=(?<extractVersion>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s*\\nSANDBOX_[A-Z0-9_]+="\\$\\{SANDBOX_[A-Z0-9_]+:-(?<currentValue>[^}"]+)\\}"',
+      ],
+    },
+  ],
+
+  packageRules: [
+    {
+      // setup installs helm via the get-helm-3 script and the Cilium chart is
+      // validated against helm 3 — do not let Renovate jump the pin to helm 4.
+      matchDepNames: ['helm/helm'],
+      allowedVersions: '<4',
+    },
+    {
+      // The isolation stack is security-critical; group its PRs and label them
+      // so an operator reviews k3s/Cilium/gVisor bumps deliberately.
+      matchFileNames: ['setup/versions.sh'],
+      addLabels: ['infra', 'security'],
+    },
+  ],
+}

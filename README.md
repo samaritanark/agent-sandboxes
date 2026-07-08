@@ -70,6 +70,11 @@ sandbox logs   ses-20260401-143022-a7b3
 sandbox resume ses-20260401-143022-a7b3
 ```
 
+Once the CLI is on your PATH, `sandbox install` / `sandbox uninstall` are
+equivalent to running `./setup.sh` / `./uninstall.sh` directly, and
+`sandbox upgrade` rolls the pinned k3s / Cilium / gVisor versions forward — see
+[Upgrading infrastructure](docs/how-to/upgrading-infra.md).
+
 ## Tiers
 
 | Tier | Workspace        | Requirements                                                  |

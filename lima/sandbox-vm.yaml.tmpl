@@ -82,6 +82,9 @@ provision:
       # during triage. If you change either default in setup/common.sh,
       # update the matching value here too.
       export INSTALL_K3S_EXEC="--flannel-backend=none --disable-network-policy --disable=servicelb --disable=traefik --disable=metrics-server --cluster-cidr=100.64.0.0/10 --service-cidr=10.43.0.0/16"
+      # Pinned by setup/versions.sh (substituted at render time). Empty == the
+      # k3s installer's default latest stable channel.
+      export INSTALL_K3S_VERSION="__K3S_VERSION__"
       curl -sfL https://get.k3s.io | sh -
       systemctl enable --now k3s
 
@@ -97,7 +100,9 @@ provision:
       # directory so `sha512sum -c` finds the files the manifests name,
       # verify, then install. See gvisor.dev/docs/user_guide/install.
       gvisor_arch="$(uname -m)"
-      gvisor_url="https://storage.googleapis.com/gvisor/releases/release/latest/${gvisor_arch}"
+      # Pinned release id (YYYYMMDD.N) from setup/versions.sh; empty == latest.
+      gvisor_release="__GVISOR_RELEASE__"; [ -n "${gvisor_release}" ] || gvisor_release="latest"
+      gvisor_url="https://storage.googleapis.com/gvisor/releases/release/${gvisor_release}/${gvisor_arch}"
       gvisor_tmp="$(mktemp -d)"
       (
         cd "${gvisor_tmp}"
@@ -129,12 +134,15 @@ provision:
       # root has no ~/.kube/config — without this, `helm install` below would
       # try localhost:8080, fail, and abort provisioning before Cilium installs.
       export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-      curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | DESIRED_VERSION="__HELM_VERSION__" bash
       helm repo add cilium https://helm.cilium.io/
       helm repo update
+      # Chart version pinned by setup/versions.sh; empty == newest chart.
+      cilium_version_flag=""
+      [ -n "__CILIUM_VERSION__" ] && cilium_version_flag="--version __CILIUM_VERSION__"
       # socketLB.hostNamespaceOnly=true: required for gVisor pods to reach
       # ClusterIP services. See setup/common.sh for the full explanation.
-      helm install cilium cilium/cilium \
+      helm install cilium cilium/cilium ${cilium_version_flag} \
         --namespace kube-system \
         --set operator.replicas=1 \
         --set hubble.relay.enabled=true \
@@ -159,9 +167,13 @@ provision:
       # release assets use Go-style arch names (amd64 / arm64) — the opposite
       # of gVisor's x86_64 / aarch64, hence the separate rename here.
       nerdctl_arch="$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
-      nerdctl_ver="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
-        https://github.com/containerd/nerdctl/releases/latest \
-        | sed -E 's#.*/tag/v##')"
+      # Pinned by setup/versions.sh; empty == follow the releases/latest redirect.
+      nerdctl_ver="__NERDCTL_VERSION__"
+      if [ -z "${nerdctl_ver}" ]; then
+        nerdctl_ver="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+          https://github.com/containerd/nerdctl/releases/latest \
+          | sed -E 's#.*/tag/v##')"
+      fi
       curl -fsSL \
         "https://github.com/containerd/nerdctl/releases/download/v${nerdctl_ver}/nerdctl-full-${nerdctl_ver}-linux-${nerdctl_arch}.tar.gz" \
         | tar -xz -C /usr/local

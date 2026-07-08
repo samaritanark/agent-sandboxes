@@ -22,11 +22,20 @@ setup_macos() {
   configure_host_kubectl
 }
 
-# render_lima_config — substitute the API server port into the Lima template,
-# producing the concrete config that limactl consumes.
+# render_lima_config — substitute the API server port and the pinned component
+# versions (setup/versions.sh) into the Lima template, producing the concrete
+# config that limactl consumes. The version tokens let the in-VM provisioning
+# script install the same k3s/Cilium/gVisor/nerdctl as the Linux host path; an
+# empty pin renders an empty token, which each in-VM step treats as "latest".
 render_lima_config() {
   mkdir -p "${HOME}/.sandbox"
-  sed "s/__APISERVER_PORT__/${SANDBOX_APISERVER_PORT}/g" \
+  sed \
+    -e "s/__APISERVER_PORT__/${SANDBOX_APISERVER_PORT}/g" \
+    -e "s/__K3S_VERSION__/${SANDBOX_K3S_VERSION}/g" \
+    -e "s/__CILIUM_VERSION__/${SANDBOX_CILIUM_VERSION}/g" \
+    -e "s/__GVISOR_RELEASE__/${SANDBOX_GVISOR_RELEASE}/g" \
+    -e "s/__HELM_VERSION__/${SANDBOX_HELM_VERSION}/g" \
+    -e "s/__NERDCTL_VERSION__/${SANDBOX_NERDCTL_VERSION}/g" \
     "${LIMA_TEMPLATE}" > "${LIMA_CONFIG}"
 }
 

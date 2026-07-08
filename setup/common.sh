@@ -28,6 +28,10 @@ source "${SANDBOX_ROOT}/lib/dns.sh"
 # shellcheck source=../lib/resources.sh
 source "${SANDBOX_ROOT}/lib/resources.sh"
 
+# Pinned versions of the isolation stack (k3s, Cilium, gVisor) and helpers.
+# shellcheck source=./versions.sh
+source "${SANDBOX_ROOT}/setup/versions.sh"
+
 # Pod CIDR for Cilium IPAM and iptables masquerade rules.
 # Must not overlap with the host network. 100.64.0.0/10 (CGNAT range) is used
 # instead of 10.0.0.0/8 to avoid conflicts with corporate/private networks that
@@ -59,6 +63,30 @@ SANDBOX_APISERVER_PORT="${SANDBOX_APISERVER_PORT:-6443}"
 # sentinel (e.g. 10.255.255.254) that is unreachable from a pod network
 # namespace — see install_k3s_linux in setup/linux.sh.
 SANDBOX_DNS="${SANDBOX_DNS:-}"
+
+# Canonical location of the provisioned-versions manifest. `sandbox status`
+# reads this to show what the cluster was set up with, and `sandbox upgrade`
+# rewrites it after moving a component forward. Kept next to the kubeconfig.
+SANDBOX_INFRA_VERSIONS_FILE="${SANDBOX_INFRA_VERSIONS_FILE:-${HOME}/.sandbox/infra-versions}"
+
+# record_infra_versions — persist the pins this run provisioned with, so status
+# and upgrade have a baseline to compare the live cluster against. An empty pin
+# is recorded as "latest" (that is what the installer resolved). Best-effort:
+# never fail setup over a bookkeeping write.
+record_infra_versions() {
+  mkdir -p "$(dirname "${SANDBOX_INFRA_VERSIONS_FILE}")" 2>/dev/null || true
+  {
+    echo "# Infra component versions this sandbox was provisioned with."
+    echo "# Written by setup.sh / sandbox upgrade. Do not edit by hand."
+    echo "K3S_VERSION=${SANDBOX_K3S_VERSION:-latest}"
+    echo "CILIUM_VERSION=${SANDBOX_CILIUM_VERSION:-latest}"
+    echo "GVISOR_RELEASE=${SANDBOX_GVISOR_RELEASE:-latest}"
+    echo "HELM_VERSION=${SANDBOX_HELM_VERSION:-latest}"
+    echo "NERDCTL_VERSION=${SANDBOX_NERDCTL_VERSION:-latest}"
+    echo "RECORDED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "${SANDBOX_INFRA_VERSIONS_FILE}" 2>/dev/null || \
+    echo "WARN: could not record infra versions to ${SANDBOX_INFRA_VERSIONS_FILE}" >&2
+}
 
 # setup_common — apply Kubernetes manifests and verify cluster state
 setup_common() {
@@ -147,8 +175,13 @@ install_gvisor_linux() {
   local arch
   arch="$(uname -m)"
 
-  local runsc_url="https://storage.googleapis.com/gvisor/releases/release/latest/${arch}/runsc"
-  local shim_url="https://storage.googleapis.com/gvisor/releases/release/latest/${arch}/containerd-shim-runsc-v1"
+  # Empty pin == historical "latest" behavior (see setup/versions.sh).
+  local gvisor_release="${SANDBOX_GVISOR_RELEASE:-latest}"
+  [[ -n "${gvisor_release}" ]] || gvisor_release="latest"
+  echo "  gVisor release: ${gvisor_release}"
+
+  local runsc_url="https://storage.googleapis.com/gvisor/releases/release/${gvisor_release}/${arch}/runsc"
+  local shim_url="https://storage.googleapis.com/gvisor/releases/release/${gvisor_release}/${arch}/containerd-shim-runsc-v1"
 
   # Download both binaries into a temp dir so sha512sum -c can find them by
   # their bare filename (the checksum file contains e.g. "<hash>  runsc", and
@@ -175,12 +208,21 @@ install_cilium_helm() {
   echo "==> Installing Cilium via Helm..."
 
   if ! command -v helm &>/dev/null; then
-    echo "  Installing helm..."
-    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    echo "  Installing helm ${SANDBOX_HELM_VERSION:-(latest)}..."
+    # DESIRED_VERSION pins get-helm-3; unset/empty == latest.
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 \
+      | DESIRED_VERSION="${SANDBOX_HELM_VERSION:-}" bash
   fi
 
   helm repo add cilium https://helm.cilium.io/ 2>/dev/null || true
   helm repo update
+
+  # Empty pin == let Helm resolve the newest chart (historical behavior).
+  local -a cilium_version_args=()
+  if [[ -n "${SANDBOX_CILIUM_VERSION}" ]]; then
+    cilium_version_args=(--version "${SANDBOX_CILIUM_VERSION}")
+    echo "  Cilium chart version: ${SANDBOX_CILIUM_VERSION}"
+  fi
 
   # If a VPN interface is up at install time, pin Cilium's device list in the
   # INITIAL install so the cluster comes up correct on first boot. Otherwise
@@ -218,6 +260,7 @@ install_cilium_helm() {
   # paths produce identical results for runc pods; gVisor pods only work
   # via the TC path.
   helm --kubeconfig "${SANDBOX_KUBECONFIG}" upgrade --install cilium cilium/cilium \
+    "${cilium_version_args[@]+"${cilium_version_args[@]}"}" \
     --namespace kube-system \
     --set operator.replicas=1 \
     --set hubble.relay.enabled=true \
@@ -425,6 +468,28 @@ run_with_retries() {
     echo "  ${label} failed (attempt ${attempt}/${max_attempts}, exit ${rc}); retrying in ${delay}s..." >&2
     sleep "${delay}"
   done
+}
+
+# sandbox_image_tags — the canonical set of container image tags this project
+# builds, as bare `sandbox:<tag>` names in build/dependency order (base, agent
+# images, then the tier-3 infra variants). Single source of truth so the build
+# path and uninstall.sh can never drift — they did once: `copilot`/`copilot-infra`
+# were added to the build but not to uninstall's removal list, so those images
+# leaked on teardown. A drift test (tests/) asserts this list matches the images
+# build_images actually builds; consumers add any registry prefix themselves.
+sandbox_image_tags() {
+  cat <<'SANDBOX_IMAGE_TAGS'
+sandbox:base
+sandbox:claude
+sandbox:codex
+sandbox:opencode
+sandbox:copilot
+sandbox:shell
+sandbox:claude-infra
+sandbox:codex-infra
+sandbox:opencode-infra
+sandbox:copilot-infra
+SANDBOX_IMAGE_TAGS
 }
 
 # build_images — build all sandbox container images so pods can start with

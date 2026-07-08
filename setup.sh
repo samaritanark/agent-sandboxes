@@ -105,6 +105,19 @@ main() {
   # Build container images and import them into k3s containerd
   build_images
 
+  # Record the component versions this run provisioned with (for status/upgrade).
+  record_infra_versions
+
+  # Embed the CLI version identity from git, once, so `sandbox version` reads it
+  # instead of recomputing at runtime. Only in a real checkout: a released
+  # tarball has no .git and ships an authoritative .version we must not clobber.
+  if [[ -f "${SANDBOX_ROOT}/scripts/stamp-version.sh" ]] \
+     && command -v git >/dev/null 2>&1 \
+     && git -C "${SANDBOX_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    bash "${SANDBOX_ROOT}/scripts/stamp-version.sh" || \
+      echo "WARN: version stamp failed; 'sandbox version' will report 'dev'." >&2
+  fi
+
   echo ""
   echo "=== Setup complete ==="
   echo ""
