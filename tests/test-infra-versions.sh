@@ -55,6 +55,58 @@ test_versions_overridable() {
 }
 
 ###############################################################################
+# renovate.json5 — annotation field order matches the custom-manager regex
+###############################################################################
+test_renovate_annotation_order() {
+  info "Testing renovate.json5 annotation field order..."
+  # The custom manager captures the optional annotation fields
+  # (registryUrl/extractVersion/versioning) positionally. Renovate's regex
+  # engine is re2, which has no lookahead, so the pattern can't be made
+  # order-independent while still capturing those as named groups. Reordering a
+  # field would therefore make Renovate silently stop matching (and bumping)
+  # that pin. This guard turns that silent failure into a loud one: every
+  # `# renovate:` line must keep fields in the canonical order the regex expects.
+  local canonical="datasource depName registryUrl extractVersion versioning"
+  local line count=0
+  while IFS= read -r line; do
+    line="${line#*# renovate: }"
+    count=$((count + 1))
+
+    # Collect the field keys (text before '=') in the order they appear.
+    local keys="" f fields=()
+    read -ra fields <<<"${line}"
+    for f in "${fields[@]}"; do keys="${keys}${f%%=*} "; done
+
+    # Every key must be one the regex knows about (catches typos too).
+    local k
+    for k in ${keys}; do
+      case " ${canonical} " in
+        *" ${k} "*) ;;
+        *) fail "renovate annotation has unknown field '${k}': ${line}" ;;
+      esac
+    done
+
+    # The present keys, in appearance order, must equal the canonical order
+    # filtered to just those keys — i.e. no field is out of sequence.
+    local expected="" c
+    for c in ${canonical}; do
+      case " ${keys} " in *" ${c} "*) expected="${expected}${c} " ;; esac
+    done
+    [[ "${keys}" == "${expected}" ]] \
+      || fail "renovate annotation fields out of order (breaks the regex): ${line}"
+
+    # datasource + depName are the two required leading fields.
+    case "${keys}" in
+      "datasource depName"*) ;;
+      *) fail "renovate annotation must start 'datasource depName': ${line}" ;;
+    esac
+  done < <(grep '# renovate:' "${SANDBOX_ROOT}/setup/versions.sh")
+
+  [[ "${count}" -gt 0 ]] || fail "no '# renovate:' annotations found in versions.sh"
+  pass "all ${count} renovate annotations keep the canonical field order"
+}
+
+###############################################################################
 # Image list: canonical sandbox_image_tags() == what build_images builds
 ###############################################################################
 test_image_list_no_drift() {
@@ -177,6 +229,7 @@ test_version_command() {
 
 test_versions_defined
 test_versions_overridable
+test_renovate_annotation_order
 test_image_list_no_drift
 test_uninstall_derives_list
 test_cli_version_helpers
