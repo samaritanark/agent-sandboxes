@@ -48,4 +48,4 @@ SANDBOX_HELM_VERSION="${SANDBOX_HELM_VERSION:-v3.21.1}"
 
 # nerdctl — macOS-only in-VM image builder (nerdctl-full release asset).
 # renovate: datasource=github-releases depName=containerd/nerdctl versioning=semver
-SANDBOX_NERDCTL_VERSION="${SANDBOX_NERDCTL_VERSION:-2.0.2}"
+SANDBOX_NERDCTL_VERSION="${SANDBOX_NERDCTL_VERSION:-2.3.4}"
