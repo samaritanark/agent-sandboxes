@@ -30,7 +30,7 @@ SANDBOX_K3S_VERSION="${SANDBOX_K3S_VERSION:-v1.35.5+k3s1}"
 
 # Cilium — Helm chart version, passed as `--version` to `helm upgrade --install`.
 # renovate: datasource=helm depName=cilium registryUrl=https://helm.cilium.io versioning=semver
-SANDBOX_CILIUM_VERSION="${SANDBOX_CILIUM_VERSION:-1.19.4}"
+SANDBOX_CILIUM_VERSION="${SANDBOX_CILIUM_VERSION:-1.19.5}"
 
 # gVisor — release "point" identifier (YYYYMMDD.N) that selects the
 # storage.googleapis.com/gvisor/releases/release/<id>/ directory. gVisor has no
