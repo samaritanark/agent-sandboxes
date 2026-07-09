@@ -1,6 +1,46 @@
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
-  extends: ['config:recommended'],
+  // :gitSignOff appends `Signed-off-by: {{{gitAuthor}}}` to every commit so
+  // Renovate's PRs satisfy the DCO gate in .github/workflows/dco.yaml (which
+  // requires a Signed-off-by trailer whose email matches the commit author).
+  extends: ['config:recommended', ':gitSignOff'],
+
+  // Supply-chain hardening: hold a bump PR until the release has aged, so a
+  // dependency compromised in the hours after publish isn't surfaced to us
+  // immediately. internalChecksFilter: 'strict' is what makes the age gate
+  // actually *filter* candidates rather than just annotate them — it's already
+  // Renovate's default (since v33), pinned here so a future default change
+  // can't silently weaken the gate. Note: 'strict' is known to occasionally
+  // leak too-new releases (renovatebot/renovate#42260), so this is
+  // defense-in-depth on top of the deliberate infra/security review below, not
+  // a hard guarantee.
+  minimumReleaseAge: '7 days',
+  internalChecksFilter: 'strict',
+
+  // minimumReleaseAge alone only attaches a *pending* status check to the
+  // branch; on its own it does not stop the branch/PR from being created, and
+  // internalChecksFilter: 'strict' is known to occasionally leak too-new
+  // releases (renovatebot/renovate#42260). prCreation: 'not-pending' actually
+  // suppresses PR creation while any internal check is still pending, which is
+  // what makes the age gate bite. Security fixes are unaffected: the
+  // vulnerabilityAlerts config keeps its own prCreation: 'immediate' default.
+  prCreation: 'not-pending',
+
+  // No automerge, ever. This is already the default, but stated explicitly:
+  // for a repo whose bumps move the security-critical isolation stack, a human
+  // stays between an upstream release (or compromise) and master.
+  automerge: false,
+
+  // Raise a PR for known-vulnerable pins using osv.dev data. This is opt-in
+  // (default false). CAVEAT: Renovate only maps OSV data to language-package
+  // datasources (npm/PyPI/Go/Maven/…). The datasources this repo actually pins
+  // — github-releases / github-tags / helm for k3s/Cilium/gVisor/helm/nerdctl —
+  // are NOT OSV-mapped, so today this produces no alerts and is purely a
+  // harmless default-hardening flag that starts working if an OSV-covered
+  // manager is ever added. CVE watching for the isolation stack still relies on
+  // `sandbox status` staleness, operator review, and Trivy scanning image
+  // contents (see .github/workflows/security.yaml).
+  osvVulnerabilityAlerts: true,
 
   // Division of labor with Dependabot (.github/dependabot.yml):
   //   - Dependabot owns github-actions + the Docker FROM lines.
