@@ -26,7 +26,7 @@
 # installer). k3s tracks upstream Kubernetes' support window, so this is the pin
 # that matters most for EOL.
 # renovate: datasource=github-releases depName=k3s-io/k3s versioning=semver-coerced
-SANDBOX_K3S_VERSION="${SANDBOX_K3S_VERSION:-v1.35.5+k3s1}"
+SANDBOX_K3S_VERSION="${SANDBOX_K3S_VERSION:-v1.36.2+k3s1}"
 
 # Cilium — Helm chart version, passed as `--version` to `helm upgrade --install`.
 # renovate: datasource=helm depName=cilium registryUrl=https://helm.cilium.io versioning=semver
