@@ -291,39 +291,97 @@ EOF
 
 ###############################################################################
 # Hermetic status — a repo-local content filter (clean/process) must NOT be
-# executed during the dirty check. Its driver lives in .git/config and its
-# path mapping in in-tree .gitattributes — both attacker-controlled.
+# executed during the dirty check. The driver lives in git config and the path
+# mapping in in-tree .gitattributes — both attacker-controlled. Three declaration
+# styles are exercised because the neutralization must survive all: a plain
+# name, a name containing '=' (which `git -c name=value` would mis-split), and a
+# driver hidden behind `[include]` (invisible to `config --local`).
 ###############################################################################
-test_status_hermetic_against_filter() {
-  info "Testing dirty-check neutralizes repo-local content filters..."
-  write_trust_config
 
+# _filter_neutralization_check <label> <repo> <sentinel> — reset the index so
+# status re-hashes the worktree (independent of racy-git), confirm an unhardened
+# `git status` runs the planted driver (else skip: vector N/A on this git), then
+# assert the hardened `_vetting_git status` does not.
+_filter_neutralization_check() {
+  local label="$1" repo="$2" sentinel="$3"
+  rm -f "${repo}/.git/index"; git -C "${repo}" read-tree HEAD
+  rm -f "${sentinel}"
+  ( cd "${repo}" && git status --porcelain >/dev/null 2>&1 || true )
+  if [[ ! -e "${sentinel}" ]]; then
+    warn "this git does not run the ${label} filter on status; vector N/A, skipping"
+    return 0
+  fi
+  pass "confirmed: unhardened git status runs the ${label} filter"
+
+  rm -f "${repo}/.git/index"; git -C "${repo}" read-tree HEAD
+  rm -f "${sentinel}"
+  _vetting_git "${repo}" status --porcelain >/dev/null 2>&1 || true
+  [[ ! -e "${sentinel}" ]] \
+    && pass "hardened status neutralizes the ${label} filter (no host RCE)" \
+    || fail "SECURITY: ${label} filter executed via the hardened status check"
+}
+
+test_status_hermetic_against_filter() {
+  info "Testing dirty-check neutralizes a plain repo-local content filter..."
+  write_trust_config
   local repo="${TEST_DIR}/hijack-filter"
   make_repo "${repo}"
   local sentinel="${TEST_DIR}/filter-RAN"
   printf '* filter=pwn\n' > "${repo}/.gitattributes"
-  git -C "${repo}" add .gitattributes
-  git -C "${repo}" commit -q -m attrs
+  git -C "${repo}" add .gitattributes; git -C "${repo}" commit -q -m attrs
   git -C "${repo}" config filter.pwn.clean "touch ${sentinel}; cat"
   git -C "${repo}" config filter.pwn.required true
+  _filter_neutralization_check "plain" "${repo}" "${sentinel}"
+}
 
-  # Clear the index stat cache so status must re-hash worktree files (and thus
-  # run the clean filter), independent of racy-git optimizations.
-  reset_index() { rm -f "${repo}/.git/index"; git -C "${repo}" read-tree HEAD; }
+# A filter subsection name containing '=' — `git -c filter.x=y.clean=cat` would
+# mis-split on the first '=' and never override the real driver. The env-based
+# GIT_CONFIG_KEY pinning takes the key verbatim and must hold.
+test_status_hermetic_against_equals_named_filter() {
+  info "Testing dirty-check neutralizes an '='-named filter..."
+  write_trust_config
+  local repo="${TEST_DIR}/hijack-eqfilter"
+  make_repo "${repo}"
+  local sentinel="${TEST_DIR}/eqfilter-RAN"
+  printf '* filter=x=y\n' > "${repo}/.gitattributes"
+  git -C "${repo}" add .gitattributes; git -C "${repo}" commit -q -m attrs
+  git -C "${repo}" config 'filter.x=y.clean' "touch ${sentinel}; cat"
+  git -C "${repo}" config 'filter.x=y.required' true
+  _filter_neutralization_check "=-named" "${repo}" "${sentinel}"
+}
 
-  reset_index; rm -f "${sentinel}"
-  ( cd "${repo}" && git status --porcelain >/dev/null 2>&1 || true )
-  if [[ ! -e "${sentinel}" ]]; then
-    warn "this git does not exec clean filters on status; vector N/A, skipping"
-    return 0
-  fi
-  pass "confirmed: unhardened git status executes a clean filter"
+# A filter driver defined in a file pulled in via `[include]` — invisible to
+# `config --local` but honored when the filter runs. Enumeration must follow
+# includes (no --local) so it is discovered and pinned.
+test_status_hermetic_against_included_filter() {
+  info "Testing dirty-check neutralizes an include-defined filter..."
+  write_trust_config
+  local repo="${TEST_DIR}/hijack-incfilter"
+  make_repo "${repo}"
+  local sentinel="${TEST_DIR}/incfilter-RAN"
+  printf '* filter=inc\n' > "${repo}/.gitattributes"
+  git -C "${repo}" add .gitattributes; git -C "${repo}" commit -q -m attrs
+  printf '[filter "inc"]\n\tclean = touch %s; cat\n\trequired = true\n' "${sentinel}" \
+    > "${repo}/.git/extra.cfg"
+  git -C "${repo}" config --add include.path extra.cfg
+  _filter_neutralization_check "include-defined" "${repo}" "${sentinel}"
+}
 
-  reset_index; rm -f "${sentinel}"
-  _vetting_git "${repo}" status --porcelain >/dev/null 2>&1 || true
-  [[ ! -e "${sentinel}" ]] \
-    && pass "hardened status does not execute the clean filter (no host RCE)" \
-    || fail "SECURITY: repo-local clean filter executed via the hardened status check"
+# An empty filter subsection: `[filter ""]` with `.gitattributes` `* filter=`.
+# The enumeration emits a blank name — the neutralization must pin it, not skip
+# it as if it were empty pipeline output.
+test_status_hermetic_against_empty_named_filter() {
+  info "Testing dirty-check neutralizes an empty-named filter..."
+  write_trust_config
+  local repo="${TEST_DIR}/hijack-emptyfilter"
+  make_repo "${repo}"
+  local sentinel="${TEST_DIR}/emptyfilter-RAN"
+  printf '* filter=\n' > "${repo}/.gitattributes"
+  git -C "${repo}" add .gitattributes; git -C "${repo}" commit -q -m attrs
+  # `[filter ""]` can't be set via `git config <key>`; write it to .git/config.
+  printf '[filter ""]\n\tclean = touch %s; cat\n\trequired = true\n' "${sentinel}" \
+    >> "${repo}/.git/config"
+  _filter_neutralization_check "empty-named" "${repo}" "${sentinel}"
 }
 
 ###############################################################################
@@ -374,6 +432,56 @@ EOF
 }
 
 ###############################################################################
+# Hermetic attest — `git tag -s` on the attest path must NOT run a repo-local
+# gpg.ssh.defaultKeyCommand (git invokes it to obtain a key when user.signingkey
+# is unset). Globals are nulled so user.signingkey is unset for the test.
+###############################################################################
+test_attest_hermetic_against_defaultkeycommand() {
+  info "Testing attest neutralizes repo-local gpg.ssh.defaultKeyCommand..."
+  write_trust_config
+
+  local repo="${TEST_DIR}/hijack-keycmd"
+  make_repo "${repo}"
+  local sentinel="${TEST_DIR}/keycmd-RAN"
+  local evil="${repo}/evil-keycmd.sh"
+  cat > "${evil}" <<EOF
+#!/usr/bin/env bash
+: > "${sentinel}"
+exit 1
+EOF
+  chmod +x "${evil}"
+  git -C "${repo}" add evil-keycmd.sh; git -C "${repo}" commit -q -m keycmd
+  git -C "${repo}" config gpg.ssh.defaultKeyCommand "${evil}"
+
+  local fb kg gpgb
+  fb="$(command -v false 2>/dev/null || echo /bin/false)"
+  kg="$(command -v ssh-keygen 2>/dev/null || echo "${fb}")"
+  gpgb="$(command -v gpg 2>/dev/null || echo "${fb}")"
+
+  # Confirm the vector: ssh-sign with the pre-fix pins (no defaultKeyCommand pin)
+  # and no user.signingkey (globals nulled) runs the planted key command.
+  rm -f "${sentinel}"
+  ( GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git -C "${repo}" \
+      -c gpg.format=ssh -c "gpg.ssh.program=${kg}" -c "gpg.program=${gpgb}" \
+      -c "gpg.x509.program=${fb}" tag -s "probe-$$" -m x >/dev/null 2>&1 || true )
+  git -C "${repo}" tag -d "probe-$$" >/dev/null 2>&1 || true
+  if [[ ! -e "${sentinel}" ]]; then
+    warn "this git does not run gpg.ssh.defaultKeyCommand here; vector N/A, skipping"
+    return 0
+  fi
+  pass "confirmed: unpinned gpg.ssh.defaultKeyCommand runs during ssh sign"
+
+  # The hardened attest path must NOT run it (globals nulled → user.signingkey
+  # unset, so the defaultKeyCommand fallback is what git would reach for).
+  rm -f "${sentinel}"
+  ( GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    vetting_attest_repo "${repo}" "vetted" >/dev/null 2>&1 || true )
+  [[ ! -e "${sentinel}" ]] \
+    && pass "hardened attest does not execute gpg.ssh.defaultKeyCommand (no host RCE)" \
+    || fail "SECURITY: gpg.ssh.defaultKeyCommand executed during attest"
+}
+
+###############################################################################
 # Missing trust root — fails closed under 'required', regardless of override.
 ###############################################################################
 test_missing_trust_root_fails_closed() {
@@ -420,7 +528,11 @@ main() {
   test_missing_trust_root_fails_closed
   test_status_hermetic_against_fsmonitor
   test_status_hermetic_against_filter
+  test_status_hermetic_against_equals_named_filter
+  test_status_hermetic_against_included_filter
+  test_status_hermetic_against_empty_named_filter
   test_verify_hermetic_against_x509_program
+  test_attest_hermetic_against_defaultkeycommand
   if [[ "${SSH_SIGNING}" -eq 1 ]]; then
     test_status_vetted
     test_gate_required_passes_when_vetted

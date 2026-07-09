@@ -123,33 +123,59 @@ _vetting_extract_signer() {
 
 # _vetting_git <repo> <git-args>... — run git inside an UNTRUSTED workspace with
 # repo-local config that could execute an attacker-named program neutralized.
-# A workspace author controls the repo's .git/config, and several innocuous-
-# looking git operations will exec a program it names:
+# A workspace author controls the repo's .git/config (and any file it includes)
+# and the in-tree .gitattributes, and several innocuous-looking git operations
+# will exec a program those name:
 #   - core.fsmonitor (spawned on an index refresh) and hooks;
 #   - content filter drivers: `git status` re-hashes worktree files through the
 #     `filter.<name>.clean` (or `.process`) command to detect modifications. The
-#     driver command lives in .git/config and the path->filter mapping in the
-#     in-tree .gitattributes — both attacker-controlled. `-c` can override the
-#     driver command but NOT the in-tree attribute, and the filter name is
-#     attacker-chosen, so we enumerate the repo's own filter.* keys and pin each
-#     driver to a harmless identity (cat) with required=false. An in-tree
-#     `filter=<name>` attribute whose driver is thus neutralized is a no-op.
-# Command-line `-c` outranks the repo's .git/config, so these pins hold whatever
-# the workspace commits. (A side effect: a repo that legitimately relies on a
-# clean filter, e.g. git-LFS, reads as dirty here — conservative for the gate,
-# which fails toward "unvetted".) Signature-program and trust-file pins are
-# layered on top by _vetting_verify_tag.
+#     driver command lives in git config and the path->filter mapping in the
+#     in-tree .gitattributes. The attribute can't be overridden from config, so
+#     we neutralize the *driver*: enumerate the repo's own filter.* names and
+#     pin each driver to a harmless identity (cat) with required=false. An
+#     in-tree `filter=<name>` whose driver is thus neutralized is a no-op.
+#
+# Two subtleties make this security-critical rather than cosmetic:
+#   1. The filter name is attacker-chosen and may contain '=', which `git -c
+#      name=value` mis-splits (first '=' wins), leaving the real driver
+#      un-overridden. So the pins go through GIT_CONFIG_KEY_n/VALUE_n, which take
+#      the key verbatim (no '=' split). fsmonitor/hooks have fixed, '='-free
+#      names, so a plain `-c` is safe for them.
+#   2. A filter defined via `[include]` is invisible to `config --local` but is
+#      honored when the filter is applied, so we enumerate WITHOUT --local (so
+#      includes are followed) while nulling the global/system scopes, so we see
+#      exactly the repo-declared filters and don't disturb the operator's own.
+# The GIT_CONFIG_* entries outrank every config file, so the pins hold whatever
+# the workspace commits or includes. (Side effect: a repo that legitimately
+# relies on a clean filter, e.g. git-LFS, reads as dirty here — conservative for
+# the gate, which fails toward "unvetted".) Signature-program and trust-file
+# pins are layered on top by _vetting_verify_tag.
 _vetting_git() {
   local repo="$1"; shift
-  local -a opts=(-c core.fsmonitor= -c core.hooksPath=/dev/null)
-  local name
+  local -a cfgenv=()
+  local name n=0 sub
   while IFS= read -r name; do
-    [[ -n "${name}" ]] && opts+=(
-      -c "filter.${name}.clean=cat" -c "filter.${name}.smudge=cat" \
-      -c "filter.${name}.process=" -c "filter.${name}.required=false")
-  done < <(git -C "${repo}" config --local --name-only --get-regexp '^filter\.' 2>/dev/null \
+    # Do NOT skip an empty name: git supports `[filter ""]` (keys filter..clean
+    # etc.), and an in-tree `.gitattributes` `* filter=` binds every path to that
+    # empty-subsection driver — a real, attacker-usable filter that must be
+    # pinned like any other. (When the repo declares no filters the enumeration
+    # yields zero lines, so this loop simply doesn't run.)
+    for sub in clean smudge process required; do
+      cfgenv+=("GIT_CONFIG_KEY_${n}=filter.${name}.${sub}")
+      case "${sub}" in
+        clean|smudge) cfgenv+=("GIT_CONFIG_VALUE_${n}=cat") ;;
+        process)      cfgenv+=("GIT_CONFIG_VALUE_${n}=") ;;
+        required)     cfgenv+=("GIT_CONFIG_VALUE_${n}=false") ;;
+      esac
+      n=$((n + 1))
+    done
+  done < <(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+             git -C "${repo}" config --name-only --get-regexp '^filter\.' 2>/dev/null \
              | sed -E 's/^filter\.(.*)\.[^.]+$/\1/' | sort -u || true)
-  git -C "${repo}" "${opts[@]}" "$@"
+  cfgenv+=("GIT_CONFIG_COUNT=${n}")
+
+  env "${cfgenv[@]}" git -C "${repo}" \
+    -c core.fsmonitor= -c core.hooksPath=/dev/null "$@"
 }
 
 # _vetting_verify_tag <repo> <tag> <trust_root> <format> — verify one tag's
@@ -410,17 +436,20 @@ vetting_attest_repo() {
     return 0
   fi
 
-  # Sign inside a repo whose .git/config is not yet reviewed, so pin the signing
-  # program to a trusted binary (repo-local gpg.ssh.program / gpg.program would
-  # otherwise run an attacker script on the operator's host — see
-  # _vetting_verify_tag). The signing key stays the operator's own.
+  # Sign inside a repo whose .git/config is not yet reviewed, so pin every knob
+  # that lets config choose a program git will exec: the signer programs
+  # (gpg.ssh.program / gpg.program / gpg.x509.program) and, for SSH signing when
+  # user.signingkey is unset, gpg.ssh.defaultKeyCommand (git runs it to obtain a
+  # key). A repo-local value for any of these would otherwise run an attacker
+  # script on the operator's host — see _vetting_verify_tag. The signing key
+  # stays the operator's own.
   fmt="$(vetting_trust_format)"
   local false_bin ssh_keygen gpg_bin
   false_bin="$(command -v false 2>/dev/null || echo /bin/false)"
   ssh_keygen="$(command -v ssh-keygen 2>/dev/null || echo "${false_bin}")"
   gpg_bin="$(command -v gpg 2>/dev/null || command -v gpg2 2>/dev/null || echo "${false_bin}")"
   local -a gitopts=(-c "gpg.ssh.program=${ssh_keygen}" -c "gpg.program=${gpg_bin}" \
-                    -c "gpg.x509.program=${false_bin}")
+                    -c "gpg.x509.program=${false_bin}" -c gpg.ssh.defaultKeyCommand=)
   [[ "${fmt}" == "ssh" ]] && gitopts+=(-c gpg.format=ssh)
 
   if _vetting_git "${real_repo}" "${gitopts[@]}" tag -s "${tag}" -m "${msg}"; then
