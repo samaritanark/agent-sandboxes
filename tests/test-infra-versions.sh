@@ -197,6 +197,34 @@ test_version_stamp_generator() {
   rm -rf "${tmp}"
 }
 
+test_stamp_helper() {
+  info "Testing stamp_version_if_git (shared install/upgrade helper)..."
+  # shellcheck disable=SC1090
+  source "${SANDBOX_ROOT}/lib/platform.sh"
+  local tmp; tmp="$(mktemp -d /tmp/sandbox-stamphelper-XXXXXX)"
+
+  # Inside a git work tree (this repo) it stamps — redirect the output so the
+  # repo's own .version is never touched.
+  ( export SANDBOX_ROOT="${SANDBOX_ROOT}" STAMP_VERSION_OUT="${tmp}/.version"
+    stamp_version_if_git >/dev/null 2>&1 )
+  if [[ -s "${tmp}/.version" ]] && grep -q '^VERSION=' "${tmp}/.version"; then
+    pass "helper stamps inside a git work tree"
+  else
+    fail "helper did not stamp inside a git work tree"
+  fi
+
+  # Outside a real checkout (SANDBOX_ROOT with no scripts/ and not a work tree)
+  # it is a safe no-op — nothing written, no error.
+  local nongit="${tmp}/nongit"; mkdir -p "${nongit}"
+  ( export SANDBOX_ROOT="${nongit}" STAMP_VERSION_OUT="${nongit}/.version"
+    stamp_version_if_git >/dev/null 2>&1 )
+  [[ ! -e "${nongit}/.version" ]] \
+    && pass "helper is a no-op outside a real checkout" \
+    || fail "helper wrote .version outside a real checkout"
+
+  rm -rf "${tmp}"
+}
+
 test_version_command() {
   info "Testing sandbox version reader/formatter..."
   # shellcheck disable=SC1090
@@ -234,6 +262,7 @@ test_image_list_no_drift
 test_uninstall_derives_list
 test_cli_version_helpers
 test_version_stamp_generator
+test_stamp_helper
 test_version_command
 
 echo "All infra-versions tests passed."

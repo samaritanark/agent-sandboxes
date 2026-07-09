@@ -10,8 +10,8 @@ _sandbox_complete() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="run resume allow list logs flows stop cleanup check status setup onboard secret mask profile link configure-network rebuild version"
-  local run_opts="--agent --tier --profile --repo --allow-domain --base-url --infra-token --infra-kubeconfig --infra-kube-context --allow-exec-plugin --infra-endpoint --dry-run --name --keep-alive --i-accept-unmasked-secrets --help"
+  local commands="run resume allow list logs flows stop cleanup check status setup onboard secret mask vet profile link configure-network rebuild version"
+  local run_opts="--agent --tier --profile --repo --allow-domain --base-url --infra-token --infra-kubeconfig --infra-kube-context --allow-exec-plugin --infra-endpoint --dry-run --name --keep-alive --i-accept-unmasked-secrets --i-accept-unvetted-repo --help"
   local mask_subs="add list"
   local rebuild_opts="--agent --tier3 --no-cache --codex-version --opencode-version --copilot-version --help"
   local setup_opts="--pod-cidr --service-cidr --apiserver-port"
@@ -180,6 +180,16 @@ _sandbox_complete() {
       else
         # Positional relative paths for 'mask add'.
         _filedir
+      fi
+      ;;
+    vet)
+      case "${prev}" in
+        --repo) _filedir -d; return ;;
+        --message) return ;;
+      esac
+      if [[ "${cur}" == --* ]]; then
+        # shellcheck disable=SC2207
+        COMPREPLY=($(compgen -W "--repo --status --message --help" -- "${cur}"))
       fi
       ;;
     profile)

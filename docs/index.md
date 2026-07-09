@@ -18,6 +18,7 @@ the operator.
 - [Persistent extra domains & personal block list](how-to/persistent-domains.md)
 - [Profiles and team overlays](how-to/profiles-and-overlays.md)
 - [Store and inject secrets](how-to/secrets.md)
+- [Vet repos for agent use](how-to/vetting.md)
 - [MCP & service dependencies](how-to/mcp-and-dependencies.md)
 - [Tier 3 infra credentials](how-to/tier3-infra-credentials.md)
 - [Resume and keep-alive sessions](how-to/resuming-sessions.md)

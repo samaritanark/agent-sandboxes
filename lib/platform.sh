@@ -68,6 +68,24 @@ is_macos() {
   [[ "$(detect_platform)" == "macos" ]]
 }
 
+# stamp_version_if_git — refresh the embedded .version from git so
+# `sandbox version` reflects the current checkout. Call at lifecycle points that
+# follow a code change (install, upgrade). A no-op outside a git work tree or
+# without git, which correctly leaves a released tarball's authoritative
+# .version untouched. The runtime READ path never calls this — it must not shell
+# out to git (see the version block in bin/sandbox), so stamping is confined to
+# these explicit operator commands. Uses the caller's SANDBOX_ROOT global.
+stamp_version_if_git() {
+  local root="${SANDBOX_ROOT:-}"
+  [[ -n "${root}" ]] || return 0
+  if [[ -f "${root}/scripts/stamp-version.sh" ]] \
+     && command -v git >/dev/null 2>&1 \
+     && git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    bash "${root}/scripts/stamp-version.sh" \
+      || echo "WARN: version stamp failed; 'sandbox version' will report 'dev'." >&2
+  fi
+}
+
 # is_wsl — true when running inside a WSL distro on a Windows host.
 # The WSL kernel stamps "microsoft" / "WSL" into /proc/sys/kernel/osrelease;
 # detect_platform still returns "linux" because uname -s is Linux, so we need

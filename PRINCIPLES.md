@@ -246,6 +246,41 @@ The sandbox enforces three filesystem rules:
    home directory, system directories, the container runtime socket,
    and other sandbox sessions are not reachable from inside the pod.
 
+## Repo vetting
+
+Some organizations require that an agent only touch a repository that has
+been through an approval workflow. The sandbox provides the hook for that
+policy — an optional launch gate that checks each Tier 2/3 `--repo` for a
+signed attestation that a trusted reviewer cleared its current `HEAD` for
+agent use. This is the kind of "approval flow" the introduction says
+adopters layer on top; the tool supplies the mechanism, your policy decides
+whether and how to require it.
+
+Three things keep it honest:
+
+1. **The trust decision lives with the operator, not the repo.** The repo
+   carries only the artifact — a signed git tag. Whether vetting is
+   *required*, and *whose* signatures count, are operator-side settings
+   (`vetting:` and a signer trust root in `~/.sandbox/config.yaml`). Nothing
+   a workspace author can commit weakens the gate, because a repo-resident
+   flag would be a cooperative-behavior control, and no security property
+   here depends on that (see Core principle 1). Verification runs host-side,
+   before the pod starts, against the operator's signer list.
+
+2. **An overlay may only tighten it.** A team overlay can raise the posture
+   (`advisory → required`) but never relax it — the same "additive on the
+   safety side" rule the block list follows.
+
+3. **Vetted is not a substitute for the sandbox.** Vetting addresses a
+   different axis — repo-borne prompt-injection payloads, org compliance —
+   than isolation. It is additive to gVisor, default-deny egress, and
+   masking, never a replacement. A vetted repo is not thereby cleared to run
+   an agent outside a session; isolation is still mandatory (Core principle
+   4). Read a "vetted" marker as "reviewed," not as "trusted enough to skip
+   the controls."
+
+See `docs/how-to/vetting.md` for setup and the `sandbox vet` workflow.
+
 ## Agent behavior expectations
 
 The sandbox enforces what it can at the kernel, network, and
