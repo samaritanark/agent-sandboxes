@@ -51,6 +51,107 @@ make_repo() {
   printf 'github_pat=ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z\n' > "${repo}/nested/config.txt"
 }
 
+# Two distinct betterleaks-flagged tokens (github PAT shape). SEALED_TOK is
+# planted where the encrypted-at-rest exemption should apply; PLAIN_TOK where a
+# plaintext secret must still block. Deliberately not canonical example keys
+# (betterleaks allowlists those).
+SEALED_TOK="ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z"
+PLAIN_TOK="ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a"
+
+# fixture_sealedsecret <file> — a well-formed SealedSecret whose only secret is
+# in spec.encryptedData (line 8). The template block carries no secret.
+fixture_sealedsecret() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<EOF
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: mysecret
+  namespace: default
+spec:
+  encryptedData:
+    token: ${SEALED_TOK}
+  template:
+    metadata:
+      name: mysecret
+    type: Opaque
+EOF
+}
+
+# fixture_sealed_template_leak <file> — a SealedSecret with an encryptedData
+# value (line 7, safe) AND a plaintext secret smuggled into spec.template.data
+# (line 10, must still block).
+fixture_sealed_template_leak() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<EOF
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: leaky
+spec:
+  encryptedData:
+    good: ${SEALED_TOK}
+  template:
+    data:
+      token: ${PLAIN_TOK}
+EOF
+}
+
+# fixture_sealed_multidoc <file> — a SealedSecret doc (encryptedData, line 7,
+# safe) and a sibling plaintext `kind: Secret` doc (stringData, line 14, must
+# still block) in one multi-document file.
+fixture_sealed_multidoc() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<EOF
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: sealed-one
+spec:
+  encryptedData:
+    token: ${SEALED_TOK}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: plain-one
+stringData:
+  token: ${PLAIN_TOK}
+EOF
+}
+
+# fixture_sops <file> — a SOPS-encrypted Secret; the flagged value (line 6) is
+# wrapped in an ENC[AES256_GCM,...] envelope.
+fixture_sops() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sops-secret
+data:
+  token: ENC[AES256_GCM,data:${SEALED_TOK},iv:abc,tag:def,type:str]
+sops:
+  mac: ENC[AES256_GCM,data:xyz,type:str]
+EOF
+}
+
+# fixture_sops_unencrypted_leak <file> — SOPS file with one ENC[...] value
+# (line 6, safe) and an unencrypted plaintext key alongside it (line 7, must
+# still block — SOPS's unencrypted_regex escape hatch).
+fixture_sops_unencrypted_leak() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sops-leaky
+data:
+  token: ENC[AES256_GCM,data:${SEALED_TOK},iv:abc,tag:def,type:str]
+  plainkey: ${PLAIN_TOK}
+EOF
+}
+
 ###############################################################################
 # is_path_masked — built-in + configured truth table
 ###############################################################################
@@ -266,6 +367,138 @@ EOF
 }
 
 ###############################################################################
+# finding_is_encrypted — the core encrypted-at-rest classifier, exercised
+# directly (no scanner needed): SealedSecret encryptedData and SOPS ENC[...]
+# values are exempt; plaintext smuggled into the same file is NOT.
+###############################################################################
+test_finding_is_encrypted() {
+  info "Testing finding_is_encrypted..."
+  local d="${TEST_DIR}/enc"
+  mkdir -p "${d}"
+
+  # SealedSecret: the encryptedData value (line 8) is exempt.
+  fixture_sealedsecret "${d}/sealed.yaml"
+  finding_is_encrypted "${d}/sealed.yaml" 8 \
+    && pass "SealedSecret encryptedData value exempt" \
+    || fail "encryptedData value should be exempt"
+
+  # A plaintext secret in spec.template.data (line 10) is NOT exempt, even
+  # though line 7 (encryptedData) in the same doc is.
+  fixture_sealed_template_leak "${d}/tmpl.yaml"
+  finding_is_encrypted "${d}/tmpl.yaml" 7 \
+    && pass "encryptedData value exempt (template fixture)" \
+    || fail "line 7 encryptedData should be exempt"
+  finding_is_encrypted "${d}/tmpl.yaml" 10 \
+    && fail "plaintext in spec.template must NOT be exempt" \
+    || pass "plaintext in spec.template not exempt"
+
+  # Multi-doc: encryptedData in the SealedSecret doc (line 7) is exempt; the
+  # sibling plaintext Secret doc's stringData (line 14) is not.
+  fixture_sealed_multidoc "${d}/multi.yaml"
+  finding_is_encrypted "${d}/multi.yaml" 7 \
+    && pass "multi-doc SealedSecret value exempt" \
+    || fail "line 7 should be exempt"
+  finding_is_encrypted "${d}/multi.yaml" 14 \
+    && fail "sibling plaintext Secret doc must NOT be exempt" \
+    || pass "sibling plaintext Secret doc not exempt"
+
+  # SOPS: the ENC[...] envelope (line 6) is exempt.
+  fixture_sops "${d}/sops.yaml"
+  finding_is_encrypted "${d}/sops.yaml" 6 \
+    && pass "SOPS ENC[...] value exempt" \
+    || fail "SOPS ENC value should be exempt"
+
+  # SOPS with an unencrypted key alongside: the ENC value (line 6) is exempt,
+  # the plaintext key (line 7) is not.
+  fixture_sops_unencrypted_leak "${d}/sopsleak.yaml"
+  finding_is_encrypted "${d}/sopsleak.yaml" 6 \
+    && pass "SOPS ENC value exempt (leak fixture)" \
+    || fail "line 6 ENC should be exempt"
+  finding_is_encrypted "${d}/sopsleak.yaml" 7 \
+    && fail "unencrypted SOPS key must NOT be exempt" \
+    || pass "unencrypted SOPS key not exempt"
+
+  # A finding line pointing at nothing / out of range is not exempt.
+  finding_is_encrypted "${d}/sealed.yaml" 999 \
+    && fail "out-of-range line must NOT be exempt" \
+    || pass "out-of-range line not exempt"
+}
+
+###############################################################################
+# scan_repo_secrets + secret_gate_repos — encrypted-at-rest findings classify
+# as `sealed` and pass the gate; plaintext in the same file still blocks.
+###############################################################################
+test_encrypted_scan_and_gate() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing sealed/SOPS classification and gate..."
+
+  # (1) A clean SealedSecret → one `sealed` finding, no `no`; gate passes.
+  local repo="${TEST_DIR}/encscan"
+  fixture_sealedsecret "${repo}/manifests/sealed.yaml"
+  local out="${TEST_DIR}/encscan.out"
+  scan_repo_secrets "${repo}" > "${out}"
+  grep -q "$(printf '^sealed\tmanifests/sealed.yaml\t')" "${out}" \
+    && pass "SealedSecret finding classified sealed" \
+    || fail "expected a sealed finding, got: $(cat "${out}")"
+  grep -q "$(printf '^no\t')" "${out}" \
+    && fail "clean SealedSecret should produce no unmasked finding" \
+    || pass "no unmasked finding for clean SealedSecret"
+  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+    pass "gate passes on a clean SealedSecret"
+  else
+    fail "gate should pass on a clean SealedSecret"
+  fi
+
+  # (2) A clean SOPS file → sealed, gate passes.
+  local srepo="${TEST_DIR}/sopsscan"
+  fixture_sops "${srepo}/manifests/sops.yaml"
+  scan_repo_secrets "${srepo}" > "${TEST_DIR}/sopsscan.out"
+  grep -q "$(printf '^sealed\tmanifests/sops.yaml\t')" "${TEST_DIR}/sopsscan.out" \
+    && pass "SOPS finding classified sealed" \
+    || fail "expected a sealed SOPS finding, got: $(cat "${TEST_DIR}/sopsscan.out")"
+  if ( secret_gate_repos "false" "${srepo}" >/dev/null 2>&1 ); then
+    pass "gate passes on a clean SOPS file"
+  else
+    fail "gate should pass on a clean SOPS file"
+  fi
+}
+
+test_encrypted_leaks_still_block() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing plaintext-in-encrypted-file still blocks..."
+
+  # Multi-doc: the plaintext Secret sibling must still block the gate.
+  local repo="${TEST_DIR}/multiblock"
+  fixture_sealed_multidoc "${repo}/manifests/mixed.yaml"
+  local out="${TEST_DIR}/multiblock.out"
+  scan_repo_secrets "${repo}" > "${out}"
+  grep -q "$(printf '^sealed\tmanifests/mixed.yaml\t')" "${out}" \
+    && pass "multi-doc: SealedSecret value classified sealed" \
+    || fail "expected a sealed finding in multi-doc, got: $(cat "${out}")"
+  grep -q "$(printf '^no\tmanifests/mixed.yaml\t')" "${out}" \
+    && pass "multi-doc: plaintext sibling classified unmasked" \
+    || fail "expected an unmasked finding in multi-doc, got: $(cat "${out}")"
+  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "gate must refuse when a plaintext secret sits beside a SealedSecret"
+  fi
+  pass "gate refuses on plaintext sibling of a SealedSecret"
+
+  # SOPS file with an unencrypted key alongside ENC values must still block.
+  local srepo="${TEST_DIR}/sopsblock"
+  fixture_sops_unencrypted_leak "${srepo}/manifests/leak.yaml"
+  scan_repo_secrets "${srepo}" > "${TEST_DIR}/sopsblock.out"
+  grep -q "$(printf '^no\tmanifests/leak.yaml\t')" "${TEST_DIR}/sopsblock.out" \
+    && pass "SOPS: unencrypted key classified unmasked" \
+    || fail "expected an unmasked SOPS finding, got: $(cat "${TEST_DIR}/sopsblock.out")"
+  if ( secret_gate_repos "false" "${srepo}" >/dev/null 2>&1 ); then
+    fail "gate must refuse on an unencrypted key in a SOPS file"
+  fi
+  pass "gate refuses on unencrypted key in a SOPS file"
+}
+
+###############################################################################
 # build_volume_mounts_block — a configured masked_path becomes an overlay mount
 ###############################################################################
 test_manifest_mount() {
@@ -298,10 +531,13 @@ main() {
   test_is_path_masked
   test_config_add_masked_path
   test_manifest_mount
+  test_finding_is_encrypted
   test_scan_classification
   test_gate
   test_gitconfig_secret
   test_scan_failure_fails_closed
+  test_encrypted_scan_and_gate
+  test_encrypted_leaks_still_block
 
   echo ""
   echo "All secret-gate tests passed."
