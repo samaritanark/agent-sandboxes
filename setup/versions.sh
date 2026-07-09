@@ -38,7 +38,7 @@ SANDBOX_CILIUM_VERSION="${SANDBOX_CILIUM_VERSION:-1.19.4}"
 # google/gvisor (tags look like release-YYYYMMDD.0) plus `sandbox status`
 # surfacing staleness. "latest" is the historical unpinned value and still works.
 # renovate: datasource=github-tags depName=google/gvisor extractVersion=^release-(?<version>.+)$ versioning=loose
-SANDBOX_GVISOR_RELEASE="${SANDBOX_GVISOR_RELEASE:-20260601.0}"
+SANDBOX_GVISOR_RELEASE="${SANDBOX_GVISOR_RELEASE:-20260622.0}"
 
 # helm — only used when setup has to install helm itself (get-helm-3). Passed as
 # DESIRED_VERSION. Constrained to <4 in renovate.json: setup uses the get-helm-3
