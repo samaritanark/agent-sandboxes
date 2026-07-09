@@ -49,3 +49,14 @@ SANDBOX_HELM_VERSION="${SANDBOX_HELM_VERSION:-v3.21.2}"
 # nerdctl — macOS-only in-VM image builder (nerdctl-full release asset).
 # renovate: datasource=github-releases depName=containerd/nerdctl versioning=semver
 SANDBOX_NERDCTL_VERSION="${SANDBOX_NERDCTL_VERSION:-2.3.4}"
+
+# betterleaks — HOST-side secret scanner that gates every Tier 2/3 `sandbox run`
+# (the pre-launch scan in lib/filesystem.sh fails closed without it). Unlike the
+# isolation stack above, this is a plain CLI on the machine running `sandbox`,
+# not an in-cluster/in-VM component — setup installs it (setup/common.sh
+# install_betterleaks) because it is the one required tool least likely to
+# already be on a workstation. Bare X.Y.Z (no leading `v`, matching `betterleaks
+# version` output); the installer prepends `v` for the release tag and compares
+# an already-present copy against this pin, upgrading only if it is older.
+# renovate: datasource=github-releases depName=betterleaks/betterleaks versioning=semver
+SANDBOX_BETTERLEAKS_VERSION="${SANDBOX_BETTERLEAKS_VERSION:-1.6.1}"

@@ -154,7 +154,7 @@ COMMANDS:
   status       Show cluster and sandbox status (incl. infra versions vs pins)
   install      Install/configure sandbox prerequisites (cluster, CNI, gVisor)
   uninstall    Tear down the sandbox cluster and host artifacts
-  upgrade      Update the CLI to the latest release (--infra: k3s/Cilium/gVisor)
+  upgrade      Update the CLI to the latest release (--infra: k3s/Cilium/gVisor/betterleaks)
   setup        Alias of 'install' (retained for compatibility)
   onboard      Stage host-side agent OAuth state for first-run convenience
   secret       Manage host-side secret store (injected per-session by profile)
@@ -2007,10 +2007,11 @@ USAGE:
 
 TARGET (default: --app):
   --app                Update the CLI itself to the latest release (default)
-  --infra              Upgrade all host infra: k3s, Cilium, gVisor
+  --infra              Upgrade all host infra: k3s, Cilium, gVisor, betterleaks
   --k3s                Upgrade k3s only
   --cilium             Upgrade Cilium only
   --gvisor             Upgrade gVisor (runsc) only
+  --betterleaks        Upgrade the betterleaks secret scanner only
   --all                Both: update the app, then the infra (in that order)
 
 APP OPTIONS (--app):
@@ -2022,6 +2023,7 @@ INFRA OPTIONS (--infra / components):
   --to-k3s <ver>       Override the k3s target (else setup/versions.sh pin)
   --to-cilium <ver>    Override the Cilium chart target
   --to-gvisor <rel>    Override the gVisor release id (YYYYMMDD.N)
+  --to-betterleaks <ver>  Override the betterleaks target (bare X.Y.Z)
   --force              Proceed even if sessions are running (they may be killed)
 
 SHARED OPTIONS:
@@ -2038,7 +2040,9 @@ The infra phase re-runs the component installers, which restarts k3s and can
 briefly disrupt the Cilium datapath — hence the running-session guard. Infra
 targets default to the pins in setup/versions.sh (which Renovate keeps current).
 On macOS the k3s/Cilium/gVisor stack lives inside the Lima VM and is not upgraded
-in place yet; re-provision the VM instead (the command prints how).
+in place yet; re-provision the VM instead (the command prints how). betterleaks
+is the exception: it is a host-side binary, so it upgrades on any platform and
+without the session guard (swapping it neither restarts k3s nor drops sessions).
 
 With --all the app is updated first, then the CLI re-executes itself so the
 infra phase applies the newly pulled pins.
@@ -2052,8 +2056,8 @@ cmd_upgrade() {
   # work (which restarts k3s and can drop live sessions) is opt-in via --infra,
   # the individual component flags, or --all.
   local want_app=false want_infra=false explicit_target=false
-  local do_k3s=false do_cilium=false do_gvisor=false
-  local to_k3s="" to_cilium="" to_gvisor=""
+  local do_k3s=false do_cilium=false do_gvisor=false do_betterleaks=false
+  local to_k3s="" to_cilium="" to_gvisor="" to_betterleaks=""
   local to="" remote="origin" do_rebuild=false
   local force=false assume_yes=false dry_run=false
 
@@ -2067,6 +2071,7 @@ cmd_upgrade() {
       --k3s)          do_k3s=true;    explicit_target=true; shift ;;
       --cilium)       do_cilium=true; explicit_target=true; shift ;;
       --gvisor)       do_gvisor=true; explicit_target=true; shift ;;
+      --betterleaks)  do_betterleaks=true; explicit_target=true; shift ;;
       # Infra target overrides (else setup/versions.sh pins)
       --to-k3s)       to_k3s="$2";         do_k3s=true;    explicit_target=true; shift 2 ;;
       --to-k3s=*)     to_k3s="${1#*=}";    do_k3s=true;    explicit_target=true; shift ;;
@@ -2074,6 +2079,8 @@ cmd_upgrade() {
       --to-cilium=*)  to_cilium="${1#*=}"; do_cilium=true; explicit_target=true; shift ;;
       --to-gvisor)    to_gvisor="$2";      do_gvisor=true; explicit_target=true; shift 2 ;;
       --to-gvisor=*)  to_gvisor="${1#*=}"; do_gvisor=true; explicit_target=true; shift ;;
+      --to-betterleaks)   to_betterleaks="$2";      do_betterleaks=true; explicit_target=true; shift 2 ;;
+      --to-betterleaks=*) to_betterleaks="${1#*=}"; do_betterleaks=true; explicit_target=true; shift ;;
       # App-phase options
       --to)           to="$2";          shift 2 ;;
       --to=*)         to="${1#*=}";     shift ;;
@@ -2091,23 +2098,26 @@ cmd_upgrade() {
 
   # No target named at all -> the app (the safe default).
   ${explicit_target} || want_app=true
-  # --infra is shorthand for all three components.
-  ${want_infra} && { do_k3s=true; do_cilium=true; do_gvisor=true; }
+  # --infra is shorthand for every host component: the in-VM isolation stack
+  # (k3s/Cilium/gVisor) plus the host-side betterleaks secret scanner.
+  ${want_infra} && { do_k3s=true; do_cilium=true; do_gvisor=true; do_betterleaks=true; }
 
   local do_app="${want_app}"
   local do_infra=false
-  if ${do_k3s} || ${do_cilium} || ${do_gvisor}; then do_infra=true; fi
+  if ${do_k3s} || ${do_cilium} || ${do_gvisor} || ${do_betterleaks}; then do_infra=true; fi
 
   # Reconstruct the infra selection as a flag list, for the case where the app
   # phase advances the code and we must re-exec the NEW CLI to run infra (so it
   # reads the freshly pulled setup/versions.sh pins — see below).
   local -a infra_passthru=()
-  ${do_k3s}    && infra_passthru+=(--k3s)
-  ${do_cilium} && infra_passthru+=(--cilium)
-  ${do_gvisor} && infra_passthru+=(--gvisor)
-  [[ -n "${to_k3s}"    ]] && infra_passthru+=(--to-k3s "${to_k3s}")
-  [[ -n "${to_cilium}" ]] && infra_passthru+=(--to-cilium "${to_cilium}")
-  [[ -n "${to_gvisor}" ]] && infra_passthru+=(--to-gvisor "${to_gvisor}")
+  ${do_k3s}        && infra_passthru+=(--k3s)
+  ${do_cilium}     && infra_passthru+=(--cilium)
+  ${do_gvisor}     && infra_passthru+=(--gvisor)
+  ${do_betterleaks} && infra_passthru+=(--betterleaks)
+  [[ -n "${to_k3s}"         ]] && infra_passthru+=(--to-k3s "${to_k3s}")
+  [[ -n "${to_cilium}"      ]] && infra_passthru+=(--to-cilium "${to_cilium}")
+  [[ -n "${to_gvisor}"      ]] && infra_passthru+=(--to-gvisor "${to_gvisor}")
+  [[ -n "${to_betterleaks}" ]] && infra_passthru+=(--to-betterleaks "${to_betterleaks}")
   ${force}      && infra_passthru+=(--force)
   ${assume_yes} && infra_passthru+=(-y)
 
@@ -2252,14 +2262,59 @@ _upgrade_app_phase() {
   return 0
 }
 
-# _upgrade_infra_phase — move the pinned host-level infra components (k3s/Cilium/
-# gVisor) forward. Reads cmd_upgrade's locals (do_k3s/do_cilium/do_gvisor/to_*/
-# force/assume_yes/dry_run) via dynamic scope.
+# _upgrade_infra_phase — move the pinned host-level infra components forward:
+# the in-VM isolation stack (k3s/Cilium/gVisor) and the host-side betterleaks
+# secret scanner. Reads cmd_upgrade's locals (do_k3s/do_cilium/do_gvisor/
+# do_betterleaks/to_*/force/assume_yes/dry_run) via dynamic scope.
 _upgrade_infra_phase() {
-  # macOS: the isolation stack is inside the Lima VM. In-place VM upgrades are
-  # out of scope for now — re-provisioning is the supported path.
   local platform
   platform="$(detect_platform)"
+
+  # betterleaks target: explicit override, else the setup/versions.sh pin.
+  local tgt_bl="${to_betterleaks:-${SANDBOX_BETTERLEAKS_VERSION}}"
+
+  # betterleaks is a HOST-side helper, not part of the in-VM isolation stack:
+  # it upgrades on any platform (including macOS, where the k3s/Cilium/gVisor
+  # stack lives in the Lima VM and can't be moved in place), and swapping the
+  # binary neither restarts k3s nor disturbs live sessions. So handle it up
+  # front, before the macOS VM guard and the running-session guard that only
+  # the cluster stack needs. install_betterleaks is idempotent — it no-ops when
+  # the installed copy already satisfies the target.
+  if ${do_betterleaks}; then
+    local only_bl=true
+    if ${do_k3s} || ${do_cilium} || ${do_gvisor}; then only_bl=false; fi
+
+    echo "=== sandbox upgrade (betterleaks secret scanner) ==="
+    local have_bl
+    have_bl="$(command -v betterleaks >/dev/null 2>&1 \
+      && betterleaks version 2>/dev/null | tr -d '[:space:]' || true)"
+    infra_version_line "betterleaks" "${tgt_bl:-latest}" "${have_bl:-none}"
+
+    if ${dry_run}; then
+      if ${only_bl}; then echo "(dry run — no changes made)"; return 0; fi
+      echo ""
+    else
+      (
+        set -euo pipefail
+        export SANDBOX_ROOT
+        export SANDBOX_BETTERLEAKS_VERSION="${tgt_bl}"
+        # shellcheck source=../setup/common.sh
+        source "${SANDBOX_ROOT}/setup/common.sh"
+        install_betterleaks
+        record_infra_versions
+      ) || die "betterleaks upgrade failed — see output above."
+      if ${only_bl}; then
+        stamp_version_if_git
+        echo ""
+        echo "=== upgrade complete ==="
+        return 0
+      fi
+      echo ""
+    fi
+  fi
+
+  # macOS: the isolation stack is inside the Lima VM. In-place VM upgrades are
+  # out of scope for now — re-provisioning is the supported path.
   if [[ "${platform}" == "macos" ]]; then
     warn "On macOS the k3s/Cilium/gVisor stack runs inside the Lima VM."
     echo "  In-place VM upgrades aren't supported yet. To move the stack forward,"
@@ -2316,6 +2371,9 @@ _upgrade_infra_phase() {
     export SANDBOX_K3S_VERSION="${tgt_k3s}"
     export SANDBOX_CILIUM_VERSION="${tgt_cilium}"
     export SANDBOX_GVISOR_RELEASE="${tgt_gvisor}"
+    # Keep the recorded manifest's betterleaks line consistent with what the
+    # up-front betterleaks step installed (it ran outside this subshell).
+    export SANDBOX_BETTERLEAKS_VERSION="${tgt_bl}"
     # shellcheck source=../setup/common.sh
     source "${SANDBOX_ROOT}/setup/common.sh"
     # shellcheck source=../setup/linux.sh

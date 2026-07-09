@@ -3,8 +3,10 @@
 [← Documentation](../index.md)
 
 **Linux**: k3s, gVisor, Cilium, kubectl, helm, jq, xxd, sha256sum,
-curl, git, betterleaks (required for Tier 2/3 — the pre-launch secret
-gate fails closed without it)
+curl, git. Also betterleaks (the Tier 2/3 pre-launch secret gate fails
+closed without it) — `sandbox setup` installs the pinned version
+(`setup/versions.sh`) if it is missing or older, so it is not a manual
+prerequisite.
 
 **macOS**: Lima (`brew install lima`) — provisions an Ubuntu 24.04 VM
 with identical stack

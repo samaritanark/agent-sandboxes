@@ -323,7 +323,7 @@ check_prerequisites() {
   # workspace to scan.
   if ! command -v betterleaks &>/dev/null; then
     echo "WARN: betterleaks not found — Tier 2/3 'sandbox run' will refuse to" >&2
-    echo "      launch (fail closed) until it is installed." >&2
+    echo "      launch (fail closed). Run 'sandbox setup' to install it." >&2
   fi
 
   local optional_tools=("hubble" "helm")

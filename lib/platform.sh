@@ -59,6 +59,34 @@ read_into_array() {
   done
 }
 
+# version_ge <a> <b> — return 0 if dotted-numeric version <a> >= <b>.
+# A pure-bash comparison (no `sort -V`, which BSD/macOS sort lacks) that stays
+# within bash 3.2: any leading `v` is stripped, each version is split on `.`,
+# and fields are compared numerically left-to-right with a missing field read as
+# 0 (so "1.6" == "1.6.0"). Non-numeric suffixes (pre-release tags) are not
+# expected on the pins this compares and are truncated to their leading digits.
+# Used by install_betterleaks to decide whether an already-present binary is new
+# enough to leave alone.
+version_ge() {
+  local a="${1#v}" b="${2#v}" IFS='.'
+  local -a fa fb
+  # Deliberate word-splitting on IFS='.' turns "1.6.1" into one field per line.
+  # shellcheck disable=SC2086
+  read_into_array fa < <(printf '%s\n' ${a})
+  # shellcheck disable=SC2086
+  read_into_array fb < <(printf '%s\n' ${b})
+  local i n="${#fa[@]}"
+  (( ${#fb[@]} > n )) && n="${#fb[@]}"
+  for (( i = 0; i < n; i++ )); do
+    local xa="${fa[i]:-0}" xb="${fb[i]:-0}"
+    # Strip any non-digit suffix and guard against an empty (→0) field.
+    xa="${xa%%[!0-9]*}"; xb="${xb%%[!0-9]*}"
+    (( 10#${xa:-0} > 10#${xb:-0} )) && return 0
+    (( 10#${xa:-0} < 10#${xb:-0} )) && return 1
+  done
+  return 0
+}
+
 # is_linux / is_macos — boolean helpers
 is_linux() {
   [[ "$(detect_platform)" == "linux" ]]
