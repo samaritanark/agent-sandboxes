@@ -44,27 +44,37 @@ cluster until you upgrade it.
 
 ## Roll the cluster forward
 
+> **Infra is opt-in.** Bare `sandbox upgrade` now updates the **CLI itself** to
+> the latest release (see [Updating the CLI](updating-the-cli.md)). Infra work —
+> which restarts k3s and can drop live sessions — is requested explicitly with
+> `--infra` or the individual component flags.
+
 ```bash
 # Preview: what would change, nothing touched.
-sandbox upgrade --dry-run
+sandbox upgrade --infra --dry-run
 
-# Move everything to the pinned versions.
-sandbox upgrade
+# Move all infra components to the pinned versions.
+sandbox upgrade --infra
 
 # Or just one component (e.g. a Cilium CVE patch), leaving the rest alone.
 sandbox upgrade --cilium
 
 # Jump to an explicit version without editing the pins.
 sandbox upgrade --gvisor --to-gvisor 20260701.0
+
+# Update the CLI and then the infra, in that order.
+sandbox upgrade --all
 ```
 
-`sandbox upgrade` re-runs the component installers with the target versions and
+The infra phase re-runs the component installers with the target versions and
 re-records `~/.sandbox/infra-versions`, so `sandbox status` reflects the result.
+With `--all`, the app is updated first and the CLI then re-executes itself so the
+infra phase applies the newly pulled pins.
 
 ### It disrupts running sessions
 
-An upgrade restarts k3s and can briefly interrupt the Cilium datapath, which
-**kills live agent sessions**. So `sandbox upgrade` refuses to run while
+An infra upgrade restarts k3s and can briefly interrupt the Cilium datapath,
+which **kills live agent sessions**. So the infra phase refuses to run while
 sessions are active:
 
 ```text
@@ -78,8 +88,8 @@ Stop the sessions first, or pass `--force` if you accept the disruption.
 ## macOS
 
 On macOS the whole stack runs inside the Lima VM, and in-place VM upgrades
-aren't supported yet. `sandbox upgrade` prints the re-provisioning path instead:
-bump the pins, delete the VM, and re-install.
+aren't supported yet. `sandbox upgrade --infra` prints the re-provisioning path
+instead: bump the pins, delete the VM, and re-install.
 
 ```bash
 limactl delete --force sandbox-vm

@@ -71,9 +71,11 @@ sandbox resume ses-20260401-143022-a7b3
 ```
 
 Once the CLI is on your PATH, `sandbox install` / `sandbox uninstall` are
-equivalent to running `./setup.sh` / `./uninstall.sh` directly, and
-`sandbox upgrade` rolls the pinned k3s / Cilium / gVisor versions forward — see
-[Upgrading infrastructure](docs/how-to/upgrading-infra.md).
+equivalent to running `./setup.sh` / `./uninstall.sh` directly. `sandbox upgrade`
+updates the CLI itself to the latest release (see
+[Updating the CLI](docs/how-to/updating-the-cli.md)); `sandbox upgrade --infra`
+rolls the pinned k3s / Cilium / gVisor versions forward (see
+[Upgrading infrastructure](docs/how-to/upgrading-infra.md)).
 
 ## Tiers
 
