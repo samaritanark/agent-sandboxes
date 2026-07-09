@@ -44,7 +44,7 @@ SANDBOX_GVISOR_RELEASE="${SANDBOX_GVISOR_RELEASE:-20260601.0}"
 # DESIRED_VERSION. Constrained to <4 in renovate.json: setup uses the get-helm-3
 # installer and the Cilium chart is validated against helm 3.
 # renovate: datasource=github-releases depName=helm/helm versioning=semver
-SANDBOX_HELM_VERSION="${SANDBOX_HELM_VERSION:-v3.21.1}"
+SANDBOX_HELM_VERSION="${SANDBOX_HELM_VERSION:-v3.21.2}"
 
 # nerdctl — macOS-only in-VM image builder (nerdctl-full release asset).
 # renovate: datasource=github-releases depName=containerd/nerdctl versioning=semver
