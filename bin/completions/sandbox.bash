@@ -10,11 +10,13 @@ _sandbox_complete() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="run resume allow list logs flows stop cleanup check status setup onboard secret mask vet profile link configure-network rebuild version"
+  local commands="run resume allow list logs flows stop cleanup check status install uninstall upgrade setup onboard secret mask vet profile link configure-network rebuild version"
   local run_opts="--agent --tier --profile --repo --allow-domain --base-url --infra-token --infra-kubeconfig --infra-kube-context --allow-exec-plugin --infra-endpoint --dry-run --name --keep-alive --i-accept-unmasked-secrets --i-accept-unvetted-repo --help"
   local mask_subs="add list"
   local rebuild_opts="--agent --tier3 --no-cache --codex-version --opencode-version --copilot-version --help"
-  local setup_opts="--pod-cidr --service-cidr --apiserver-port"
+  local setup_opts="--pod-cidr --service-cidr --apiserver-port --dns"
+  local uninstall_opts="--yes --keep-logs --keep-images --keep-lima --keep-kubetools --help"
+  local upgrade_opts="--k3s --cilium --gvisor --all --to-k3s --to-cilium --to-gvisor --dry-run --force --yes --help"
   local onboard_opts="--agent --skip-config --dry-run --force --help"
   local secret_subs="set list delete"
   local secret_set_opts="--from-file --help"
@@ -98,10 +100,27 @@ _sandbox_complete() {
       # File/directory completion for workspace path
       _filedir -d
       ;;
-    setup)
+    install|setup)
       if [[ "${cur}" == --* ]]; then
         # shellcheck disable=SC2207
         COMPREPLY=($(compgen -W "${setup_opts}" -- "${cur}"))
+      fi
+      ;;
+    uninstall)
+      if [[ "${cur}" == --* ]]; then
+        # shellcheck disable=SC2207
+        COMPREPLY=($(compgen -W "${uninstall_opts}" -- "${cur}"))
+      fi
+      ;;
+    upgrade)
+      case "${prev}" in
+        --to-k3s|--to-cilium|--to-gvisor)
+          # Free-form version values — no completion.
+          return ;;
+      esac
+      if [[ "${cur}" == --* ]]; then
+        # shellcheck disable=SC2207
+        COMPREPLY=($(compgen -W "${upgrade_opts}" -- "${cur}"))
       fi
       ;;
     onboard)

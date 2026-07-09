@@ -44,16 +44,16 @@ full walkthrough, including Tier 2/3 and options, is in
 [Your first session](docs/tutorials/first-session.md).
 
 > **Behind a TLS-intercepting proxy (Zscaler, Netskope, etc.)?** Run
-> `./bin/sandbox setup-proxy-cert` before `./setup.sh` — see
+> `./bin/sandbox setup-proxy-cert` before you install — see
 > [Corporate TLS-intercept proxies](docs/how-to/tls-intercept-proxies.md).
 
 ```bash
-# 1. Install prerequisites (k3s + Cilium + gVisor on Linux; Lima VM on macOS).
-./setup.sh
-
-# 2. Put the CLI on PATH and load completions (add to your shell rc to persist).
+# 1. Put the CLI on PATH and load completions (add to your shell rc to persist).
 export PATH="$(pwd)/bin:$PATH"
 source bin/completions/sandbox.bash   # or sandbox.zsh
+
+# 2. Install prerequisites (k3s + Cilium + gVisor on Linux; Lima VM on macOS).
+sandbox install                       # thin wrapper over ./setup.sh
 
 # 3. Smoke-test the install.
 sandbox status
