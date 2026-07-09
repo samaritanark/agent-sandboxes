@@ -3,13 +3,14 @@
 [← Documentation](../index.md)
 
 ```bash
-./uninstall.sh           # Interactive — prompts before each destructive step
-./uninstall.sh --yes     # Non-interactive (skip all prompts)
-./uninstall.sh --keep-logs   # Remove everything except ~/.sandbox/logs/
+sandbox uninstall              # Interactive — prompts before each destructive step
+sandbox uninstall --yes        # Non-interactive (skip all prompts)
+sandbox uninstall --keep-logs  # Remove everything except ~/.sandbox/logs/
 ```
 
-`sandbox uninstall` is the equivalent once the CLI is on your PATH (same flags);
-`./uninstall.sh` continues to work.
+`sandbox uninstall` is a thin wrapper over `./uninstall.sh` (same flags);
+running `./uninstall.sh` directly continues to work, which is handy in scripts
+or if the CLI isn't on your PATH.
 
 | Option             | Effect                                          |
 |--------------------|-------------------------------------------------|

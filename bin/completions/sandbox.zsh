@@ -28,7 +28,10 @@ _sandbox() {
         'cleanup:Remove old session logs'
         'check:Pre-flight workspace check'
         'status:Show cluster and sandbox status'
-        'setup:Install/configure sandbox prerequisites'
+        'install:Install/configure sandbox prerequisites (cluster, CNI, gVisor)'
+        'uninstall:Tear down the sandbox cluster and host artifacts'
+        'upgrade:Move pinned infra components (k3s/Cilium/gVisor) forward'
+        'setup:Alias of install (retained for compatibility)'
         'onboard:Stage host-side agent OAuth state for first-run convenience'
         'secret:Manage host-side secret store (injected per-session by profile)'
         'mask:Manage per-repo file masking (add/list masked_paths)'
@@ -52,7 +55,9 @@ _sandbox() {
         cleanup) _sandbox_cleanup ;;
         check)  _files -/ ;;
         rebuild) _sandbox_rebuild ;;
-        setup)  _sandbox_setup ;;
+        install|setup) _sandbox_setup ;;
+        uninstall) _sandbox_uninstall ;;
+        upgrade) _sandbox_upgrade ;;
         onboard) _sandbox_onboard ;;
         secret) _sandbox_secret ;;
         mask)   _sandbox_mask ;;
@@ -212,7 +217,33 @@ _sandbox_setup() {
   _arguments \
     '--pod-cidr[Pod network CIDR for Cilium IPAM]:cidr:' \
     '--service-cidr[Kubernetes Service CIDR]:cidr:' \
-    '--apiserver-port[Kubernetes API server port (default 6443)]:port:'
+    '--apiserver-port[Kubernetes API server port (default 6443)]:port:' \
+    '--dns[In-cluster DNS upstream IP(s), comma-separated (Linux only)]:ips:'
+}
+
+_sandbox_uninstall() {
+  _arguments \
+    '(--yes -y)'{--yes,-y}'[Skip all confirmation prompts]' \
+    '--keep-logs[Preserve ~/.sandbox/logs (session audit records)]' \
+    '--keep-images[Skip sandbox container image removal]' \
+    '--keep-lima[macOS: delete the Lima VM but leave Lima itself installed]' \
+    '--keep-kubetools[Leave Helm (and kubectl on Linux) on PATH]' \
+    '--help[Show help]'
+}
+
+_sandbox_upgrade() {
+  _arguments \
+    '--k3s[Upgrade k3s]' \
+    '--cilium[Upgrade Cilium]' \
+    '--gvisor[Upgrade gVisor (runsc)]' \
+    '--all[Upgrade all components (default when none given)]' \
+    '--to-k3s[Override the k3s target version]:version:' \
+    '--to-cilium[Override the Cilium chart target]:version:' \
+    '--to-gvisor[Override the gVisor release id (YYYYMMDD.N)]:release:' \
+    '--dry-run[Show the plan (pinned vs installed) and exit]' \
+    '--force[Proceed even if sessions are running]' \
+    '(--yes -y)'{--yes,-y}'[Skip the confirmation prompt]' \
+    '--help[Show help]'
 }
 
 _sandbox_rebuild() {
