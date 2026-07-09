@@ -124,13 +124,32 @@ _vetting_extract_signer() {
 # _vetting_git <repo> <git-args>... — run git inside an UNTRUSTED workspace with
 # repo-local config that could execute an attacker-named program neutralized.
 # A workspace author controls the repo's .git/config, and several innocuous-
-# looking git operations will exec a program it names (core.fsmonitor on an
-# index refresh, hooks). Command-line `-c` outranks the repo's .git/config, so
-# these pins hold regardless of what the workspace commits. Signature-program
-# and trust-file pins are layered on top by _vetting_verify_tag.
+# looking git operations will exec a program it names:
+#   - core.fsmonitor (spawned on an index refresh) and hooks;
+#   - content filter drivers: `git status` re-hashes worktree files through the
+#     `filter.<name>.clean` (or `.process`) command to detect modifications. The
+#     driver command lives in .git/config and the path->filter mapping in the
+#     in-tree .gitattributes — both attacker-controlled. `-c` can override the
+#     driver command but NOT the in-tree attribute, and the filter name is
+#     attacker-chosen, so we enumerate the repo's own filter.* keys and pin each
+#     driver to a harmless identity (cat) with required=false. An in-tree
+#     `filter=<name>` attribute whose driver is thus neutralized is a no-op.
+# Command-line `-c` outranks the repo's .git/config, so these pins hold whatever
+# the workspace commits. (A side effect: a repo that legitimately relies on a
+# clean filter, e.g. git-LFS, reads as dirty here — conservative for the gate,
+# which fails toward "unvetted".) Signature-program and trust-file pins are
+# layered on top by _vetting_verify_tag.
 _vetting_git() {
   local repo="$1"; shift
-  git -C "${repo}" -c core.fsmonitor= -c core.hooksPath=/dev/null "$@"
+  local -a opts=(-c core.fsmonitor= -c core.hooksPath=/dev/null)
+  local name
+  while IFS= read -r name; do
+    [[ -n "${name}" ]] && opts+=(
+      -c "filter.${name}.clean=cat" -c "filter.${name}.smudge=cat" \
+      -c "filter.${name}.process=" -c "filter.${name}.required=false")
+  done < <(git -C "${repo}" config --local --name-only --get-regexp '^filter\.' 2>/dev/null \
+             | sed -E 's/^filter\.(.*)\.[^.]+$/\1/' | sort -u || true)
+  git -C "${repo}" "${opts[@]}" "$@"
 }
 
 # _vetting_verify_tag <repo> <tag> <trust_root> <format> — verify one tag's
@@ -145,8 +164,11 @@ _vetting_git() {
 # git also AUTO-DETECTS the signature format on the verify path (gpg.format only
 # governs signing), so BOTH backends must be locked, not just the configured
 # one. We therefore, via command-line `-c` (which beats repo .git/config):
-#   - pin both verifier programs to trusted absolute binaries, or to `false`
-#     when a backend is absent, so repo config can never choose the program;
+#   - pin ALL THREE verifier programs (ssh, openpgp, x509) to trusted absolute
+#     binaries, or to `false` when absent/unsupported, so repo config can never
+#     choose the program — git also auto-detects X.509 (armor
+#     "-----BEGIN SIGNED MESSAGE-----") and would otherwise run a repo-chosen
+#     gpg.x509.program;
 #   - pin the selected format's trust source to the operator's trust root and
 #     neutralize the other format's (empty GNUPGHOME in ssh mode so a planted
 #     OpenPGP tag has no key; empty allowedSignersFile in gpg mode so a planted
@@ -167,9 +189,13 @@ _vetting_verify_tag() (
   chmod 700 "${empty_gnupg}" 2>/dev/null || true
   trap 'rm -rf "${empty_gnupg}"' EXIT
 
+  # X.509 is not a supported attestation format here, so pin its program to
+  # `false` — that both denies verification and stops repo config from choosing
+  # a program when git auto-detects an X.509-armored tag.
   local -a hard=(
     -c core.fsmonitor= -c core.hooksPath=/dev/null
     -c "gpg.ssh.program=${ssh_keygen}" -c "gpg.program=${gpg_bin}"
+    -c "gpg.x509.program=${false_bin}"
   )
 
   local vout rc
@@ -393,7 +419,8 @@ vetting_attest_repo() {
   false_bin="$(command -v false 2>/dev/null || echo /bin/false)"
   ssh_keygen="$(command -v ssh-keygen 2>/dev/null || echo "${false_bin}")"
   gpg_bin="$(command -v gpg 2>/dev/null || command -v gpg2 2>/dev/null || echo "${false_bin}")"
-  local -a gitopts=(-c "gpg.ssh.program=${ssh_keygen}" -c "gpg.program=${gpg_bin}")
+  local -a gitopts=(-c "gpg.ssh.program=${ssh_keygen}" -c "gpg.program=${gpg_bin}" \
+                    -c "gpg.x509.program=${false_bin}")
   [[ "${fmt}" == "ssh" ]] && gitopts+=(-c gpg.format=ssh)
 
   if _vetting_git "${real_repo}" "${gitopts[@]}" tag -s "${tag}" -m "${msg}"; then

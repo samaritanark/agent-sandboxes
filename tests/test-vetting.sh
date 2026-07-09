@@ -290,6 +290,90 @@ EOF
 }
 
 ###############################################################################
+# Hermetic status — a repo-local content filter (clean/process) must NOT be
+# executed during the dirty check. Its driver lives in .git/config and its
+# path mapping in in-tree .gitattributes — both attacker-controlled.
+###############################################################################
+test_status_hermetic_against_filter() {
+  info "Testing dirty-check neutralizes repo-local content filters..."
+  write_trust_config
+
+  local repo="${TEST_DIR}/hijack-filter"
+  make_repo "${repo}"
+  local sentinel="${TEST_DIR}/filter-RAN"
+  printf '* filter=pwn\n' > "${repo}/.gitattributes"
+  git -C "${repo}" add .gitattributes
+  git -C "${repo}" commit -q -m attrs
+  git -C "${repo}" config filter.pwn.clean "touch ${sentinel}; cat"
+  git -C "${repo}" config filter.pwn.required true
+
+  # Clear the index stat cache so status must re-hash worktree files (and thus
+  # run the clean filter), independent of racy-git optimizations.
+  reset_index() { rm -f "${repo}/.git/index"; git -C "${repo}" read-tree HEAD; }
+
+  reset_index; rm -f "${sentinel}"
+  ( cd "${repo}" && git status --porcelain >/dev/null 2>&1 || true )
+  if [[ ! -e "${sentinel}" ]]; then
+    warn "this git does not exec clean filters on status; vector N/A, skipping"
+    return 0
+  fi
+  pass "confirmed: unhardened git status executes a clean filter"
+
+  reset_index; rm -f "${sentinel}"
+  _vetting_git "${repo}" status --porcelain >/dev/null 2>&1 || true
+  [[ ! -e "${sentinel}" ]] \
+    && pass "hardened status does not execute the clean filter (no host RCE)" \
+    || fail "SECURITY: repo-local clean filter executed via the hardened status check"
+}
+
+###############################################################################
+# Hermetic verify — a repo-local gpg.x509.program must NOT execute when git
+# auto-detects an X.509-armored tag on the verify path.
+###############################################################################
+test_verify_hermetic_against_x509_program() {
+  info "Testing verification is hermetic against repo-local gpg.x509.program..."
+  write_trust_config
+
+  local repo="${TEST_DIR}/hijack-x509"
+  make_repo "${repo}"
+  local sentinel="${TEST_DIR}/x509-RAN"
+  local evil="${TEST_DIR}/evil-x509.sh"   # outside the repo, so the tree stays clean
+  cat > "${evil}" <<EOF
+#!/usr/bin/env bash
+: > "${sentinel}"
+exit 1
+EOF
+  chmod +x "${evil}"
+  git -C "${repo}" config gpg.x509.program "${evil}"
+
+  # Plant an annotated tag at HEAD whose message carries the X.509 armor header,
+  # so 'git tag -v' auto-detects an X.509 signature and routes to gpg.x509.program.
+  local sha; sha="$(git -C "${repo}" rev-parse HEAD)"
+  git -C "${repo}" tag -a "agent-vetted/${sha}" \
+    -m "$(printf -- '-----BEGIN SIGNED MESSAGE-----\nAAAA\n-----END SIGNED MESSAGE-----\n')"
+
+  # Confirm the vector: verify with the ssh/openpgp pins but WITHOUT the x509
+  # pin (as the pre-fix code did) executes the planted program.
+  local kg; kg="$(command -v ssh-keygen 2>/dev/null || echo /bin/false)"
+  rm -f "${sentinel}"
+  ( GNUPGHOME="$(mktemp -d "${TEST_DIR}/gh-XXXXXX")" git -C "${repo}" \
+      -c gpg.ssh.program="${kg}" -c gpg.format=ssh \
+      -c gpg.ssh.allowedSignersFile="${TRUST_ROOT}" \
+      tag -v "agent-vetted/${sha}" >/dev/null 2>&1 || true )
+  if [[ ! -e "${sentinel}" ]]; then
+    warn "this git does not route to gpg.x509.program for this tag; vector N/A, skipping"
+    return 0
+  fi
+  pass "confirmed: unpinned gpg.x509.program runs during verify"
+
+  rm -f "${sentinel}"
+  _vetting_verify_tag "${repo}" "agent-vetted/${sha}" "${TRUST_ROOT}" "ssh" >/dev/null 2>&1 || true
+  [[ ! -e "${sentinel}" ]] \
+    && pass "hardened verify does not execute gpg.x509.program (no host RCE)" \
+    || fail "SECURITY: repo-local gpg.x509.program executed during verify"
+}
+
+###############################################################################
 # Missing trust root — fails closed under 'required', regardless of override.
 ###############################################################################
 test_missing_trust_root_fails_closed() {
@@ -335,6 +419,8 @@ main() {
   test_gate_posture
   test_missing_trust_root_fails_closed
   test_status_hermetic_against_fsmonitor
+  test_status_hermetic_against_filter
+  test_verify_hermetic_against_x509_program
   if [[ "${SSH_SIGNING}" -eq 1 ]]; then
     test_status_vetted
     test_gate_required_passes_when_vetted
