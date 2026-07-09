@@ -25,6 +25,7 @@ the operator.
 - [Reach clusters behind a corporate VPN (Linux)](how-to/corporate-vpn.md)
 - [Corporate TLS-intercept proxies (Zscaler, Netskope…)](how-to/tls-intercept-proxies.md)
 - [Rebuild agent images](how-to/rebuilding-images.md)
+- [Update the CLI to the latest release](how-to/updating-the-cli.md)
 - [Upgrade infrastructure (k3s / Cilium / gVisor)](how-to/upgrading-infra.md)
 - [Run the tests](how-to/running-tests.md)
 - [Uninstall](how-to/uninstalling.md)

@@ -42,6 +42,7 @@ tasks:
       - bash tests/test-dependency-manifest.sh
       - bash tests/test-policy-deps.sh
       - bash tests/test-infra-versions.sh
+      - bash tests/test-upgrade.sh
 
   release:
     desc: Build the release tarball. Pass VERSION=vX.Y.Z (defaults to "dev").

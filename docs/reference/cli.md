@@ -61,9 +61,12 @@ sandbox install [--pod-cidr CIDR] [--service-cidr CIDR] [--apiserver-port PORT] 
 sandbox setup   [...]                           # alias of `install` (compat)
 sandbox uninstall [--yes] [--keep-logs] [--keep-images]
                   [--keep-lima] [--keep-kubetools]
-sandbox upgrade [--k3s] [--cilium] [--gvisor] [--all]
+sandbox upgrade [--app]                          # default: update the CLI itself
+                [--to vX.Y.Z] [--remote NAME] [--rebuild]
+sandbox upgrade --infra | --k3s | --cilium | --gvisor | --all
                 [--to-k3s VER] [--to-cilium VER] [--to-gvisor REL]
-                [--dry-run] [--force] [--yes]
+                [--force]
+                [--dry-run] [--yes]              # shared by both phases
 sandbox configure-network                       # Linux only; re-detect host
                                                 # interfaces, re-apply to Cilium
                                                 # (also auto-run by `sandbox run`)
@@ -126,15 +129,25 @@ live working-tree state.
   (mirror of install). `--yes` skips the prompt; `--keep-logs` / `--keep-images`
   / `--keep-lima` / `--keep-kubetools` preserve individual pieces. Wrapper over
   `uninstall.sh`.
-- **`sandbox upgrade`** — moves the pinned isolation components forward to the
-  versions in `setup/versions.sh` (which Renovate keeps current), or to an
-  explicit `--to-*` target. Select components with `--k3s` / `--cilium` /
-  `--gvisor` (default: all). It restarts k3s and can briefly disrupt the Cilium
-  datapath, so it **refuses to run while sessions are active** unless `--force`;
-  `--dry-run` shows the plan without changing anything. On macOS the stack runs
-  inside the Lima VM and is not upgraded in place yet — the command prints the
-  re-provisioning steps instead. See
-  [Upgrading infrastructure](../how-to/upgrading-infra.md).
+- **`sandbox upgrade`** — moves your install forward. Two phases, one verb:
+  - **App (default, `--app`)** — fast-forwards this CLI checkout to the latest
+    release tag (or `--to vX.Y.Z`), only when it's a clean fast-forward, so
+    local edits and commits are never discarded. `--remote` picks the git remote
+    (default `origin`); `--rebuild` rebuilds agent images afterward. A released
+    tarball (no `.git`) can't self-update — the command prints the download link.
+    See [Updating the CLI](../how-to/updating-the-cli.md).
+  - **Infra (`--infra`, or `--k3s` / `--cilium` / `--gvisor`)** — moves the
+    pinned isolation components to the versions in `setup/versions.sh` (which
+    Renovate keeps current), or to an explicit `--to-*` target. It restarts k3s
+    and can briefly disrupt the Cilium datapath, so it **refuses to run while
+    sessions are active** unless `--force`. On macOS the stack runs inside the
+    Lima VM and is not upgraded in place yet — the command prints the
+    re-provisioning steps instead. See
+    [Upgrading infrastructure](../how-to/upgrading-infra.md).
+  - **`--all`** — does the app first, then re-executes the updated CLI so the
+    infra phase applies the newly pulled pins.
+
+  `--dry-run` (show the plan, change nothing) and `-y`/`--yes` are shared.
 
 ## Session naming
 

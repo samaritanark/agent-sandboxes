@@ -154,7 +154,7 @@ COMMANDS:
   status       Show cluster and sandbox status (incl. infra versions vs pins)
   install      Install/configure sandbox prerequisites (cluster, CNI, gVisor)
   uninstall    Tear down the sandbox cluster and host artifacts
-  upgrade      Move pinned infra components (k3s/Cilium/gVisor) forward
+  upgrade      Update the CLI to the latest release (--infra: k3s/Cilium/gVisor)
   setup        Alias of 'install' (retained for compatibility)
   onboard      Stage host-side agent OAuth state for first-run convenience
   secret       Manage host-side secret store (injected per-session by profile)
@@ -1994,70 +1994,268 @@ cmd_uninstall() {
 }
 
 ###############################################################################
-# cmd_upgrade — move pinned host-level infra components forward
+# cmd_upgrade — move the install forward: the app (this CLI, default) and/or the
+# host infra components (k3s/Cilium/gVisor). Delegates to _upgrade_app_phase and
+# _upgrade_infra_phase; see usage_upgrade for the flag model.
 ###############################################################################
 usage_upgrade() {
   cat <<EOF
-sandbox upgrade — move pinned infrastructure components forward
+sandbox upgrade — move your install forward (the CLI app and/or host infra)
 
 USAGE:
-  sandbox upgrade [COMPONENTS] [OPTIONS]
+  sandbox upgrade [TARGET] [OPTIONS]
 
-COMPONENTS (default: all):
-  --k3s                Upgrade k3s
-  --cilium             Upgrade Cilium
-  --gvisor             Upgrade gVisor (runsc)
-  --all                Upgrade all of the above (default when none given)
+TARGET (default: --app):
+  --app                Update the CLI itself to the latest release (default)
+  --infra              Upgrade all host infra: k3s, Cilium, gVisor
+  --k3s                Upgrade k3s only
+  --cilium             Upgrade Cilium only
+  --gvisor             Upgrade gVisor (runsc) only
+  --all                Both: update the app, then the infra (in that order)
 
-OPTIONS:
+APP OPTIONS (--app):
+  --to <vX.Y.Z>        Update to a specific release tag (default: latest)
+  --remote <name>      Git remote to fetch releases from (default: origin)
+  --rebuild            After updating, rebuild agent images ('sandbox rebuild')
+
+INFRA OPTIONS (--infra / components):
   --to-k3s <ver>       Override the k3s target (else setup/versions.sh pin)
   --to-cilium <ver>    Override the Cilium chart target
   --to-gvisor <rel>    Override the gVisor release id (YYYYMMDD.N)
-  --dry-run            Show the plan (pinned vs installed) and exit
   --force              Proceed even if sessions are running (they may be killed)
+
+SHARED OPTIONS:
+  --dry-run            Show the plan and exit; make no changes
   -y, --yes            Skip the confirmation prompt
   -h, --help           Show this help
 
-Targets default to the pins in setup/versions.sh (which Renovate keeps current).
-An upgrade re-runs the component installers, which restarts k3s and can briefly
-disrupt the Cilium datapath — hence the running-session guard. On macOS the
-k3s/Cilium/gVisor stack lives inside the Lima VM and is not upgraded in place
-yet; re-provision the VM instead (the command prints how).
+The app phase fast-forwards this checkout to the latest RELEASE tag (never the
+tip of a branch), and only when it is a clean fast-forward — local edits and
+local commits are never discarded. A released tarball (no .git) cannot
+self-update; the command prints the download link instead.
+
+The infra phase re-runs the component installers, which restarts k3s and can
+briefly disrupt the Cilium datapath — hence the running-session guard. Infra
+targets default to the pins in setup/versions.sh (which Renovate keeps current).
+On macOS the k3s/Cilium/gVisor stack lives inside the Lima VM and is not upgraded
+in place yet; re-provision the VM instead (the command prints how).
+
+With --all the app is updated first, then the CLI re-executes itself so the
+infra phase applies the newly pulled pins.
 EOF
   exit 0
 }
 
 cmd_upgrade() {
-  local do_k3s=false do_cilium=false do_gvisor=false any=false
+  # Target selection. Default (no target flag) is the APP: fast-forward this CLI
+  # checkout to the latest release — the safe, no-cluster-impact operation. Infra
+  # work (which restarts k3s and can drop live sessions) is opt-in via --infra,
+  # the individual component flags, or --all.
+  local want_app=false want_infra=false explicit_target=false
+  local do_k3s=false do_cilium=false do_gvisor=false
   local to_k3s="" to_cilium="" to_gvisor=""
+  local to="" remote="origin" do_rebuild=false
   local force=false assume_yes=false dry_run=false
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --k3s)          do_k3s=true;    any=true; shift ;;
-      --cilium)       do_cilium=true; any=true; shift ;;
-      --gvisor)       do_gvisor=true; any=true; shift ;;
-      --all)          do_k3s=true; do_cilium=true; do_gvisor=true; any=true; shift ;;
-      --to-k3s)       to_k3s="$2";    shift 2 ;;
-      --to-k3s=*)     to_k3s="${1#*=}";    shift ;;
-      --to-cilium)    to_cilium="$2"; shift 2 ;;
-      --to-cilium=*)  to_cilium="${1#*=}"; shift ;;
-      --to-gvisor)    to_gvisor="$2"; shift 2 ;;
-      --to-gvisor=*)  to_gvisor="${1#*=}"; shift ;;
-      --dry-run)      dry_run=true;   shift ;;
-      --force)        force=true;     shift ;;
+      # Target buckets
+      --app)          want_app=true;   explicit_target=true; shift ;;
+      --infra)        want_infra=true; explicit_target=true; shift ;;
+      --all)          want_app=true; want_infra=true; explicit_target=true; shift ;;
+      # Individual infra components (each implies the infra phase)
+      --k3s)          do_k3s=true;    explicit_target=true; shift ;;
+      --cilium)       do_cilium=true; explicit_target=true; shift ;;
+      --gvisor)       do_gvisor=true; explicit_target=true; shift ;;
+      # Infra target overrides (else setup/versions.sh pins)
+      --to-k3s)       to_k3s="$2";         do_k3s=true;    explicit_target=true; shift 2 ;;
+      --to-k3s=*)     to_k3s="${1#*=}";    do_k3s=true;    explicit_target=true; shift ;;
+      --to-cilium)    to_cilium="$2";      do_cilium=true; explicit_target=true; shift 2 ;;
+      --to-cilium=*)  to_cilium="${1#*=}"; do_cilium=true; explicit_target=true; shift ;;
+      --to-gvisor)    to_gvisor="$2";      do_gvisor=true; explicit_target=true; shift 2 ;;
+      --to-gvisor=*)  to_gvisor="${1#*=}"; do_gvisor=true; explicit_target=true; shift ;;
+      # App-phase options
+      --to)           to="$2";          shift 2 ;;
+      --to=*)         to="${1#*=}";     shift ;;
+      --remote)       remote="$2";      shift 2 ;;
+      --remote=*)     remote="${1#*=}"; shift ;;
+      --rebuild)      do_rebuild=true;  shift ;;
+      # Shared
+      --dry-run)      dry_run=true;    shift ;;
+      --force)        force=true;      shift ;;
       -y|--yes)       assume_yes=true; shift ;;
       -h|--help)      usage_upgrade ;;
       *) die "Unknown flag for 'upgrade': $1 (see 'sandbox upgrade --help')" ;;
     esac
   done
 
-  # Naming a --to-X selects that component; no flags at all == upgrade all.
-  [[ -n "${to_k3s}"    ]] && { do_k3s=true;    any=true; }
-  [[ -n "${to_cilium}" ]] && { do_cilium=true; any=true; }
-  [[ -n "${to_gvisor}" ]] && { do_gvisor=true; any=true; }
-  if ! ${any}; then do_k3s=true; do_cilium=true; do_gvisor=true; fi
+  # No target named at all -> the app (the safe default).
+  ${explicit_target} || want_app=true
+  # --infra is shorthand for all three components.
+  ${want_infra} && { do_k3s=true; do_cilium=true; do_gvisor=true; }
 
+  local do_app="${want_app}"
+  local do_infra=false
+  if ${do_k3s} || ${do_cilium} || ${do_gvisor}; then do_infra=true; fi
+
+  # Reconstruct the infra selection as a flag list, for the case where the app
+  # phase advances the code and we must re-exec the NEW CLI to run infra (so it
+  # reads the freshly pulled setup/versions.sh pins — see below).
+  local -a infra_passthru=()
+  ${do_k3s}    && infra_passthru+=(--k3s)
+  ${do_cilium} && infra_passthru+=(--cilium)
+  ${do_gvisor} && infra_passthru+=(--gvisor)
+  [[ -n "${to_k3s}"    ]] && infra_passthru+=(--to-k3s "${to_k3s}")
+  [[ -n "${to_cilium}" ]] && infra_passthru+=(--to-cilium "${to_cilium}")
+  [[ -n "${to_gvisor}" ]] && infra_passthru+=(--to-gvisor "${to_gvisor}")
+  ${force}      && infra_passthru+=(--force)
+  ${assume_yes} && infra_passthru+=(-y)
+
+  if ${do_app}; then
+    # _upgrade_app_phase sets app_advanced and may `return 2` (non-git install)
+    # without aborting under set -e, so capture its status via the || guard.
+    local app_advanced=false app_rc=0
+    _upgrade_app_phase || app_rc=$?
+
+    if ${do_infra}; then
+      if ${app_advanced}; then
+        # The code just moved. bin/sandbox sources setup/versions.sh ONCE at
+        # startup (see the top of this file), so this process still holds the
+        # OLD pins. Re-exec the updated CLI so the infra phase applies the NEW
+        # ones. The app-phase clean-tree/ff-only guards already ran.
+        echo ""
+        echo "App updated — re-executing to apply infra with the new pins..."
+        exec "${SANDBOX_ROOT}/bin/sandbox" upgrade "${infra_passthru[@]}"
+      fi
+      # App unchanged (already current, or a tarball that can't self-update):
+      # the in-memory pins already match the code, so run infra in-process.
+      _upgrade_infra_phase
+      return 0
+    fi
+    return "${app_rc}"
+  fi
+
+  _upgrade_infra_phase
+}
+
+# _upgrade_app_phase — fast-forward THIS checkout (the CLI itself) to the latest
+# release tag. Reads cmd_upgrade's locals (to/remote/do_rebuild/dry_run/
+# assume_yes/do_infra) via dynamic scope and sets `app_advanced` when it moves
+# HEAD. Returns 0 on success (advanced or already current); returns 2 when the
+# install is not a git checkout, so there is nothing to fast-forward.
+_upgrade_app_phase() {
+  local root="${SANDBOX_ROOT}"
+  echo "=== sandbox upgrade (app / CLI) ==="
+
+  # A released tarball has no .git — nothing to fast-forward. Point at the
+  # download path; if infra is also queued, note it will still run below.
+  if ! command -v git >/dev/null 2>&1 \
+     || ! git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    warn "This install isn't a git checkout, so 'upgrade' can't fast-forward the app."
+    echo "  • To update the app: download the latest release and re-run setup:"
+    echo "      https://github.com/samaritanark/agent-sandboxes/releases/latest"
+    if ${do_infra}; then
+      echo "  • Infrastructure will still be upgraded below."
+    else
+      echo "  • To move infrastructure only: sandbox upgrade --infra"
+    fi
+    return 2
+  fi
+
+  echo "Fetching releases from '${remote}'..."
+  git -C "${root}" fetch --quiet --tags --prune "${remote}" \
+    || die "Fetch from '${remote}' failed."
+
+  # Target = explicit --to, else the highest semver v* tag (newest-first sort).
+  local target="${to}"
+  if [[ -z "${target}" ]]; then
+    target="$(git -C "${root}" tag -l 'v*' --sort=-v:refname | head -1)"
+  fi
+  [[ -n "${target}" ]] || die "No release tags found on '${remote}'."
+
+  # Resolve to a commit (separate decl so the command status isn't masked by
+  # `local`). Fails cleanly if --to named a tag that doesn't exist.
+  local tgt_c head_c
+  tgt_c="$(git -C "${root}" rev-parse -q --verify "refs/tags/${target}^{commit}" 2>/dev/null)" \
+    || die "Release tag '${target}' not found on '${remote}'."
+  head_c="$(git -C "${root}" rev-parse HEAD)"
+
+  echo "  Current: ${SANDBOX_VERSION}"
+  echo "  Target:  ${target}"
+
+  if [[ "${head_c}" == "${tgt_c}" ]]; then
+    echo "Already at ${target}. Nothing to do."
+    return 0
+  fi
+
+  # Clean fast-forward only: the target must be a descendant of HEAD. Otherwise
+  # the checkout has diverged (local commits, or HEAD ahead of the release) —
+  # refuse rather than merge or rewrite.
+  if ! git -C "${root}" merge-base --is-ancestor "${head_c}" "${tgt_c}"; then
+    die "Cannot fast-forward ${SANDBOX_VERSION} -> ${target}: this checkout has diverged. Reconcile with git, or re-clone."
+  fi
+
+  # TRUST: release tags are currently lightweight (created by 'gh release
+  # create'), so there is no signed tag object to verify — best-effort check the
+  # target commit's signature and WARN if it can't be confirmed. Once
+  # release.yaml signs annotated tags with a pinned project key, replace this
+  # with a hard gate via lib/vetting.sh's _vetting_verify_tag against a
+  # config/release-signers trust root.
+  if git -C "${root}" verify-commit "${tgt_c}" >/dev/null 2>&1; then
+    echo "  Signature: verified"
+  else
+    warn "Could not verify ${target}'s signature locally (unsigned tag / signing key absent); proceeding on channel trust."
+  fi
+
+  if ${dry_run}; then
+    echo "(dry run — no changes made)"
+    return 0
+  fi
+
+  # Refuse on a dirty tree before mutating: a fast-forward won't touch local
+  # edits, but updating around uncommitted work invites confusion (and git would
+  # block a ff that must overwrite them anyway). Checked after the dry-run return
+  # so --dry-run stays a read-only preview. Fail toward safe.
+  if ! git -C "${root}" diff --quiet 2>/dev/null \
+     || ! git -C "${root}" diff --cached --quiet 2>/dev/null; then
+    die "Working tree at ${root} has uncommitted changes. Commit or stash them first."
+  fi
+
+  if ! ${assume_yes}; then
+    printf 'Update app %s -> %s? [y/N] ' "${SANDBOX_VERSION}" "${target}"
+    local reply; read -r reply
+    [[ "${reply}" =~ ^[Yy] ]] || die "Aborted."
+  fi
+
+  # Fast-forward the current branch to the release commit — stays on-branch,
+  # never rewrites, and the clean-tree guard above means no local edits are lost.
+  git -C "${root}" merge --ff-only "${tgt_c}" \
+    || die "Fast-forward to ${target} failed."
+  app_advanced=true
+
+  # Re-stamp so 'sandbox version'/'status' report the new identity (the runtime
+  # never recomputes from git — see stamp_version_if_git in lib/platform.sh).
+  stamp_version_if_git
+  echo "Updated app to ${target}."
+
+  # Images are built from this code; a code bump can leave them stale. Advise,
+  # or rebuild now with --rebuild. (The rebuild runs the pre-update rebuild
+  # logic against the freshly pulled Dockerfiles/build args, which is correct
+  # for the common case; run 'sandbox rebuild' again if a release changed the
+  # rebuild logic itself.)
+  if ${do_rebuild}; then
+    echo "Rebuilding agent images..."
+    cmd_rebuild
+  else
+    echo "Agent images may be stale — rebuild when convenient: sandbox rebuild"
+  fi
+  return 0
+}
+
+# _upgrade_infra_phase — move the pinned host-level infra components (k3s/Cilium/
+# gVisor) forward. Reads cmd_upgrade's locals (do_k3s/do_cilium/do_gvisor/to_*/
+# force/assume_yes/dry_run) via dynamic scope.
+_upgrade_infra_phase() {
   # macOS: the isolation stack is inside the Lima VM. In-place VM upgrades are
   # out of scope for now — re-provisioning is the supported path.
   local platform
