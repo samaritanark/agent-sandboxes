@@ -10,6 +10,7 @@
 | codex    | sandbox:codex    | OAuth   | `api.openai.com`, `auth.openai.com`, `auth0.openai.com`, `cdn.openai.com`, `chatgpt.com`         |
 | opencode | sandbox:opencode | API key | hostname of `OPENCODE_BASE_URL` (any OpenAI-compatible endpoint; operator chooses)               |
 | copilot  | sandbox:copilot  | OAuth   | `github.com`, `api.github.com`, `*.githubcopilot.com`, `*.{individual,business,enterprise}.githubcopilot.com`, `copilot-proxy.githubusercontent.com` (+ attribution/telemetry) |
+| grok     | sandbox:grok     | OAuth   | `api.x.ai`, `accounts.x.ai`, `auth.x.ai`, `grok.com`                                             |
 
 Allowlists are mostly exact-match FQDNs; an entry may be an explicit wildcard
 pattern (e.g. `*.githubcopilot.com`) when a provider fans out across
@@ -23,9 +24,9 @@ reach them. See `lib/agents.sh` for the authoritative list.
 > and you must supply an OpenAI-compatible endpoint URL — either via
 > `OPENCODE_BASE_URL` in the env, or per-invocation with `--base-url <URL>`
 > (`https://api.openai.com/v1`, an internal vLLM/Ollama proxy, etc.). The CLI
-> will refuse to start if either is missing. claude, codex, and copilot use
-> OAuth and require nothing in the host env in advance (copilot needs an active
-> Copilot subscription and signs in via GitHub device flow on first run).
+> will refuse to start if either is missing. claude, codex, copilot, and grok
+> use OAuth and require nothing in the host env in advance (copilot needs an
+> active Copilot subscription and signs in via GitHub device flow on first run).
 
 > **copilot users:** Copilot's control plane is `github.com`/`api.github.com` —
 > the same hosts a Tier 2 session uses for git — so a Tier 1 copilot sandbox is
@@ -34,6 +35,15 @@ reach them. See `lib/agents.sh` for the authoritative list.
 > (`@github/copilot`) is supported, not the `gh copilot` extension or the cloud
 > coding agent. Behind a corporate proxy or GHES, add your `*.ghe.com` endpoints
 > with `--allow-domain`.
+
+> **grok users:** the official xAI Grok CLI signs in via OAuth against
+> `auth.x.ai` (`grok login --device-auth` runs a device-code flow inside the
+> pod), and the token persists to `~/.grok/auth.json` in the mounted agent-home.
+> `GROK_DEPLOYMENT_KEY` is forbidden — it overrides the OAuth token, so it is
+> blocked at build, onboard, and launch; `XAI_API_KEY` is unnecessary (OAuth
+> outranks it). Grok's web search/fetch is on by default; if a fetch reaches a
+> host outside the tier allowlist it is blocked by default-deny (pass
+> `--disable-web-search` to turn the tools off entirely).
 
 ## Tiers
 

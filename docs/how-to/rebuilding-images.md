@@ -18,9 +18,10 @@ sandbox rebuild --agent claude
 # Also rebuild the Tier 3 variant (sandbox:claude-infra).
 sandbox rebuild --agent claude --tier3
 
-# Pin an exact version for codex or opencode.
+# Pin an exact version for codex, opencode, or grok.
 sandbox rebuild --agent codex --codex-version 0.2.1
 sandbox rebuild --agent opencode --opencode-version 1.3.17
+sandbox rebuild --agent grok --grok-version 0.2.93   # semver only; "latest" is rejected
 
 # Full rebuild, ignoring all cached layers.
 sandbox rebuild --agent all --no-cache

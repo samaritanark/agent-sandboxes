@@ -30,6 +30,10 @@
 #
 #   copilot ~/.copilot/config.json        → ~/.sandbox/agent-home/copilot/config.json
 #
+#   grok    ~/.grok/auth.json             → ~/.sandbox/agent-home/grok/auth.json
+#           ~/.grok/config.toml           → ~/.sandbox/agent-home/grok/config.toml
+#                                           (only when it pins no per-model key)
+#
 # Copilot onboard is best-effort by nature: the CLI stores its OAuth token in
 # the OS keychain when one is available (typical on a macOS/Linux-desktop host),
 # in which case ~/.copilot/config.json holds no token and there is nothing to
@@ -39,8 +43,15 @@
 # short-circuits that first login when the host already keeps a plaintext token
 # (headless Linux host, or one without libsecret).
 #
+# Grok is likewise best-effort: ~/.grok/auth.json exists only after a host-side
+# 'grok login'. When absent, onboard is a no-op and the first in-pod 'grok login
+# --device-auth' persists the token into the mounted agent-home. config.toml is
+# staged only when it carries no per-model api_key/env_key — such a key outranks
+# the OAuth session token and would defeat the OAuth-only path (see _onboard_grok).
+#
 # Conversation history (~/.claude/projects/, ~/.codex/sessions/,
-# ~/.copilot/history/) is intentionally NOT copied — the sandbox starts fresh.
+# ~/.copilot/history/, ~/.grok/sessions/) is intentionally NOT copied — the
+# sandbox starts fresh.
 set -euo pipefail
 
 ONBOARD_AGENT_HOME_BASE="${HOME}/.sandbox/agent-home"
@@ -55,6 +66,7 @@ ONBOARD_FORBIDDEN_ENV=(
   "COPILOT_GITHUB_TOKEN"
   "GH_TOKEN"
   "GITHUB_TOKEN"
+  "GROK_DEPLOYMENT_KEY"
 )
 
 # warn_forbidden_env — emit a warning for each forbidden var that's
@@ -143,6 +155,9 @@ onboard_agent() {
       ;;
     copilot)
       _onboard_copilot "${dry_run}" "${force}"
+      ;;
+    grok)
+      _onboard_grok "${dry_run}" "${force}"
       ;;
     opencode)
       _onboard_opencode_refuse
@@ -263,6 +278,37 @@ _onboard_copilot() {
     result="$(stage_file "${src}" "${dst}" "${dry_run}" "${force}")"
     print_stage_result copilot "${src}" "${dst}" "${result}"
   done
+}
+
+_onboard_grok() {
+  local dry_run="$1" force="$2"
+  local agent_home="${ONBOARD_AGENT_HOME_BASE}/grok"
+  mkdir -p "${agent_home}"
+
+  # Stage the OAuth token. Absent until the operator has run 'grok login' on the
+  # host — in which case this is a no-op ("missing-src") and the first in-pod
+  # 'grok login --device-auth' writes the token durably into the mounted
+  # agent-home (same pattern as copilot).
+  local result
+  result="$(stage_file "${HOME}/.grok/auth.json" "${agent_home}/auth.json" "${dry_run}" "${force}")"
+  print_stage_result grok "${HOME}/.grok/auth.json" "${agent_home}/auth.json" "${result}"
+
+  # Stage config.toml ONLY when it pins no per-model credential. Grok resolves
+  # credentials model.api_key > model.env_key > OAuth session token > XAI_API_KEY,
+  # so a config that hard-codes a model api_key/env_key would silently outrank the
+  # OAuth token — baking a long-lived key into agent state (PRINCIPLES.md rule 1).
+  # Refuse that file and keep OAuth device flow the only path in.
+  local src_cfg="${HOME}/.grok/config.toml"
+  local dst_cfg="${agent_home}/config.toml"
+  local src_cfg_disp="${src_cfg/#${HOME}/\~}"
+  if [[ -f "${src_cfg}" ]] && grep -qE '^[[:space:]]*(api_key|env_key)[[:space:]]*=' "${src_cfg}"; then
+    echo "  grok: ${src_cfg_disp} pins a per-model api_key/env_key — NOT staging it."
+    echo "        That key would outrank the OAuth session token (PRINCIPLES.md"
+    echo "        rule 1). Authenticate in-pod with 'grok login --device-auth'."
+  else
+    result="$(stage_file "${src_cfg}" "${dst_cfg}" "${dry_run}" "${force}")"
+    print_stage_result grok "${src_cfg}" "${dst_cfg}" "${result}"
+  fi
 }
 
 _onboard_opencode_refuse() {

@@ -336,6 +336,60 @@ test_capture_transcript_copilot() {
 }
 
 ###############################################################################
+# Test: grok sessions subtree is captured with its layout preserved. Two things
+# must NEVER be captured: auth.json (the OAuth token, OUTSIDE sessions/) and
+# session_search.sqlite (a full-text index spanning ALL sessions, which — unlike
+# copilot's DB — lives INSIDE sessions/ at its root, so a name-based exclude is
+# what keeps it out).
+###############################################################################
+test_capture_transcript_grok() {
+  info "Testing transcript capture (grok)..."
+
+  local session_id="ses-20260401-173000-trgk"
+  local log_dir="${TEST_LOG_DIR}/${session_id}"
+  local agent_home="${TEST_LOG_DIR}/home-grok"
+  mkdir -p "${log_dir}" "${agent_home}/sessions/encoded-cwd/sess_abc"
+
+  audit_write_session_json \
+    "${log_dir}" "${session_id}" "grok" "1" "testuser" "" "" "sandbox-grok-trgk" \
+    "2026-04-01T17:30:00Z" "api.x.ai"
+  touch -d "2026-04-01T17:30:00" "${log_dir}/session.json"
+
+  # In-window session artifacts (must be captured, layout preserved).
+  local upd="${agent_home}/sessions/encoded-cwd/sess_abc/updates.jsonl"
+  local chat="${agent_home}/sessions/encoded-cwd/sess_abc/chat_history.jsonl"
+  echo '{"grok":true}' > "${upd}"
+  echo '{"role":"user"}' > "${chat}"
+  touch -d "2026-04-01T17:40:00" "${upd}" "${chat}"
+
+  # The full-text index lives at sessions/ ROOT (in-window), and the token lives
+  # OUTSIDE sessions/ — neither must be captured.
+  echo 'sqlite'         > "${agent_home}/sessions/session_search.sqlite"
+  echo 'wal'            > "${agent_home}/sessions/session_search.sqlite-wal"
+  echo '{"t":"secret"}' > "${agent_home}/auth.json"
+  touch -d "2026-04-01T17:41:00" \
+    "${agent_home}/sessions/session_search.sqlite" \
+    "${agent_home}/sessions/session_search.sqlite-wal" \
+    "${agent_home}/auth.json"
+
+  audit_capture_transcript "${log_dir}" "grok" "${agent_home}"
+
+  [[ -f "${log_dir}/transcript/encoded-cwd/sess_abc/updates.jsonl" ]] \
+    && pass "captured grok updates.jsonl with layout preserved" \
+    || fail "grok sessions subtree was not captured correctly"
+  [[ -f "${log_dir}/transcript/encoded-cwd/sess_abc/chat_history.jsonl" ]] \
+    && pass "captured grok chat_history.jsonl" \
+    || fail "grok chat_history.jsonl was not captured"
+  [[ ! -e "${log_dir}/transcript/session_search.sqlite" ]] \
+    && [[ ! -e "${log_dir}/transcript/session_search.sqlite-wal" ]] \
+    && pass "full-text index (session_search.sqlite*) not captured" \
+    || fail "session_search.sqlite leaked into the transcript capture!"
+  [[ ! -e "${log_dir}/transcript/auth.json" ]] \
+    && pass "OAuth token (auth.json) not captured" \
+    || fail "auth.json token leaked into the transcript capture!"
+}
+
+###############################################################################
 # Test: a session with no in-window transcript produces no transcript dir and
 # does not error.
 ###############################################################################
@@ -612,6 +666,7 @@ main() {
   test_capture_transcript_codex
   test_capture_transcript_opencode
   test_capture_transcript_copilot
+  test_capture_transcript_grok
   test_capture_transcript_no_match
   test_record_agent_session_id
   test_capture_transcript_claude_pinned

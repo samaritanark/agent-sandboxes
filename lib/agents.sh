@@ -5,15 +5,15 @@
 set -euo pipefail
 
 # VALID_AGENTS — supported agent identifiers
-VALID_AGENTS=("claude" "codex" "opencode" "copilot")
+VALID_AGENTS=("claude" "codex" "opencode" "copilot" "grok")
 
 # validate_agent — die if agent is not supported
 validate_agent() {
   local agent="$1"
   case "${agent}" in
-    claude|codex|opencode|copilot) return 0 ;;
+    claude|codex|opencode|copilot|grok) return 0 ;;
     *)
-      echo "ERROR: Unknown agent '${agent}'. Valid agents: claude, codex, opencode, copilot." >&2
+      echo "ERROR: Unknown agent '${agent}'. Valid agents: claude, codex, opencode, copilot, grok." >&2
       echo " " >&2
       exit 1
       ;;
@@ -98,6 +98,30 @@ origin-tracker.githubusercontent.com
 copilot-telemetry.githubusercontent.com
 collector.github.com
 default.exp-tas.com
+EOF
+      ;;
+    grok)
+      # Official xAI Grok Build CLI (`grok`, installed from x.ai/cli/install.sh).
+      # Auth is OAuth (grok login --device-auth in the pod) against auth.x.ai; the
+      # OAuth token persists to ~/.grok/auth.json. Unlike Copilot, the control
+      # plane is a set of narrow xAI SaaS hostnames, so a Tier 1 Grok sandbox is
+      # as isolated as a Tier 1 Claude one.
+      #
+      #   api.x.ai          model API (/v1/responses, ...)
+      #   accounts.x.ai     OAuth 2.0 PKCE account/authorize endpoints
+      #   auth.x.ai         device-code login flow (grok login --device-auth)
+      #   grok.com          SuperGrok subscription surface used during login
+      #
+      # All plain matchName hosts — no wildcards needed. NOTE: Grok ships web
+      # search + web fetch ON by default (--disable-web-search to turn off);
+      # whether web-fetch egresses directly (blocked by the default-deny FQDN
+      # allowlist) or proxies via api.x.ai is untested — revisit once a sandbox
+      # is operational.
+      cat <<'EOF'
+api.x.ai
+accounts.x.ai
+auth.x.ai
+grok.com
 EOF
       ;;
     opencode)
@@ -239,7 +263,7 @@ render_agent_mcp_config() {
 get_agent_credential_type() {
   local agent="$1"
   case "${agent}" in
-    claude|codex|copilot)  echo "oauth" ;;
+    claude|codex|copilot|grok)  echo "oauth" ;;
     opencode)              echo "apikey" ;;
     *)                     echo "unknown" ;;
   esac

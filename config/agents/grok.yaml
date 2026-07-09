@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
+# config/agents/grok.yaml
+# xAI Grok Build CLI agent profile
+#
+# Descriptive contract only — runtime config lives in lib/agents.sh and
+# lib/onboard.sh; this file documents the contract.
+
+agent: grok
+display_name: "xAI Grok Build CLI"
+image_base: "sandbox:grok"
+image_infra: "sandbox:grok-infra"
+credential_type: oauth  # OAuth device flow — NO token injection (PRINCIPLES.md)
+entrypoint: grok
+
+# Allowed egress domains — Tier 1 only (Tier 2/3 add tier_domains on top).
+# All plain hostnames (no wildcards). See lib/agents.sh:get_agent_domains for
+# the per-host rationale.
+allowed_domains:
+  - api.x.ai         # model API
+  - accounts.x.ai    # OAuth 2.0 PKCE account/authorize
+  - auth.x.ai        # device-code login flow
+  - grok.com         # SuperGrok subscription surface used during login
+
+# Environment variables injected into pod
+env:
+  HOME: /home/agent
+  TERM: xterm-256color
+  # No GROK_HOME override: the credential mount lands at /home/agent/.grok,
+  # Grok's default config dir (lib/manifest.sh). The OAuth token persists to
+  # ~/.grok/auth.json via `grok login --device-auth`.
+
+# Forbidden env vars — must not appear in the pod spec (nor at image build time).
+#
+# GROK_DEPLOYMENT_KEY is Grok's enterprise deployment credential; per the
+# installer it TAKES PRECEDENCE over the stored ~/.grok/auth.json OAuth token
+# and is also an install-time auth source, so a stray value would silently
+# override OAuth with a broad, long-lived key. Blocked at build, onboard, and
+# launch (docker/Dockerfile.grok, lib/onboard.sh, lib/credentials.sh) to keep
+# OAuth device flow the only path in.
+#
+# XAI_API_KEY is advisory: Grok's credential resolution ranks the active OAuth
+# session token ABOVE XAI_API_KEY (model.api_key > model.env_key > session
+# token > XAI_API_KEY), so it cannot override OAuth — but it is still surfaced
+# so operators are steered to OAuth rather than a baked API key.
+forbidden_env:
+  - GROK_DEPLOYMENT_KEY
+advisory_env:
+  - XAI_API_KEY
+
+# Config caveat: ~/.grok/config.toml may pin a per-model api_key/env_key, which
+# outranks the OAuth session token. Onboarding must NOT stage a config.toml that
+# hard-codes a model key (lib/onboard.sh), or a long-lived key sneaks in behind
+# OAuth (PRINCIPLES.md rule 1).

@@ -45,6 +45,12 @@ build_pod_manifest() {
     # looks, and its in-pod 'copilot login' persists the token there. Contrast
     # with claude, which needs CLAUDE_CONFIG_DIR (see build_env_block).
     copilot)  agent_config_mount="/home/agent/.copilot" ;;
+    # Grok's default config dir is ~/.grok (= /home/agent/.grok), so no GROK_HOME
+    # override is needed. The `grok` binary lives at /usr/local/bin/grok (a real
+    # standalone file, NOT under ~/.grok — see docker/Dockerfile.grok), so this
+    # mount over ~/.grok does not shadow it; the in-pod 'grok login --device-auth'
+    # persists auth.json here.
+    grok)     agent_config_mount="/home/agent/.grok" ;;
     *)        agent_config_mount="/home/agent/.${agent}" ;;
   esac
   local volumes_block
