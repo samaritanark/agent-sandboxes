@@ -205,10 +205,12 @@ _betterleaks_run() {
   return 1
 }
 
-# finding_is_encrypted <file> <line> — return 0 if the betterleaks finding at
-# <file>:<line> is a value that is encrypted at rest, and therefore safe for the
-# agent to read: only ciphertext is exposed, and the plaintext is unrecoverable
-# without a key the workspace does not hold. Two shapes are recognised:
+# finding_is_encrypted <file> <line> [startcol] [endcol] — return 0 if the
+# betterleaks finding at <file>:<line> (columns <startcol>..<endcol>, 1-based
+# inclusive over the real file) is a value that is encrypted at rest, and
+# therefore safe for the agent to read: only ciphertext is exposed, and the
+# plaintext is unrecoverable without a key the workspace does not hold. Two
+# shapes are recognised:
 #
 #   * Bitnami SealedSecret — the finding sits inside a `kind: SealedSecret`
 #     (apiVersion *bitnami.com*) document's spec.encryptedData: block. Scoped to
@@ -216,29 +218,56 @@ _betterleaks_run() {
 #     file is NOT exempted: neither a sibling `kind: Secret` document in a
 #     multi-doc file, nor the SealedSecret's own spec.template.
 #
-#   * Mozilla SOPS — the flagged line carries a SOPS `ENC[AES256_GCM,...]`
-#     envelope. Keyed off the envelope on the line itself rather than the
-#     presence of a top-level `sops:` metadata block, so a plaintext value left
-#     alongside encrypted ones (via SOPS's unencrypted_regex) is NOT exempted.
+#   * Mozilla SOPS — the flagged secret's own column span sits *inside* a SOPS
+#     `ENC[AES256_GCM,...]` envelope on the flagged line. Containment (not mere
+#     presence of the envelope on the line) is required, so a plaintext secret
+#     that only shares a line with an envelope — an adjacent unencrypted value
+#     (SOPS's unencrypted_regex escape hatch), or an `ENC[...]` string in a
+#     trailing comment — is NOT exempted. Without a column span (betterleaks
+#     StartColumn/EndColumn) containment cannot be proven, so we do not exempt.
 #
 # The real file is inspected (not betterleaks' --redact'd match), and only the
-# enclosing YAML document / flagged line — never the wider workspace — so this
+# enclosing YAML document / flagged span — never the wider workspace — so this
 # cannot be widened by content elsewhere. Unlike a masked path, an exempted
 # finding is one the agent CAN read; it is safe only because it is ciphertext.
 # We do not (and cannot, without the key) verify the value decrypts; kind +
-# apiVersion + encryptedData scoping is the honest, pragmatic bar.
+# apiVersion + encryptedData scoping (SealedSecret) and envelope containment
+# (SOPS) are the honest, pragmatic bar.
 finding_is_encrypted() {
-  local file="$1" line="$2"
+  local file="$1" line="$2" startcol="${3:-}" endcol="${4:-}"
   [[ -f "${file}" ]] || return 1
   [[ "${line}" =~ ^[0-9]+$ ]] || return 1
 
-  # SOPS: the flagged line carries an ENC[AES256_GCM,...] envelope. A single
-  # line read of the real file — the scanner match is redacted.
-  local line_content
-  line_content="$(awk -v n="${line}" 'NR==n{print; exit}' "${file}")"
-  case "${line_content}" in
-    *"ENC[AES256_GCM,"*) return 0 ;;
-  esac
+  # SOPS: the flagged secret's span must lie strictly between the `[` and `]`
+  # of an ENC[AES256_GCM,...] envelope on the flagged line — sharing the line
+  # with one is not enough. Needs the finding's column span; without it we
+  # cannot prove containment and fall through (no exemption). The real file is
+  # read (the scanner match is redacted). StartColumn is de-inflated by one
+  # (betterleaks reports it one past the match start) in the conservative
+  # direction so an off-by-one can only make containment stricter, never
+  # falsely exempt.
+  if [[ "${startcol}" =~ ^[0-9]+$ && "${endcol}" =~ ^[0-9]+$ ]]; then
+    if awk -v n="${line}" -v sc="${startcol}" -v ec="${endcol}" '
+      NR != n { next }
+      {
+        s = sc - 1                             # real match start (1-based)
+        pos = 1
+        while ((idx = index(substr($0, pos), "ENC[AES256_GCM,")) > 0) {
+          estart = pos + idx - 1               # column of the E in ENC[
+          bopen = estart + 3                   # column of the [
+          rest = substr($0, bopen)
+          close_rel = index(rest, "]")
+          if (close_rel == 0) { pos = estart + 1; continue }  # no terminator
+          bclose = bopen + close_rel - 1       # column of the ]
+          if (s > bopen && ec < bclose) { found = 1; exit }
+          pos = estart + 1
+        }
+      }
+      END { exit(found ? 0 : 1) }
+    ' "${file}"; then
+      return 0
+    fi
+  fi
 
   # SealedSecret: cheap top-level pre-filter before buffering the file in awk.
   grep -Eq '^kind:[[:space:]]*SealedSecret[[:space:]]*$' "${file}" 2>/dev/null || return 1
@@ -267,7 +296,11 @@ finding_is_encrypted() {
       }
       if (!kindok || !apiok) { print "0"; exit }
       # Walk the mapping-key ancestry down to the target line; it must nest
-      # directly under spec: > encryptedData:. depth is the live ancestor stack.
+      # directly under a top-level spec: > encryptedData:. depth is the live
+      # ancestor stack. The exemption is pinned to exactly two levels deep with
+      # `spec` at the document root (indent 0), so a value under any *other*
+      # spec:/encryptedData: pair — e.g. one nested inside spec.template — is
+      # NOT exempted and still blocks the launch.
       depth = 0
       for (i = ds; i <= target; i++) {
         if (lines[i] ~ /^[[:space:]]*($|#)/) continue          # blank / comment
@@ -276,7 +309,8 @@ finding_is_encrypted() {
         key = lines[i]; sub(/^[[:space:]]*/, "", key); sub(/:.*$/, "", key)
         while (depth > 0 && stackInd[depth] >= ind) depth--
         if (i == target) {
-          if (depth >= 2 && stackKey[depth] == "encryptedData" && stackKey[depth - 1] == "spec")
+          if (depth == 2 && stackKey[depth] == "encryptedData" \
+              && stackKey[depth - 1] == "spec" && stackInd[depth - 1] == 0)
             print "1"
           else
             print "0"
@@ -318,7 +352,7 @@ scan_repo_secrets() {
   local report
   report="$(mktemp "${TMPDIR:-/tmp}/sandbox-leakscan-XXXXXX")"
 
-  local file ruleid line match relpath
+  local file ruleid line startcol endcol match relpath
 
   # (1) Whole-workspace scan.
   if ! _betterleaks_run "${real_repo}" "${report}"; then
@@ -326,18 +360,18 @@ scan_repo_secrets() {
     rm -f "${report}"
     return 0
   fi
-  while IFS=$'\t' read -r file ruleid line match; do
+  while IFS=$'\t' read -r file ruleid line startcol endcol match; do
     [[ -z "${file}" ]] && continue
     relpath="${file#${real_repo}/}"
     [[ "${relpath}" == .git/* ]] && continue
-    if finding_is_encrypted "${file}" "${line}"; then
+    if finding_is_encrypted "${file}" "${line}" "${startcol}" "${endcol}"; then
       printf 'sealed\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
     elif is_path_masked "${repo}" "${relpath}"; then
       printf 'yes\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
     else
       printf 'no\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
     fi
-  done < <(jq -r '.[] | [.File, .RuleID, (.StartLine|tostring), .Match] | @tsv' \
+  done < <(jq -r '.[] | [.File, .RuleID, (.StartLine|tostring), (.StartColumn|tostring), (.EndColumn|tostring), .Match] | @tsv' \
              "${report}" 2>/dev/null)
 
   # (2) .git/config — readable in the pod, unmaskable, common credential home.

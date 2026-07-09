@@ -61,15 +61,18 @@ the agent reads only ciphertext it cannot decrypt:
 
 - **Bitnami SealedSecret** — a hit inside a `kind: SealedSecret`
   (`apiVersion: *bitnami.com*`) document's `spec.encryptedData:` block.
-- **Mozilla SOPS** — a flagged value wrapped in a SOPS
-  `ENC[AES256_GCM,...]` envelope.
+- **Mozilla SOPS** — a flagged value whose column span sits *inside* a SOPS
+  `ENC[AES256_GCM,...]` envelope. Containment is required: merely sharing a
+  line with an envelope is not enough.
 
 This is *not* a mask: the file stays fully readable to the agent (unlike a
 `masked_paths` entry, which hides it). The exemption is scoped tightly on
-purpose. It applies only to the `encryptedData` block / `ENC[...]` value
-itself, so a plaintext secret smuggled into the same file still blocks the
-launch — a sibling `kind: Secret` document in a multi-doc manifest, a
-plaintext value under the SealedSecret's `spec.template`, or an unencrypted
-key left beside SOPS-encrypted ones. The gate cannot verify the value
-actually decrypts (it holds no key); `kind` + `apiVersion` + `encryptedData`
-scoping is the check.
+purpose. It applies only to the `encryptedData` block / the value inside the
+`ENC[...]` envelope itself, so a plaintext secret smuggled into the same file
+still blocks the launch — a sibling `kind: Secret` document in a multi-doc
+manifest, a plaintext value under the SealedSecret's `spec.template`, an
+unencrypted key left beside SOPS-encrypted ones, or a plaintext value that
+only shares a line with an `ENC[...]` string (e.g. in a trailing comment).
+The gate cannot verify the value actually decrypts (it holds no key); `kind` +
+`apiVersion` + `encryptedData` scoping (SealedSecret) and envelope containment
+(SOPS) are the check.

@@ -97,6 +97,28 @@ spec:
 EOF
 }
 
+# fixture_sealed_nested_spec <file> — a SealedSecret whose real encryptedData
+# value is at the top level (line 7, safe) AND a plaintext secret smuggled into
+# a nested spec.template.spec.encryptedData block (line 12, must still block).
+# The nested block reproduces the same spec:/encryptedData: key pair one level
+# down, so a top-two-of-stack ancestry check would wrongly exempt it.
+fixture_sealed_nested_spec() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<EOF
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: nested
+spec:
+  encryptedData:
+    good: ${SEALED_TOK}
+  template:
+    spec:
+      encryptedData:
+        token: ${PLAIN_TOK}
+EOF
+}
+
 # fixture_sealed_multidoc <file> — a SealedSecret doc (encryptedData, line 7,
 # safe) and a sibling plaintext `kind: Secret` doc (stringData, line 14, must
 # still block) in one multi-document file.
@@ -150,6 +172,43 @@ data:
   token: ENC[AES256_GCM,data:${SEALED_TOK},iv:abc,tag:def,type:str]
   plainkey: ${PLAIN_TOK}
 EOF
+}
+
+# fixture_sops_sameline_comment <file> — a plaintext secret (line 6) whose line
+# ALSO carries an ENC[AES256_GCM,...] string in a trailing comment. The flagged
+# secret's span is OUTSIDE the envelope, so it must still block: presence of an
+# envelope on the line is not containment.
+fixture_sops_sameline_comment() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sneaky
+data:
+  token: ${PLAIN_TOK} # rotated from ENC[AES256_GCM,data:old,type:str]
+EOF
+}
+
+# fixture_sops_nonyaml <file> — a non-YAML (source) file with a plaintext
+# secret and an ENC[AES256_GCM,...] string in a comment on the same line. The
+# SOPS branch is file-type agnostic, so containment (not the bare envelope)
+# must be what gates it: this must still block.
+fixture_sops_nonyaml() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<EOF
+# config.py
+API_KEY = "${PLAIN_TOK}"  # was ENC[AES256_GCM,data:old,type:str]
+EOF
+}
+
+# colspan_of <file> <line> <token> — echo "<startcol> <endcol>" for <token> on
+# <line> as betterleaks reports them (StartColumn/EndColumn are one past the
+# real 1-based positions). Lets the scanner-free unit test feed the classifier
+# the same column span the real scanner would.
+colspan_of() {
+  awk -v n="$2" -v t="$3" \
+    'NR==n { i = index($0, t); if (i) print (i + 1) " " (i + length(t)) }' "$1"
 }
 
 ###############################################################################
@@ -392,6 +451,17 @@ test_finding_is_encrypted() {
     && fail "plaintext in spec.template must NOT be exempt" \
     || pass "plaintext in spec.template not exempt"
 
+  # A plaintext secret under a NESTED spec.template.spec.encryptedData block
+  # (line 12) is NOT exempt: only a top-level spec.encryptedData value (line 7)
+  # is. Guards against a top-two-of-stack ancestry match.
+  fixture_sealed_nested_spec "${d}/nested.yaml"
+  finding_is_encrypted "${d}/nested.yaml" 7 \
+    && pass "top-level encryptedData exempt (nested fixture)" \
+    || fail "line 7 top-level encryptedData should be exempt"
+  finding_is_encrypted "${d}/nested.yaml" 12 \
+    && fail "plaintext under nested spec.encryptedData must NOT be exempt" \
+    || pass "nested spec.encryptedData not exempt"
+
   # Multi-doc: encryptedData in the SealedSecret doc (line 7) is exempt; the
   # sibling plaintext Secret doc's stringData (line 14) is not.
   fixture_sealed_multidoc "${d}/multi.yaml"
@@ -402,21 +472,42 @@ test_finding_is_encrypted() {
     && fail "sibling plaintext Secret doc must NOT be exempt" \
     || pass "sibling plaintext Secret doc not exempt"
 
-  # SOPS: the ENC[...] envelope (line 6) is exempt.
+  # SOPS: a finding whose span sits inside the ENC[...] envelope (line 6) is
+  # exempt. The classifier needs the finding's column span, so feed it the span
+  # betterleaks would report for the enclosed token.
   fixture_sops "${d}/sops.yaml"
-  finding_is_encrypted "${d}/sops.yaml" 6 \
+  finding_is_encrypted "${d}/sops.yaml" 6 $(colspan_of "${d}/sops.yaml" 6 "${SEALED_TOK}") \
     && pass "SOPS ENC[...] value exempt" \
     || fail "SOPS ENC value should be exempt"
+
+  # A SOPS finding with NO column span cannot be proven contained → not exempt.
+  finding_is_encrypted "${d}/sops.yaml" 6 \
+    && fail "SOPS value with no column span must NOT be exempt" \
+    || pass "SOPS value not exempt without a column span"
 
   # SOPS with an unencrypted key alongside: the ENC value (line 6) is exempt,
   # the plaintext key (line 7) is not.
   fixture_sops_unencrypted_leak "${d}/sopsleak.yaml"
-  finding_is_encrypted "${d}/sopsleak.yaml" 6 \
+  finding_is_encrypted "${d}/sopsleak.yaml" 6 $(colspan_of "${d}/sopsleak.yaml" 6 "${SEALED_TOK}") \
     && pass "SOPS ENC value exempt (leak fixture)" \
     || fail "line 6 ENC should be exempt"
-  finding_is_encrypted "${d}/sopsleak.yaml" 7 \
+  finding_is_encrypted "${d}/sopsleak.yaml" 7 $(colspan_of "${d}/sopsleak.yaml" 7 "${PLAIN_TOK}") \
     && fail "unencrypted SOPS key must NOT be exempt" \
     || pass "unencrypted SOPS key not exempt"
+
+  # Containment, not presence: a plaintext secret sharing a line with an
+  # ENC[...] envelope (in a trailing comment) is OUTSIDE the envelope span and
+  # must NOT be exempt — the reviewer's r3553097254 bypass.
+  fixture_sops_sameline_comment "${d}/sameline.yaml"
+  finding_is_encrypted "${d}/sameline.yaml" 6 $(colspan_of "${d}/sameline.yaml" 6 "${PLAIN_TOK}") \
+    && fail "plaintext on a line with an ENC[...] comment must NOT be exempt" \
+    || pass "plaintext outside the envelope not exempt (same-line comment)"
+
+  # ...and the same for a non-YAML file (the SOPS branch is file-type agnostic).
+  fixture_sops_nonyaml "${d}/config.py"
+  finding_is_encrypted "${d}/config.py" 2 $(colspan_of "${d}/config.py" 2 "${PLAIN_TOK}") \
+    && fail "plaintext in a non-YAML file with an ENC[...] comment must NOT be exempt" \
+    || pass "plaintext outside the envelope not exempt (non-YAML)"
 
   # A finding line pointing at nothing / out of range is not exempt.
   finding_is_encrypted "${d}/sealed.yaml" 999 \
@@ -496,6 +587,22 @@ test_encrypted_leaks_still_block() {
     fail "gate must refuse on an unencrypted key in a SOPS file"
   fi
   pass "gate refuses on unencrypted key in a SOPS file"
+
+  # A plaintext secret sharing a line with an ENC[...] comment must still block
+  # end-to-end (real betterleaks) — presence of the envelope is not containment.
+  local crepo="${TEST_DIR}/sopscomment"
+  fixture_sops_sameline_comment "${crepo}/manifests/sneaky.yaml"
+  scan_repo_secrets "${crepo}" > "${TEST_DIR}/sopscomment.out"
+  grep -q "$(printf '^sealed\t')" "${TEST_DIR}/sopscomment.out" \
+    && fail "plaintext beside an ENC[...] comment must NOT classify sealed, got: $(cat "${TEST_DIR}/sopscomment.out")" \
+    || pass "same-line ENC comment: plaintext not classified sealed"
+  grep -q "$(printf '^no\tmanifests/sneaky.yaml\t')" "${TEST_DIR}/sopscomment.out" \
+    && pass "same-line ENC comment: plaintext classified unmasked" \
+    || fail "expected an unmasked finding, got: $(cat "${TEST_DIR}/sopscomment.out")"
+  if ( secret_gate_repos "false" "${crepo}" >/dev/null 2>&1 ); then
+    fail "gate must refuse plaintext sharing a line with an ENC[...] comment"
+  fi
+  pass "gate refuses plaintext sharing a line with an ENC[...] comment"
 }
 
 ###############################################################################
