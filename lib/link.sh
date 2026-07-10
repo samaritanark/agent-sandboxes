@@ -286,6 +286,21 @@ link_validate_shape() {
     done
   fi
 
+  # config.yaml — an overlay may ship one to ratchet the vetting posture UP
+  # (advisory → required). This is NOT ignored: the consume path
+  # (lib/vetting.sh resolve_vetting_posture) reads its `vetting:` key at run
+  # time. Read it here so the summary can positively confirm what will apply,
+  # and warn on an unrecognized value so a typo ("requird") is visible rather
+  # than silently downgraded to advisory at consume time.
+  local overlay_vetting=""
+  if [[ -f "${dir}/config.yaml" ]]; then
+    overlay_vetting="$(extract_yaml_scalar_from_file "${dir}/config.yaml" vetting)"
+    case "${overlay_vetting}" in
+      off|advisory|required|"") ;;
+      *) warn "overlay config.yaml sets an unrecognized vetting posture '${overlay_vetting}' — it will be treated as 'advisory' at run time." ;;
+    esac
+  fi
+
   # Unknown top-level entries only warn — an overlay may legitimately carry a
   # README, GOVERNANCE.md, etc. We flag the unexpected so a typo'd dir name
   # (e.g. "profile/" instead of "profiles/") doesn't silently do nothing.
@@ -294,7 +309,7 @@ link_validate_shape() {
     [[ -e "${entry}" ]] || continue
     base="$(basename "${entry}")"
     case "${base}" in
-      profiles|catalogue|extra-ca-certs|blocked-destinations.yaml|\
+      profiles|catalogue|extra-ca-certs|blocked-destinations.yaml|config.yaml|\
       README.md|GOVERNANCE.md|README|LICENSE|NOTICE) ;;
       *) warn "overlay ships an unrecognized top-level entry: ${base} (ignored by the CLI)" ;;
     esac
@@ -319,7 +334,7 @@ link_validate_shape() {
     done
   fi
 
-  echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )" >&2
+  echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )$( [[ -n "${overlay_vetting}" ]] && echo ", vetting: ${overlay_vetting}" )" >&2
   return 0
 }
 

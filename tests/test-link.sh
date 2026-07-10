@@ -276,6 +276,49 @@ test_value_validation() {
 }
 
 ###############################################################################
+# Integration: an overlay config.yaml is a recognized, consumed file — not an
+# "unrecognized top-level entry", and its vetting posture is surfaced.
+###############################################################################
+test_config_yaml_recognized() {
+  info "Testing overlay config.yaml recognition + posture surfacing..."
+
+  # A valid overlay that also ships config.yaml with `vetting: required`.
+  local cfg="${TEST_DIR}/up-config"
+  make_upstream "${cfg}"
+  printf 'vetting: required\n' > "${cfg}/config.yaml"
+  git -C "${cfg}" add -A; git -C "${cfg}" commit -qm config
+
+  local out
+  out="$("${SB}" link "${cfg}" --name cfg 2>&1)" || fail "overlay with config.yaml should link"
+  echo "${out}" | grep -q "unrecognized top-level entry: config.yaml" \
+    && fail "config.yaml wrongly flagged as unrecognized, got: ${out}"
+  echo "${out}" | grep -q "vetting: required" \
+    || fail "vetting posture not surfaced in summary, got: ${out}"
+  pass "config.yaml is recognized and its vetting posture is surfaced on link"
+
+  # resolve_vetting_posture (the consume path) actually honors the overlay file:
+  # with no user posture set, the overlay ratchets the baseline up to required.
+  local overlay_dir; overlay_dir="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" overlay)"
+  source "${SANDBOX_ROOT}/lib/vetting.sh"
+  eq "overlay ratchets posture to required" "required" "$(SANDBOX_OVERLAY="${overlay_dir}" resolve_vetting_posture)"
+
+  "${SB}" link unlink --yes >/dev/null 2>&1 || fail "unlink failed"
+
+  # An unrecognized posture value warns (visible, fails safe to advisory) but
+  # does not block the link.
+  local badp="${TEST_DIR}/up-badposture"
+  make_upstream "${badp}"
+  printf 'vetting: requird\n' > "${badp}/config.yaml"   # typo
+  git -C "${badp}" add -A; git -C "${badp}" commit -qm badposture
+  out="$("${SB}" link "${badp}" --name badp 2>&1)" || fail "overlay with typo'd posture should still link"
+  echo "${out}" | grep -q "unrecognized vetting posture 'requird'" \
+    || fail "typo'd vetting posture not warned, got: ${out}"
+  pass "unrecognized vetting posture warns but does not block the link"
+
+  "${SB}" link unlink --yes >/dev/null 2>&1 || fail "unlink failed"
+}
+
+###############################################################################
 # Integration: sync refuses to clobber local uncommitted edits
 ###############################################################################
 test_sync_refuses_dirty() {
@@ -349,6 +392,7 @@ test_link_and_track_branch
 test_tag_pin_is_stable
 test_validation_rejects
 test_value_validation
+test_config_yaml_recognized
 test_sync_refuses_dirty
 test_notify_hook
 test_unlink
