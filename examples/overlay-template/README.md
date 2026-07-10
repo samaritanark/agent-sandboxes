@@ -78,6 +78,9 @@ overlay-myteam/
 ├── README.md                    your team's onboarding doc
 ├── GOVERNANCE.md                your team's policy doc (referenced
 │                                from PRINCIPLES.md as the team layer)
+├── config.yaml                  overlay-wide policy: `vetting:` posture,
+│                                `leakscan_extra_dep_dirs:` (operator-only
+│                                secret-scan skips) — see docs/reference/configuration.md
 ├── blocked-destinations.yaml    additional blocked domains/patterns
 ├── extra-ca-certs/              extra root CAs (see note below)
 │   └── *.crt

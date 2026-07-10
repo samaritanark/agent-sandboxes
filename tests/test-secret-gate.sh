@@ -25,6 +25,7 @@ trap cleanup EXIT
 # are needed for the volume-mount emission check.
 source "${SANDBOX_ROOT}/lib/platform.sh"
 source "${SANDBOX_ROOT}/lib/config.sh"
+source "${SANDBOX_ROOT}/lib/profile.sh"
 source "${SANDBOX_ROOT}/lib/filesystem.sh"
 source "${SANDBOX_ROOT}/lib/manifest.sh"
 
@@ -336,6 +337,116 @@ test_dep_dir_exclusion() {
   grep -q "$(printf '^no\tvendor/leak.txt\t')" "${out}" \
     && pass "tracked vendor/ still scanned (not skipped by name)" \
     || fail "tracked vendor/ should still be scanned, got: $(cat "${out}")"
+}
+
+###############################################################################
+# Known-safe artifact skip (LEAKSCAN_SKIP_PATHS) — a detect-secrets
+# `.secrets.baseline` is skipped even though it is TRACKED (unlike the
+# gitignore-gated dependency trees), and disabling exclusions scans it again.
+###############################################################################
+test_known_safe_paths() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing known-safe artifact skip (.secrets.baseline)..."
+
+  local repo="${TEST_DIR}/safepaths"
+  mkdir -p "${repo}/sub"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  local tok='ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z'
+  # A detect-secrets baseline is committed (tracked), so the gitignore gate
+  # would never skip it — the unconditional LEAKSCAN_SKIP_PATHS list must.
+  printf '{"results": {}, "note": "%s"}\n' "${tok}" > "${repo}/.secrets.baseline"
+  # A lookalike must NOT be swept up (the entry is anchored to a full name).
+  printf 'tok = "%s"\n' "${tok}" > "${repo}/sub/.secrets.baseline.bak"
+  printf 'tok = "%s"\n' "${tok}" > "${repo}/sub/app.txt"
+  git -C "${repo}" add -A 2>/dev/null
+
+  local out="${TEST_DIR}/safepaths.out"
+  scan_repo_secrets "${repo}" > "${out}"
+  grep -q "$(printf '\t.secrets.baseline\t')" "${out}" \
+    && fail "tracked .secrets.baseline must be skipped, got: $(cat "${out}")" \
+    || pass "tracked .secrets.baseline skipped (unconditional)"
+  grep -q "$(printf '^no\tsub/.secrets.baseline.bak\t')" "${out}" \
+    && pass ".secrets.baseline.bak NOT swept up (anchored match)" \
+    || fail "the anchored skip should not match .secrets.baseline.bak"
+  grep -q "$(printf '^no\tsub/app.txt\t')" "${out}" \
+    && pass "ordinary file still scanned" \
+    || fail "sub/app.txt should still be flagged"
+
+  # Disabling exclusions scans the baseline too (stricter).
+  local _saved_user="${USER_SANDBOX_CONFIG}"
+  USER_SANDBOX_CONFIG="${TEST_DIR}/safepaths-nouser.yaml"
+  mkdir -p "${repo}/.sandbox"
+  printf 'leakscan_dep_exclusions: off\n' > "${repo}/.sandbox/config.yaml"
+  scan_repo_secrets "${repo}" > "${TEST_DIR}/safepaths-off.out"
+  grep -q "$(printf '^no\t.secrets.baseline\t')" "${TEST_DIR}/safepaths-off.out" \
+    && pass "leakscan_dep_exclusions: off scans .secrets.baseline (stricter)" \
+    || fail ".secrets.baseline should be scanned when exclusions disabled"
+  rm -f "${repo}/.sandbox/config.yaml"
+  USER_SANDBOX_CONFIG="${_saved_user}"
+}
+
+###############################################################################
+# Dependency-tree exclusion config — the operator overlay may WIDEN the skip
+# set (loosening, so operator-only); a repo/user may DISABLE it (stricter, so
+# local); a repo may NOT widen it (local loosening is blocked by construction).
+###############################################################################
+test_dep_dir_config() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing dependency-tree exclusion config (widen/lock/disable)..."
+
+  # Hermetic user config (an absent file → no user-level override leaking in).
+  local _saved_user="${USER_SANDBOX_CONFIG}"
+  USER_SANDBOX_CONFIG="${TEST_DIR}/depcfg-nouser.yaml"
+
+  # A repo with a gitignored .venv (a built-in skip) and a gitignored 'privlib'
+  # (a name NOT in the built-in set → scanned by default).
+  local repo="${TEST_DIR}/depcfg"
+  mkdir -p "${repo}/.venv/lib" "${repo}/privlib"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  printf '.venv/\nprivlib/\n' > "${repo}/.gitignore"
+  local tok='ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z'
+  printf 'token = "%s"\n' "${tok}" > "${repo}/.venv/lib/leak.txt"
+  printf 'token = "%s"\n' "${tok}" > "${repo}/privlib/leak.txt"
+
+  # Baseline: privlib is not a known dependency name → scanned and flagged.
+  scan_repo_secrets "${repo}" > "${TEST_DIR}/depcfg-base.out"
+  grep -q "$(printf '^no\tprivlib/leak.txt\t')" "${TEST_DIR}/depcfg-base.out" \
+    && pass "unknown gitignored dir scanned by default" \
+    || fail "privlib should be scanned by default, got: $(cat "${TEST_DIR}/depcfg-base.out")"
+
+  # (1) Operator overlay adds 'privlib' → now excluded.
+  local overlay="${TEST_DIR}/overlay"
+  mkdir -p "${overlay}"
+  printf 'leakscan_extra_dep_dirs:\n  - privlib\n' > "${overlay}/config.yaml"
+  ( export SANDBOX_OVERLAY="${overlay}"; scan_repo_secrets "${repo}" ) > "${TEST_DIR}/depcfg-op.out"
+  grep -q "$(printf '\tprivlib/leak.txt\t')" "${TEST_DIR}/depcfg-op.out" \
+    && fail "operator overlay should exclude privlib, got: $(cat "${TEST_DIR}/depcfg-op.out")" \
+    || pass "operator overlay widens the skip set (privlib excluded)"
+
+  # (2) The SAME key in the REPO config must be ignored — local widening blocked.
+  mkdir -p "${repo}/.sandbox"
+  printf 'leakscan_extra_dep_dirs:\n  - privlib\n' > "${repo}/.sandbox/config.yaml"
+  scan_repo_secrets "${repo}" > "${TEST_DIR}/depcfg-repo.out"
+  grep -q "$(printf '^no\tprivlib/leak.txt\t')" "${TEST_DIR}/depcfg-repo.out" \
+    && pass "repo config cannot widen the skip set (privlib still scanned)" \
+    || fail "repo-level leakscan_extra_dep_dirs must be ignored, got: $(cat "${TEST_DIR}/depcfg-repo.out")"
+  rm -f "${repo}/.sandbox/config.yaml"
+
+  # (3) Local disable: leakscan_dep_exclusions: off → even .venv is scanned.
+  printf 'leakscan_dep_exclusions: off\n' > "${repo}/.sandbox/config.yaml"
+  scan_repo_secrets "${repo}" > "${TEST_DIR}/depcfg-off.out"
+  grep -q "$(printf '^no\t.venv/lib/leak.txt\t')" "${TEST_DIR}/depcfg-off.out" \
+    && pass "leakscan_dep_exclusions: off scans dependency trees (stricter)" \
+    || fail ".venv should be scanned when exclusions disabled, got: $(cat "${TEST_DIR}/depcfg-off.out")"
+  rm -f "${repo}/.sandbox/config.yaml"
+
+  USER_SANDBOX_CONFIG="${_saved_user}"
 }
 
 ###############################################################################
@@ -688,6 +799,8 @@ main() {
   test_finding_is_encrypted
   test_scan_classification
   test_dep_dir_exclusion
+  test_known_safe_paths
+  test_dep_dir_config
   test_gate
   test_gitconfig_secret
   test_scan_failure_fails_closed

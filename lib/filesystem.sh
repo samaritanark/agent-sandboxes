@@ -186,23 +186,85 @@ is_path_masked() {
 # gitignore gate is deliberate: a directory with one of these names that the
 # repo actually *tracks* is scanned normally, because a secret committed there
 # IS the workspace's responsibility. Entries are shell globs.
+#
+# This built-in set is defined in tracked source on purpose: it is a security
+# control, so it changes through git review (and, where operators use it, the
+# `sandbox vet` signing gate). Two config knobs adjust it at runtime, split by
+# the direction of risk (mirroring the vetting posture's "only ratchet UP"
+# rule in lib/vetting.sh):
+#   * WIDENING the skip set (adding names) makes the scan LOOSER — a way to hide
+#     a secret from the gate — so it is confined to the operator trust level:
+#     `leakscan_extra_dep_dirs:` in the team OVERLAY config only. A repo's or a
+#     user's own config cannot add skips.  (_leakscan_overlay_extra_dep_dirs)
+#   * DISABLING the exclusion makes the scan STRICTER (walks everything), so any
+#     repo or user may do it locally: `leakscan_dep_exclusions: off`.
+#     (_leakscan_exclusions_enabled)
 LEAKSCAN_DEP_DIRS=(
   node_modules bower_components .pnp .yarn
-  vendor
+  vendor .go
   .venv venv virtualenv .virtualenvs site-packages '*.egg-info' .eggs .tox .nox
   __pycache__ .mypy_cache .pytest_cache .ruff_cache
   .gradle
 )
 
-# _leakscan_is_dep_dir <basename> — 0 if <basename> is a known dependency tree.
+# LEAKSCAN_SKIP_PATHS — basenames of known-safe, first-party artifacts skipped
+# *unconditionally* (whether tracked or gitignored), because their contents are
+# audited or derived, not live secrets:
+#   * .secrets.baseline — a detect-secrets baseline. It records SHA-1 *hashes* of
+#     already-reviewed findings for the CI pipeline to diff against, so it is
+#     not a place live secrets live; scanning it only yields hash-shaped false
+#     positives. Requested by the security team.
+# These differ from LEAKSCAN_DEP_DIRS: a detect-secrets baseline is committed
+# (tracked), so the gitignore gate would never skip it — this list is not gated.
+# That is a deliberate, narrow exemption: naming a file to match one of these
+# entries would hide it from the gate, so keep the set to specific, well-known
+# artifact filenames, never broad patterns. Disabling exclusions
+# (`leakscan_dep_exclusions: off`) turns this off too and scans them.
+LEAKSCAN_SKIP_PATHS=(
+  .secrets.baseline
+)
+
+# _leakscan_is_dep_dir <basename> <glob>... — 0 if <basename> matches one of
+# the candidate globs. The effective set is passed in (built-in + operator
+# additions), not read from the global, so widening stays operator-scoped.
 _leakscan_is_dep_dir() {
-  local base="$1" glob
-  for glob in "${LEAKSCAN_DEP_DIRS[@]}"; do
+  local base="$1"; shift
+  local glob
+  for glob in "$@"; do
     # Intentional glob match: RHS is unquoted so patterns like *.egg-info work.
     # shellcheck disable=SC2053
     [[ "${base}" == ${glob} ]] && return 0
   done
   return 1
+}
+
+# _leakscan_overlay_extra_dep_dirs — extra dependency-dir names an operator has
+# added via the team overlay's config.yaml (`leakscan_extra_dep_dirs:` list),
+# one per line. Read ONLY from the operator overlay — never a repo's or a user's
+# own config — because adding a skip loosens the scan, and that authority lives
+# at the operator trust level (see LEAKSCAN_DEP_DIRS). Empty if no overlay is
+# set or the key is absent.
+_leakscan_overlay_extra_dep_dirs() {
+  local overlay
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] || return 0
+  extract_yaml_list_from_file "${overlay}/config.yaml" "leakscan_extra_dep_dirs"
+}
+
+# _leakscan_exclusions_enabled <repo> — 0 unless a repo or user config has
+# turned dependency-tree exclusion OFF (`leakscan_dep_exclusions: off`, also
+# false/no/0). Disabling makes the scan STRICTER (it then walks every tracked
+# and gitignored file, save betterleaks' own built-in node_modules skip), so it
+# is honored at the local trust level; there is deliberately no local way to
+# make the scan looser. Repo config wins over user config; default is enabled.
+_leakscan_exclusions_enabled() {
+  local repo="$1" v=""
+  v="$(extract_yaml_scalar_from_file "${repo}/${SANDBOX_REPO_CONFIG_NAME}" leakscan_dep_exclusions 2>/dev/null || true)"
+  [[ -z "${v}" ]] && v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" leakscan_dep_exclusions 2>/dev/null || true)"
+  case "${v}" in
+    off|false|no|0|OFF|False|FALSE|No|NO) return 1 ;;
+    *) return 0 ;;
+  esac
 }
 
 # _leakscan_regex_escape <string> — escape re2 metacharacters so a literal path
@@ -213,13 +275,16 @@ _leakscan_regex_escape() {
 
 # _leakscan_write_config <repo> <config_out> — write a betterleaks config to
 # <config_out>. It (1) uses betterleaks' default ruleset and default allowlist
-# (`[extend] useDefault = true`), and (2) adds an allowlist path for every
-# gitignored dependency directory (see LEAKSCAN_DEP_DIRS) so those trees are
-# skipped. `git ls-files --directory` collapses a wholly-ignored directory to
-# its top and git walks the whole tree, so a nested one (packages/*/.venv) is
-# found and excluded too. Owning the config is also a hardening: a passed -c
-# takes precedence over a workspace's own .gitleaks.toml, so an untrusted repo
-# can no longer ship a config that allowlists its own secrets away.
+# (`[extend] useDefault = true`), and (2) unless a repo/user config disabled it
+# (_leakscan_exclusions_enabled), adds allowlist paths for:
+#   * every known-safe artifact filename (LEAKSCAN_SKIP_PATHS), unconditionally;
+#   * every gitignored dependency directory — the built-in LEAKSCAN_DEP_DIRS
+#     plus any operator-added names (_leakscan_overlay_extra_dep_dirs).
+# `git ls-files --directory` collapses a wholly-ignored directory to its top and
+# git walks the whole tree, so a nested one (packages/*/.venv) is found and
+# excluded too. Owning the config is also a hardening: a passed -c takes
+# precedence over a workspace's own .gitleaks.toml, so an untrusted repo can no
+# longer ship a config that allowlists its own secrets away.
 _leakscan_write_config() {
   local repo="$1" out="$2"
   {
@@ -228,19 +293,46 @@ _leakscan_write_config() {
     echo 'useDefault = true'
   } > "${out}"
 
-  local d base opened=0
+  # A repo or user may turn exclusions off (stricter: scan everything). Only
+  # betterleaks' own built-in node_modules/lockfile skip remains in that case.
+  _leakscan_exclusions_enabled "${repo}" || return 0
+
+  # Collect allowlist regexes, then emit the block only if any apply.
+  local -a paths=()
+
+  # (a) Known-safe artifact filenames — unconditional (tracked or not), anchored
+  # to a full path component so `.secrets.baseline` never matches, say,
+  # `.secrets.baseline.bak`.
+  local sp
+  for sp in "${LEAKSCAN_SKIP_PATHS[@]}"; do
+    paths+=("(^|/)$(_leakscan_regex_escape "${sp}")\$")
+  done
+
+  # (b) Gitignored dependency trees: built-in list + operator-overlay additions.
+  # Widening is operator-scoped by construction — the extras come only from the
+  # overlay, never a repo's or a user's own config.
+  local -a dep_dirs=("${LEAKSCAN_DEP_DIRS[@]}")
+  local extra
+  while IFS= read -r extra; do
+    [[ -n "${extra}" ]] && dep_dirs+=("${extra}")
+  done < <(_leakscan_overlay_extra_dep_dirs)
+
+  local d base
   while IFS= read -r d; do
     d="${d%/}"
     [[ -z "${d}" ]] && continue
     base="${d##*/}"
-    _leakscan_is_dep_dir "${base}" || continue
-    if (( ! opened )); then
-      { echo '[allowlist]'; echo 'paths = ['; } >> "${out}"
-      opened=1
-    fi
-    printf "  '''(^|/)%s(/|\$)''',\n" "$(_leakscan_regex_escape "${d}")" >> "${out}"
+    _leakscan_is_dep_dir "${base}" "${dep_dirs[@]}" || continue
+    paths+=("(^|/)$(_leakscan_regex_escape "${d}")(/|\$)")
   done < <(git -C "${repo}" ls-files --others --ignored --exclude-standard --directory 2>/dev/null)
-  (( opened )) && echo ']' >> "${out}"
+
+  [[ "${#paths[@]}" -eq 0 ]] && return 0
+  { echo '[allowlist]'; echo 'paths = ['; } >> "${out}"
+  local p
+  for p in "${paths[@]}"; do
+    printf "  '''%s''',\n" "${p}" >> "${out}"
+  done
+  echo ']' >> "${out}"
   return 0
 }
 

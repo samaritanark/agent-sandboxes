@@ -38,11 +38,21 @@ extra_allowed_domains:
   - go.private.example.com
 masked_paths:                        # written by `sandbox mask add`; hidden from the agent
   - config/prod/secrets.yaml
+leakscan_dep_exclusions: off         # scan gitignored dependency trees too (stricter)
+```
+
+The **team overlay** `config.yaml` additionally holds:
+
+```yaml
+leakscan_extra_dep_dirs:             # extra dependency-dir names the secret gate skips
+  - .cache-npm                       #   when gitignored (OVERLAY-ONLY — see note)
+  - my-vendored-libs
 ```
 
 - `extra_allowed_domains` — see [Persistent extra domains](../how-to/persistent-domains.md).
 - `blocked_domains` / `blocked_cidrs` — see [Never-allow block list](../how-to/persistent-domains.md#never-allow-a-personal-block-list). All three domain sources are still subject to the blocked-destinations check.
 - `masked_paths` — see [Extending the mask](../explanation/security-model.md#extending-the-mask).
+- `leakscan_dep_exclusions` / `leakscan_extra_dep_dirs` — control which gitignored dependency trees the secret gate skips; see [Dependency-tree exclusion](../explanation/security-model.md#dependency-tree-exclusion). `leakscan_extra_dep_dirs` is honored **only** in the overlay: adding a skip loosens the scan, so a repo or user cannot do it (only disable exclusions, which is stricter).
 
 ## Environment variables
 
