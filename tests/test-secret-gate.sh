@@ -292,6 +292,53 @@ test_scan_classification() {
 }
 
 ###############################################################################
+# scan_repo_secrets — gitignored dependency trees are skipped, but a tracked
+# directory sharing the name (first-party content) is still scanned. Guards the
+# _leakscan_write_config exclusion: perf without a coverage hole.
+###############################################################################
+test_dep_dir_exclusion() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing gitignored dependency-tree exclusion..."
+
+  local repo="${TEST_DIR}/depdirs"
+  mkdir -p "${repo}"/{src,.venv/lib,packages/a/.venv,vendor}
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  # .venv (root and nested) is gitignored; vendor is NOT — it is committed
+  # first-party content that happens to use a dependency-tree name.
+  printf '.venv/\npackages/a/.venv/\n' > "${repo}/.gitignore"
+  # A non-example token so betterleaks' default allowlist does not swallow it.
+  local tok='ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z'
+  local d
+  for d in src .venv/lib packages/a/.venv vendor; do
+    printf 'token = "%s"\n' "${tok}" > "${repo}/${d}/leak.txt"
+  done
+  git -C "${repo}" add -A 2>/dev/null   # tracks src + vendor; .venv dirs stay ignored
+
+  local out="${TEST_DIR}/depdirs.out"
+  scan_repo_secrets "${repo}" > "${out}"
+
+  # The gitignored virtualenvs (root and nested) must NOT be scanned.
+  grep -q "$(printf '\t.venv/lib/leak.txt\t')" "${out}" \
+    && fail "gitignored .venv must be excluded from the scan" \
+    || pass "gitignored .venv excluded"
+  grep -q "$(printf '\tpackages/a/.venv/leak.txt\t')" "${out}" \
+    && fail "nested gitignored .venv must be excluded from the scan" \
+    || pass "nested gitignored .venv excluded"
+
+  # First-party content — tracked src, and a tracked dir that merely shares the
+  # 'vendor' name — must still be scanned and flagged.
+  grep -q "$(printf '^no\tsrc/leak.txt\t')" "${out}" \
+    && pass "tracked src still scanned" \
+    || fail "tracked src should still be a finding, got: $(cat "${out}")"
+  grep -q "$(printf '^no\tvendor/leak.txt\t')" "${out}" \
+    && pass "tracked vendor/ still scanned (not skipped by name)" \
+    || fail "tracked vendor/ should still be scanned, got: $(cat "${out}")"
+}
+
+###############################################################################
 # secret_gate_repos — refuse, then pass after masking, then override
 ###############################################################################
 test_gate() {
@@ -640,6 +687,7 @@ main() {
   test_manifest_mount
   test_finding_is_encrypted
   test_scan_classification
+  test_dep_dir_exclusion
   test_gate
   test_gitconfig_secret
   test_scan_failure_fails_closed
