@@ -204,7 +204,7 @@ LEAKSCAN_DEP_DIRS=(
   vendor .go
   .venv venv virtualenv .virtualenvs site-packages '*.egg-info' .eggs .tox .nox
   __pycache__ .mypy_cache .pytest_cache .ruff_cache
-  .gradle
+  .gradle .ansible
 )
 
 # LEAKSCAN_SKIP_PATHS — basenames of known-safe, first-party artifacts skipped
