@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# config.yaml — optional overlay-level defaults.
+#
+# An overlay may ship this file to set team-wide defaults that the CLI reads at
+# run time. Like everything else in an overlay it is additive on the safety
+# side: it can ratchet a posture UP but never relax an org-level control.
+#
+# vetting: the repo-vetting posture (off | advisory | required). An overlay may
+# only ratchet this UP relative to the operator's ~/.sandbox/config.yaml
+# (advisory → required), never down. Shipping `required` here makes signed-tag
+# vetting mandatory for everyone who uses this overlay: `sandbox run` refuses a
+# Tier 2/3 launch unless every --repo carries a current, verified
+# agent-vetted/<sha> tag at HEAD. See docs/how-to/vetting.md.
+#
+# The trust root — WHOSE signatures count — is deliberately operator-side and
+# cannot be shipped in an overlay; each operator configures it once in their own
+# ~/.sandbox/config.yaml (vetting_trust_root / vetting_trust_format).
+#
+# Left at `advisory` here, which matches the org default (a no-op that documents
+# intent). Change to `required` to enforce, or delete this file to say nothing.
+vetting: advisory

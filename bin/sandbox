@@ -3190,7 +3190,7 @@ _link_clone() {
   echo "Linked overlay '${name}' → ${dir/#${HOME}/\~}"
   echo "  ref:    ${ref}"
   echo "  commit: ${commit:0:12}"
-  echo "  pointer written to ${USER_SANDBOX_CONFIG/#${HOME}/\~} (overlay:)"
+  echo "  pointer written to the 'overlay:' key in ${USER_SANDBOX_CONFIG/#${HOME}/\~}"
 }
 
 # _link_status — show the active link and whether it's behind its ref.
