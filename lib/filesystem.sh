@@ -251,6 +251,37 @@ _leakscan_overlay_extra_dep_dirs() {
   extract_yaml_list_from_file "${overlay}/config.yaml" "leakscan_extra_dep_dirs"
 }
 
+# _leakscan_ignore_path — path to pass to betterleaks' -i/--gitleaks-ignore-path,
+# an EXTRA .betterleaksignore/.gitleaksignore listing finding fingerprints to
+# suppress. betterleaks' -i default is "." (the process CWD), so leaving it
+# unset lets a stray ignore file in whatever directory `sandbox` runs from feed
+# the scanner. We never let it default:
+#   * if the team OVERLAY ships one (<overlay>/.betterleaksignore, else
+#     .gitleaksignore) use it — an operator may keep a REVIEWED baseline of
+#     accepted fingerprints. Suppressing findings is a loosening, so that
+#     authority lives at the operator trust level, never a repo's or a user's
+#     own config (mirrors leakscan_extra_dep_dirs; see LEAKSCAN_DEP_DIRS).
+#   * otherwise print nothing; the caller passes a neutral empty path instead.
+# Prints the chosen path, or nothing.
+#
+# NOTE: -i is ADDITIVE. betterleaks ALSO always reads a .gitleaksignore/
+# .betterleaksignore at the SCAN-TARGET ROOT and offers no flag (as of 1.6.0) to
+# disable it, so an operator baseline here does NOT neutralize a workspace that
+# ships its own root ignore file — see the KNOWN LIMITATION in scan_repo_secrets.
+_leakscan_ignore_path() {
+  local overlay
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" ]] || return 0
+  local f
+  for f in .betterleaksignore .gitleaksignore; do
+    if [[ -f "${overlay}/${f}" ]]; then
+      echo "${overlay}/${f}"
+      return 0
+    fi
+  done
+  return 0
+}
+
 # _leakscan_exclusions_enabled <repo> — 0 unless a repo or user config has
 # turned dependency-tree exclusion OFF (`leakscan_dep_exclusions: off`, also
 # false/no/0). Disabling makes the scan STRICTER (it then walks every tracked
@@ -336,8 +367,9 @@ _leakscan_write_config() {
   return 0
 }
 
-# _betterleaks_run <target> <report> [config] — run one trustworthy betterleaks
-# scan of <target> into <report>, optionally under <config> (-c). Returns 0 if
+# _betterleaks_run <target> <report> [config] [ignore_path] — run one
+# trustworthy betterleaks scan of <target> into <report>, optionally under
+# <config> (-c) and <ignore_path> (-i, extra fingerprint allowlist). Returns 0 if
 # the run can be trusted (a clean run, or leaks-found with a valid JSON-array
 # report); returns 1 if it failed and the caller must fail closed. The exit code
 # is left in LEAKSCAN_RC for the error message.
@@ -355,17 +387,33 @@ _leakscan_write_config() {
 # a secret found in an untrusted workspace (it is the betterleaks default, but
 # we pin it so a future default flip or repo-local config cannot enable it).
 #
+# --ignore-gitleaks-allow: do NOT honor inline `gitleaks:allow`/`betterleaks:allow`
+# comments. Those are workspace-authored suppression — an untrusted repo could
+# annotate its own secret lines and pass the gate — the same bypass class that
+# owning -c closes for a repo-local .gitleaks.toml. Pinned on unconditionally:
+# there is no operator-owned inline comment, so nothing legitimately relies on
+# them being honored.
+#
+# -i/--gitleaks-ignore-path points at an EXTRA .betterleaksignore/.gitleaksignore
+# of accepted fingerprints (an operator baseline; see _leakscan_ignore_path).
+# Its default is "." (the process CWD), which we never let stand. NOTE: -i is
+# additive — betterleaks ALSO always reads an ignore file at the scan-target
+# ROOT and (as of 1.6.0) offers no flag to disable that, so -i does NOT
+# neutralize a workspace that ships its own root ignore file. See the KNOWN
+# LIMITATION note in scan_repo_secrets.
+#
 # The scan runs at low CPU and (Linux) idle I/O priority so a deep-repo walk
 # cannot starve interactive work on the host. ionice is Linux-only (absent on
 # macOS) so it is used only when present; its idle class (-c3) needs no
 # privilege. nice -n 19 is portable across GNU and BSD.
 _betterleaks_run() {
-  local target="$1" report="$2" config="${3:-}"
+  local target="$1" report="$2" config="${3:-}" ignore_path="${4:-}"
   LEAKSCAN_RC=0
   local -a cmd=(nice -n 19)
   command -v ionice >/dev/null 2>&1 && cmd+=(ionice -c3)
-  cmd+=(betterleaks dir "${target}" --no-banner -f json -r "${report}" --validation=false --redact)
+  cmd+=(betterleaks dir "${target}" --no-banner -f json -r "${report}" --validation=false --redact --ignore-gitleaks-allow)
   [[ -n "${config}" ]] && cmd+=(-c "${config}")
+  [[ -n "${ignore_path}" ]] && cmd+=(-i "${ignore_path}")
   "${cmd[@]}" >/dev/null 2>&1 || LEAKSCAN_RC=$?
   [[ "${LEAKSCAN_RC}" == 0 ]] && return 0
   [[ "${LEAKSCAN_RC}" == 1 ]] && jq -e 'type == "array"' "${report}" >/dev/null 2>&1 && return 0
@@ -513,6 +561,21 @@ finding_is_encrypted() {
 # On scanner failure either scan emits an `error` sentinel line; the caller
 # (secret_gate_repos) aborts on it. A bare return/exit here would be swallowed
 # by the process substitution the caller reads us through.
+#
+# The scan owns its allowlist inputs so an untrusted workspace cannot suppress
+# its own findings: -c (our generated config) overrides a repo-local
+# .gitleaks.toml, and --ignore-gitleaks-allow ignores inline allow comments
+# (both in _betterleaks_run). -i points at an operator-owned fingerprint
+# baseline when the overlay ships one, else a neutral empty dir.
+#
+# KNOWN LIMITATION: betterleaks always reads a .gitleaksignore/.betterleaksignore
+# at the SCAN-TARGET ROOT (here the workspace root and .git/config's dir) and
+# 1.6.0 has no flag to disable that, so a workspace committing a root ignore
+# file listing its own findings' fingerprints can still suppress them below the
+# gate. -i is additive and cannot override it; neutralizing it would mean
+# removing/relocating the file or refusing the scan. Tracked as a follow-up.
+# Nested (non-root) ignore files are not auto-read, and inline allow comments
+# and a repo-local .gitleaks.toml are already neutralized.
 scan_repo_secrets() {
   local repo="$1"
   local real_repo
@@ -523,12 +586,23 @@ scan_repo_secrets() {
   config="$(mktemp "${TMPDIR:-/tmp}/sandbox-leakcfg-XXXXXX")"
   _leakscan_write_config "${repo}" "${config}"
 
+  # betterleaks -i: an operator-owned baseline of accepted fingerprints when the
+  # overlay ships one, else a neutral empty dir so the -i default (".", the
+  # process CWD) is never used. See _leakscan_ignore_path.
+  local ignore_path empty_ignore_dir=""
+  ignore_path="$(_leakscan_ignore_path)"
+  if [[ -z "${ignore_path}" ]]; then
+    empty_ignore_dir="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-leakignore-XXXXXX")"
+    ignore_path="${empty_ignore_dir}"
+  fi
+
   local file ruleid line startcol endcol match relpath
 
   # (1) Whole-workspace scan.
-  if ! _betterleaks_run "${real_repo}" "${report}" "${config}"; then
+  if ! _betterleaks_run "${real_repo}" "${report}" "${config}" "${ignore_path}"; then
     printf 'error\tbetterleaks scan failed (exit %s)\n' "${LEAKSCAN_RC}"
     rm -f "${report}" "${config}"
+    [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
     return 0
   fi
   while IFS=$'\t' read -r file ruleid line startcol endcol match; do
@@ -549,9 +623,10 @@ scan_repo_secrets() {
   local gitcfg="${real_repo}/.git/config"
   if [[ -f "${gitcfg}" ]]; then
     : > "${report}"
-    if ! _betterleaks_run "${gitcfg}" "${report}" "${config}"; then
+    if ! _betterleaks_run "${gitcfg}" "${report}" "${config}" "${ignore_path}"; then
       printf 'error\tbetterleaks scan of .git/config failed (exit %s)\n' "${LEAKSCAN_RC}"
       rm -f "${report}" "${config}"
+      [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
       return 0
     fi
     while IFS=$'\t' read -r file ruleid line match; do
@@ -562,6 +637,7 @@ scan_repo_secrets() {
   fi
 
   rm -f "${report}" "${config}"
+  [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
 }
 
 # _print_unmasked_findings <entry>... — render "repo<TAB>relpath<TAB>rule<TAB>

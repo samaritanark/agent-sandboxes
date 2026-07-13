@@ -450,6 +450,90 @@ test_dep_dir_config() {
 }
 
 ###############################################################################
+# Inline allow comments do not bypass the gate. An untrusted workspace could
+# annotate its own secret line with `# gitleaks:allow` / `# betterleaks:allow`
+# to have the scanner skip it; --ignore-gitleaks-allow (in _betterleaks_run)
+# neutralizes that, the same bypass class owning -c closes for .gitleaks.toml.
+###############################################################################
+test_inline_allow_ignored() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing that inline allow comments do not bypass the gate..."
+
+  local repo="${TEST_DIR}/inlineallow"
+  mkdir -p "${repo}"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  local tok='ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z'
+  printf 'token = "%s" # gitleaks:allow\n' "${tok}" > "${repo}/allow.txt"
+  printf 'token = "%s" # betterleaks:allow\n' "${tok}" > "${repo}/allow2.txt"
+  git -C "${repo}" add -A 2>/dev/null
+
+  scan_repo_secrets "${repo}" > "${TEST_DIR}/inlineallow.out"
+  grep -q "$(printf '^no\tallow.txt\t')" "${TEST_DIR}/inlineallow.out" \
+    && pass "inline gitleaks:allow does not hide the secret" \
+    || fail "gitleaks:allow must not bypass the gate, got: $(cat "${TEST_DIR}/inlineallow.out")"
+  grep -q "$(printf '^no\tallow2.txt\t')" "${TEST_DIR}/inlineallow.out" \
+    && pass "inline betterleaks:allow does not hide the secret" \
+    || fail "betterleaks:allow must not bypass the gate, got: $(cat "${TEST_DIR}/inlineallow.out")"
+}
+
+###############################################################################
+# Operator-owned ignore baseline (-i). An operator may keep a REVIEWED baseline
+# of accepted fingerprints in the overlay (<overlay>/.betterleaksignore); the
+# gate passes it via -i. Suppressing findings is a loosening, so — like
+# leakscan_extra_dep_dirs — it is read only from the overlay, never a repo/user
+# config; with no overlay the -i default (".") is replaced by a neutral empty
+# dir, so the finding still surfaces.
+###############################################################################
+test_operator_ignore_baseline() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing operator-owned betterleaks ignore baseline (-i)..."
+
+  local _saved_user="${USER_SANDBOX_CONFIG}"
+  USER_SANDBOX_CONFIG="${TEST_DIR}/opign-nouser.yaml"
+
+  local repo="${TEST_DIR}/opign"
+  mkdir -p "${repo}"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  local tok='ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z'
+  printf 'token = "%s"\n' "${tok}" > "${repo}/app.txt"
+  git -C "${repo}" add -A 2>/dev/null
+
+  # Baseline: the secret is in an unmasked path → flagged.
+  scan_repo_secrets "${repo}" > "${TEST_DIR}/opign-base.out"
+  grep -q "$(printf '^no\tapp.txt\t')" "${TEST_DIR}/opign-base.out" \
+    && pass "secret flagged without an operator baseline" \
+    || fail "app.txt should be flagged by default, got: $(cat "${TEST_DIR}/opign-base.out")"
+
+  # Seed an overlay baseline with the finding fingerprints exactly as
+  # betterleaks derives them for this workspace (they are path-based).
+  local report; report="$(mktemp "${TEST_DIR}/opign-fp-XXXXXX")"
+  _betterleaks_run "$(realpath "${repo}")" "${report}" "" "" >/dev/null 2>&1 || true
+  local overlay="${TEST_DIR}/opign-overlay"
+  mkdir -p "${overlay}"
+  jq -r '.[].Fingerprint' "${report}" > "${overlay}/.betterleaksignore"
+
+  # Operator overlay baseline suppresses the accepted fingerprints.
+  ( export SANDBOX_OVERLAY="${overlay}"; scan_repo_secrets "${repo}" ) > "${TEST_DIR}/opign-op.out"
+  grep -q "$(printf '\tapp.txt\t')" "${TEST_DIR}/opign-op.out" \
+    && fail "operator baseline should suppress the accepted finding, got: $(cat "${TEST_DIR}/opign-op.out")" \
+    || pass "operator overlay .betterleaksignore suppresses the accepted fingerprint"
+
+  # Without the overlay the baseline does not apply (neutral -i) → still flagged.
+  scan_repo_secrets "${repo}" > "${TEST_DIR}/opign-nooverlay.out"
+  grep -q "$(printf '^no\tapp.txt\t')" "${TEST_DIR}/opign-nooverlay.out" \
+    && pass "no overlay → neutral -i, finding still reported" \
+    || fail "without the overlay baseline app.txt should still be flagged"
+
+  USER_SANDBOX_CONFIG="${_saved_user}"
+}
+
+###############################################################################
 # secret_gate_repos — refuse, then pass after masking, then override
 ###############################################################################
 test_gate() {
@@ -801,6 +885,8 @@ main() {
   test_dep_dir_exclusion
   test_known_safe_paths
   test_dep_dir_config
+  test_inline_allow_ignored
+  test_operator_ignore_baseline
   test_gate
   test_gitconfig_secret
   test_scan_failure_fails_closed

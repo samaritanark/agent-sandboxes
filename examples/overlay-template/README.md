@@ -82,6 +82,9 @@ overlay-myteam/
 │                                `leakscan_extra_dep_dirs:` (operator-only
 │                                secret-scan skips) — see docs/reference/configuration.md
 ├── blocked-destinations.yaml    additional blocked domains/patterns
+├── .betterleaksignore           operator-owned secret-scan baseline: betterleaks
+│                                fingerprints the gate should accept (operator-only,
+│                                like leakscan_extra_dep_dirs) — see security-model.md
 ├── extra-ca-certs/              extra root CAs (see note below)
 │   └── *.crt
 ├── profiles/                    launch profiles (schema below)

@@ -109,11 +109,36 @@ matching it hides a file from the gate, so it holds specific well-known artifact
 names, never broad patterns — and lives in `LEAKSCAN_SKIP_PATHS` in
 `lib/filesystem.sh`, changed only through source review.
 
-The gate also runs betterleaks under its own generated config, which takes
-precedence over any `.gitleaks.toml` a workspace ships. This is deliberate: it
-means an untrusted repo cannot weaken the scan by allowlisting its own secrets
-away. The full default betterleaks ruleset always applies; a repo config can
-only *add* rules, never remove them.
+### Owning betterleaks' allowlist inputs
+
+The gate also owns the inputs betterleaks would otherwise take from the
+workspace, so an untrusted repo cannot quietly allowlist its own secrets away —
+with one documented exception, noted at the end of this section. Three channels
+are covered:
+
+- **Config.** betterleaks runs under the gate's own generated config, which
+  takes precedence over any `.gitleaks.toml` / `.betterleaks.toml` a workspace
+  ships. The full default ruleset always applies; a repo config can only *add*
+  rules, never remove them.
+- **Inline comments.** `# gitleaks:allow` / `# betterleaks:allow` annotations
+  are ignored (`--ignore-gitleaks-allow`), so a repo cannot exempt a line just
+  by commenting next to the secret.
+- **Fingerprint ignore file.** betterleaks' `-i` ignore path is pointed at an
+  operator-owned baseline — a `.betterleaksignore` (or `.gitleaksignore`) shipped
+  at the root of the **team overlay** — rather than the process working
+  directory. This is the sanctioned way to accept a reviewed finding, and like
+  `leakscan_extra_dep_dirs` it is operator-only, because suppressing a finding
+  loosens the scan.
+
+One gap remains, and it is worth stating plainly: betterleaks *also* always
+reads a `.gitleaksignore` / `.betterleaksignore` at the root of the tree it
+scans, and offers no flag to turn that off, so a workspace that commits one at
+its repo root can still suppress its own findings' fingerprints. The operator
+`-i` baseline is additive and cannot override it. Only the repo root is read
+this way — nested ignore files are not — so a committed root ignore file is
+exactly the kind of change `sandbox vet` review is meant to catch. Closing the
+gap in the scanner itself (relocating or refusing such a file) is tracked as a
+follow-up.
 
 ### Customising the skip list
 
