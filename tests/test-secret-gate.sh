@@ -120,6 +120,49 @@ spec:
 EOF
 }
 
+# fixture_sealed_extraobjects <file> — a SealedSecret nested as a Helm
+# `extraObjects:` list element (not a top-level document). The only secret is in
+# spec.encryptedData (line 8); the template block carries none. Exercises the
+# nested-object path: kind/apiVersion sit at the element indent, not indent 0.
+fixture_sealed_extraobjects() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<EOF
+extraObjects:
+  - apiVersion: bitnami.com/v1alpha1
+    kind: SealedSecret
+    metadata:
+      name: creds
+    spec:
+      encryptedData:
+        token: ${SEALED_TOK}
+      template:
+        metadata:
+          name: creds
+EOF
+}
+
+# fixture_extraobjects_mixed <file> — two elements in one extraObjects: list. The
+# first is a real SealedSecret (encryptedData, line 6, safe). The second is a
+# plaintext kind: Secret that reuses a spec.encryptedData: shape (line 11) to try
+# to borrow the first element's SealedSecret-ness. The list-element boundary must
+# keep them separate: line 6 exempt, line 11 still blocks.
+fixture_extraobjects_mixed() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<EOF
+extraObjects:
+  - apiVersion: bitnami.com/v1alpha1
+    kind: SealedSecret
+    spec:
+      encryptedData:
+        token: ${SEALED_TOK}
+  - apiVersion: v1
+    kind: Secret
+    spec:
+      encryptedData:
+        token: ${PLAIN_TOK}
+EOF
+}
+
 # fixture_sealed_multidoc <file> — a SealedSecret doc (encryptedData, line 7,
 # safe) and a sibling plaintext `kind: Secret` doc (stringData, line 14, must
 # still block) in one multi-document file.
@@ -700,9 +743,27 @@ test_finding_is_encrypted() {
   finding_is_encrypted "${d}/nested.yaml" 7 \
     && pass "top-level encryptedData exempt (nested fixture)" \
     || fail "line 7 top-level encryptedData should be exempt"
-  finding_is_encrypted "${d}/nested.yaml" 12 \
-    && fail "plaintext under nested spec.encryptedData must NOT be exempt" \
+  finding_is_encrypted "${d}/nested.yaml" 11 \
+    && fail "plaintext under nested spec.template.spec.encryptedData must NOT be exempt" \
     || pass "nested spec.encryptedData not exempt"
+
+  # Embedded SealedSecret (Helm extraObjects: list element): the encryptedData
+  # value (line 8) is exempt even though kind/apiVersion are not at indent 0.
+  fixture_sealed_extraobjects "${d}/extra.yaml"
+  finding_is_encrypted "${d}/extra.yaml" 8 \
+    && pass "embedded (extraObjects) SealedSecret value exempt" \
+    || fail "line 8 embedded encryptedData should be exempt"
+
+  # Two list elements: the real SealedSecret's value (line 6) is exempt; a
+  # plaintext element reusing the encryptedData shape (line 11) must NOT be — the
+  # first element's SealedSecret-ness cannot leak across the element boundary.
+  fixture_extraobjects_mixed "${d}/mixed-extra.yaml"
+  finding_is_encrypted "${d}/mixed-extra.yaml" 6 \
+    && pass "mixed extraObjects: real SealedSecret value exempt" \
+    || fail "line 6 SealedSecret element should be exempt"
+  finding_is_encrypted "${d}/mixed-extra.yaml" 11 \
+    && fail "plaintext element borrowing encryptedData shape must NOT be exempt" \
+    || pass "sibling plaintext list element not exempt"
 
   # Multi-doc: encryptedData in the SealedSecret doc (line 7) is exempt; the
   # sibling plaintext Secret doc's stringData (line 14) is not.
@@ -783,6 +844,22 @@ test_encrypted_scan_and_gate() {
     fail "gate should pass on a clean SealedSecret"
   fi
 
+  # (1b) An embedded SealedSecret (Helm extraObjects:) → sealed, gate passes.
+  local erepo="${TEST_DIR}/extrascan"
+  fixture_sealed_extraobjects "${erepo}/base/values.yaml"
+  scan_repo_secrets "${erepo}" > "${TEST_DIR}/extrascan.out"
+  grep -q "$(printf '^sealed\tbase/values.yaml\t')" "${TEST_DIR}/extrascan.out" \
+    && pass "embedded SealedSecret finding classified sealed" \
+    || fail "expected a sealed finding for extraObjects, got: $(cat "${TEST_DIR}/extrascan.out")"
+  grep -q "$(printf '^no\t')" "${TEST_DIR}/extrascan.out" \
+    && fail "embedded SealedSecret should produce no unmasked finding" \
+    || pass "no unmasked finding for embedded SealedSecret"
+  if ( secret_gate_repos "false" "${erepo}" >/dev/null 2>&1 ); then
+    pass "gate passes on an embedded SealedSecret"
+  else
+    fail "gate should pass on an embedded SealedSecret"
+  fi
+
   # (2) A clean SOPS file → sealed, gate passes.
   local srepo="${TEST_DIR}/sopsscan"
   fixture_sops "${srepo}/manifests/sops.yaml"
@@ -817,6 +894,22 @@ test_encrypted_leaks_still_block() {
     fail "gate must refuse when a plaintext secret sits beside a SealedSecret"
   fi
   pass "gate refuses on plaintext sibling of a SealedSecret"
+
+  # Mixed extraObjects: the plaintext list element beside a real SealedSecret
+  # element must still block (element boundary holds under real betterleaks).
+  local erepo="${TEST_DIR}/extrablock"
+  fixture_extraobjects_mixed "${erepo}/base/values.yaml"
+  scan_repo_secrets "${erepo}" > "${TEST_DIR}/extrablock.out"
+  grep -q "$(printf '^sealed\tbase/values.yaml\t')" "${TEST_DIR}/extrablock.out" \
+    && pass "mixed extraObjects: SealedSecret element classified sealed" \
+    || fail "expected a sealed finding in mixed extraObjects, got: $(cat "${TEST_DIR}/extrablock.out")"
+  grep -q "$(printf '^no\tbase/values.yaml\t')" "${TEST_DIR}/extrablock.out" \
+    && pass "mixed extraObjects: plaintext element classified unmasked" \
+    || fail "expected an unmasked finding in mixed extraObjects, got: $(cat "${TEST_DIR}/extrablock.out")"
+  if ( secret_gate_repos "false" "${erepo}" >/dev/null 2>&1 ); then
+    fail "gate must refuse on a plaintext element beside a SealedSecret element"
+  fi
+  pass "gate refuses on plaintext sibling list element"
 
   # SOPS file with an unencrypted key alongside ENC values must still block.
   local srepo="${TEST_DIR}/sopsblock"

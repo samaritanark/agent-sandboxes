@@ -427,11 +427,16 @@ _betterleaks_run() {
 # plaintext is unrecoverable without a key the workspace does not hold. Two
 # shapes are recognised:
 #
-#   * Bitnami SealedSecret — the finding sits inside a `kind: SealedSecret`
-#     (apiVersion *bitnami.com*) document's spec.encryptedData: block. Scoped to
-#     encryptedData specifically so a plaintext secret smuggled into the same
-#     file is NOT exempted: neither a sibling `kind: Secret` document in a
-#     multi-doc file, nor the SealedSecret's own spec.template.
+#   * Bitnami SealedSecret — the finding sits under the spec.encryptedData: of a
+#     `kind: SealedSecret` (apiVersion *bitnami.com*) object. The object may be a
+#     top-level document OR a mapping nested inside a block sequence (e.g. a
+#     SealedSecret in a Helm `extraObjects:` list), so block-sequence "- "
+#     markers are folded into indentation when walking the tree. kind and
+#     apiVersion must be siblings of that spec: WITHIN the same object (one
+#     sequence element), so a plaintext secret smuggled into the same file is NOT
+#     exempted: not a sibling `kind: Secret` document/list-element, not the
+#     SealedSecret's own spec.template, and not a SealedSecret elsewhere in the
+#     list vouching for a different element.
 #
 #   * Mozilla SOPS — the flagged secret's own column span sits *inside* a SOPS
 #     `ENC[AES256_GCM,...]` envelope on the flagged line. Containment (not mere
@@ -484,12 +489,14 @@ finding_is_encrypted() {
     fi
   fi
 
-  # SealedSecret: cheap top-level pre-filter before buffering the file in awk.
-  grep -Eq '^kind:[[:space:]]*SealedSecret[[:space:]]*$' "${file}" 2>/dev/null || return 1
+  # SealedSecret: cheap pre-filter before buffering the file in awk. Allow the
+  # `kind: SealedSecret` line to be indented and/or introduced by a sequence
+  # marker so a SealedSecret nested in a list (Helm extraObjects:) still primes.
+  grep -Eq '^[[:space:]]*(-[[:space:]]+)?kind:[[:space:]]*SealedSecret[[:space:]]*$' \
+    "${file}" 2>/dev/null || return 1
 
   local verdict
   verdict="$(awk -v target="${line}" '
-    function indent_of(s,   n) { n = 0; while (substr(s, n + 1, 1) == " ") n++; return n }
     { lines[NR] = $0 }
     END {
       if (target < 1 || target > NR) { print "0"; exit }
@@ -502,38 +509,79 @@ finding_is_encrypted() {
           else if (i > target) { de = i - 1; break }
         }
       }
-      # That document must be, at its top level, a Bitnami SealedSecret.
-      kindok = 0; apiok = 0
+      # Precompute, for every line in the document window: its content indent
+      # (leading spaces with each block-sequence "- " marker folded into the two
+      # columns of indentation it introduces, so a mapping nested in a list is
+      # walked at its true depth), whether it is a mapping key (and that key +
+      # value), and whether it starts a sequence element (item[]). item[] is what
+      # bounds one object from its list siblings.
       for (i = ds; i <= de; i++) {
-        if (indent_of(lines[i]) != 0) continue
-        if (lines[i] ~ /^kind:[[:space:]]*SealedSecret[[:space:]]*$/) kindok = 1
-        if (lines[i] ~ /^apiVersion:.*bitnami\.com/) apiok = 1
-      }
-      if (!kindok || !apiok) { print "0"; exit }
-      # Walk the mapping-key ancestry down to the target line; it must nest
-      # directly under a top-level spec: > encryptedData:. depth is the live
-      # ancestor stack. The exemption is pinned to exactly two levels deep with
-      # `spec` at the document root (indent 0), so a value under any *other*
-      # spec:/encryptedData: pair — e.g. one nested inside spec.template — is
-      # NOT exempted and still blocks the launch.
-      depth = 0
-      for (i = ds; i <= target; i++) {
-        if (lines[i] ~ /^[[:space:]]*($|#)/) continue          # blank / comment
-        if (lines[i] !~ /^[[:space:]]*[^[:space:]][^:]*:/) continue  # not a key
-        ind = indent_of(lines[i])
-        key = lines[i]; sub(/^[[:space:]]*/, "", key); sub(/:.*$/, "", key)
-        while (depth > 0 && stackInd[depth] >= ind) depth--
-        if (i == target) {
-          if (depth == 2 && stackKey[depth] == "encryptedData" \
-              && stackKey[depth - 1] == "spec" && stackInd[depth - 1] == 0)
-            print "1"
-          else
-            print "0"
-          exit
+        s = lines[i]
+        t = s; sub(/^[[:space:]]+/, "", t)
+        if (t == "" || substr(t, 1, 1) == "#") { blank[i] = 1; cind[i] = -1; continue }
+        blank[i] = 0
+        L = length(s); pos = 0
+        while (pos < L && substr(s, pos + 1, 1) == " ") pos++
+        it = 0
+        while (pos < L && substr(s, pos + 1, 1) == "-" && (pos + 2 > L || substr(s, pos + 2, 1) == " ")) {
+          it = 1; pos++
+          while (pos < L && substr(s, pos + 1, 1) == " ") pos++
         }
-        depth++; stackInd[depth] = ind; stackKey[depth] = key
+        cind[i] = pos; item[i] = it
+        rest = substr(s, pos + 1)
+        if (rest ~ /^[^[:space:]#][^:]*:([[:space:]].*)?$/) {
+          iskey[i] = 1
+          k = rest; sub(/:.*$/, "", k); key[i] = k
+          v = rest; sub(/^[^:]*:[[:space:]]*/, "", v); val[i] = v
+        } else { iskey[i] = 0; key[i] = ""; val[i] = "" }
       }
-      print "0"
+      if (blank[target]) { print "0"; exit }
+
+      # The target must nest directly under spec: > encryptedData:. Resolve its
+      # parent and grandparent as the nearest preceding key lines at a strictly
+      # smaller content indent (block-YAML structural parents).
+      tInd = cind[target]
+      p = -1
+      for (j = target - 1; j >= ds; j--) {
+        if (blank[j]) continue
+        if (cind[j] < tInd) { if (iskey[j]) p = j; break }
+      }
+      if (p < 0 || key[p] != "encryptedData") { print "0"; exit }
+      gp = -1
+      for (j = p - 1; j >= ds; j--) {
+        if (blank[j]) continue
+        if (cind[j] < cind[p]) { if (iskey[j]) gp = j; break }
+      }
+      if (gp < 0 || key[gp] != "spec") { print "0"; exit }
+      specInd = cind[gp]
+
+      # Bound the SINGLE object (mapping / sequence element) that directly owns
+      # this spec:, then require kind: SealedSecret + apiVersion *bitnami.com*
+      # among the keys at spec: s indent WITHIN that object. Scanning up stops at
+      # the element start (item[]) or a dedent; scanning down stops at the next
+      # sibling element or a dedent. So a SealedSecret in another list element,
+      # or a nested spec.template.spec:, cannot vouch for this value.
+      start = ds
+      for (j = gp; j >= ds; j--) {
+        if (blank[j]) continue
+        if (cind[j] > specInd) continue
+        if (cind[j] < specInd) { start = j + 1; break }
+        start = j
+        if (item[j]) break
+      }
+      end = de + 1
+      for (j = gp + 1; j <= de; j++) {
+        if (blank[j]) continue
+        if (cind[j] < specInd) { end = j; break }
+        if (cind[j] == specInd && item[j]) { end = j; break }
+      }
+      kindok = 0; apiok = 0
+      for (j = start; j < end; j++) {
+        if (blank[j] || cind[j] != specInd || !iskey[j]) continue
+        if (key[j] == "kind" && val[j] ~ /^SealedSecret[[:space:]]*$/) kindok = 1
+        if (key[j] == "apiVersion" && val[j] ~ /bitnami\.com/) apiok = 1
+      }
+      print (kindok && apiok) ? "1" : "0"
     }
   ' "${file}")"
   [[ "${verdict}" == "1" ]] && return 0
