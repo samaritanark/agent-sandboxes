@@ -588,13 +588,61 @@ finding_is_encrypted() {
   return 1
 }
 
-# scan_repo_secrets <repo> — scan a workspace with betterleaks and emit one TSV
-# line per finding: "<class>\t<relpath>\t<RuleID>\t<line>\t<match>", where class
-# is one of: yes (secret in a masked path, hidden from the agent), sealed
-# (secret is an encrypted-at-rest value — SealedSecret/SOPS — the agent may read
-# safely, see finding_is_encrypted), no (secret in an unmasked path), gitconfig
-# (secret in .git/config), or error (scan failed). Secret values are redacted
-# (--redact).
+# _leakscan_finding_accepted <accept_file> <real_repo> <relpath> <rule> <line>
+# <startcol> <endcol> — return 0 iff this finding is a recorded, honorable
+# false positive: accept_file is non-empty AND lists this finding's
+# `relpath:rule:line:hash` fingerprint (hash recomputed here, so replacing the
+# value breaks the match) AND the file is git-TRACKED (committed content the
+# vetting signature actually covers — a gitignored/untracked file is not, so it
+# is never accepted). Returns 1 otherwise.
+_leakscan_finding_accepted() {
+  local accept_file="$1" real_repo="$2" relpath="$3" rule="$4" line="$5" sc="$6" ec="$7"
+  [[ -n "${accept_file}" && -s "${accept_file}" ]] || return 1
+  local h fp
+  h="$(_leakscan_value_hash "${real_repo}/${relpath}" "${line}" "${sc}" "${ec}")" || return 1
+  [[ -n "${h}" ]] || return 1
+  fp="${relpath}:${rule}:${line}:${h}"
+  grep -qxF "${fp}" "${accept_file}" 2>/dev/null || return 1
+  # Tracked-file gate. fsmonitor/hooks disabled so an untrusted repo config can't
+  # exec anything on this read.
+  git -C "${real_repo}" -c core.fsmonitor= -c core.hooksPath=/dev/null \
+    ls-files --error-unmatch -- "${relpath}" >/dev/null 2>&1
+}
+
+# vetted_accepted_fingerprints <repo> — the accepted_secrets fingerprints to
+# honor for a repo at launch, or NOTHING unless the repo is currently vetted (a
+# signed attestation verifies at HEAD over a clean tree — vetting_status_repo).
+# The committed accept-list carries weight only because the vetting signature
+# covers it; an unvetted (or unsignable) repo's list is ignored, independent of
+# the vetting *posture* (off/advisory/required). Consumed by the secret gate and
+# the `sandbox check` preview to decide what scan_repo_secrets may downgrade to
+# `accepted`.
+vetted_accepted_fingerprints() {
+  local repo="$1" line status
+  line="$(vetting_status_repo "${repo}" 2>/dev/null)"
+  IFS=$'\t' read -r status _ <<<"${line}"
+  [[ "${status}" == "vetted" ]] || return 0
+  load_repo_accepted_secrets "${repo}"
+}
+
+# scan_repo_secrets <repo> [accept_file] — scan a workspace with betterleaks and
+# emit one TSV line per finding: "<class>\t<relpath>\t<RuleID>\t<line>\t<match>",
+# where class is one of: yes (secret in a masked path, hidden from the agent),
+# sealed (secret is an encrypted-at-rest value — SealedSecret/SOPS — the agent may
+# read safely, see finding_is_encrypted), accepted (a reviewed false positive the
+# operator recorded and the vetting signature blessed — see accept_file below),
+# no (secret in an unmasked path), gitconfig (secret in .git/config), or error
+# (scan failed). Secret values are redacted (--redact).
+#
+# accept_file (optional): a plain list of `relpath:rule:line:hash` fingerprints
+# the CALLER has already decided may be honored — i.e. the repo is vetted (see
+# vetted_accepted_fingerprints); this function applies no vetting policy of its
+# own. A would-be `no` finding is downgraded to `accepted` only when its
+# fingerprint (with hash recomputed here via _leakscan_value_hash, so a changed
+# value no longer matches) is listed AND its file is git-TRACKED. The tracked
+# check is the security boundary: the attestation covers committed content, so a
+# finding in a gitignored/untracked file is never in the signed tree and must
+# never be accepted, even if a fingerprint for it appears in the list.
 #
 # Two scans run. (1) A whole-workspace directory scan — betterleaks excludes
 # .git/ from directory walks, so this never sees anything under .git, and a
@@ -625,7 +673,7 @@ finding_is_encrypted() {
 # Nested (non-root) ignore files are not auto-read, and inline allow comments
 # and a repo-local .gitleaks.toml are already neutralized.
 scan_repo_secrets() {
-  local repo="$1"
+  local repo="$1" accept_file="${2:-}"
   local real_repo
   real_repo="$(realpath "${repo}")"
 
@@ -661,6 +709,9 @@ scan_repo_secrets() {
       printf 'sealed\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
     elif is_path_masked "${repo}" "${relpath}"; then
       printf 'yes\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
+    elif _leakscan_finding_accepted "${accept_file}" "${real_repo}" "${relpath}" \
+           "${ruleid}" "${line}" "${startcol}" "${endcol}"; then
+      printf 'accepted\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
     else
       printf 'no\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
     fi
@@ -803,6 +854,31 @@ _print_mask_add_commands() {
   done
 }
 
+# _print_exceptions_add_commands <entry>... — emit one ready-to-run
+# `sandbox exceptions add` command per repo, listing that repo's unmasked
+# findings as RELPATH:RULE:LINE specs (the value hash is resolved by the
+# command). Mirrors _print_mask_add_commands.
+_print_exceptions_add_commands() {
+  local entry repo relpath rr rp ru rl r found e
+  local -a seen_repos=()
+  for entry in "$@"; do
+    IFS=$'\t' read -r repo relpath _ _ _ <<<"${entry}"
+    found=false
+    for r in ${seen_repos[@]+"${seen_repos[@]}"}; do
+      [[ "${r}" == "${repo}" ]] && { found=true; break; }
+    done
+    [[ "${found}" == true ]] && continue
+    seen_repos+=("${repo}")
+
+    local cmd="        sandbox exceptions add --repo ${repo}"
+    for e in "$@"; do
+      IFS=$'\t' read -r rr rp ru rl _ <<<"${e}"
+      [[ "${rr}" == "${repo}" ]] && cmd+=" $(printf '%q' "${rp}:${ru}:${rl}")"
+    done
+    echo "${cmd}" >&2
+  done
+}
+
 # secret_gate_repos <accept_flag> <repo>... — scan every workspace with
 # betterleaks and refuse the launch if any secret lives in a file the mask
 # would not hide. Fail closed: a missing betterleaks aborts. With
@@ -829,8 +905,13 @@ secret_gate_repos() {
   local -a gitconfig=()
   local total_masked=0
   local total_encrypted=0
-  local repo m relpath ruleid ln match
+  local total_accepted=0
+  local repo m relpath ruleid ln match accept_file
   for repo in "${repos[@]}"; do
+    # The exceptions list is honored only for a currently-vetted repo; otherwise
+    # this file is empty and nothing is downgraded to `accepted`.
+    accept_file="$(mktemp "${TMPDIR:-/tmp}/sandbox-accept-XXXXXX")"
+    vetted_accepted_fingerprints "${repo}" > "${accept_file}" 2>/dev/null || true
     while IFS=$'\t' read -r m relpath ruleid ln match; do
       [[ -z "${relpath}" ]] && continue
       # An `error` sentinel means betterleaks could not be trusted to have
@@ -838,6 +919,7 @@ secret_gate_repos() {
       # risk passing a repo whose secrets were never inspected. The override
       # does not apply here — it accepts *known* secrets, not an unknown scan.
       if [[ "${m}" == "error" ]]; then
+        rm -f "${accept_file}"
         echo "" >&2
         echo "ERROR: betterleaks failed to scan ${repo} (${relpath})." >&2
         echo "       The workspace could not be verified free of unmasked" >&2
@@ -849,10 +931,12 @@ secret_gate_repos() {
       case "${m}" in
         yes) (( total_masked++ )) || true ;;
         sealed) (( total_encrypted++ )) || true ;;
+        accepted) (( total_accepted++ )) || true ;;
         gitconfig) gitconfig+=("${repo}"$'\t'"${relpath}"$'\t'"${ruleid}"$'\t'"${ln}"$'\t'"${match}") ;;
         *) unmasked+=("${repo}"$'\t'"${relpath}"$'\t'"${ruleid}"$'\t'"${ln}"$'\t'"${match}") ;;
       esac
-    done < <(scan_repo_secrets "${repo}")
+    done < <(scan_repo_secrets "${repo}" "${accept_file}")
+    rm -f "${accept_file}"
   done
 
   if [[ "${total_masked}" -gt 0 ]]; then
@@ -860,6 +944,9 @@ secret_gate_repos() {
   fi
   if [[ "${total_encrypted}" -gt 0 ]]; then
     echo "  ${total_encrypted} secret finding(s) are encrypted at rest (SealedSecret/SOPS); the agent reads only ciphertext."
+  fi
+  if [[ "${total_accepted}" -gt 0 ]]; then
+    echo "  ${total_accepted} secret finding(s) accepted via the vetted exceptions list (reviewed false positives; the agent WILL read these)."
   fi
 
   if [[ "${#unmasked[@]}" -eq 0 && "${#gitconfig[@]}" -eq 0 ]]; then
@@ -891,6 +978,11 @@ secret_gate_repos() {
     echo "      <repo>/.sandbox/config.yaml masked_paths:):" >&2
     echo "" >&2
     _print_mask_add_commands "${unmasked[@]}"
+    echo "" >&2
+    echo "    - Or, if a finding is a reviewed false positive, record it as an" >&2
+    echo "      exception (honored once a reviewer vets the repo — 'sandbox vet'):" >&2
+    echo "" >&2
+    _print_exceptions_add_commands "${unmasked[@]}"
   fi
 
   if [[ "${#gitconfig[@]}" -gt 0 ]]; then

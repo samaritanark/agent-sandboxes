@@ -28,6 +28,13 @@ source "${SANDBOX_ROOT}/lib/config.sh"
 source "${SANDBOX_ROOT}/lib/profile.sh"
 source "${SANDBOX_ROOT}/lib/filesystem.sh"
 source "${SANDBOX_ROOT}/lib/manifest.sh"
+# The gate now consults vetting status to decide whether to honor a repo's
+# accepted_secrets list (Phase 2), so the vetting unit is in scope here too.
+source "${SANDBOX_ROOT}/lib/vetting.sh"
+
+# Hermetic user config so a real ~/.sandbox/config.yaml never leaks into a test.
+USER_SANDBOX_CONFIG="${TEST_DIR}/user-config.yaml"
+: > "${USER_SANDBOX_CONFIG}"
 
 # eq <label> <expected> <actual>
 eq() {
@@ -1037,6 +1044,136 @@ test_encrypted_leaks_still_block() {
 }
 
 ###############################################################################
+# scan_repo_secrets accept-list — a `no` finding whose fingerprint is in the
+# accept-file is downgraded to `accepted`, BUT only for a git-tracked file; a
+# gitignored/untracked file is never accepted (not in the signed tree). A
+# changed value (wrong hash) does not match.
+###############################################################################
+test_scan_acceptance() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing scan_repo_secrets accept-list downgrade + tracked-file guard..."
+
+  local repo="${TEST_DIR}/accept"
+  mkdir -p "${repo}/deploy"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  printf 'api_key: %s\n' "${PLAIN_TOK}" > "${repo}/deploy/values.yaml"
+  # A gitignored local file with its own secret — present at scan time but NOT
+  # part of the tracked/signed tree.
+  printf 'untracked.txt\n' > "${repo}/.gitignore"
+  printf 'SECRET=%s\n' "${SEALED_TOK}" > "${repo}/untracked.txt"
+  git -C "${repo}" add -A 2>/dev/null   # tracks deploy/values.yaml + .gitignore
+
+  # Resolve real fingerprints (Phase 1 resolver) for both files.
+  local rule ln grule gln
+  IFS=$'\t' read -r _ _ rule ln _ < <(scan_repo_secrets "${repo}" | grep "^no	deploy/values.yaml	" | head -n1)
+  IFS=$'\t' read -r _ _ grule gln _ < <(scan_repo_secrets "${repo}" | grep "^no	untracked.txt	" | head -n1)
+  local fp_tracked fp_ignored
+  fp_tracked="$(leakscan_fingerprints_for "${repo}" "deploy/values.yaml" "${rule}" "${ln}")"
+  fp_ignored="$(leakscan_fingerprints_for "${repo}" "untracked.txt" "${grule}" "${gln}")"
+  [[ -n "${fp_tracked}" && -n "${fp_ignored}" ]] || fail "could not resolve fingerprints"
+
+  local accept="${TEST_DIR}/accept.list" out="${TEST_DIR}/accept.out"
+  printf '%s\n%s\n' "${fp_tracked}" "${fp_ignored}" > "${accept}"
+  scan_repo_secrets "${repo}" "${accept}" > "${out}"
+
+  grep -q "$(printf '^accepted\tdeploy/values.yaml\t')" "${out}" \
+    && pass "tracked finding with matching fingerprint → accepted" \
+    || fail "tracked finding should be accepted, got: $(cat "${out}")"
+
+  # SECURITY: gitignored file is not in the signed tree; a matching fingerprint
+  # must NOT accept it.
+  grep -q "$(printf '^accepted\tuntracked.txt\t')" "${out}" \
+    && fail "gitignored file must NOT be accepted (not tracked): $(cat "${out}")" \
+    || pass "gitignored file stays blocking despite an accept-list entry"
+  grep -q "$(printf '^no\tuntracked.txt\t')" "${out}" \
+    && pass "gitignored file classified unmasked" \
+    || fail "expected gitignored file to remain 'no'"
+
+  # A wrong/tampered hash does not match (value-binding).
+  printf 'deploy/values.yaml:%s:%s:deadbeefdeadbeef\n' "${rule}" "${ln}" > "${accept}"
+  scan_repo_secrets "${repo}" "${accept}" > "${out}"
+  grep -q "$(printf '^no\tdeploy/values.yaml\t')" "${out}" \
+    && pass "wrong hash does not accept (value-binding holds)" \
+    || fail "tampered-hash fingerprint should not be accepted, got: $(cat "${out}")"
+
+  # No accept-file → unchanged behavior.
+  scan_repo_secrets "${repo}" > "${out}"
+  grep -q "$(printf '^no\tdeploy/values.yaml\t')" "${out}" \
+    && pass "no accept-file → finding stays 'no'" \
+    || fail "without an accept-file the finding should be 'no'"
+}
+
+###############################################################################
+# secret_gate_repos — the exceptions list is honored ONLY when the repo is
+# vetted (a signed attestation verifies at HEAD). End-to-end with real SSH
+# signing; skips gracefully where signing is unavailable.
+###############################################################################
+test_exceptions_gate_vetted() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  command -v ssh-keygen &>/dev/null || skip "ssh-keygen not installed"
+  info "Testing exceptions honored only when vetted..."
+
+  local signer="reviewer@sandbox.test"
+  local trust_root="${TEST_DIR}/vet-allowed_signers"
+  ssh-keygen -q -t ed25519 -f "${TEST_DIR}/vet-id" -N "" -C "${signer}" 2>/dev/null || skip "ssh-keygen failed"
+  printf '%s %s\n' "${signer}" "$(awk '{print $1" "$2}' "${TEST_DIR}/vet-id.pub")" > "${trust_root}"
+  printf 'x' | ssh-keygen -Y sign -f "${TEST_DIR}/vet-id" -n git >/dev/null 2>&1 || skip "SSH signing unavailable"
+
+  local _saved_user="${USER_SANDBOX_CONFIG}"
+  USER_SANDBOX_CONFIG="${TEST_DIR}/vet-user.yaml"
+  cat > "${USER_SANDBOX_CONFIG}" <<EOF
+vetting_trust_root: ${trust_root}
+vetting_trust_format: ssh
+EOF
+
+  local repo="${TEST_DIR}/vetgate"
+  mkdir -p "${repo}/deploy"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "${signer}"
+  git -C "${repo}" config user.name "Reviewer"
+  printf 'api_key: %s\n' "${PLAIN_TOK}" > "${repo}/deploy/values.yaml"
+  git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m init
+
+  # Record an exception for every unmasked finding (one planted token can trip
+  # more than one betterleaks rule; the gate only passes when all are accepted —
+  # exactly what a reviewer would do from the gate's printed list). Commit them.
+  local frel frule fln fp one recorded=0
+  while IFS=$'\t' read -r _ frel frule fln _; do
+    [[ -z "${frel}" ]] && continue
+    fp="$(leakscan_fingerprints_for "${repo}" "${frel}" "${frule}" "${fln}")"
+    while IFS= read -r one; do
+      [[ -z "${one}" ]] && continue
+      config_add_accepted_secret "${repo}/.sandbox/config.yaml" "${one}" "reviewed FP"
+      recorded=$((recorded + 1))
+    done <<<"${fp}"
+  done < <(scan_repo_secrets "${repo}" | grep "^no	" || true)
+  [[ "${recorded}" -gt 0 ]] || fail "expected at least one finding to record"
+  git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m "record exceptions"
+
+  # UNVETTED (no tag yet): the committed list carries no weight → gate refuses.
+  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "unvetted repo must not honor the exceptions list"
+  fi
+  pass "unvetted repo: exception ignored, gate refuses"
+
+  # Attest HEAD with the trusted key → vetted → exception honored → gate passes.
+  local sha; sha="$(git -C "${repo}" rev-parse HEAD)"
+  git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${TEST_DIR}/vet-id" \
+    tag -s "agent-vetted/${sha}" -m "vetted" 2>/dev/null || { USER_SANDBOX_CONFIG="${_saved_user}"; skip "tag signing failed"; }
+  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+    pass "vetted repo: exception honored, gate passes"
+  else
+    fail "vetted repo should honor the exception and pass"
+  fi
+
+  USER_SANDBOX_CONFIG="${_saved_user}"
+}
+
+###############################################################################
 # build_volume_mounts_block — a configured masked_path becomes an overlay mount
 ###############################################################################
 test_manifest_mount() {
@@ -1083,6 +1220,8 @@ main() {
   test_scan_failure_fails_closed
   test_encrypted_scan_and_gate
   test_encrypted_leaks_still_block
+  test_scan_acceptance
+  test_exceptions_gate_vetted
 
   echo ""
   echo "All secret-gate tests passed."
