@@ -99,7 +99,7 @@ test_session_id_format() {
 test_required_tools() {
   info "Testing required tools availability..."
 
-  local required=("kubectl" "jq" "git" "xxd" "sha256sum" "curl")
+  local required=("kubectl" "jq" "git" "xxd" "curl")
   local all_ok=true
 
   for tool in "${required[@]}"; do
@@ -110,6 +110,14 @@ test_required_tools() {
       all_ok=false
     fi
   done
+
+  # sha-256 hasher: sha256sum on Linux, shasum on stock macOS — either works.
+  if command -v sha256sum &>/dev/null || command -v shasum &>/dev/null; then
+    pass "Tool available: sha256sum (or shasum)"
+  else
+    warn "Tool NOT available: sha256sum (or shasum) (install before running sandbox)"
+    all_ok=false
+  fi
 
   if [[ "${all_ok}" == "true" ]]; then
     pass "All required tools are available"

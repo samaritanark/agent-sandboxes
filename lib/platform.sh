@@ -87,6 +87,42 @@ version_ge() {
   return 0
 }
 
+# sha256_verify — read "sha256␠␠filename" check lines on stdin and verify them,
+# using whatever sha-256 checker the host has. GNU coreutils ships `sha256sum`;
+# stock macOS ships neither it nor GNU tools but does carry `shasum` (Perl),
+# whose `-a 256 -c` reads the identical checksum-file format. Prefer sha256sum,
+# fall back to shasum.
+#
+# Exit status is three-way on purpose so a caller can tell a genuine mismatch
+# apart from an unusable environment: 0 = verified, 1 = a checksum mismatched,
+# 2 = no checker is installed (nothing was verified). install_betterleaks relies
+# on this split so a missing checker on macOS is treated as "can't verify, skip"
+# rather than misread as a tampered download.
+sha256_verify() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c - >/dev/null 2>&1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -c - >/dev/null 2>&1
+  else
+    return 2
+  fi
+}
+
+# sha256_hash_cmd — print the argv (one token per line) of the host's sha-256
+# hasher in "emit <hash>␠␠<path>" mode: `sha256sum` on GNU, `shasum -a 256` on
+# macOS (both produce the identical two-space format). Prints nothing and
+# returns 1 if neither exists. Callers read it into an array (read_into_array)
+# and run it — typically via `find -exec` to batch a whole workspace.
+sha256_hash_cmd() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s\n' sha256sum
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s\n' shasum -a 256
+  else
+    return 1
+  fi
+}
+
 # is_linux / is_macos — boolean helpers
 is_linux() {
   [[ "$(detect_platform)" == "linux" ]]

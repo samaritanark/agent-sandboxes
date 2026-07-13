@@ -309,13 +309,21 @@ check_dependency_no_host_mounts() {
 check_prerequisites() {
   local missing=0
 
-  local required_tools=("kubectl" "jq" "git" "xxd" "sha256sum")
+  local required_tools=("kubectl" "jq" "git" "xxd")
   for tool in "${required_tools[@]}"; do
     if ! command -v "${tool}" &>/dev/null; then
       echo "WARN: Required tool not found: ${tool}" >&2
       (( missing++ )) || true
     fi
   done
+
+  # sha-256 hashing (workspace drift) and checksum verification (setup) need a
+  # hasher, but the binary name differs by platform: GNU sha256sum on Linux,
+  # shasum on stock macOS. Either one satisfies the requirement.
+  if ! command -v sha256sum &>/dev/null && ! command -v shasum &>/dev/null; then
+    echo "WARN: Required tool not found: sha256sum (or shasum)" >&2
+    (( missing++ )) || true
+  fi
 
   # betterleaks gates Tier 2/3 launches (the secret scan in lib/filesystem.sh
   # fails closed without it), so flag it more loudly than the truly optional

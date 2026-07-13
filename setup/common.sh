@@ -181,8 +181,20 @@ install_betterleaks() {
   fi
 
   # Verify our asset's checksum only: checksums.txt lists every platform's
-  # asset, and `sha256sum -c` errors on lines whose files are absent from tmp.
-  if ! ( cd "${tmp}" && grep " ${asset}\$" checksums.txt | sha256sum -c - >/dev/null 2>&1 ); then
+  # asset, so we grep out our one line — a whole-file `-c` errors on lines whose
+  # files are absent from tmp. sha256_verify picks the host's checker
+  # (sha256sum, or macOS's shasum) and returns 2 when neither exists, which we
+  # treat as "can't verify, skip" rather than a mismatch: stock macOS ships no
+  # sha256sum, and misreading its absence as tampering would hard-abort setup.
+  local sha_rc
+  ( cd "${tmp}" && grep " ${asset}\$" checksums.txt | sha256_verify ); sha_rc=$?
+  if [[ "${sha_rc}" == 2 ]]; then
+    rm -rf "${tmp}"
+    echo "WARN: no sha256 checker (sha256sum/shasum) found; cannot verify the betterleaks" >&2
+    echo "      download, so skipping install rather than trusting it. Tier 2/3 'sandbox run'" >&2
+    echo "      will fail closed until betterleaks is installed." >&2
+    return 0
+  elif [[ "${sha_rc}" != 0 ]]; then
     rm -rf "${tmp}"
     echo "ERROR: betterleaks ${asset} failed checksum verification; refusing to install a" >&2
     echo "       possibly-tampered secret scanner." >&2
