@@ -688,6 +688,87 @@ scan_repo_secrets() {
   [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
 }
 
+# _leakscan_value_hash <file> <line> <startcol> <endcol> — the single source of
+# truth for a finding's VALUE fingerprint: a 16-hex-char prefix of the SHA-256 of
+# the matched secret value, sliced out of the REAL source file so betterleaks'
+# --redact never has to be lifted. betterleaks reports StartColumn/EndColumn one
+# past the real 1-based match boundaries (see finding_is_encrypted / the tests'
+# colspan_of), so the value occupies columns [startcol-1 .. endcol-1] inclusive,
+# i.e. substr(line, startcol-1, endcol-startcol+1). Both `sandbox exceptions add`
+# (recording an accepted finding) and the launch gate (matching one) call this,
+# so the hash they compute is identical by construction. When the span is absent
+# (betterleaks reports 0/empty columns for some rules) it falls back to the whole
+# trimmed source line — coarser but still value-bearing and equally deterministic
+# for a given file, so add-time and gate-time still agree. Empty on error.
+_leakscan_value_hash() {
+  local file="$1" line="$2" startcol="$3" endcol="$4"
+  [[ -f "${file}" && "${line}" =~ ^[0-9]+$ ]] || return 1
+
+  local value
+  if [[ "${startcol}" =~ ^[0-9]+$ && "${endcol}" =~ ^[0-9]+$ \
+        && "${startcol}" -gt 1 && "${endcol}" -ge "${startcol}" ]]; then
+    value="$(awk -v n="${line}" -v sc="${startcol}" -v ec="${endcol}" \
+      'NR==n { printf "%s", substr($0, sc - 1, ec - sc + 1); exit }' "${file}")"
+  else
+    value="$(awk -v n="${line}" \
+      'NR==n { s=$0; sub(/^[[:space:]]+/,"",s); sub(/[[:space:]]+$/,"",s); printf "%s", s; exit }' \
+      "${file}")"
+  fi
+  [[ -n "${value}" ]] || return 1
+
+  local -a hcmd=()
+  read_into_array hcmd < <(sha256_hash_cmd) || return 1
+  printf '%s' "${value}" | "${hcmd[@]}" 2>/dev/null | awk '{ print substr($1, 1, 16); exit }'
+}
+
+# leakscan_fingerprints_for <repo> <relpath> <rule> <line> — resolve the
+# value-fingerprint entries for a specific finding the caller names by location,
+# for `sandbox exceptions add`. Runs betterleaks over the workspace with the SAME
+# config and ignore baseline the gate uses (so the recorded hash is exactly the
+# one the gate will recompute), selects the finding(s) at relpath+rule+line, and
+# prints one `relpath:rule:line:hash` per distinct matched value (sorted/unique).
+# Prints nothing and returns: 1 if no such finding exists in the current tree,
+# 2 if the scan itself failed, 3 if betterleaks/jq are unavailable.
+leakscan_fingerprints_for() {
+  local repo="$1" relpath="$2" rule="$3" line="$4"
+  command -v betterleaks &>/dev/null || return 3
+  command -v jq &>/dev/null || return 3
+  [[ "${line}" =~ ^[0-9]+$ ]] || return 1
+
+  local real_repo report config ignore_path empty_ignore_dir=""
+  real_repo="$(realpath "${repo}")"
+  report="$(mktemp "${TMPDIR:-/tmp}/sandbox-bl-fp-XXXXXX")"
+  config="$(mktemp "${TMPDIR:-/tmp}/sandbox-bl-cfg-XXXXXX")"
+  _leakscan_write_config "${repo}" "${config}"
+  ignore_path="$(_leakscan_ignore_path)"
+  if [[ -z "${ignore_path}" ]]; then
+    empty_ignore_dir="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-bl-ign-XXXXXX")"
+    ignore_path="${empty_ignore_dir}"
+  fi
+
+  local rc=0
+  if ! _betterleaks_run "${real_repo}" "${report}" "${config}" "${ignore_path}"; then
+    rc=2
+  else
+    local target="${real_repo}/${relpath}" sc ec hash emitted=0
+    while IFS=$'\t' read -r sc ec; do
+      hash="$(_leakscan_value_hash "${target}" "${line}" "${sc}" "${ec}")" || continue
+      [[ -n "${hash}" ]] || continue
+      printf '%s:%s:%s:%s\n' "${relpath}" "${rule}" "${line}" "${hash}"
+      emitted=1
+    done < <(jq -r --arg f "${target}" --arg r "${rule}" --argjson ln "${line}" \
+               '.[] | select(.File == $f and .RuleID == $r and .StartLine == $ln)
+                     | [(.StartColumn|tostring), (.EndColumn|tostring)] | @tsv' \
+               "${report}" 2>/dev/null | sort -u)
+    # Scan succeeded but named no such finding ⇒ not-found.
+    [[ "${emitted}" -eq 1 ]] || rc=1
+  fi
+
+  rm -f "${report}" "${config}"
+  [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
+  return "${rc}"
+}
+
 # _print_unmasked_findings <entry>... — render "repo<TAB>relpath<TAB>rule<TAB>
 # line<TAB>match" entries to stderr as a human-readable list.
 _print_unmasked_findings() {

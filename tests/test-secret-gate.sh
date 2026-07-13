@@ -311,6 +311,102 @@ test_config_add_masked_path() {
 }
 
 ###############################################################################
+# accepted_secrets: reader/writer (config) + the value-fingerprint hash. The
+# `sandbox exceptions` accept-list; scanner-free.
+###############################################################################
+test_exceptions_accept_list() {
+  info "Testing accepted_secrets reader/writer + value hash..."
+  local cfg="${TEST_DIR}/excwrite/.sandbox/config.yaml"
+  local fp1="deploy/values.yaml:generic-api-key:155:abc123def4567890"
+  local fp2="config/app.env:github-pat:3:0011223344556677"
+
+  config_add_accepted_secret "${cfg}" "${fp1}" "sealed secret, reviewed AH"
+  eq "creates accepted_secrets key" "${fp1}" \
+     "$(load_repo_accepted_secrets "${TEST_DIR}/excwrite")"
+
+  # The reason is a YAML comment the reader strips — the stored value is bare.
+  grep -q '# sealed secret, reviewed AH' "${cfg}" \
+    && pass "reason stored as a comment" || fail "reason comment missing"
+
+  # Idempotent on the fingerprint even with a different reason.
+  config_add_accepted_secret "${cfg}" "${fp1}" "a different note"
+  eq "dedup keeps one entry" "1" \
+     "$(load_repo_accepted_secrets "${TEST_DIR}/excwrite" | wc -l | tr -d ' ')"
+
+  # A second distinct fingerprint (no reason) is appended.
+  config_add_accepted_secret "${cfg}" "${fp2}"
+  eq "second fingerprint appended" "2" \
+     "$(load_repo_accepted_secrets "${TEST_DIR}/excwrite" | wc -l | tr -d ' ')"
+
+  # Coexists with a masked_paths block in the same file.
+  local cfg2="${TEST_DIR}/exccoexist/.sandbox/config.yaml"
+  mkdir -p "$(dirname "${cfg2}")"
+  printf 'masked_paths:\n  - "creds.json"\n' > "${cfg2}"
+  config_add_accepted_secret "${cfg2}" "${fp1}"
+  eq "masked_paths preserved" "creds.json" \
+     "$(load_repo_masked_paths "${TEST_DIR}/exccoexist")"
+  eq "accepted_secret added alongside" "${fp1}" \
+     "$(load_repo_accepted_secrets "${TEST_DIR}/exccoexist")"
+
+  # _leakscan_value_hash: 16-hex, deterministic, and equal to sha256 of the
+  # exact matched value sliced by betterleaks' columns.
+  local f="${TEST_DIR}/hashme.yaml"
+  printf 'token: %s\n' "${PLAIN_TOK}" > "${f}"
+  local h; h="$(_leakscan_value_hash "${f}" 1 $(colspan_of "${f}" 1 "${PLAIN_TOK}"))"
+  case "${h}" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) pass "value hash is a 16-hex prefix" ;;
+    *) fail "value hash not 16 hex: '${h}'" ;;
+  esac
+  local expected
+  expected="$(printf '%s' "${PLAIN_TOK}" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)"
+  eq "value hash matches sha256 of the sliced value" "${expected}" "${h}"
+
+  # Changing the value changes the hash (the property the gate relies on).
+  local f2="${TEST_DIR}/hashme2.yaml"
+  printf 'token: %s\n' "${SEALED_TOK}" > "${f2}"
+  local h2; h2="$(_leakscan_value_hash "${f2}" 1 $(colspan_of "${f2}" 1 "${SEALED_TOK}"))"
+  [[ "${h}" != "${h2}" ]] && pass "different value → different hash" \
+    || fail "hash should change when the value changes"
+}
+
+###############################################################################
+# leakscan_fingerprints_for — resolves a live finding to its recorded entry;
+# reports not-found for a location the scanner does not flag.
+###############################################################################
+test_fingerprint_resolver() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing leakscan_fingerprints_for..."
+
+  local repo="${TEST_DIR}/fpres"
+  mkdir -p "${repo}/deploy"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  printf 'api_key: %s\n' "${PLAIN_TOK}" > "${repo}/deploy/values.yaml"
+  git -C "${repo}" add -A 2>/dev/null
+
+  # Learn the rule+line the scanner assigns (avoid hard-coding a rule name).
+  local m rel rule ln match
+  IFS=$'\t' read -r m rel rule ln match < <(scan_repo_secrets "${repo}" | grep "^no	deploy/values.yaml	" | head -n1)
+  [[ -n "${rule}" ]] || fail "expected a finding in deploy/values.yaml to resolve"
+
+  # Capture rc without set -e aborting on the resolver's non-zero returns.
+  local out rc
+  rc=0; out="$(leakscan_fingerprints_for "${repo}" "deploy/values.yaml" "${rule}" "${ln}")" || rc=$?
+  eq "resolver returns 0 for a live finding" "0" "${rc}"
+  case "${out}" in
+    deploy/values.yaml:${rule}:${ln}:[0-9a-f]*) pass "resolved entry has RELPATH:RULE:LINE:HASH shape" ;;
+    *) fail "unexpected resolver output: '${out}'" ;;
+  esac
+
+  # A line the scanner does not flag → not-found (rc 1), no output.
+  rc=0; out="$(leakscan_fingerprints_for "${repo}" "deploy/values.yaml" "${rule}" 999)" || rc=$?
+  eq "resolver returns 1 for a non-finding location" "1" "${rc}"
+  [[ -z "${out}" ]] && pass "no output for a non-finding location" || fail "expected no output, got: '${out}'"
+}
+
+###############################################################################
 # scan_repo_secrets — classifies findings as masked / unmasked
 ###############################################################################
 test_scan_classification() {
@@ -972,6 +1068,8 @@ main() {
 
   test_is_path_masked
   test_config_add_masked_path
+  test_exceptions_accept_list
+  test_fingerprint_resolver
   test_manifest_mount
   test_finding_is_encrypted
   test_scan_classification
