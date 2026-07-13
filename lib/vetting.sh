@@ -419,11 +419,33 @@ vetting_gate_repos() {
 # logic the gate will (value-hash + tracked file), so the preview is exactly what
 # gets honored. Returns 0 to proceed (nothing recorded, the list is inert, or the
 # signer acknowledged), 1 to abort (declined, or cannot preview / cannot prompt).
+# vetting_committed_accepted_secrets <repo> — the accepted_secrets: fingerprints
+# recorded in the repo's HEAD *commit*, one per line. This deliberately reads the
+# COMMITTED blob (`HEAD:.sandbox/config.yaml`), never the working-tree file, and
+# that is the security boundary: an attestation signs HEAD's tree, so only a list
+# that is actually in that commit is covered by the signature. A gitignored or
+# otherwise-uncommitted .sandbox/config.yaml is NOT in HEAD — and, being ignored,
+# would not even register as a dirty tree — so it must never be honored. Reading
+# it from HEAD closes that gap at the source. Hardened via _vetting_git
+# (fsmonitor/hooks/filter drivers neutralized); `git show <rev>:<path>` emits the
+# stored blob and applies no smudge filters. Empty if the file is absent at HEAD,
+# the repo has no commit, or it is not a git repo.
+vetting_committed_accepted_secrets() {
+  local repo="$1" tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/sandbox-accept-src-XXXXXX")" || return 0
+  _vetting_git "${repo}" show "HEAD:${SANDBOX_REPO_CONFIG_NAME}" > "${tmp}" 2>/dev/null || true
+  extract_yaml_list_from_file "${tmp}" "accepted_secrets"
+  rm -f "${tmp}"
+}
+
 _vetting_acknowledge_exceptions() {
   local real_repo="$1" repo="$2" assume_yes="$3"
 
+  # Read the list from the commit about to be signed (HEAD), not the working
+  # tree — the signer must acknowledge exactly what the signature will cover and
+  # the gate will later honor. See vetting_committed_accepted_secrets.
   local -a entries=()
-  read_into_array entries < <(load_repo_accepted_secrets "${repo}")
+  read_into_array entries < <(vetting_committed_accepted_secrets "${repo}")
   [[ "${#entries[@]}" -gt 0 ]] || return 0
 
   if ! command -v betterleaks >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then

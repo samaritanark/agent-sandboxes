@@ -35,12 +35,15 @@ deploy/values.yaml:generic-api-key:155:3cd3c4be828647be
 
 Two properties make this safe rather than a backdoor:
 
-- **It only counts on a vetted repo.** A committed accept-list means nothing on
-  its own — anyone who can push to the repo (including a prompt-injected agent)
-  could add one. What gives it authority is the [vetting](vetting.md) signature:
-  a reviewer signs the whole tree, *including* this list, so accepting a finding
-  carries a human's cryptographic sign-off. On an unvetted repo the list is
-  ignored and the gate blocks exactly as before. (More on this in
+- **It only counts on a vetted repo, and only when committed.** A committed
+  accept-list means nothing on its own — anyone who can push to the repo
+  (including a prompt-injected agent) could add one. What gives it authority is
+  the [vetting](vetting.md) signature: a reviewer signs the whole tree,
+  *including* this list, so accepting a finding carries a human's cryptographic
+  sign-off. The gate reads the list from the **signed commit** (`HEAD`), not your
+  working copy, so an entry that is uncommitted — or hidden by `.gitignore` —
+  is never honored; you must commit it and (re-)vet. On an unvetted repo the list
+  is ignored and the gate blocks exactly as before. (More on this in
   [Integration with vetting](#integration-with-vetting-and-team-overlays).)
 - **It's bound to the value.** The hash is of the secret value the scanner
   matched. Replace that value — rotate the token, or slip a *real* secret onto

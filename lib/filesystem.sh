@@ -617,12 +617,18 @@ _leakscan_finding_accepted() {
 # the vetting *posture* (off/advisory/required). Consumed by the secret gate and
 # the `sandbox check` preview to decide what scan_repo_secrets may downgrade to
 # `accepted`.
+#
+# The list is read from the SIGNED commit (vetting_committed_accepted_secrets),
+# not the working tree: "vetted" only guarantees the tracked tree is clean, and
+# `git status --porcelain` does not flag gitignored files, so a working-tree read
+# would honor a gitignored/uncommitted .sandbox/config.yaml the signature never
+# covered. Reading HEAD's blob ties every honored fingerprint to the attestation.
 vetted_accepted_fingerprints() {
   local repo="$1" line status
   line="$(vetting_status_repo "${repo}" 2>/dev/null)"
   IFS=$'\t' read -r status _ <<<"${line}"
   [[ "${status}" == "vetted" ]] || return 0
-  load_repo_accepted_secrets "${repo}"
+  vetting_committed_accepted_secrets "${repo}"
 }
 
 # scan_repo_secrets <repo> [accept_file] — scan a workspace with betterleaks and
