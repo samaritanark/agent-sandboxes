@@ -29,7 +29,10 @@ For the design intent and threat model behind these controls, read
   launches anyway. Values that are **encrypted at rest** are exempt — a hit
   inside a Bitnami SealedSecret's `spec.encryptedData` or a Mozilla SOPS
   `ENC[...]` envelope is ciphertext the agent can read harmlessly, so it does
-  not gate (see [Encrypted-at-rest exemption](#encrypted-at-rest-exemption)).
+  not gate (see [Encrypted-at-rest exemption](#encrypted-at-rest-exemption)). A
+  genuine false positive can instead be recorded per-finding as an exception
+  that the gate honors only once the repo is vetted (see
+  [Accepting a reviewed false positive](#accepting-a-reviewed-false-positive)).
 - **Credentials**: claude/codex use OAuth (no API key injection);
   opencode key via K8s Secret; tier 3 infra creds via per-session Secrets
   (`--infra-token` → `$INFRA_TOKEN`; `--infra-kubeconfig` → mounted file)
@@ -81,6 +84,37 @@ only shares a line with an `ENC[...]` string (e.g. in a trailing comment).
 The gate cannot verify the value actually decrypts (it holds no key); `kind` +
 `apiVersion` + `encryptedData` scoping (SealedSecret) and envelope containment
 (SOPS) are the check.
+
+## Accepting a reviewed false positive
+
+Masking hides a whole file; the encrypted-at-rest exemption is automatic. Between
+them sits the case of a finding that is a genuine false positive — a documented
+example key, a dummy token in a fixture — where the agent still needs to read the
+file. For that, a reviewer can record a per-finding **exception** instead of
+masking the file or accepting every secret at launch:
+
+```bash
+sandbox exceptions add --repo ~/repos/app deploy/values.yaml:generic-api-key:155 \
+    --reason "documented example key"
+```
+
+Each entry is a value-bound fingerprint (`relpath:rule:line:sha256(value)`) under
+`accepted_secrets:` in the repo's `.sandbox/config.yaml`. Two properties keep this
+from being a workspace-authored bypass — the thing the gate otherwise refuses to
+allow:
+
+- **It counts only on a vetted repo.** A committed list carries no weight on its
+  own; the [vetting](../how-to/vetting.md) signature over the tree — including the
+  list — is its authority, so accepting a finding is a reviewer's cryptographic
+  sign-off, not the say-so of an untrusted workspace. `sandbox vet` surfaces the
+  exceptions and requires the signer to acknowledge them.
+- **It is bound to the value and to tracked content.** The hash is of the matched
+  value, so replacing the secret at that line re-blocks; and only a git-tracked
+  file (the signed content) can be excepted, so a gitignored/untracked local
+  secret is never accepted even if a fingerprint for it is listed.
+
+Full workflow, hand-authoring, and how this compares to an operator-wide
+`.betterleaksignore` baseline: [Accepting secret-gate false positives](../how-to/secret-exceptions.md).
 
 ## Dependency-tree exclusion
 
