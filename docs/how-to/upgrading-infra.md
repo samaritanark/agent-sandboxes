@@ -62,9 +62,18 @@ sandbox upgrade --cilium
 # Jump to an explicit version without editing the pins.
 sandbox upgrade --gvisor --to-gvisor 20260701.0
 
+# Refresh the host-side betterleaks secret scanner only (no cluster impact).
+sandbox upgrade --betterleaks
+
 # Update the CLI and then the infra, in that order.
 sandbox upgrade --all
 ```
+
+`--infra` also refreshes **betterleaks**, the host-side secret scanner that gates
+Tier 2/3 launches. Unlike the cluster stack it is just a binary on the host, so
+it upgrades on any platform (macOS included) and without the running-session
+guard below — swapping it neither restarts k3s nor drops sessions. It is a no-op
+when the installed copy already meets the pin.
 
 The infra phase re-runs the component installers with the target versions and
 re-records `~/.sandbox/infra-versions`, so `sandbox status` reflects the result.

@@ -210,7 +210,7 @@ route() {
     }
     # Reads cmd_upgrade's locals via dynamic scope (invisible to shellcheck).
     # shellcheck disable=SC2154
-    _upgrade_infra_phase() { echo "INFRA k3s=${do_k3s} cilium=${do_cilium} gvisor=${do_gvisor} to_cilium='${to_cilium}' force=${force} yes=${assume_yes}"; }
+    _upgrade_infra_phase() { echo "INFRA k3s=${do_k3s} cilium=${do_cilium} gvisor=${do_gvisor} betterleaks=${do_betterleaks} to_cilium='${to_cilium}' force=${force} yes=${assume_yes}"; }
     # Real exec() replaces the process and never returns; mimic that with exit
     # so any (unreachable in production) code after the exec call doesn't run.
     # shellcheck disable=SC2317
@@ -230,14 +230,17 @@ test_route_infra_and_components() {
   info "Testing --infra and component flags route to the infra phase only..."
   local out
   out="$(route '--infra' --infra)"
-  contains "--infra runs infra (all three)" "${out}" "INFRA k3s=true cilium=true gvisor=true"
+  contains "--infra runs infra (all four)" "${out}" "INFRA k3s=true cilium=true gvisor=true betterleaks=true"
   not_contains "--infra skips app" "${out}" "APP"
 
   out="$(route '--k3s' --k3s)"
-  contains "--k3s selects only k3s" "${out}" "INFRA k3s=true cilium=false gvisor=false"
+  contains "--k3s selects only k3s" "${out}" "INFRA k3s=true cilium=false gvisor=false betterleaks=false"
 
   out="$(route '--cilium --gvisor' --cilium --gvisor)"
-  contains "--cilium --gvisor selects those two" "${out}" "INFRA k3s=false cilium=true gvisor=true"
+  contains "--cilium --gvisor selects those two" "${out}" "INFRA k3s=false cilium=true gvisor=true betterleaks=false"
+
+  out="$(route '--betterleaks' --betterleaks)"
+  contains "--betterleaks selects only betterleaks" "${out}" "INFRA k3s=false cilium=false gvisor=false betterleaks=true"
 }
 
 test_route_all_reexecs_after_advance() {
@@ -245,13 +248,13 @@ test_route_all_reexecs_after_advance() {
   local out
   out="$(APP_SIM=advanced route '--all' --all)"
   contains "--all runs app first"          "${out}" "APP"
-  contains "--all re-execs for infra"      "${out}" "upgrade --k3s --cilium --gvisor"
+  contains "--all re-execs for infra"      "${out}" "upgrade --k3s --cilium --gvisor --betterleaks"
   not_contains "--all does not run infra in-process after advance" "${out}" "INFRA k3s="
 
   # Passthru: infra-relevant flags survive the re-exec; --app-only flags don't.
   out="$(APP_SIM=advanced route '--all passthru' --all --force -y --to-cilium 1.16)"
-  contains "re-exec carries the component + override + guards" \
-    "${out}" "upgrade --k3s --cilium --gvisor --to-cilium 1.16 --force -y"
+  contains "re-exec carries the components + override + guards" \
+    "${out}" "upgrade --k3s --cilium --gvisor --betterleaks --to-cilium 1.16 --force -y"
 }
 
 test_route_all_no_reexec_when_unchanged() {

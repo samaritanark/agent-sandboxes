@@ -59,6 +59,70 @@ read_into_array() {
   done
 }
 
+# version_ge <a> <b> — return 0 if dotted-numeric version <a> >= <b>.
+# A pure-bash comparison (no `sort -V`, which BSD/macOS sort lacks) that stays
+# within bash 3.2: any leading `v` is stripped, each version is split on `.`,
+# and fields are compared numerically left-to-right with a missing field read as
+# 0 (so "1.6" == "1.6.0"). Non-numeric suffixes (pre-release tags) are not
+# expected on the pins this compares and are truncated to their leading digits.
+# Used by install_betterleaks to decide whether an already-present binary is new
+# enough to leave alone.
+version_ge() {
+  local a="${1#v}" b="${2#v}" IFS='.'
+  local -a fa fb
+  # Deliberate word-splitting on IFS='.' turns "1.6.1" into one field per line.
+  # shellcheck disable=SC2086
+  read_into_array fa < <(printf '%s\n' ${a})
+  # shellcheck disable=SC2086
+  read_into_array fb < <(printf '%s\n' ${b})
+  local i n="${#fa[@]}"
+  (( ${#fb[@]} > n )) && n="${#fb[@]}"
+  for (( i = 0; i < n; i++ )); do
+    local xa="${fa[i]:-0}" xb="${fb[i]:-0}"
+    # Strip any non-digit suffix and guard against an empty (→0) field.
+    xa="${xa%%[!0-9]*}"; xb="${xb%%[!0-9]*}"
+    (( 10#${xa:-0} > 10#${xb:-0} )) && return 0
+    (( 10#${xa:-0} < 10#${xb:-0} )) && return 1
+  done
+  return 0
+}
+
+# sha256_verify — read "sha256␠␠filename" check lines on stdin and verify them,
+# using whatever sha-256 checker the host has. GNU coreutils ships `sha256sum`;
+# stock macOS ships neither it nor GNU tools but does carry `shasum` (Perl),
+# whose `-a 256 -c` reads the identical checksum-file format. Prefer sha256sum,
+# fall back to shasum.
+#
+# Exit status is three-way on purpose so a caller can tell a genuine mismatch
+# apart from an unusable environment: 0 = verified, 1 = a checksum mismatched,
+# 2 = no checker is installed (nothing was verified). install_betterleaks relies
+# on this split so a missing checker on macOS is treated as "can't verify, skip"
+# rather than misread as a tampered download.
+sha256_verify() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c - >/dev/null 2>&1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -c - >/dev/null 2>&1
+  else
+    return 2
+  fi
+}
+
+# sha256_hash_cmd — print the argv (one token per line) of the host's sha-256
+# hasher in "emit <hash>␠␠<path>" mode: `sha256sum` on GNU, `shasum -a 256` on
+# macOS (both produce the identical two-space format). Prints nothing and
+# returns 1 if neither exists. Callers read it into an array (read_into_array)
+# and run it — typically via `find -exec` to batch a whole workspace.
+sha256_hash_cmd() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s\n' sha256sum
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s\n' shasum -a 256
+  else
+    return 1
+  fi
+}
+
 # is_linux / is_macos — boolean helpers
 is_linux() {
   [[ "$(detect_platform)" == "linux" ]]

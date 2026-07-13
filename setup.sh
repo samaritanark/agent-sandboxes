@@ -99,6 +99,15 @@ main() {
       ;;
   esac
 
+  # Host-side secret scanner that gates Tier 2/3 launches. Installed here (not
+  # in the platform blocks) because it runs on the machine executing `sandbox`,
+  # which is the host on both Linux and macOS. A benign miss (unsupported
+  # platform, network hiccup) only warns — betterleaks stays absent and Tier 2/3
+  # fails closed at run time with a clear message. The one hard failure is a
+  # checksum mismatch: a tampered secret-scanner download aborts setup rather
+  # than installing something we can't trust.
+  install_betterleaks
+
   # Common post-platform setup
   setup_common
 
