@@ -19,10 +19,12 @@ For the design intent and threat model behind these controls, read
   never sees a workspace secret you forgot about. The error names the
   offending path and gives a `sandbox mask add` command to hide it (see
   [Extending the mask](#extending-the-mask) below). betterleaks is required for
-  Tier 2/3; if it is missing, the launch fails closed. The scan covers your
-  tracked and untracked files but skips gitignored dependency trees
-  (`node_modules`, `.venv`, `vendor`, ...) — upstream-managed code that holds
-  none of your secrets (see [Dependency-tree exclusion](#dependency-tree-exclusion)).
+  Tier 2/3; if it is missing, the launch fails closed. `sandbox setup` installs
+  the pinned version (`setup/versions.sh`) when it is absent or older, so you
+  normally never have to install it by hand. The scan covers your tracked and
+  untracked files but skips gitignored dependency trees (`node_modules`,
+  `.venv`, `vendor`, ...) — upstream-managed code that holds none of your
+  secrets (see [Dependency-tree exclusion](#dependency-tree-exclusion)).
   `--i-accept-unmasked-secrets` on `sandbox run` prints the findings and
   launches anyway. Values that are **encrypted at rest** are exempt — a hit
   inside a Bitnami SealedSecret's `spec.encryptedData` or a Mozilla SOPS

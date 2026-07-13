@@ -975,25 +975,36 @@ _load_workspace_audit_prune_dirs() {
 
 # _hash_workspace — emit "sha256  path" lines for every file in workspace,
 # excluding .git/objects and any directory listed in workspace-audit.yaml.
-# Uses find -print0 | xargs -0 sha256sum (batched) so large repos don't
-# spawn one process per file. Sorted output for stable diffs.
+# Uses `find -exec <hasher> {} +` (batched) so large repos don't spawn one
+# process per file, handles arbitrary filenames without a shell round-trip, and
+# — unlike `xargs -0 -r` — needs no GNU-only flag, so it runs on macOS's BSD
+# find too. The hasher is sha256sum on GNU or shasum on macOS (see
+# sha256_hash_cmd). Sorted output for stable diffs.
 _hash_workspace() {
   local workspace="$1"
+
+  local -a sha_cmd=()
+  read_into_array sha_cmd < <(sha256_hash_cmd)
+  if [[ "${#sha_cmd[@]}" -eq 0 ]]; then
+    echo "WARN: no sha256 hasher (sha256sum/shasum) found; cannot capture workspace" >&2
+    echo "      state for drift detection." >&2
+    return 0
+  fi
 
   local -a prune_dirs=()
   read_into_array prune_dirs < <(_load_workspace_audit_prune_dirs)
 
   # find expression: prune .git/objects (always) + configured dirs (any depth),
-  # then -type f -print0 the rest. Grouping with \( ... \) is required so the
-  # -prune applies to the whole alternation.
+  # then hash the remaining files in batches. Grouping with \( ... \) is
+  # required so the -prune applies to the whole alternation. `-exec ... +`
+  # skips the command entirely when nothing matches (no empty-input footgun).
   local -a expr=( '(' -path "${workspace}/.git/objects" )
   for dir in "${prune_dirs[@]}"; do
     expr+=( -o -name "${dir}" )
   done
-  expr+=( ')' -prune -o -type f -print0 )
+  expr+=( ')' -prune -o -type f -exec "${sha_cmd[@]}" '{}' '+' )
 
   find "${workspace}" "${expr[@]}" 2>/dev/null \
-    | xargs -0 -r sha256sum 2>/dev/null \
     | sort
 }
 

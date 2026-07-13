@@ -83,9 +83,148 @@ record_infra_versions() {
     echo "GVISOR_RELEASE=${SANDBOX_GVISOR_RELEASE:-latest}"
     echo "HELM_VERSION=${SANDBOX_HELM_VERSION:-latest}"
     echo "NERDCTL_VERSION=${SANDBOX_NERDCTL_VERSION:-latest}"
+    echo "BETTERLEAKS_VERSION=${SANDBOX_BETTERLEAKS_VERSION:-latest}"
     echo "RECORDED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "${SANDBOX_INFRA_VERSIONS_FILE}" 2>/dev/null || \
     echo "WARN: could not record infra versions to ${SANDBOX_INFRA_VERSIONS_FILE}" >&2
+}
+
+# _betterleaks_latest_tag — print the `vX.Y.Z` tag of the newest betterleaks
+# release by following the /releases/latest redirect (no jq/API token needed).
+# Used only when the pin is blanked (unpinned == latest). Empty on failure.
+_betterleaks_latest_tag() {
+  local final tag
+  final="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    https://github.com/betterleaks/betterleaks/releases/latest 2>/dev/null)" || return 1
+  tag="${final##*/tag/}"
+  [[ "${tag}" == v* ]] || return 1
+  echo "${tag}"
+}
+
+# install_betterleaks — ensure the betterleaks secret scanner is on PATH at (at
+# least) the pinned version. betterleaks gates every Tier 2/3 `sandbox run`
+# (the pre-launch scan in lib/filesystem.sh fails closed without it) yet is the
+# one required host tool least likely to already be on a workstation, so setup
+# provisions it directly instead of leaving it a manual prerequisite. Runs on
+# the machine executing `sandbox` — the host on Linux AND macOS, since the gate
+# runs in the CLI before a workspace is shipped into any VM.
+#
+# Idempotent: a copy already >= the pin is left alone; an older copy is replaced
+# in place (so a PATH-shadowing package-manager install is the one upgraded); a
+# missing binary lands in /usr/local/bin, which is on the default PATH on both
+# platforms. An empty pin means "unpinned" — install the newest release.
+#
+# The release layout mirrors gitleaks (betterleaks is a fork of it): assets are
+# betterleaks_<ver>_<os>_<arch>.tar.gz with os in {linux,darwin} and arch in
+# {x64,arm64} — Intel is `x64`, not amd64 — and the git tag carries a leading
+# `v` the bare version omits. The download is checksum-verified against the
+# release's checksums.txt before it is trusted: this binary decides whether a
+# workspace secret reaches the agent, so a corrupted or tampered download must
+# fail the step, never install silently.
+install_betterleaks() {
+  echo "==> Ensuring betterleaks secret scanner is installed..."
+  local pin="${SANDBOX_BETTERLEAKS_VERSION:-}"
+
+  # Map uname to the release asset's os/arch tokens.
+  local os arch uname_s uname_m
+  uname_s="$(uname -s)"; uname_m="$(uname -m)"
+  case "${uname_s}" in
+    Linux)  os="linux" ;;
+    Darwin) os="darwin" ;;
+    *) echo "WARN: betterleaks auto-install unsupported on ${uname_s}; install it manually." >&2; return 0 ;;
+  esac
+  case "${uname_m}" in
+    x86_64|amd64)  arch="x64" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *) echo "WARN: betterleaks auto-install: unrecognized arch ${uname_m}; install it manually." >&2; return 0 ;;
+  esac
+
+  # Decide where a new binary lands, and short-circuit if what's present is new
+  # enough. `betterleaks version` prints a bare X.Y.Z, directly comparable to
+  # the (leading-`v`-stripped) pin via version_ge.
+  local dest_dir existing have
+  if existing="$(command -v betterleaks 2>/dev/null)" && [[ -n "${existing}" ]]; then
+    have="$(betterleaks version 2>/dev/null | tr -d '[:space:]')"
+    if [[ -n "${pin}" && -n "${have}" ]] && version_ge "${have}" "${pin}"; then
+      echo "  betterleaks ${have} already present (>= pinned ${pin}); skipping."
+      return 0
+    fi
+    dest_dir="$(cd "$(dirname "${existing}")" && pwd)"
+    echo "  betterleaks ${have:-unknown} present; installing ${pin:-latest} over ${existing}..."
+  else
+    dest_dir="/usr/local/bin"
+    echo "  betterleaks not found; installing ${pin:-latest}..."
+  fi
+
+  # Resolve the concrete version + tag to fetch.
+  local ver tag
+  if [[ -n "${pin}" ]]; then
+    ver="${pin#v}"; tag="v${ver}"
+  elif tag="$(_betterleaks_latest_tag)"; then
+    ver="${tag#v}"
+  else
+    echo "WARN: could not resolve the latest betterleaks release; skipping install." >&2
+    return 0
+  fi
+
+  local asset="betterleaks_${ver}_${os}_${arch}.tar.gz"
+  local base="https://github.com/betterleaks/betterleaks/releases/download/${tag}"
+  local tmp
+  tmp="$(mktemp -d)" || { echo "WARN: mktemp failed; skipping betterleaks install." >&2; return 0; }
+
+  if ! curl -fsSL "${base}/${asset}" -o "${tmp}/${asset}" \
+     || ! curl -fsSL "${base}/checksums.txt" -o "${tmp}/checksums.txt"; then
+    rm -rf "${tmp}"
+    echo "WARN: failed to download betterleaks ${tag} (${asset}); Tier 2/3 'sandbox run'" >&2
+    echo "      will refuse to launch (fail closed) until betterleaks is installed." >&2
+    return 0
+  fi
+
+  # Verify our asset's checksum only: checksums.txt lists every platform's
+  # asset, so we grep out our one line — a whole-file `-c` errors on lines whose
+  # files are absent from tmp. sha256_verify picks the host's checker
+  # (sha256sum, or macOS's shasum) and returns 2 when neither exists, which we
+  # treat as "can't verify, skip" rather than a mismatch: stock macOS ships no
+  # sha256sum, and misreading its absence as tampering would hard-abort setup.
+  local sha_rc
+  ( cd "${tmp}" && grep " ${asset}\$" checksums.txt | sha256_verify ); sha_rc=$?
+  if [[ "${sha_rc}" == 2 ]]; then
+    rm -rf "${tmp}"
+    echo "WARN: no sha256 checker (sha256sum/shasum) found; cannot verify the betterleaks" >&2
+    echo "      download, so skipping install rather than trusting it. Tier 2/3 'sandbox run'" >&2
+    echo "      will fail closed until betterleaks is installed." >&2
+    return 0
+  elif [[ "${sha_rc}" != 0 ]]; then
+    rm -rf "${tmp}"
+    echo "ERROR: betterleaks ${asset} failed checksum verification; refusing to install a" >&2
+    echo "       possibly-tampered secret scanner." >&2
+    return 1
+  fi
+
+  if ! tar -xzf "${tmp}/${asset}" -C "${tmp}" betterleaks; then
+    rm -rf "${tmp}"
+    echo "WARN: could not extract betterleaks from ${asset}; skipping." >&2
+    return 0
+  fi
+  chmod +x "${tmp}/betterleaks"
+
+  # Install with sudo only when the destination isn't already user-writable.
+  local -a install_cmd=(install -m 0755 "${tmp}/betterleaks" "${dest_dir}/betterleaks")
+  local ok=0
+  if [[ -w "${dest_dir}" ]]; then
+    "${install_cmd[@]}" && ok=1
+  elif command -v sudo &>/dev/null; then
+    sudo "${install_cmd[@]}" && ok=1
+  else
+    mkdir -p "${dest_dir}" 2>/dev/null && "${install_cmd[@]}" && ok=1
+  fi
+  rm -rf "${tmp}"
+  if [[ "${ok}" != 1 ]]; then
+    echo "WARN: could not install betterleaks to ${dest_dir}; install it manually." >&2
+    return 0
+  fi
+
+  echo "  betterleaks installed: $(command -v betterleaks) ($(betterleaks version 2>/dev/null | tr -d '[:space:]'))"
 }
 
 # setup_common — apply Kubernetes manifests and verify cluster state
