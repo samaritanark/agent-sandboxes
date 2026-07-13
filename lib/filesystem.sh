@@ -177,11 +177,202 @@ is_path_masked() {
   return 1
 }
 
-# _betterleaks_run <target> <report> — run one trustworthy betterleaks scan of
-# <target> into <report>. Returns 0 if the run can be trusted (a clean run, or
-# leaks-found with a valid JSON-array report); returns 1 if it failed and the
-# caller must fail closed. The exit code is left in LEAKSCAN_RC for the error
-# message.
+# LEAKSCAN_DEP_DIRS — basenames of dependency / module install trees that hold
+# upstream-managed code, never workspace-owned secrets (npm's node_modules,
+# Python virtualenvs and site-packages, a vendored Composer/Go/Bundler tree,
+# build-tool caches, ...). When one of these is *gitignored* — a copy installed
+# locally, not first-party content the repo tracks — it is excluded from the
+# secret scan so a deep, polyglot workspace does not pay to walk it. The
+# gitignore gate is deliberate: a directory with one of these names that the
+# repo actually *tracks* is scanned normally, because a secret committed there
+# IS the workspace's responsibility. Entries are shell globs.
+#
+# This built-in set is defined in tracked source on purpose: it is a security
+# control, so it changes through git review (and, where operators use it, the
+# `sandbox vet` signing gate). Two config knobs adjust it at runtime, split by
+# the direction of risk (mirroring the vetting posture's "only ratchet UP"
+# rule in lib/vetting.sh):
+#   * WIDENING the skip set (adding names) makes the scan LOOSER — a way to hide
+#     a secret from the gate — so it is confined to the operator trust level:
+#     `leakscan_extra_dep_dirs:` in the team OVERLAY config only. A repo's or a
+#     user's own config cannot add skips.  (_leakscan_overlay_extra_dep_dirs)
+#   * DISABLING the exclusion makes the scan STRICTER (walks everything), so any
+#     repo or user may do it locally: `leakscan_dep_exclusions: off`.
+#     (_leakscan_exclusions_enabled)
+LEAKSCAN_DEP_DIRS=(
+  node_modules bower_components .pnp .yarn
+  vendor .go
+  .venv venv virtualenv .virtualenvs site-packages '*.egg-info' .eggs .tox .nox
+  __pycache__ .mypy_cache .pytest_cache .ruff_cache
+  .gradle .ansible
+)
+
+# LEAKSCAN_SKIP_PATHS — basenames of known-safe, first-party artifacts skipped
+# *unconditionally* (whether tracked or gitignored), because their contents are
+# audited or derived, not live secrets:
+#   * .secrets.baseline — a detect-secrets baseline. It records SHA-1 *hashes* of
+#     already-reviewed findings for the CI pipeline to diff against, so it is
+#     not a place live secrets live; scanning it only yields hash-shaped false
+#     positives. Requested by the security team.
+# These differ from LEAKSCAN_DEP_DIRS: a detect-secrets baseline is committed
+# (tracked), so the gitignore gate would never skip it — this list is not gated.
+# That is a deliberate, narrow exemption: naming a file to match one of these
+# entries would hide it from the gate, so keep the set to specific, well-known
+# artifact filenames, never broad patterns. Disabling exclusions
+# (`leakscan_dep_exclusions: off`) turns this off too and scans them.
+LEAKSCAN_SKIP_PATHS=(
+  .secrets.baseline
+)
+
+# _leakscan_is_dep_dir <basename> <glob>... — 0 if <basename> matches one of
+# the candidate globs. The effective set is passed in (built-in + operator
+# additions), not read from the global, so widening stays operator-scoped.
+_leakscan_is_dep_dir() {
+  local base="$1"; shift
+  local glob
+  for glob in "$@"; do
+    # Intentional glob match: RHS is unquoted so patterns like *.egg-info work.
+    # shellcheck disable=SC2053
+    [[ "${base}" == ${glob} ]] && return 0
+  done
+  return 1
+}
+
+# _leakscan_overlay_extra_dep_dirs — extra dependency-dir names an operator has
+# added via the team overlay's config.yaml (`leakscan_extra_dep_dirs:` list),
+# one per line. Read ONLY from the operator overlay — never a repo's or a user's
+# own config — because adding a skip loosens the scan, and that authority lives
+# at the operator trust level (see LEAKSCAN_DEP_DIRS). Empty if no overlay is
+# set or the key is absent.
+_leakscan_overlay_extra_dep_dirs() {
+  local overlay
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] || return 0
+  extract_yaml_list_from_file "${overlay}/config.yaml" "leakscan_extra_dep_dirs"
+}
+
+# _leakscan_ignore_path — path to pass to betterleaks' -i/--gitleaks-ignore-path,
+# an EXTRA .betterleaksignore/.gitleaksignore listing finding fingerprints to
+# suppress. betterleaks' -i default is "." (the process CWD), so leaving it
+# unset lets a stray ignore file in whatever directory `sandbox` runs from feed
+# the scanner. We never let it default:
+#   * if the team OVERLAY ships one (<overlay>/.betterleaksignore, else
+#     .gitleaksignore) use it — an operator may keep a REVIEWED baseline of
+#     accepted fingerprints. Suppressing findings is a loosening, so that
+#     authority lives at the operator trust level, never a repo's or a user's
+#     own config (mirrors leakscan_extra_dep_dirs; see LEAKSCAN_DEP_DIRS).
+#   * otherwise print nothing; the caller passes a neutral empty path instead.
+# Prints the chosen path, or nothing.
+#
+# NOTE: -i is ADDITIVE. betterleaks ALSO always reads a .gitleaksignore/
+# .betterleaksignore at the SCAN-TARGET ROOT and offers no flag (as of 1.6.0) to
+# disable it, so an operator baseline here does NOT neutralize a workspace that
+# ships its own root ignore file — see the KNOWN LIMITATION in scan_repo_secrets.
+_leakscan_ignore_path() {
+  local overlay
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" ]] || return 0
+  local f
+  for f in .betterleaksignore .gitleaksignore; do
+    if [[ -f "${overlay}/${f}" ]]; then
+      echo "${overlay}/${f}"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# _leakscan_exclusions_enabled <repo> — 0 unless a repo or user config has
+# turned dependency-tree exclusion OFF (`leakscan_dep_exclusions: off`, also
+# false/no/0). Disabling makes the scan STRICTER (it then walks every tracked
+# and gitignored file, save betterleaks' own built-in node_modules skip), so it
+# is honored at the local trust level; there is deliberately no local way to
+# make the scan looser. Repo config wins over user config; default is enabled.
+_leakscan_exclusions_enabled() {
+  local repo="$1" v=""
+  v="$(extract_yaml_scalar_from_file "${repo}/${SANDBOX_REPO_CONFIG_NAME}" leakscan_dep_exclusions 2>/dev/null || true)"
+  [[ -z "${v}" ]] && v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" leakscan_dep_exclusions 2>/dev/null || true)"
+  case "${v}" in
+    off|false|no|0|OFF|False|FALSE|No|NO) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# _leakscan_regex_escape <string> — escape re2 metacharacters so a literal path
+# can be embedded in an allowlist regex.
+_leakscan_regex_escape() {
+  printf '%s' "$1" | sed 's/[][\.^$*+?(){}|]/\\&/g'
+}
+
+# _leakscan_write_config <repo> <config_out> — write a betterleaks config to
+# <config_out>. It (1) uses betterleaks' default ruleset and default allowlist
+# (`[extend] useDefault = true`), and (2) unless a repo/user config disabled it
+# (_leakscan_exclusions_enabled), adds allowlist paths for:
+#   * every known-safe artifact filename (LEAKSCAN_SKIP_PATHS), unconditionally;
+#   * every gitignored dependency directory — the built-in LEAKSCAN_DEP_DIRS
+#     plus any operator-added names (_leakscan_overlay_extra_dep_dirs).
+# `git ls-files --directory` collapses a wholly-ignored directory to its top and
+# git walks the whole tree, so a nested one (packages/*/.venv) is found and
+# excluded too. Owning the config is also a hardening: a passed -c takes
+# precedence over a workspace's own .gitleaks.toml, so an untrusted repo can no
+# longer ship a config that allowlists its own secrets away.
+_leakscan_write_config() {
+  local repo="$1" out="$2"
+  {
+    echo '# generated by sandbox — betterleaks config for the secret gate'
+    echo '[extend]'
+    echo 'useDefault = true'
+  } > "${out}"
+
+  # A repo or user may turn exclusions off (stricter: scan everything). Only
+  # betterleaks' own built-in node_modules/lockfile skip remains in that case.
+  _leakscan_exclusions_enabled "${repo}" || return 0
+
+  # Collect allowlist regexes, then emit the block only if any apply.
+  local -a paths=()
+
+  # (a) Known-safe artifact filenames — unconditional (tracked or not), anchored
+  # to a full path component so `.secrets.baseline` never matches, say,
+  # `.secrets.baseline.bak`.
+  local sp
+  for sp in "${LEAKSCAN_SKIP_PATHS[@]}"; do
+    paths+=("(^|/)$(_leakscan_regex_escape "${sp}")\$")
+  done
+
+  # (b) Gitignored dependency trees: built-in list + operator-overlay additions.
+  # Widening is operator-scoped by construction — the extras come only from the
+  # overlay, never a repo's or a user's own config.
+  local -a dep_dirs=("${LEAKSCAN_DEP_DIRS[@]}")
+  local extra
+  while IFS= read -r extra; do
+    [[ -n "${extra}" ]] && dep_dirs+=("${extra}")
+  done < <(_leakscan_overlay_extra_dep_dirs)
+
+  local d base
+  while IFS= read -r d; do
+    d="${d%/}"
+    [[ -z "${d}" ]] && continue
+    base="${d##*/}"
+    _leakscan_is_dep_dir "${base}" "${dep_dirs[@]}" || continue
+    paths+=("(^|/)$(_leakscan_regex_escape "${d}")(/|\$)")
+  done < <(git -C "${repo}" ls-files --others --ignored --exclude-standard --directory 2>/dev/null)
+
+  [[ "${#paths[@]}" -eq 0 ]] && return 0
+  { echo '[allowlist]'; echo 'paths = ['; } >> "${out}"
+  local p
+  for p in "${paths[@]}"; do
+    printf "  '''%s''',\n" "${p}" >> "${out}"
+  done
+  echo ']' >> "${out}"
+  return 0
+}
+
+# _betterleaks_run <target> <report> [config] [ignore_path] — run one
+# trustworthy betterleaks scan of <target> into <report>, optionally under
+# <config> (-c) and <ignore_path> (-i, extra fingerprint allowlist). Returns 0 if
+# the run can be trusted (a clean run, or leaks-found with a valid JSON-array
+# report); returns 1 if it failed and the caller must fail closed. The exit code
+# is left in LEAKSCAN_RC for the error message.
 #
 # Fail closed on scanner failure: a betterleaks runtime error (panic, bad
 # config, OOM, truncated report) must NOT look like "no secrets found", or the
@@ -195,11 +386,35 @@ is_path_masked() {
 # --validation=false: never let the scanner reach out to live APIs to validate
 # a secret found in an untrusted workspace (it is the betterleaks default, but
 # we pin it so a future default flip or repo-local config cannot enable it).
+#
+# --ignore-gitleaks-allow: do NOT honor inline `gitleaks:allow`/`betterleaks:allow`
+# comments. Those are workspace-authored suppression — an untrusted repo could
+# annotate its own secret lines and pass the gate — the same bypass class that
+# owning -c closes for a repo-local .gitleaks.toml. Pinned on unconditionally:
+# there is no operator-owned inline comment, so nothing legitimately relies on
+# them being honored.
+#
+# -i/--gitleaks-ignore-path points at an EXTRA .betterleaksignore/.gitleaksignore
+# of accepted fingerprints (an operator baseline; see _leakscan_ignore_path).
+# Its default is "." (the process CWD), which we never let stand. NOTE: -i is
+# additive — betterleaks ALSO always reads an ignore file at the scan-target
+# ROOT and (as of 1.6.0) offers no flag to disable that, so -i does NOT
+# neutralize a workspace that ships its own root ignore file. See the KNOWN
+# LIMITATION note in scan_repo_secrets.
+#
+# The scan runs at low CPU and (Linux) idle I/O priority so a deep-repo walk
+# cannot starve interactive work on the host. ionice is Linux-only (absent on
+# macOS) so it is used only when present; its idle class (-c3) needs no
+# privilege. nice -n 19 is portable across GNU and BSD.
 _betterleaks_run() {
-  local target="$1" report="$2"
+  local target="$1" report="$2" config="${3:-}" ignore_path="${4:-}"
   LEAKSCAN_RC=0
-  betterleaks dir "${target}" --no-banner -f json -r "${report}" \
-    --validation=false --redact >/dev/null 2>&1 || LEAKSCAN_RC=$?
+  local -a cmd=(nice -n 19)
+  command -v ionice >/dev/null 2>&1 && cmd+=(ionice -c3)
+  cmd+=(betterleaks dir "${target}" --no-banner -f json -r "${report}" --validation=false --redact --ignore-gitleaks-allow)
+  [[ -n "${config}" ]] && cmd+=(-c "${config}")
+  [[ -n "${ignore_path}" ]] && cmd+=(-i "${ignore_path}")
+  "${cmd[@]}" >/dev/null 2>&1 || LEAKSCAN_RC=$?
   [[ "${LEAKSCAN_RC}" == 0 ]] && return 0
   [[ "${LEAKSCAN_RC}" == 1 ]] && jq -e 'type == "array"' "${report}" >/dev/null 2>&1 && return 0
   return 1
@@ -334,7 +549,9 @@ finding_is_encrypted() {
 # (--redact).
 #
 # Two scans run. (1) A whole-workspace directory scan — betterleaks excludes
-# .git/ from directory walks, so this never sees anything under .git. (2) An
+# .git/ from directory walks, so this never sees anything under .git, and a
+# generated config additionally excludes gitignored dependency trees (see
+# _leakscan_write_config) so a deep repo is not walked in full. (2) An
 # explicit scan of .git/config: the repo is mounted into the pod *including*
 # .git, the mask does not (and cannot — emptying it breaks git) hide it, and it
 # commonly carries credentials in remote URLs and http.<url>.extraheader. Such a
@@ -344,20 +561,48 @@ finding_is_encrypted() {
 # On scanner failure either scan emits an `error` sentinel line; the caller
 # (secret_gate_repos) aborts on it. A bare return/exit here would be swallowed
 # by the process substitution the caller reads us through.
+#
+# The scan owns its allowlist inputs so an untrusted workspace cannot suppress
+# its own findings: -c (our generated config) overrides a repo-local
+# .gitleaks.toml, and --ignore-gitleaks-allow ignores inline allow comments
+# (both in _betterleaks_run). -i points at an operator-owned fingerprint
+# baseline when the overlay ships one, else a neutral empty dir.
+#
+# KNOWN LIMITATION: betterleaks always reads a .gitleaksignore/.betterleaksignore
+# at the SCAN-TARGET ROOT (here the workspace root and .git/config's dir) and
+# 1.6.0 has no flag to disable that, so a workspace committing a root ignore
+# file listing its own findings' fingerprints can still suppress them below the
+# gate. -i is additive and cannot override it; neutralizing it would mean
+# removing/relocating the file or refusing the scan. Tracked as a follow-up.
+# Nested (non-root) ignore files are not auto-read, and inline allow comments
+# and a repo-local .gitleaks.toml are already neutralized.
 scan_repo_secrets() {
   local repo="$1"
   local real_repo
   real_repo="$(realpath "${repo}")"
 
-  local report
+  local report config
   report="$(mktemp "${TMPDIR:-/tmp}/sandbox-leakscan-XXXXXX")"
+  config="$(mktemp "${TMPDIR:-/tmp}/sandbox-leakcfg-XXXXXX")"
+  _leakscan_write_config "${repo}" "${config}"
+
+  # betterleaks -i: an operator-owned baseline of accepted fingerprints when the
+  # overlay ships one, else a neutral empty dir so the -i default (".", the
+  # process CWD) is never used. See _leakscan_ignore_path.
+  local ignore_path empty_ignore_dir=""
+  ignore_path="$(_leakscan_ignore_path)"
+  if [[ -z "${ignore_path}" ]]; then
+    empty_ignore_dir="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-leakignore-XXXXXX")"
+    ignore_path="${empty_ignore_dir}"
+  fi
 
   local file ruleid line startcol endcol match relpath
 
   # (1) Whole-workspace scan.
-  if ! _betterleaks_run "${real_repo}" "${report}"; then
+  if ! _betterleaks_run "${real_repo}" "${report}" "${config}" "${ignore_path}"; then
     printf 'error\tbetterleaks scan failed (exit %s)\n' "${LEAKSCAN_RC}"
-    rm -f "${report}"
+    rm -f "${report}" "${config}"
+    [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
     return 0
   fi
   while IFS=$'\t' read -r file ruleid line startcol endcol match; do
@@ -378,9 +623,10 @@ scan_repo_secrets() {
   local gitcfg="${real_repo}/.git/config"
   if [[ -f "${gitcfg}" ]]; then
     : > "${report}"
-    if ! _betterleaks_run "${gitcfg}" "${report}"; then
+    if ! _betterleaks_run "${gitcfg}" "${report}" "${config}" "${ignore_path}"; then
       printf 'error\tbetterleaks scan of .git/config failed (exit %s)\n' "${LEAKSCAN_RC}"
-      rm -f "${report}"
+      rm -f "${report}" "${config}"
+      [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
       return 0
     fi
     while IFS=$'\t' read -r file ruleid line match; do
@@ -390,7 +636,8 @@ scan_repo_secrets() {
                "${report}" 2>/dev/null)
   fi
 
-  rm -f "${report}"
+  rm -f "${report}" "${config}"
+  [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
 }
 
 # _print_unmasked_findings <entry>... — render "repo<TAB>relpath<TAB>rule<TAB>
