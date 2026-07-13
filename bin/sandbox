@@ -3104,7 +3104,7 @@ usage_vet() {
 sandbox vet — Attest that a repo is cleared for use with an AI agent
 
 USAGE:
-  sandbox vet --repo <PATH> [--message <MSG>]
+  sandbox vet --repo <PATH> [--message <MSG>] [--yes]
   sandbox vet --status --repo <PATH>
   sandbox vet --help
 
@@ -3119,9 +3119,15 @@ SSH allowed_signers file by default (vetting_trust_root:), or a GnuPG home when
 vetting_trust_format: gpg. The tag is named 'agent-vetted/<sha>'. A dirty
 working tree is refused: an attestation covers a commit, not uncommitted edits.
 
+If the repo records secret exceptions ('sandbox exceptions'), signing blesses
+them: the secret gate honors that list only on a vetted repo, so before signing
+'vet' lists the finding(s) the agent would then be able to read and asks you to
+acknowledge them. Use --yes to acknowledge non-interactively (e.g. in CI).
+
   --repo <PATH>       Repository to attest (or inspect with --status).
   --status            Print the repo's current vetting state instead of signing.
   --message <MSG>     Tag message (default: "vetted for agent use").
+  --yes, -y           Acknowledge any recorded secret exceptions without prompting.
   --help              Show this help
 
 EXAMPLES:
@@ -3140,7 +3146,7 @@ cmd_vet() {
     usage_vet
   fi
 
-  local action="attest" repo="" msg="vetted for agent use"
+  local action="attest" repo="" msg="vetted for agent use" assume_yes="false"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --help|-h|help) usage_vet ;;
@@ -3149,6 +3155,7 @@ cmd_vet() {
       --repo=*)       repo="${1#--repo=}" ;;
       --message)      msg="${2:?--message requires a value}"; shift ;;
       --message=*)    msg="${1#--message=}" ;;
+      --yes|-y)       assume_yes="true" ;;
       -*)             die "Unknown option for 'vet': $1" ;;
       *)              die "Unexpected argument for 'vet': $1" ;;
     esac
@@ -3190,7 +3197,7 @@ cmd_vet() {
     return 0
   fi
 
-  vetting_attest_repo "${repo}" "${msg}"
+  vetting_attest_repo "${repo}" "${msg}" "${assume_yes}"
 }
 
 cmd_secret() {

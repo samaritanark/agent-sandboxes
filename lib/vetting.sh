@@ -410,12 +410,75 @@ vetting_gate_repos() {
   exit 1
 }
 
-# vetting_attest_repo <repo> [message] — create a signed attestation tag at
-# HEAD using the operator's own signing key. Refuses a dirty tree (the tag must
-# describe exactly what a reviewer looked at). Idempotent: a pre-existing tag at
-# HEAD is left in place. Backs `sandbox vet --repo`.
+# _vetting_acknowledge_exceptions <real_repo> <repo> <assume_yes> — the honesty
+# gate for `sandbox vet`. A repo's committed accepted_secrets: list (see `sandbox
+# exceptions`) only takes effect once THIS attestation signs the tree, so before
+# signing we surface which findings that list will expose to the agent and make
+# the signer acknowledge them — otherwise a rubber-stamp signature could launder
+# a real secret a contributor recorded as an "exception". Uses the same match
+# logic the gate will (value-hash + tracked file), so the preview is exactly what
+# gets honored. Returns 0 to proceed (nothing recorded, the list is inert, or the
+# signer acknowledged), 1 to abort (declined, or cannot preview / cannot prompt).
+_vetting_acknowledge_exceptions() {
+  local real_repo="$1" repo="$2" assume_yes="$3"
+
+  local -a entries=()
+  read_into_array entries < <(load_repo_accepted_secrets "${repo}")
+  [[ "${#entries[@]}" -gt 0 ]] || return 0
+
+  if ! command -v betterleaks >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    echo "ERROR: ${repo} has an accepted_secrets: list, but betterleaks/jq are not" >&2
+    echo "       available to show what signing it would let the agent read. Install" >&2
+    echo "       them and re-run so the attestation is not a blind sign-off." >&2
+    return 1
+  fi
+
+  local accept_file; accept_file="$(mktemp "${TMPDIR:-/tmp}/sandbox-vet-accept-XXXXXX")"
+  printf '%s\n' "${entries[@]}" > "${accept_file}"
+  local -a accepted=()
+  local m rel rule ln _rest
+  while IFS=$'\t' read -r m rel rule ln _rest; do
+    [[ "${m}" == "accepted" ]] || continue
+    accepted+=("${rel}  [${rule}, line ${ln}]")
+  done < <(scan_repo_secrets "${real_repo}" "${accept_file}")
+  rm -f "${accept_file}"
+
+  # A list that currently matches nothing (stale entries) exposes nothing.
+  [[ "${#accepted[@]}" -gt 0 ]] || return 0
+
+  echo "" >&2
+  echo "  This repo records ${#accepted[@]} secret exception(s). Signing this attestation" >&2
+  echo "  vouches that they are reviewed false positives — the agent WILL be able to" >&2
+  echo "  read these values once the repo is vetted:" >&2
+  local a
+  for a in "${accepted[@]}"; do echo "      ${a}" >&2; done
+  echo "" >&2
+
+  if [[ "${assume_yes}" == "true" ]]; then
+    echo "  Acknowledged via --yes." >&2
+    return 0
+  fi
+  if [[ ! -t 0 ]]; then
+    echo "ERROR: not an interactive terminal, so these cannot be acknowledged" >&2
+    echo "       interactively. Re-run with --yes to sign off on them explicitly." >&2
+    return 1
+  fi
+  local reply=""
+  printf '  Acknowledge and sign? [y/N] ' >&2
+  read -r reply || true
+  [[ "${reply}" =~ ^[Yy] ]] && return 0
+  echo "  Aborted; no attestation created." >&2
+  return 1
+}
+
+# vetting_attest_repo <repo> [message] [assume_yes] — create a signed attestation
+# tag at HEAD using the operator's own signing key. Refuses a dirty tree (the tag
+# must describe exactly what a reviewer looked at) and, when the repo records
+# secret exceptions, requires the signer to acknowledge them first (assume_yes
+# skips the interactive prompt — see _vetting_acknowledge_exceptions). Idempotent:
+# a pre-existing tag at HEAD is left in place. Backs `sandbox vet --repo`.
 vetting_attest_repo() {
-  local repo="$1"; local msg="${2:-vetted for agent use}"
+  local repo="$1"; local msg="${2:-vetted for agent use}"; local assume_yes="${3:-false}"
   local real_repo
   real_repo="$(cd "${repo}" 2>/dev/null && pwd -P)" || { echo "ERROR: cannot access ${repo}" >&2; return 1; }
 
@@ -435,6 +498,9 @@ vetting_attest_repo() {
     echo "  ${repo}: already attested — tag ${tag} exists."
     return 0
   fi
+
+  # Honesty gate: surface any secret exceptions this signature would bless.
+  _vetting_acknowledge_exceptions "${real_repo}" "${repo}" "${assume_yes}" || return 1
 
   # Sign inside a repo whose .git/config is not yet reviewed, so pin every knob
   # that lets config choose a program git will exec: the signer programs

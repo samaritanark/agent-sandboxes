@@ -27,6 +27,9 @@ unset SANDBOX_OVERLAY
 source "${SANDBOX_ROOT}/lib/platform.sh"
 source "${SANDBOX_ROOT}/lib/config.sh"
 source "${SANDBOX_ROOT}/lib/profile.sh"
+# Attest now surfaces a repo's secret exceptions before signing (Phase 2b), which
+# scans via the secret gate, so filesystem.sh is in scope here too.
+source "${SANDBOX_ROOT}/lib/filesystem.sh"
 source "${SANDBOX_ROOT}/lib/vetting.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -482,6 +485,71 @@ EOF
 }
 
 ###############################################################################
+# Exceptions acknowledgment (Phase 2b) — attest surfaces a repo's recorded
+# secret exceptions and refuses to sign them off unattended; --yes acknowledges.
+###############################################################################
+test_attest_acknowledges_exceptions() {
+  [[ "${SSH_SIGNING}" -eq 1 ]] || { info "SSH signing unavailable — skipping exceptions-ack test"; return 0; }
+  command -v betterleaks >/dev/null 2>&1 || { info "betterleaks not installed — skipping exceptions-ack test"; return 0; }
+  command -v jq >/dev/null 2>&1 || { info "jq not installed — skipping exceptions-ack test"; return 0; }
+  info "Testing attest surfaces + gates on recorded secret exceptions..."
+  write_trust_config
+
+  local repo="${TEST_DIR}/ack-exceptions"
+  make_repo "${repo}"
+  mkdir -p "${repo}/deploy"
+  printf 'api_key: ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z\n' > "${repo}/deploy/values.yaml"
+  git -C "${repo}" add -A; git -C "${repo}" commit -q -m "add config"
+  # Sign with the trusted key (attest inherits user.signingkey from repo config).
+  git -C "${repo}" config gpg.format ssh
+  git -C "${repo}" config user.signingkey "${TEST_DIR}/id"
+
+  # Record an exception for every unmasked finding, then commit (clean tree).
+  local frel frule fln one recorded=0
+  while IFS=$'\t' read -r _ frel frule fln _; do
+    [[ -z "${frel}" ]] && continue
+    while IFS= read -r one; do
+      [[ -z "${one}" ]] && continue
+      config_add_accepted_secret "${repo}/.sandbox/config.yaml" "${one}" "reviewed FP"
+      recorded=$((recorded + 1))
+    done < <(leakscan_fingerprints_for "${repo}" "${frel}" "${frule}" "${fln}")
+  done < <(scan_repo_secrets "${repo}" | grep "^no	" || true)
+  [[ "${recorded}" -gt 0 ]] || fail "expected at least one finding to record as an exception"
+  git -C "${repo}" add -A; git -C "${repo}" commit -q -m "record exceptions"
+
+  local sha; sha="$(git -C "${repo}" rev-parse HEAD)"
+
+  # (1) Non-interactive, no --yes → refuse to sign off unattended; no tag.
+  if ( vetting_attest_repo "${repo}" "vetted" "false" </dev/null >/dev/null 2>&1 ); then
+    fail "attest must refuse to bless exceptions unattended (no --yes)"
+  fi
+  git -C "${repo}" rev-parse -q --verify "refs/tags/agent-vetted/${sha}" >/dev/null 2>&1 \
+    && fail "no tag should exist after a refused acknowledgment" \
+    || pass "attest refuses exceptions unattended; no tag created"
+
+  # (2) --yes acknowledges → tag created and the repo verifies as vetted.
+  if ( vetting_attest_repo "${repo}" "vetted" "true" </dev/null >/dev/null 2>&1 ); then
+    pass "attest --yes acknowledges exceptions and signs"
+  else
+    fail "attest --yes should create the attestation"
+  fi
+  local status _f
+  IFS=$'\t' read -r status _f < <(vetting_status_repo "${repo}")
+  eq "repo is vetted after --yes attest" "vetted" "${status}"
+
+  # (3) A repo with NO exceptions attests without prompting, even unattended.
+  local clean="${TEST_DIR}/ack-clean"
+  make_repo "${clean}"
+  git -C "${clean}" config gpg.format ssh
+  git -C "${clean}" config user.signingkey "${TEST_DIR}/id"
+  if ( vetting_attest_repo "${clean}" "vetted" "false" </dev/null >/dev/null 2>&1 ); then
+    pass "attest proceeds unattended when there are no exceptions"
+  else
+    fail "attest should not prompt/refuse when there are no exceptions"
+  fi
+}
+
+###############################################################################
 # Missing trust root — fails closed under 'required', regardless of override.
 ###############################################################################
 test_missing_trust_root_fails_closed() {
@@ -533,6 +601,7 @@ main() {
   test_status_hermetic_against_empty_named_filter
   test_verify_hermetic_against_x509_program
   test_attest_hermetic_against_defaultkeycommand
+  test_attest_acknowledges_exceptions
   if [[ "${SSH_SIGNING}" -eq 1 ]]; then
     test_status_vetted
     test_gate_required_passes_when_vetted
