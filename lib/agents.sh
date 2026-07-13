@@ -112,11 +112,12 @@ EOF
       #   auth.x.ai         device-code login flow (grok login --device-auth)
       #   grok.com          SuperGrok subscription surface used during login
       #
-      # All plain matchName hosts — no wildcards needed. NOTE: Grok ships web
-      # search + web fetch ON by default (--disable-web-search to turn off);
-      # whether web-fetch egresses directly (blocked by the default-deny FQDN
-      # allowlist) or proxies via api.x.ai is untested — revisit once a sandbox
-      # is operational.
+      # All plain matchName hosts — no wildcards needed. NOTE: api.x.ai is not a
+      # pure model-inference channel — Grok's server-side web_search/x_search
+      # tools run on xAI and stream web/X content back over it, invisibly to this
+      # allowlist. Those tools (and client-side web_fetch) are removed at launch
+      # by get_agent_sandbox_flags, so web access flows through curl/wget, whose
+      # pod-originated egress this allowlist DOES bound. See that function.
       cat <<'EOF'
 api.x.ai
 accounts.x.ai
@@ -169,25 +170,41 @@ get_agent_resume_flag() {
   esac
 }
 
-# get_agent_sandbox_flags — print extra launch flags that pin the agent's own
-# in-process OS sandbox, or nothing if the agent needs none. Codex wraps every
-# shell/apply_patch operation in bubblewrap, whose netns setup configures
-# loopback via a netlink RTM_NEWADDR call gVisor doesn't emulate — so bwrap
-# aborts ("loopback: Failed RTM_NEWADDR: No child processes") before Codex can
-# even read a file. The pod already IS the boundary (gVisor kernel isolation +
-# Cilium default-deny egress + filesystem masking), so that inner sandbox is
-# redundant as well as broken. "--sandbox danger-full-access" disables ONLY the
-# inner OS-sandbox; it is sandbox-only and leaves "--ask-for-approval" (Codex's
-# human-in-the-loop prompts) untouched, so it is NOT a bypass-approvals posture.
+# get_agent_sandbox_flags — print extra per-agent launch flags that harden the
+# session's security posture, or nothing if the agent needs none. Two agents use
+# this hook today.
 #
-# This duplicates the intent of the staged config.toml sandbox_mode key
-# (lib/onboard.sh) on purpose, as defense-in-depth: the launch flag overrides
-# config and so works even when an agent-home was staged before this change (no
-# 're-run sandbox onboard' required), when a pre-existing sandbox_mode key would
-# otherwise be left alone, or when Codex rewrites config.toml at runtime.
+# Codex ("--sandbox danger-full-access"): disables Codex's OWN in-process OS
+# sandbox (bubblewrap), whose netns setup configures loopback via a netlink
+# RTM_NEWADDR call gVisor doesn't emulate — so bwrap aborts ("loopback: Failed
+# RTM_NEWADDR: No child processes") before Codex can even read a file. The pod
+# already IS the boundary (gVisor kernel isolation + Cilium default-deny egress +
+# filesystem masking), so that inner sandbox is redundant as well as broken. The
+# flag is sandbox-only and leaves "--ask-for-approval" (Codex's human-in-the-loop
+# prompts) untouched, so it is NOT a bypass-approvals posture. It also duplicates
+# the intent of the staged config.toml sandbox_mode key (lib/onboard.sh) on
+# purpose, as defense-in-depth: the launch flag overrides config and so works
+# even when an agent-home was staged before this change (no 're-run sandbox
+# onboard' required), when a pre-existing sandbox_mode key would otherwise be
+# left alone, or when Codex rewrites config.toml at runtime.
+#
+# Grok ("--disallowed-tools web_search,x_search,web_fetch"): removes Grok's
+# built-in web tools from the model request. web_search and x_search are
+# SERVER-SIDE tools — xAI executes the crawl and only the allowed api.x.ai
+# channel is dialed — so Cilium's egress allowlist can neither see nor bound
+# them; dropping them client-side, before the request leaves the pod, is the
+# only control. ("--disable-web-search" is insufficient: it drops web_search but
+# leaves x_search live — verified against grok 0.2.93.) web_fetch is dropped too
+# so all web access is forced onto curl/wget in the shell, which egresses from
+# the pod and IS bound by the Cilium allowlist — making that allowlist the single
+# source of truth, with no parallel web_fetch domain list to keep in sync. This
+# is defense-in-depth with the pod egress policy and leaves Grok's approval
+# prompts untouched, so shell fetches stay human-gated (verified: grok reaches
+# for curl unprompted, and the interactive session still asks before running it).
 get_agent_sandbox_flags() {
   case "$1" in
     codex) echo "--sandbox danger-full-access" ;;
+    grok)  echo "--disallowed-tools web_search,x_search,web_fetch" ;;
     *)     echo "" ;;
   esac
 }

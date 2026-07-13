@@ -41,9 +41,16 @@ reach them. See `lib/agents.sh` for the authoritative list.
 > pod), and the token persists to `~/.grok/auth.json` in the mounted agent-home.
 > `GROK_DEPLOYMENT_KEY` is forbidden — it overrides the OAuth token, so it is
 > blocked at build, onboard, and launch; `XAI_API_KEY` is unnecessary (OAuth
-> outranks it). Grok's web search/fetch is on by default; if a fetch reaches a
-> host outside the tier allowlist it is blocked by default-deny (pass
-> `--disable-web-search` to turn the tools off entirely).
+> outranks it). Grok's built-in web tools are **removed at launch** via
+> `--disallowed-tools web_search,x_search,web_fetch`. `web_search` and `x_search`
+> run server-side on xAI and return over `api.x.ai`, so the egress allowlist
+> cannot see or bound them — dropping the tools from the request is the only
+> control (`--disable-web-search` alone is insufficient; it leaves `x_search`
+> live). With them gone, the agent fetches web content with `curl`/`wget`, which
+> egresses from the pod and **is** bound by the tier allowlist — so a fetch to a
+> host outside it is blocked by default-deny, and the allowlist stays the single
+> source of truth for web reach. Shell fetches remain human-gated by Grok's
+> approval prompts.
 
 ## Tiers
 

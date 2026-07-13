@@ -17,10 +17,25 @@ entrypoint: grok
 # All plain hostnames (no wildcards). See lib/agents.sh:get_agent_domains for
 # the per-host rationale.
 allowed_domains:
-  - api.x.ai         # model API
+  - api.x.ai         # model API (see web-tools note below — NOT pure inference)
   - accounts.x.ai    # OAuth 2.0 PKCE account/authorize
   - auth.x.ai        # device-code login flow
   - grok.com         # SuperGrok subscription surface used during login
+
+# Web tools — disabled at launch, NOT here.
+# Grok ships two SERVER-SIDE search tools (web_search, x_search): xAI performs
+# the crawl and returns results over api.x.ai, so that host is not a pure
+# model-inference channel — it can carry arbitrary web/X content in (and search
+# queries out). The Cilium egress allowlist cannot see or bound this: it governs
+# which hosts the pod may dial, not what an allowed host does server-side. The
+# only control is to remove the tools from the model request client-side, which
+# lib/agents.sh:get_agent_sandbox_flags does at launch via
+#   --disallowed-tools web_search,x_search,web_fetch
+# ('--disable-web-search' alone is insufficient — it leaves x_search live).
+# web_fetch (client-side) is dropped too, so all web access flows through
+# curl/wget in the shell — pod-originated egress that the Cilium allowlist DOES
+# bound, keeping that allowlist the single source of truth (no parallel domain
+# list). Shell fetches remain human-gated by Grok's approval prompts.
 
 # Environment variables injected into pod
 env:
