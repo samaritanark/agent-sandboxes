@@ -15,6 +15,14 @@ set -euo pipefail
 # onboarded via OAuth device flow only (lib/onboard.sh) and these never enter the
 # pod. Listed as exact names rather than a "GITHUB_" prefix pattern to avoid
 # sweeping up benign GITHUB_COPILOT_* / GITHUB_* config vars.
+#
+# GROK_DEPLOYMENT_KEY is the analogous var for Grok: it takes precedence over the
+# stored ~/.grok/auth.json OAuth token (and is an install-time auth source), so a
+# stray value would override OAuth with a broad, long-lived enterprise key. Grok
+# is OAuth-only too, so it is blocked here. (XAI_API_KEY is deliberately NOT
+# listed: it RANKS BELOW the OAuth session token so it cannot override OAuth, it
+# never enters the pod anyway by omission, and it is common enough that blocking
+# it would spew warnings for every non-Grok session.)
 HOST_ENV_BLOCKLIST=(
   "KUBECONFIG"
   "SSH_AUTH_SOCK"
@@ -24,6 +32,7 @@ HOST_ENV_BLOCKLIST=(
   "COPILOT_GITHUB_TOKEN"
   "GH_TOKEN"
   "GITHUB_TOKEN"
+  "GROK_DEPLOYMENT_KEY"
 )
 
 # HOST_ENV_BLOCKLIST_PATTERNS — prefix patterns (all vars matching blocked)

@@ -5,15 +5,15 @@
 set -euo pipefail
 
 # VALID_AGENTS — supported agent identifiers
-VALID_AGENTS=("claude" "codex" "opencode" "copilot")
+VALID_AGENTS=("claude" "codex" "opencode" "copilot" "grok")
 
 # validate_agent — die if agent is not supported
 validate_agent() {
   local agent="$1"
   case "${agent}" in
-    claude|codex|opencode|copilot) return 0 ;;
+    claude|codex|opencode|copilot|grok) return 0 ;;
     *)
-      echo "ERROR: Unknown agent '${agent}'. Valid agents: claude, codex, opencode, copilot." >&2
+      echo "ERROR: Unknown agent '${agent}'. Valid agents: claude, codex, opencode, copilot, grok." >&2
       echo " " >&2
       exit 1
       ;;
@@ -100,6 +100,31 @@ collector.github.com
 default.exp-tas.com
 EOF
       ;;
+    grok)
+      # Official xAI Grok Build CLI (`grok`, installed from x.ai/cli/install.sh).
+      # Auth is OAuth (grok login --device-auth in the pod) against auth.x.ai; the
+      # OAuth token persists to ~/.grok/auth.json. Unlike Copilot, the control
+      # plane is a set of narrow xAI SaaS hostnames, so a Tier 1 Grok sandbox is
+      # as isolated as a Tier 1 Claude one.
+      #
+      #   api.x.ai          model API (/v1/responses, ...)
+      #   accounts.x.ai     OAuth 2.0 PKCE account/authorize endpoints
+      #   auth.x.ai         device-code login flow (grok login --device-auth)
+      #   grok.com          SuperGrok subscription surface used during login
+      #
+      # All plain matchName hosts — no wildcards needed. NOTE: api.x.ai is not a
+      # pure model-inference channel — Grok's server-side web_search/x_search
+      # tools run on xAI and stream web/X content back over it, invisibly to this
+      # allowlist. Those tools (and client-side web_fetch) are removed at launch
+      # by get_agent_sandbox_flags, so web access flows through curl/wget, whose
+      # pod-originated egress this allowlist DOES bound. See that function.
+      cat <<'EOF'
+api.x.ai
+accounts.x.ai
+auth.x.ai
+grok.com
+EOF
+      ;;
     opencode)
       # Egress for opencode is restricted to the single OpenAI-compatible
       # endpoint hostname extracted from OPENCODE_BASE_URL (e.g. an OpenAI
@@ -145,25 +170,41 @@ get_agent_resume_flag() {
   esac
 }
 
-# get_agent_sandbox_flags — print extra launch flags that pin the agent's own
-# in-process OS sandbox, or nothing if the agent needs none. Codex wraps every
-# shell/apply_patch operation in bubblewrap, whose netns setup configures
-# loopback via a netlink RTM_NEWADDR call gVisor doesn't emulate — so bwrap
-# aborts ("loopback: Failed RTM_NEWADDR: No child processes") before Codex can
-# even read a file. The pod already IS the boundary (gVisor kernel isolation +
-# Cilium default-deny egress + filesystem masking), so that inner sandbox is
-# redundant as well as broken. "--sandbox danger-full-access" disables ONLY the
-# inner OS-sandbox; it is sandbox-only and leaves "--ask-for-approval" (Codex's
-# human-in-the-loop prompts) untouched, so it is NOT a bypass-approvals posture.
+# get_agent_sandbox_flags — print extra per-agent launch flags that harden the
+# session's security posture, or nothing if the agent needs none. Two agents use
+# this hook today.
 #
-# This duplicates the intent of the staged config.toml sandbox_mode key
-# (lib/onboard.sh) on purpose, as defense-in-depth: the launch flag overrides
-# config and so works even when an agent-home was staged before this change (no
-# 're-run sandbox onboard' required), when a pre-existing sandbox_mode key would
-# otherwise be left alone, or when Codex rewrites config.toml at runtime.
+# Codex ("--sandbox danger-full-access"): disables Codex's OWN in-process OS
+# sandbox (bubblewrap), whose netns setup configures loopback via a netlink
+# RTM_NEWADDR call gVisor doesn't emulate — so bwrap aborts ("loopback: Failed
+# RTM_NEWADDR: No child processes") before Codex can even read a file. The pod
+# already IS the boundary (gVisor kernel isolation + Cilium default-deny egress +
+# filesystem masking), so that inner sandbox is redundant as well as broken. The
+# flag is sandbox-only and leaves "--ask-for-approval" (Codex's human-in-the-loop
+# prompts) untouched, so it is NOT a bypass-approvals posture. It also duplicates
+# the intent of the staged config.toml sandbox_mode key (lib/onboard.sh) on
+# purpose, as defense-in-depth: the launch flag overrides config and so works
+# even when an agent-home was staged before this change (no 're-run sandbox
+# onboard' required), when a pre-existing sandbox_mode key would otherwise be
+# left alone, or when Codex rewrites config.toml at runtime.
+#
+# Grok ("--disallowed-tools web_search,x_search,web_fetch"): removes Grok's
+# built-in web tools from the model request. web_search and x_search are
+# SERVER-SIDE tools — xAI executes the crawl and only the allowed api.x.ai
+# channel is dialed — so Cilium's egress allowlist can neither see nor bound
+# them; dropping them client-side, before the request leaves the pod, is the
+# only control. ("--disable-web-search" is insufficient: it drops web_search but
+# leaves x_search live — verified against grok 0.2.93.) web_fetch is dropped too
+# so all web access is forced onto curl/wget in the shell, which egresses from
+# the pod and IS bound by the Cilium allowlist — making that allowlist the single
+# source of truth, with no parallel web_fetch domain list to keep in sync. This
+# is defense-in-depth with the pod egress policy and leaves Grok's approval
+# prompts untouched, so shell fetches stay human-gated (verified: grok reaches
+# for curl unprompted, and the interactive session still asks before running it).
 get_agent_sandbox_flags() {
   case "$1" in
     codex) echo "--sandbox danger-full-access" ;;
+    grok)  echo "--disallowed-tools web_search,x_search,web_fetch" ;;
     *)     echo "" ;;
   esac
 }
@@ -239,7 +280,7 @@ render_agent_mcp_config() {
 get_agent_credential_type() {
   local agent="$1"
   case "${agent}" in
-    claude|codex|copilot)  echo "oauth" ;;
+    claude|codex|copilot|grok)  echo "oauth" ;;
     opencode)              echo "apikey" ;;
     *)                     echo "unknown" ;;
   esac

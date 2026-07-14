@@ -230,6 +230,127 @@ test_onboard_agent_copilot_no_host_state() {
     || fail "destination file appeared with no source"
 }
 
+test_onboard_agent_grok_real() {
+  info "Testing onboard_agent grok (auth.json + benign config.toml staged)..."
+
+  local h
+  h="$(new_home grok-real)"
+  load_onboard_with_home "${h}"
+
+  mkdir -p "${h}/.grok"
+  echo '{"token":"oauth-fake"}' > "${h}/.grok/auth.json"
+  printf '[cli]\ninstaller = "internal"\n' > "${h}/.grok/config.toml"
+
+  onboard_agent grok false false >/dev/null
+
+  local auth="${h}/.sandbox/agent-home/grok/auth.json"
+  local cfg="${h}/.sandbox/agent-home/grok/config.toml"
+  [[ -f "${auth}" ]] && pass "auth.json staged for grok" \
+    || fail "grok auth.json missing"
+  eq "grok auth.json mode 0600" "600" "$(stat -c '%a' "${auth}")"
+  [[ -f "${cfg}" ]] && pass "benign config.toml staged for grok" \
+    || fail "grok config.toml missing (benign config should stage)"
+  # The operator's [cli] section is preserved AND the privacy veto is appended.
+  grep -q 'installer = "internal"' "${cfg}" \
+    && pass "operator's [cli] section preserved" \
+    || fail "staging clobbered the operator's config.toml"
+  grep -qE '^disable_codebase_upload = true' "${cfg}" \
+    && pass "disable_codebase_upload appended to staged config" \
+    || fail "disable_codebase_upload missing after onboard"
+  grep -qE '^trace_upload = false' "${cfg}" \
+    && pass "trace_upload disabled in staged config" \
+    || fail "trace_upload not disabled after onboard"
+  eq "hardened config.toml mode 0600" "600" "$(stat -c '%a' "${cfg}")"
+}
+
+test_onboard_agent_grok_privacy_idempotent() {
+  info "Testing onboard_agent grok leaves an operator's own upload choice alone..."
+
+  local h
+  h="$(new_home grok-privacy-idem)"
+  load_onboard_with_home "${h}"
+
+  mkdir -p "${h}/.grok"
+  echo '{"token":"oauth-fake"}' > "${h}/.grok/auth.json"
+  # Operator has deliberately RE-ENABLED upload — onboard must not override it.
+  printf '[harness]\ndisable_codebase_upload = false\n' > "${h}/.grok/config.toml"
+
+  local out
+  out="$(onboard_agent grok false false)"
+
+  local cfg="${h}/.sandbox/agent-home/grok/config.toml"
+  grep -qE '^disable_codebase_upload = false' "${cfg}" \
+    && pass "operator's disable_codebase_upload=false preserved" \
+    || fail "onboard overrode the operator's explicit choice"
+  local occurrences
+  occurrences="$(grep -cE '^[[:space:]]*disable_codebase_upload[[:space:]]*=' "${cfg}")"
+  eq "no duplicate disable_codebase_upload key" "1" "${occurrences}"
+  echo "${out}" | grep -qi "leaving it as-is" \
+    && pass "onboard reports it left the setting as-is" \
+    || fail "expected an 'as-is' notice; got: ${out}"
+}
+
+test_onboard_agent_grok_model_key_refused() {
+  info "Testing onboard_agent grok refuses a config.toml that pins a model key..."
+
+  local h
+  h="$(new_home grok-modelkey)"
+  load_onboard_with_home "${h}"
+
+  mkdir -p "${h}/.grok"
+  echo '{"token":"oauth-fake"}' > "${h}/.grok/auth.json"
+  # A per-model api_key outranks the OAuth session token — must NOT be staged.
+  printf '[[models]]\nname = "grok-4.5"\napi_key = "xai-SECRET"\n' \
+    > "${h}/.grok/config.toml"
+
+  local out
+  out="$(onboard_agent grok false false)"
+
+  local auth="${h}/.sandbox/agent-home/grok/auth.json"
+  local cfg="${h}/.sandbox/agent-home/grok/config.toml"
+  [[ -f "${auth}" ]] && pass "auth.json still staged" \
+    || fail "auth.json should stage even when config is refused"
+  echo "${out}" | grep -qi "outrank" \
+    && pass "refusal explains the OAuth-precedence reason" \
+    || fail "expected an 'outrank' explanation; got: ${out}"
+  # The host config was refused, but onboard still writes a FRESH hardened
+  # config.toml — with the privacy veto and WITHOUT the baked model key.
+  [[ -f "${cfg}" ]] \
+    && pass "fresh hardened config.toml written despite refusal" \
+    || fail "no hardened config.toml created after refusal"
+  grep -qE '^disable_codebase_upload = true' "${cfg}" \
+    && pass "fresh config vetoes codebase upload" \
+    || fail "disable_codebase_upload missing from fresh config"
+  grep -q 'xai-SECRET' "${cfg}" \
+    && fail "the refused model key leaked into the staged config" \
+    || pass "refused model key did NOT leak into staged config"
+}
+
+test_onboard_agent_grok_no_host_state() {
+  info "Testing onboard_agent grok when no host state exists (not yet logged in)..."
+
+  local h
+  h="$(new_home grok-empty)"
+  load_onboard_with_home "${h}"
+
+  # No ~/.grok/auth.json — operator has not run 'grok login' on the host.
+  local out
+  out="$(onboard_agent grok false false)"
+  if echo "${out}" | grep -q "no host-side state"; then
+    pass "missing host state is reported, not fatal"
+  else
+    fail "expected 'no host-side state' message; got: ${out}"
+  fi
+  [[ ! -f "${h}/.sandbox/agent-home/grok/auth.json" ]] \
+    && pass "no auth.json created when source absent" \
+    || fail "auth.json appeared with no source"
+  # Even before login, the pod should launch pre-hardened against upload.
+  local cfg="${h}/.sandbox/agent-home/grok/config.toml"
+  [[ -f "${cfg}" ]] && grep -qE '^disable_codebase_upload = true' "${cfg}" \
+    && pass "hardened config.toml written even with no host login" \
+    || fail "expected a hardened config.toml before first login"
+}
+
 test_onboard_agent_opencode_refusal() {
   info "Testing onboard_agent opencode refusal..."
 
@@ -392,6 +513,16 @@ test_warn_forbidden_env() {
   else
     fail "warning did not name GH_TOKEN"
   fi
+
+  # GROK_DEPLOYMENT_KEY is forbidden too — it outranks Grok's stored OAuth token.
+  out="$(GROK_DEPLOYMENT_KEY=xai-deploy warn_forbidden_env 2>&1)"
+  count="$(echo "${out}" | tail -1)"
+  eq "GROK_DEPLOYMENT_KEY forbidden → count 1" "1" "${count}"
+  if echo "${out}" | grep -q "GROK_DEPLOYMENT_KEY"; then
+    pass "warning names GROK_DEPLOYMENT_KEY"
+  else
+    fail "warning did not name GROK_DEPLOYMENT_KEY"
+  fi
 }
 
 ###############################################################################
@@ -457,6 +588,10 @@ main() {
   test_onboard_agent_claude_no_host_state
   test_onboard_agent_copilot_real
   test_onboard_agent_copilot_no_host_state
+  test_onboard_agent_grok_real
+  test_onboard_agent_grok_privacy_idempotent
+  test_onboard_agent_grok_model_key_refused
+  test_onboard_agent_grok_no_host_state
   test_onboard_agent_opencode_refusal
   test_onboard_codex_sandbox_mode_fresh
   test_onboard_codex_sandbox_mode_prepended

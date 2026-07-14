@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
+# config/agents/grok.yaml
+# xAI Grok Build CLI agent profile
+#
+# Descriptive contract only — runtime config lives in lib/agents.sh and
+# lib/onboard.sh; this file documents the contract.
+
+agent: grok
+display_name: "xAI Grok Build CLI"
+image_base: "sandbox:grok"
+image_infra: "sandbox:grok-infra"
+credential_type: oauth  # OAuth device flow — NO token injection (PRINCIPLES.md)
+entrypoint: grok
+
+# Allowed egress domains — Tier 1 only (Tier 2/3 add tier_domains on top).
+# All plain hostnames (no wildcards). See lib/agents.sh:get_agent_domains for
+# the per-host rationale.
+allowed_domains:
+  - api.x.ai         # model API (see web-tools note below — NOT pure inference)
+  - accounts.x.ai    # OAuth 2.0 PKCE account/authorize
+  - auth.x.ai        # device-code login flow
+  - grok.com         # SuperGrok subscription surface used during login
+
+# Web tools — disabled at launch, NOT here.
+# Grok ships two SERVER-SIDE search tools (web_search, x_search): xAI performs
+# the crawl and returns results over api.x.ai, so that host is not a pure
+# model-inference channel — it can carry arbitrary web/X content in (and search
+# queries out). The Cilium egress allowlist cannot see or bound this: it governs
+# which hosts the pod may dial, not what an allowed host does server-side. The
+# only control is to remove the tools from the model request client-side, which
+# lib/agents.sh:get_agent_sandbox_flags does at launch via
+#   --disallowed-tools web_search,x_search,web_fetch
+# ('--disable-web-search' alone is insufficient — it leaves x_search live).
+# web_fetch (client-side) is dropped too, so all web access flows through
+# curl/wget in the shell — pod-originated egress that the Cilium allowlist DOES
+# bound, keeping that allowlist the single source of truth (no parallel domain
+# list). Shell fetches remain human-gated by Grok's approval prompts.
+
+# Environment variables injected into pod
+env:
+  HOME: /home/agent
+  TERM: xterm-256color
+  # No GROK_HOME override: the credential mount lands at /home/agent/.grok,
+  # Grok's default config dir (lib/manifest.sh). The OAuth token persists to
+  # ~/.grok/auth.json via `grok login --device-auth`.
+
+# Forbidden env vars — must not appear in the pod spec (nor at image build time).
+#
+# GROK_DEPLOYMENT_KEY is Grok's enterprise deployment credential; per the
+# installer it TAKES PRECEDENCE over the stored ~/.grok/auth.json OAuth token
+# and is also an install-time auth source, so a stray value would silently
+# override OAuth with a broad, long-lived key. Blocked at build, onboard, and
+# launch (docker/Dockerfile.grok, lib/onboard.sh, lib/credentials.sh) to keep
+# OAuth device flow the only path in.
+#
+# XAI_API_KEY is advisory: Grok's credential resolution ranks the active OAuth
+# session token ABOVE XAI_API_KEY (model.api_key > model.env_key > session
+# token > XAI_API_KEY), so it cannot override OAuth — but it is still surfaced
+# so operators are steered to OAuth rather than a baked API key.
+forbidden_env:
+  - GROK_DEPLOYMENT_KEY
+advisory_env:
+  - XAI_API_KEY
+
+# Config caveat: ~/.grok/config.toml may pin a per-model api_key/env_key, which
+# outranks the OAuth session token. Onboarding must NOT stage a config.toml that
+# hard-codes a model key (lib/onboard.sh), or a long-lived key sneaks in behind
+# OAuth (PRINCIPLES.md rule 1).
+#
+# Codebase-upload veto: grok 0.2.93 was found to POST the ENTIRE repository (not
+# just files a prompt read), secrets included, to xAI's grok-code-session-traces
+# bucket. The observed uploads used storage.googleapis.com and
+# cli-chat-proxy.grok.com — neither is an allowed_domain, so the Cilium allowlist
+# already drops them. But api.x.ai (a required host) is not a pure inference
+# channel, so onboarding also stages the client-side veto into the config:
+#   [harness]   disable_codebase_upload = true
+#   [telemetry] trace_upload = false, enabled = false
+# These are reverse-engineered (NOT a documented xAI contract) and verified
+# against 0.2.93 — re-check with 'grok inspect' on a version bump. See
+# lib/onboard.sh:ensure_grok_privacy_config.

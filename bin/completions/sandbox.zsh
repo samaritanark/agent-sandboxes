@@ -154,7 +154,7 @@ _sandbox_profile() {
     save)
       _arguments \
         '--tier[Isolation tier (required)]:tier:(1 2 3)' \
-        '--agent[Agent to pin (optional)]:agent:(claude codex opencode copilot)' \
+        '--agent[Agent to pin (optional)]:agent:(claude codex opencode copilot grok)' \
         '--repo[Default workspace repository]:directory:_files -/' \
         '*--allow-domain[Extra allowed egress domain]:domain:' \
         '--name[Profile name (default: derived from repo + agent)]:name:' \
@@ -206,7 +206,7 @@ _sandbox_link() {
 
 _sandbox_onboard() {
   _arguments \
-    '--agent[Limit to one agent (default: all)]:agent:(claude codex opencode copilot all)' \
+    '--agent[Limit to one agent (default: all)]:agent:(claude codex opencode copilot grok all)' \
     '--skip-config[Do not write ~/.sandbox/config.yaml]' \
     '--dry-run[Report what would be done; copy nothing]' \
     '--force[Overwrite already-staged files]' \
@@ -248,12 +248,13 @@ _sandbox_upgrade() {
 
 _sandbox_rebuild() {
   _arguments \
-    '--agent[Image to rebuild]:image:(claude codex opencode copilot shell base all)' \
+    '--agent[Image to rebuild]:image:(claude codex opencode copilot grok shell base all)' \
     '--tier3[Also rebuild matching *-infra image(s)]' \
     '--no-cache[Pass --no-cache to container builder]' \
     '--codex-version[Pin @openai/codex npm version]:version:' \
     '--opencode-version[Pin OpenCode release version]:version:' \
     '--copilot-version[Pin @github/copilot npm version]:version:' \
+    '--grok-version[Pin Grok CLI release (semver, e.g. 0.2.93)]:version:' \
     '--help[Show help]'
 }
 
@@ -264,7 +265,7 @@ _sandbox_run() {
     pnames+=(${(f)"$(cd "${pdir}" && ls -1 *.yaml(N) 2>/dev/null | sed 's/\.yaml$//')"})
   fi
   _arguments \
-    '--agent[Agent to run]:agent:(claude codex opencode copilot)' \
+    '--agent[Agent to run]:agent:(claude codex opencode copilot grok)' \
     '--tier[Isolation tier]:tier:(1 2 3)' \
     "--profile[Numeric (1|2|3) aliases --tier; named resolves a profile YAML]:profile:(${pnames[*]})" \
     '--repo[Workspace git repository]:directory:_files -/' \

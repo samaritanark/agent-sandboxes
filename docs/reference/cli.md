@@ -4,7 +4,7 @@
 
 ```text
 sandbox run [OPTIONS]
-  --agent <claude|codex|opencode>    default: claude
+  --agent <claude|codex|opencode|copilot|grok>    default: claude
   --tier <1|2|3>                     default: 1
   --profile <NAME>                   numeric (1|2|3) aliases --tier; named
                                      resolves ~/.sandbox/profiles/<name>.yaml
@@ -80,7 +80,7 @@ sandbox configure-network                       # Linux only; re-detect host
                                                 # (also auto-run by `sandbox run`)
 sandbox rebuild [--agent NAME] [--tier3] [--no-cache]
                 [--codex-version VER] [--opencode-version VER]
-                [--copilot-version VER]
+                [--copilot-version VER] [--grok-version VER]
 sandbox version [--short | --json]              # reads the identity embedded at
                                                 # release/install time; a fresh,
                                                 # never-installed checkout: "dev"

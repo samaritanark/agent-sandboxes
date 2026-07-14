@@ -33,6 +33,7 @@ tasks:
       - bash tests/test-onboard.sh
       - bash tests/test-agents.sh
       - bash tests/test-copilot.sh
+      - bash tests/test-grok.sh
       - bash tests/test-agent-home.sh
       - bash tests/test-workspace-mount.sh
       - bash tests/test-secrets.sh

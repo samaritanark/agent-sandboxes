@@ -200,6 +200,8 @@ test_config_files_present() {
     "${SANDBOX_ROOT}/config/agents/claude.yaml"
     "${SANDBOX_ROOT}/config/agents/codex.yaml"
     "${SANDBOX_ROOT}/config/agents/opencode.yaml"
+    "${SANDBOX_ROOT}/config/agents/copilot.yaml"
+    "${SANDBOX_ROOT}/config/agents/grok.yaml"
     "${SANDBOX_ROOT}/config/tiers/tier1.yaml"
     "${SANDBOX_ROOT}/config/tiers/tier2.yaml"
   )

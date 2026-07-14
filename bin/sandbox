@@ -197,7 +197,7 @@ USAGE:
   sandbox run [OPTIONS]
 
 OPTIONS:
-  --agent <claude|codex|opencode|copilot>   Agent to run (default: claude)
+  --agent <claude|codex|opencode|copilot|grok>   Agent to run (default: claude)
   --tier <1|2|3>                    Isolation tier (default: 1)
   --profile <NAME>                  Named profile or numeric tier alias.
                                     '1', '2', '3' aliases --tier <N>.
@@ -354,6 +354,7 @@ print_session_banner() {
     codex)    agent_desc="codex (OpenAI OAuth)" ;;
     opencode) agent_desc="opencode (vLLM proxy)" ;;
     copilot)  agent_desc="copilot (GitHub OAuth)" ;;
+    grok)     agent_desc="grok (xAI OAuth)" ;;
     *)        agent_desc="${agent}" ;;
   esac
 
@@ -1785,13 +1786,14 @@ USAGE:
 
 OPTIONS:
   --agent <NAME>               Image to rebuild. One of:
-                                 claude, codex, opencode, copilot, shell, base, all
+                                 claude, codex, opencode, copilot, grok, shell, base, all
                                  (default: all)
   --tier3                      Also rebuild the matching *-infra image(s)
   --no-cache                   Pass --no-cache to the container builder
   --codex-version <VER>        Pin @openai/codex npm version (default: latest)
   --opencode-version <VER>     Pin OpenCode release (default: latest)
   --copilot-version <VER>      Pin @github/copilot npm version (default: latest)
+  --grok-version <VER>         Pin Grok CLI release, e.g. 0.2.93 (semver only)
   --help                       Show this help
 
 NOTES:
@@ -1820,6 +1822,7 @@ cmd_rebuild() {
   local opt_codex_version=""
   local opt_opencode_version=""
   local opt_copilot_version=""
+  local opt_grok_version=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1833,6 +1836,8 @@ cmd_rebuild() {
       --opencode-version=*) opt_opencode_version="${1#--opencode-version=}" ;;
       --copilot-version)   opt_copilot_version="${2:?--copilot-version requires a value}"; shift ;;
       --copilot-version=*) opt_copilot_version="${1#--copilot-version=}" ;;
+      --grok-version)      opt_grok_version="${2:?--grok-version requires a value}"; shift ;;
+      --grok-version=*)    opt_grok_version="${1#--grok-version=}" ;;
       --help|-h)           usage_rebuild ;;
       *)                   die "Unknown option: $1 (run 'sandbox rebuild --help')" ;;
     esac
@@ -1840,8 +1845,8 @@ cmd_rebuild() {
   done
 
   case "${opt_agent}" in
-    claude|codex|opencode|copilot|shell|base|all) ;;
-    *) die "Invalid --agent: ${opt_agent} (must be claude, codex, opencode, copilot, shell, base, or all)" ;;
+    claude|codex|opencode|copilot|grok|shell|base|all) ;;
+    *) die "Invalid --agent: ${opt_agent} (must be claude, codex, opencode, copilot, grok, shell, base, or all)" ;;
   esac
 
   # Container builder — match setup/common.sh preference order.
@@ -1909,6 +1914,7 @@ cmd_rebuild() {
       sandbox:codex|sandbox:codex-infra)       version_cmd="codex --version" ;;
       sandbox:opencode|sandbox:opencode-infra) version_cmd="opencode --version" ;;
       sandbox:copilot|sandbox:copilot-infra)   version_cmd="copilot --version" ;;
+      sandbox:grok|sandbox:grok-infra)         version_cmd="grok --version" ;;
       sandbox:shell)                           version_cmd="bash --version | head -1" ;;
       sandbox:base)                            version_cmd="node --version" ;;
     esac
@@ -1939,6 +1945,9 @@ cmd_rebuild() {
   local -a copilot_args=()
   [[ -n "${opt_copilot_version}" ]] && copilot_args+=(--build-arg "COPILOT_CLI_VERSION=${opt_copilot_version}")
 
+  local -a grok_args=()
+  [[ -n "${opt_grok_version}" ]] && grok_args+=(--build-arg "GROK_CLI_VERSION=${opt_grok_version}")
+
   # Build in dependency order.
   if [[ "${opt_agent}" == "base" || "${opt_agent}" == "all" ]]; then
     _rebuild_one "docker.io/library/sandbox:base" "Dockerfile.base"
@@ -1955,6 +1964,9 @@ cmd_rebuild() {
   fi
   if [[ "${opt_agent}" == "copilot" || "${opt_agent}" == "all" ]]; then
     _rebuild_one "docker.io/library/sandbox:copilot" "Dockerfile.copilot" "${copilot_args[@]+"${copilot_args[@]}"}"
+  fi
+  if [[ "${opt_agent}" == "grok" || "${opt_agent}" == "all" ]]; then
+    _rebuild_one "docker.io/library/sandbox:grok" "Dockerfile.grok" "${grok_args[@]+"${grok_args[@]}"}"
   fi
   if [[ "${opt_agent}" == "shell" || "${opt_agent}" == "all" ]]; then
     _rebuild_one "docker.io/library/sandbox:shell" "Dockerfile.shell"
@@ -1977,6 +1989,10 @@ cmd_rebuild() {
     if [[ "${opt_agent}" == "copilot" || "${opt_agent}" == "all" ]]; then
       _rebuild_one "docker.io/library/sandbox:copilot-infra" "Dockerfile.infra" \
         --build-arg "BASE_IMAGE=sandbox:copilot"
+    fi
+    if [[ "${opt_agent}" == "grok" || "${opt_agent}" == "all" ]]; then
+      _rebuild_one "docker.io/library/sandbox:grok-infra" "Dockerfile.infra" \
+        --build-arg "BASE_IMAGE=sandbox:grok"
     fi
   fi
 
@@ -2505,7 +2521,7 @@ USAGE:
   sandbox onboard [OPTIONS]
 
 OPTIONS:
-  --agent <claude|codex|opencode|copilot|all>  Limit to one agent (default: all)
+  --agent <claude|codex|opencode|copilot|grok|all>  Limit to one agent (default: all)
   --skip-config                        Don't write ~/.sandbox/config.yaml
   --dry-run                            Report what would be done; copy nothing
   --force                              Overwrite already-staged files
@@ -2549,8 +2565,8 @@ cmd_onboard() {
   done
 
   case "${opt_agent}" in
-    claude|codex|opencode|copilot|all) ;;
-    *) die "--agent must be one of: claude, codex, opencode, copilot, all" ;;
+    claude|codex|opencode|copilot|grok|all) ;;
+    *) die "--agent must be one of: claude, codex, opencode, copilot, grok, all" ;;
   esac
 
   if [[ "${opt_dry_run}" == "true" ]]; then
@@ -2572,7 +2588,7 @@ cmd_onboard() {
   echo "==> Staging agent credentials"
   local -a agents=()
   if [[ "${opt_agent}" == "all" ]]; then
-    agents=(claude codex opencode copilot)
+    agents=(claude codex opencode copilot grok)
   else
     agents=("${opt_agent}")
   fi
@@ -3585,7 +3601,7 @@ profile can never widen what a session is allowed to do.
 
 SAVE OPTIONS (mirror 'sandbox run'):
   --tier <1|2|3>            Required.
-  --agent <claude|codex|opencode|copilot>
+  --agent <claude|codex|opencode|copilot|grok>
                             OPTIONAL. If omitted, the profile pins no agent
                             and 'run --profile' falls back to its --agent flag
                             (default: claude).

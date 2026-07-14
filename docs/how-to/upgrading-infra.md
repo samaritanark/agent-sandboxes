@@ -111,7 +111,7 @@ recreating the VM rather than mutating it.
 
 ## What isn't covered here
 
-- **Agent CLIs** (Claude Code, Codex, Copilot, OpenCode) live in the container
+- **Agent CLIs** (Claude Code, Codex, Copilot, OpenCode, Grok) live in the container
   images — refresh those with [`sandbox rebuild`](rebuilding-images.md).
 - **Base-image tools** (uv, gitleaks, terraform, the in-image helm) are pinned
   as build args in `docker/Dockerfile.base` / `Dockerfile.infra`.

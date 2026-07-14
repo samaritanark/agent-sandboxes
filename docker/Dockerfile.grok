@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
+# docker/Dockerfile.grok
+# sandbox:grok — xAI Grok Build CLI agent image
+# - Installs the official `grok` binary from x.ai/cli/install.sh (a static-pie
+#   ELF, NOT an npm package) into /usr/local/bin
+# - NO deployment key baked in — authentication is OAuth device-flow only
+#   (grok login --device-auth), staged into agent-home by 'sandbox onboard'
+# - NO tsh, docker CLI, or SSH client
+
+FROM sandbox:base
+
+# Root for the system-wide install + copy into /usr/local/bin; drop back to
+# agent afterwards (mirrors Dockerfile.codex).
+USER root
+
+# Install the Grok Build CLI.
+#
+# GROK_CLI_VERSION pins the release; bump it (or pass
+# `--build-arg GROK_CLI_VERSION=<v>`) via `sandbox rebuild` to refresh on your
+# own cadence. The installer takes the version as a positional arg and rejects
+# non-semver values, so "latest" is NOT accepted — an explicit pin is required
+# (and preferred for supply-chain reasons; Renovate bumps this).
+#
+# The installer roots its entire layout under $HOME/.grok (the `grok` binary is
+# a symlink into $HOME/.grok/downloads) and, when run as root, ALSO drops
+# convenience symlinks /usr/local/bin/{grok,agent} pointing back into that tree.
+# At runtime we bind-mount agent-home OVER /home/agent/.grok, which would both
+# shadow a binary installed there AND break those symlinks — so we install under
+# a throwaway $HOME and replace /usr/local/bin/grok with the *resolved* real
+# binary (readlink -f → the download target; --remove-destination clears the
+# installer's symlink first). The artifact is a static-pie ELF with no external
+# deps, so the standalone copy runs after the temp tree is removed. The `agent`
+# alias symlink is dropped (we only expose `grok`).
+ARG GROK_CLI_VERSION=0.2.93
+
+# Fail the build if a deployment key bled into the image. Grok honors
+# GROK_DEPLOYMENT_KEY over its stored ~/.grok/auth.json OAuth token (and it is
+# also an install-time auth source), so a baked key silently overrides OAuth and
+# may carry broad, long-lived privileges — it must never be baked in (see
+# PRINCIPLES.md, "Credential isolation").
+RUN test -z "${GROK_DEPLOYMENT_KEY:-}" || \
+    (echo "ERROR: GROK_DEPLOYMENT_KEY must not be set in image" && exit 1)
+
+RUN export HOME=/tmp/grok-install \
+  && mkdir -p "${HOME}" \
+  && curl -fsSL https://x.ai/cli/install.sh | bash -s "${GROK_CLI_VERSION}" \
+  && cp -L --remove-destination "$(readlink -f "${HOME}/.grok/bin/grok")" /usr/local/bin/grok \
+  && chmod 0755 /usr/local/bin/grok \
+  && rm -f /usr/local/bin/agent \
+  && rm -rf "${HOME}" \
+  && grok --version
+
+USER agent
+
+ENTRYPOINT ["grok"]
+CMD []

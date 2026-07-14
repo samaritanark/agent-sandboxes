@@ -30,6 +30,10 @@
 #
 #   copilot ~/.copilot/config.json        → ~/.sandbox/agent-home/copilot/config.json
 #
+#   grok    ~/.grok/auth.json             → ~/.sandbox/agent-home/grok/auth.json
+#           ~/.grok/config.toml           → ~/.sandbox/agent-home/grok/config.toml
+#                                           (only when it pins no per-model key)
+#
 # Copilot onboard is best-effort by nature: the CLI stores its OAuth token in
 # the OS keychain when one is available (typical on a macOS/Linux-desktop host),
 # in which case ~/.copilot/config.json holds no token and there is nothing to
@@ -39,8 +43,18 @@
 # short-circuits that first login when the host already keeps a plaintext token
 # (headless Linux host, or one without libsecret).
 #
+# Grok is likewise best-effort: ~/.grok/auth.json exists only after a host-side
+# 'grok login'. When absent, onboard is a no-op and the first in-pod 'grok login
+# --device-auth' persists the token into the mounted agent-home. config.toml is
+# staged only when it carries no per-model api_key/env_key — such a key outranks
+# the OAuth session token and would defeat the OAuth-only path (see _onboard_grok).
+# The staged config is then hardened with disable_codebase_upload=true (+ trace/
+# telemetry off) so Grok cannot bundle-and-upload the whole repo — defense in
+# depth with the pod egress allowlist (see ensure_grok_privacy_config).
+#
 # Conversation history (~/.claude/projects/, ~/.codex/sessions/,
-# ~/.copilot/history/) is intentionally NOT copied — the sandbox starts fresh.
+# ~/.copilot/history/, ~/.grok/sessions/) is intentionally NOT copied — the
+# sandbox starts fresh.
 set -euo pipefail
 
 ONBOARD_AGENT_HOME_BASE="${HOME}/.sandbox/agent-home"
@@ -55,6 +69,7 @@ ONBOARD_FORBIDDEN_ENV=(
   "COPILOT_GITHUB_TOKEN"
   "GH_TOKEN"
   "GITHUB_TOKEN"
+  "GROK_DEPLOYMENT_KEY"
 )
 
 # warn_forbidden_env — emit a warning for each forbidden var that's
@@ -143,6 +158,9 @@ onboard_agent() {
       ;;
     copilot)
       _onboard_copilot "${dry_run}" "${force}"
+      ;;
+    grok)
+      _onboard_grok "${dry_run}" "${force}"
       ;;
     opencode)
       _onboard_opencode_refuse
@@ -263,6 +281,114 @@ _onboard_copilot() {
     result="$(stage_file "${src}" "${dst}" "${dry_run}" "${force}")"
     print_stage_result copilot "${src}" "${dst}" "${result}"
   done
+}
+
+_onboard_grok() {
+  local dry_run="$1" force="$2"
+  local agent_home="${ONBOARD_AGENT_HOME_BASE}/grok"
+  mkdir -p "${agent_home}"
+
+  # Stage the OAuth token. Absent until the operator has run 'grok login' on the
+  # host — in which case this is a no-op ("missing-src") and the first in-pod
+  # 'grok login --device-auth' writes the token durably into the mounted
+  # agent-home (same pattern as copilot).
+  local result
+  result="$(stage_file "${HOME}/.grok/auth.json" "${agent_home}/auth.json" "${dry_run}" "${force}")"
+  print_stage_result grok "${HOME}/.grok/auth.json" "${agent_home}/auth.json" "${result}"
+
+  # Stage config.toml ONLY when it pins no per-model credential. Grok resolves
+  # credentials model.api_key > model.env_key > OAuth session token > XAI_API_KEY,
+  # so a config that hard-codes a model api_key/env_key would silently outrank the
+  # OAuth token — baking a long-lived key into agent state (PRINCIPLES.md rule 1).
+  # Refuse that file and keep OAuth device flow the only path in.
+  local src_cfg="${HOME}/.grok/config.toml"
+  local dst_cfg="${agent_home}/config.toml"
+  local src_cfg_disp="${src_cfg/#${HOME}/\~}"
+  if [[ -f "${src_cfg}" ]] && grep -qE '^[[:space:]]*(api_key|env_key)[[:space:]]*=' "${src_cfg}"; then
+    echo "  grok: ${src_cfg_disp} pins a per-model api_key/env_key — NOT staging it."
+    echo "        That key would outrank the OAuth session token (PRINCIPLES.md"
+    echo "        rule 1). Authenticate in-pod with 'grok login --device-auth'."
+  else
+    result="$(stage_file "${src_cfg}" "${dst_cfg}" "${dry_run}" "${force}")"
+    print_stage_result grok "${src_cfg}" "${dst_cfg}" "${result}"
+  fi
+
+  # Harden the staged config against whole-repository upload / trace exfil,
+  # whether or not a host config.toml was staged above (see below).
+  ensure_grok_privacy_config "${dst_cfg}" "${dry_run}"
+}
+
+# ensure_grok_privacy_config <config.toml> <dry_run> — guarantee the staged
+# Grok config vetoes whole-repository upload and trace/telemetry exfil.
+#
+# grok 0.2.93 was found to bundle and POST the ENTIRE git repository — not just
+# the files a prompt read — to xAI's grok-code-session-traces bucket, secrets
+# included. The pod egress allowlist already drops the hosts those uploads used
+# (storage.googleapis.com, cli-chat-proxy.grok.com — neither is an allowed
+# matchName), so a Grok sandbox blocks the observed leak at the network layer.
+# But api.x.ai, which a session MUST reach, is NOT a pure inference channel
+# (see config/agents/grok.yaml), so if a trace upload can ride that host the
+# allowlist cannot see it. This client-side veto is the belt to that allowlist's
+# suspenders. The keys are reverse-engineered — NOT a documented xAI contract —
+# and verified against grok 0.2.93 (the pinned version); run 'grok inspect'
+# in-pod to confirm they still load after a version bump.
+#
+#   [harness]   disable_codebase_upload = true    whole-repo bundle upload off
+#   [telemetry] trace_upload = false, enabled = false   session-trace + telemetry off
+#
+# Idempotent: if disable_codebase_upload is already set we leave the operator's
+# choice alone. We only APPEND fresh tables; if the config already declares a
+# [harness] or [telemetry] table we do NOT edit inside it (TOML forbids a
+# duplicate table header) and instead point the operator at the keys to add.
+ensure_grok_privacy_config() {
+  local cfg="$1" dry_run="$2"
+  local cfg_disp="${cfg/#${HOME}/\~}"
+
+  if [[ -f "${cfg}" ]] && grep -qE '^[[:space:]]*disable_codebase_upload[[:space:]]*=' "${cfg}"; then
+    echo "  grok: ${cfg_disp} already sets disable_codebase_upload — leaving it as-is."
+    return 0
+  fi
+
+  if [[ -f "${cfg}" ]] && grep -qE '^[[:space:]]*\[(harness|telemetry)\]' "${cfg}"; then
+    echo "  grok: ${cfg_disp} already declares a [harness]/[telemetry] table — NOT"
+    echo "        auto-editing it (TOML forbids a duplicate header). Add"
+    echo "        'disable_codebase_upload = true' under [harness] (and"
+    echo "        trace_upload = false / enabled = false under [telemetry]) to"
+    echo "        keep whole-repo upload off."
+    return 0
+  fi
+
+  if [[ "${dry_run}" == "true" ]]; then
+    echo "  grok: would set disable_codebase_upload=true (+ telemetry off) in ${cfg_disp}"
+    return 0
+  fi
+
+  local block
+  block="$(cat <<'TOML'
+# Added by 'sandbox onboard'. grok 0.2.93 uploaded the ENTIRE repository — not
+# just files a prompt read — to xAI's grok-code-session-traces bucket. The pod
+# egress allowlist already blocks the hosts those uploads used, but api.x.ai —
+# which a session must reach — is not a pure inference channel, so this is the
+# client-side veto (defense-in-depth). Reverse-engineered for grok 0.2.93; run
+# 'grok inspect' to confirm it still loads. Remove these to restore defaults.
+[harness]
+disable_codebase_upload = true
+
+[telemetry]
+trace_upload = false
+enabled = false
+TOML
+)"
+
+  mkdir -p "$(dirname "${cfg}")"
+  if [[ -f "${cfg}" ]]; then
+    printf '%s\n\n%s\n' "$(cat "${cfg}")" "${block}" > "${cfg}.tmp"
+    mv "${cfg}.tmp" "${cfg}"
+  else
+    printf '%s\n' "${block}" > "${cfg}"
+  fi
+  chmod 0600 "${cfg}"
+  echo "  grok: set disable_codebase_upload=true (+ telemetry off) in ${cfg_disp}"
 }
 
 _onboard_opencode_refuse() {

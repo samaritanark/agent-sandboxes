@@ -4,8 +4,9 @@
 # tests/test-agents.sh — lib/agents.sh helper tests
 # Verifies the per-agent launch-flag helpers, focusing on
 # get_agent_sandbox_flags: Codex disables its inner bwrap OS-sandbox at launch
-# (so it works without re-running 'sandbox onboard'), other agents add nothing.
-# Cluster-free.
+# (so it works without re-running 'sandbox onboard'), Grok drops its server-side
+# web tools so egress stays bound by the Cilium allowlist, other agents add
+# nothing. Cluster-free.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"
 
@@ -38,7 +39,41 @@ test_sandbox_flags_others_empty() {
   info "Testing get_agent_sandbox_flags adds nothing for other agents..."
   eq "claude gets no sandbox flag"   "" "$(get_agent_sandbox_flags claude)"
   eq "opencode gets no sandbox flag" "" "$(get_agent_sandbox_flags opencode)"
+  eq "copilot gets no sandbox flag"  "" "$(get_agent_sandbox_flags copilot)"
   eq "unknown agent gets no flag"    "" "$(get_agent_sandbox_flags bogus)"
+}
+
+test_sandbox_flags_grok() {
+  info "Testing get_agent_sandbox_flags drops Grok's web tools..."
+  local flags
+  flags="$(get_agent_sandbox_flags grok)"
+  eq "grok disallows the web tools" \
+    "--disallowed-tools web_search,x_search,web_fetch" "${flags}"
+  # x_search MUST be in the list: '--disable-web-search' would drop web_search
+  # but leave x_search's server-side X search live (verified vs grok 0.2.93).
+  # Both web_search and x_search egress via api.x.ai and are invisible to Cilium,
+  # so the launch flag is the only place they can be closed.
+  for tool in web_search x_search web_fetch; do
+    [[ "${flags}" == *"${tool}"* ]] || fail "grok flags must disallow ${tool}; got: ${flags}"
+  done
+  pass "grok disallows web_search, x_search, and web_fetch"
+  # The flag removes tools only; it must never relax Grok's approval prompts
+  # (shell fetches like curl stay human-gated).
+  if [[ "${flags}" == *"bypass"* \
+     || "${flags}" == *"always-approve"* \
+     || "${flags}" == *"dontAsk"* ]]; then
+    fail "grok sandbox flags must not touch approvals; got: ${flags}"
+  fi
+  pass "grok sandbox flags leave approval policy untouched"
+}
+
+test_sandbox_flags_grok_word_split() {
+  info "Testing the Grok flag string splits into exactly two argv tokens..."
+  local -a parts
+  read -ra parts <<< "$(get_agent_sandbox_flags grok)"
+  eq "two argv tokens"      "2"                                    "${#parts[@]}"
+  eq "first token is flag"  "--disallowed-tools"                   "${parts[0]}"
+  eq "second is tool list"  "web_search,x_search,web_fetch"        "${parts[1]}"
 }
 
 test_sandbox_flags_keep_approvals() {
@@ -71,8 +106,10 @@ main() {
   info "Running ${TEST_NAME} tests..."
   test_sandbox_flags_codex
   test_sandbox_flags_others_empty
+  test_sandbox_flags_grok
   test_sandbox_flags_keep_approvals
   test_sandbox_flags_word_split
+  test_sandbox_flags_grok_word_split
   echo "All ${TEST_NAME} tests passed."
 }
 

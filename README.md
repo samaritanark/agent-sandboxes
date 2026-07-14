@@ -9,7 +9,8 @@
   <b>Sandboxed execution environment for AI coding agents</b>
 </p>
 
-Works with Claude Code, OpenAI Codex CLI, GitHub Copilot CLI, and OpenCode.
+Works with Claude Code, OpenAI Codex CLI, GitHub Copilot CLI, OpenCode, and the
+xAI Grok CLI.
 Provides kernel-level isolation (gVisor), network policy enforcement (Cilium),
 and filesystem masking. Design intent and operator guidance in
 [PRINCIPLES.md](PRINCIPLES.md).

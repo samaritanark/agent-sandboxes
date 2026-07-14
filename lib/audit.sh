@@ -260,6 +260,18 @@ audit_capture_transcript() {
       read_into_array srcs < <(find "${agent_home}/session-state" -type f \
         -newer "${session_json}" 2>/dev/null || true)
       ;;
+    grok)
+      # ~/.grok/sessions/<encoded-cwd>/<session-id>/{updates.jsonl,
+      # chat_history.jsonl,summary.json,rewind_points.jsonl,feedback.jsonl}. No
+      # session-id flag is wired (get_agent_session_id_flag), so correlate by
+      # mtime like codex/opencode/copilot. Two things are deliberately excluded:
+      # session_search.sqlite (+ its -wal/-shm) sits at the sessions/ root and is
+      # a full-text index spanning ALL sessions — not a transcript, and copying it
+      # would leak other sessions' content; and auth.json lives OUTSIDE sessions/,
+      # so the OAuth token is never captured.
+      read_into_array srcs < <(find "${agent_home}/sessions" -type f \
+        -newer "${session_json}" ! -name 'session_search.sqlite*' 2>/dev/null || true)
+      ;;
     *)
       warn "Transcript capture not supported for agent '${agent}'."
       return 0
@@ -278,6 +290,7 @@ audit_capture_transcript() {
   case "${agent}" in
     opencode) subtree_base="${agent_home}/storage/" ;;
     copilot)  subtree_base="${agent_home}/session-state/" ;;
+    grok)     subtree_base="${agent_home}/sessions/" ;;
   esac
 
   mkdir -p "${dest}"
