@@ -852,9 +852,17 @@ _print_mask_add_commands() {
     seen_repos+=("${repo}")
 
     local cmd="        sandbox mask add --repo ${repo}"
+    local -a seen_paths=()
     for e in "$@"; do
       IFS=$'\t' read -r rr rp _ _ _ <<<"${e}"
-      [[ "${rr}" == "${repo}" ]] && cmd+=" $(printf '%q' "${rp}")"
+      [[ "${rr}" == "${repo}" ]] || continue
+      local p pfound=false
+      for p in ${seen_paths[@]+"${seen_paths[@]}"}; do
+        [[ "${p}" == "${rp}" ]] && { pfound=true; break; }
+      done
+      [[ "${pfound}" == true ]] && continue
+      seen_paths+=("${rp}")
+      cmd+=" $(printf '%q' "${rp}")"
     done
     echo "${cmd}" >&2
   done
