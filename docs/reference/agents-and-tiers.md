@@ -51,6 +51,16 @@ reach them. See `lib/agents.sh` for the authoritative list.
 > host outside it is blocked by default-deny, and the allowlist stays the single
 > source of truth for web reach. Shell fetches remain human-gated by Grok's
 > approval prompts.
+>
+> `sandbox onboard` also hardens the staged `~/.grok/config.toml` with
+> `disable_codebase_upload = true` (plus trace/telemetry off) — grok 0.2.93 was
+> found to POST the **entire repository**, secrets included, to xAI's
+> `grok-code-session-traces` bucket. The uploads used hosts outside the allowlist
+> (so the egress policy already drops them), but `api.x.ai` is a required host
+> and not a pure inference channel, so the client-side veto is defense-in-depth.
+> These keys are reverse-engineered (not a documented xAI contract) and verified
+> against 0.2.93; re-check with `grok inspect` after a version bump. Set the keys
+> yourself in your host `~/.grok/config.toml` to override.
 
 ## Tiers
 

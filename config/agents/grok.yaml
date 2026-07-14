@@ -67,3 +67,15 @@ advisory_env:
 # outranks the OAuth session token. Onboarding must NOT stage a config.toml that
 # hard-codes a model key (lib/onboard.sh), or a long-lived key sneaks in behind
 # OAuth (PRINCIPLES.md rule 1).
+#
+# Codebase-upload veto: grok 0.2.93 was found to POST the ENTIRE repository (not
+# just files a prompt read), secrets included, to xAI's grok-code-session-traces
+# bucket. The observed uploads used storage.googleapis.com and
+# cli-chat-proxy.grok.com — neither is an allowed_domain, so the Cilium allowlist
+# already drops them. But api.x.ai (a required host) is not a pure inference
+# channel, so onboarding also stages the client-side veto into the config:
+#   [harness]   disable_codebase_upload = true
+#   [telemetry] trace_upload = false, enabled = false
+# These are reverse-engineered (NOT a documented xAI contract) and verified
+# against 0.2.93 — re-check with 'grok inspect' on a version bump. See
+# lib/onboard.sh:ensure_grok_privacy_config.

@@ -48,6 +48,9 @@
 # --device-auth' persists the token into the mounted agent-home. config.toml is
 # staged only when it carries no per-model api_key/env_key — such a key outranks
 # the OAuth session token and would defeat the OAuth-only path (see _onboard_grok).
+# The staged config is then hardened with disable_codebase_upload=true (+ trace/
+# telemetry off) so Grok cannot bundle-and-upload the whole repo — defense in
+# depth with the pod egress allowlist (see ensure_grok_privacy_config).
 #
 # Conversation history (~/.claude/projects/, ~/.codex/sessions/,
 # ~/.copilot/history/, ~/.grok/sessions/) is intentionally NOT copied — the
@@ -309,6 +312,83 @@ _onboard_grok() {
     result="$(stage_file "${src_cfg}" "${dst_cfg}" "${dry_run}" "${force}")"
     print_stage_result grok "${src_cfg}" "${dst_cfg}" "${result}"
   fi
+
+  # Harden the staged config against whole-repository upload / trace exfil,
+  # whether or not a host config.toml was staged above (see below).
+  ensure_grok_privacy_config "${dst_cfg}" "${dry_run}"
+}
+
+# ensure_grok_privacy_config <config.toml> <dry_run> — guarantee the staged
+# Grok config vetoes whole-repository upload and trace/telemetry exfil.
+#
+# grok 0.2.93 was found to bundle and POST the ENTIRE git repository — not just
+# the files a prompt read — to xAI's grok-code-session-traces bucket, secrets
+# included. The pod egress allowlist already drops the hosts those uploads used
+# (storage.googleapis.com, cli-chat-proxy.grok.com — neither is an allowed
+# matchName), so a Grok sandbox blocks the observed leak at the network layer.
+# But api.x.ai, which a session MUST reach, is NOT a pure inference channel
+# (see config/agents/grok.yaml), so if a trace upload can ride that host the
+# allowlist cannot see it. This client-side veto is the belt to that allowlist's
+# suspenders. The keys are reverse-engineered — NOT a documented xAI contract —
+# and verified against grok 0.2.93 (the pinned version); run 'grok inspect'
+# in-pod to confirm they still load after a version bump.
+#
+#   [harness]   disable_codebase_upload = true    whole-repo bundle upload off
+#   [telemetry] trace_upload = false, enabled = false   session-trace + telemetry off
+#
+# Idempotent: if disable_codebase_upload is already set we leave the operator's
+# choice alone. We only APPEND fresh tables; if the config already declares a
+# [harness] or [telemetry] table we do NOT edit inside it (TOML forbids a
+# duplicate table header) and instead point the operator at the keys to add.
+ensure_grok_privacy_config() {
+  local cfg="$1" dry_run="$2"
+  local cfg_disp="${cfg/#${HOME}/\~}"
+
+  if [[ -f "${cfg}" ]] && grep -qE '^[[:space:]]*disable_codebase_upload[[:space:]]*=' "${cfg}"; then
+    echo "  grok: ${cfg_disp} already sets disable_codebase_upload — leaving it as-is."
+    return 0
+  fi
+
+  if [[ -f "${cfg}" ]] && grep -qE '^[[:space:]]*\[(harness|telemetry)\]' "${cfg}"; then
+    echo "  grok: ${cfg_disp} already declares a [harness]/[telemetry] table — NOT"
+    echo "        auto-editing it (TOML forbids a duplicate header). Add"
+    echo "        'disable_codebase_upload = true' under [harness] (and"
+    echo "        trace_upload = false / enabled = false under [telemetry]) to"
+    echo "        keep whole-repo upload off."
+    return 0
+  fi
+
+  if [[ "${dry_run}" == "true" ]]; then
+    echo "  grok: would set disable_codebase_upload=true (+ telemetry off) in ${cfg_disp}"
+    return 0
+  fi
+
+  local block
+  block="$(cat <<'TOML'
+# Added by 'sandbox onboard'. grok 0.2.93 uploaded the ENTIRE repository — not
+# just files a prompt read — to xAI's grok-code-session-traces bucket. The pod
+# egress allowlist already blocks the hosts those uploads used, but api.x.ai —
+# which a session must reach — is not a pure inference channel, so this is the
+# client-side veto (defense-in-depth). Reverse-engineered for grok 0.2.93; run
+# 'grok inspect' to confirm it still loads. Remove these to restore defaults.
+[harness]
+disable_codebase_upload = true
+
+[telemetry]
+trace_upload = false
+enabled = false
+TOML
+)"
+
+  mkdir -p "$(dirname "${cfg}")"
+  if [[ -f "${cfg}" ]]; then
+    printf '%s\n\n%s\n' "$(cat "${cfg}")" "${block}" > "${cfg}.tmp"
+    mv "${cfg}.tmp" "${cfg}"
+  else
+    printf '%s\n' "${block}" > "${cfg}"
+  fi
+  chmod 0600 "${cfg}"
+  echo "  grok: set disable_codebase_upload=true (+ telemetry off) in ${cfg_disp}"
 }
 
 _onboard_opencode_refuse() {
