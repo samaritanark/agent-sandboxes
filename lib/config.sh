@@ -176,6 +176,60 @@ config_add_masked_path() {
   fi
 }
 
+# load_repo_accepted_secrets <repo> — print the per-repo `accepted_secrets:`
+# list, one fingerprint per line. Each is a `relpath:rule:line:hash` string a
+# reviewer has recorded as a reviewed false positive (see `sandbox exceptions`).
+# The launch gate honours these ONLY when the repo is vetted (a signed attestation
+# covers this exact tree, hence the reviewer's judgment); this reader just returns
+# the raw list. Empty if the repo has no config or no accepted_secrets key.
+load_repo_accepted_secrets() {
+  extract_yaml_list_from_file "$1/${SANDBOX_REPO_CONFIG_NAME}" "accepted_secrets"
+}
+
+# config_add_accepted_secret <config_file> <fingerprint> [reason] — add a
+# `relpath:rule:line:hash` fingerprint to the `accepted_secrets:` list in a
+# per-repo config file, creating the file (and its .sandbox/ parent) if needed.
+# Idempotent on the fingerprint (a reason change does not re-add). An optional
+# reason is appended as a YAML `# comment`; the reader (extract_yaml_list_from_file)
+# strips inline comments, so it is purely for humans reading the file/PR — which is
+# why it is optional. Mirrors config_add_masked_path. bash 3.2-safe.
+config_add_accepted_secret() {
+  local config_file="$1" fingerprint="$2" reason="${3:-}"
+
+  # Already present? The reader strips quoting and the comment, so compare bare.
+  local existing
+  while IFS= read -r existing; do
+    [[ "${existing}" == "${fingerprint}" ]] && return 0
+  done < <(extract_yaml_list_from_file "${config_file}" "accepted_secrets")
+
+  mkdir -p "$(dirname "${config_file}")"
+
+  local item="  - \"${fingerprint}\""
+  if [[ -n "${reason}" ]]; then
+    # One line only: strip CR/LF and a leading '#' so the comment can't wrap or
+    # look like a new key.
+    reason="$(printf '%s' "${reason}" | tr -d '\r\n')"
+    reason="${reason#\#}"
+    item="${item}  # ${reason}"
+  fi
+
+  if [[ ! -f "${config_file}" ]]; then
+    printf 'accepted_secrets:\n%s\n' "${item}" > "${config_file}"
+    return 0
+  fi
+
+  if grep -q '^accepted_secrets:' "${config_file}"; then
+    local tmp="${config_file}.tmp.$$"
+    awk -v item="${item}" '
+      { print }
+      /^accepted_secrets:/ && !done { print item; done = 1 }
+    ' "${config_file}" > "${tmp}" && mv "${tmp}" "${config_file}"
+  else
+    [[ -n "$(tail -c1 "${config_file}")" ]] && printf '\n' >> "${config_file}"
+    printf 'accepted_secrets:\n%s\n' "${item}" >> "${config_file}"
+  fi
+}
+
 # load_user_blocked_domains / load_user_blocked_cidrs — print the per-user
 # block-list additions from ~/.sandbox/config.yaml, one per line. These reuse
 # the same keys as config/blocked-destinations.yaml (blocked_domains /

@@ -3,8 +3,8 @@
 [← Documentation](../index.md)
 
 Some teams want a gate on *which* repositories an agent may touch: not "does
-this repo leak a secret?" (that's the [secret gate](secrets.md)) but "has a
-trusted human reviewed this exact tree and cleared it for agent use?" The
+this repo leak a secret?" (that's the [secret gate](../explanation/security-model.md))
+but "has a trusted human reviewed this exact tree and cleared it for agent use?" The
 vetting gate answers that question at launch. A reviewer signs a git tag at a
 repo's `HEAD`; `sandbox run` verifies that signature against an operator-held
 trust root before it will start a Tier 2/3 session.
@@ -91,6 +91,30 @@ sandbox vet --status --repo ~/repos/app
 Any new commit moves `HEAD` past the tag, so the attestation goes stale and the
 repo must be re-vetted — which is the point: a review covers the code that was
 reviewed, not whatever lands on top of it.
+
+## Acknowledging secret exceptions
+
+Vetting is also what gives a repo's
+[secret-gate exceptions](secret-exceptions.md) their authority. If the repo
+records any under `accepted_secrets:`, signing the tree vouches for them — so
+before it signs, `sandbox vet` lists the finding(s) that list would let the agent
+read and asks you to acknowledge them:
+
+```
+$ sandbox vet --repo ~/repos/app
+
+  This repo records 1 secret exception(s). Signing this attestation
+  vouches that they are reviewed false positives — the agent WILL be able to
+  read these values once the repo is vetted:
+      deploy/values.yaml  [generic-api-key, line 155]
+
+  Acknowledge and sign? [y/N] y
+```
+
+This keeps a signature from silently laundering a real secret a contributor
+recorded as an "exception". Pass `--yes` to acknowledge non-interactively (e.g.
+in CI); without it, and with no terminal to prompt on, `vet` refuses rather than
+sign off unattended. A repo with no exceptions signs with no extra prompt.
 
 ## When a launch is refused
 

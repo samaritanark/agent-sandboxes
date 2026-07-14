@@ -159,6 +159,7 @@ COMMANDS:
   onboard      Stage host-side agent OAuth state for first-run convenience
   secret       Manage host-side secret store (injected per-session by profile)
   mask         Manage per-repo file masking (add/list masked_paths)
+  exceptions   Record reviewed false positives for the secret gate (add/list)
   vet          Attest a repo as cleared for agent use (signed tag; see run gate)
   profile      Create and manage launch profiles (save/list/show/delete)
   link         Link a git-backed team overlay and keep it pinned (status/sync/unlink)
@@ -1576,20 +1577,29 @@ cmd_check() {
   # 'check' is informational. 'sandbox run' applies the real gate.
   if command -v betterleaks &>/dev/null; then
     echo "  Scanning for unmasked secrets with betterleaks (preview)..."
-    local _m _rel _rule _ln _match _unmasked=0 _encrypted=0 _scan_failed=false
+    local _m _rel _rule _ln _match _unmasked=0 _encrypted=0 _accepted=0 _scan_failed=false
+    # Honor the vetted exceptions list in the preview exactly as the gate will.
+    local _accept_file; _accept_file="$(mktemp "${TMPDIR:-/tmp}/sandbox-accept-XXXXXX")"
+    vetted_accepted_fingerprints "${workspace}" > "${_accept_file}" 2>/dev/null || true
     while IFS=$'\t' read -r _m _rel _rule _ln _match; do
       [[ -z "${_rel}" ]] && continue
       if [[ "${_m}" == "error" ]]; then
         _scan_failed=true
       elif [[ "${_m}" == "sealed" ]]; then
         (( _encrypted++ )) || true
+      elif [[ "${_m}" == "accepted" ]]; then
+        (( _accepted++ )) || true
       elif [[ "${_m}" == "no" || "${_m}" == "gitconfig" ]]; then
         (( _unmasked++ )) || true
         echo "  UNMASKED: ${_rel}  [${_rule}, line ${_ln}]"
       fi
-    done < <(scan_repo_secrets "${workspace}")
+    done < <(scan_repo_secrets "${workspace}" "${_accept_file}")
+    rm -f "${_accept_file}"
     if [[ "${_encrypted}" -gt 0 ]]; then
       echo "  ${_encrypted} encrypted-at-rest finding(s) (SealedSecret/SOPS) — safe, not gated."
+    fi
+    if [[ "${_accepted}" -gt 0 ]]; then
+      echo "  ${_accepted} finding(s) accepted via the vetted exceptions list — not gated."
     fi
     if [[ "${_scan_failed}" == true ]]; then
       echo "  WARN: betterleaks scan failed; 'sandbox run' would refuse to launch (fail closed)."
@@ -2886,6 +2896,155 @@ cmd_mask() {
 }
 
 ###############################################################################
+# cmd_exceptions — manage per-repo accepted secret findings (accepted_secrets in
+# .sandbox/config.yaml), the reviewed-false-positive accept-list for the gate.
+###############################################################################
+usage_exceptions() {
+  cat <<EOF
+sandbox exceptions — Record reviewed false positives for the secret gate
+
+USAGE:
+  sandbox exceptions add --repo <PATH> <PATH:RULE:LINE>... [--reason <TEXT>]
+  sandbox exceptions list --repo <PATH>
+  sandbox exceptions --help
+
+The Tier 2/3 secret gate refuses to launch when betterleaks finds a secret in a
+file the mask would not hide. When a finding is a reviewed false positive, record
+it here instead of masking the whole file or accepting every secret at launch.
+Each entry is a fingerprint 'RELPATH:RULE:LINE:HASH' — the finding's path, rule,
+line, and a short SHA-256 of the matched value — appended under accepted_secrets:
+in <repo>/.sandbox/config.yaml.
+
+The gate honours these ONLY when the repo is VETTED (see 'sandbox vet'): the
+signed attestation covers this whole tree, including this list, so accepting a
+finding carries a reviewer's cryptographic sign-off rather than the say-so of an
+unreviewed workspace. Because the fingerprint pins the matched value, replacing
+the secret at that location changes the hash and the finding blocks again.
+
+'exceptions add' names findings the way the gate prints them (RELPATH, RULE, LINE);
+it re-scans to resolve and record the value hash, so a matching finding must
+exist in the current tree. The written entry is plain text — a reviewer can add
+or audit one by hand.
+
+  --repo <PATH>       Repository whose accepted_secrets: list to edit/inspect.
+  --reason <TEXT>     Optional note, stored as a YAML comment beside the entry.
+  --help              Show this help
+
+EXAMPLES:
+  # Accept a specific finding the gate flagged (path, rule, line as printed)
+  sandbox exceptions add --repo ~/repos/app \\
+      deploy/values.yaml:generic-api-key:155 --reason "sealed secret, reviewed AH"
+
+  # Show the recorded accept-list for a repo
+  sandbox exceptions list --repo ~/repos/app
+EOF
+  exit 0
+}
+
+cmd_exceptions() {
+  if [[ $# -eq 0 ]]; then
+    usage_exceptions
+  fi
+
+  local sub="$1"
+  shift
+
+  case "${sub}" in
+    --help|-h|help)
+      usage_exceptions
+      ;;
+    add)
+      local repo="" reason=""
+      local -a specs=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo)     repo="${2:?--repo requires a value}"; shift ;;
+          --repo=*)   repo="${1#--repo=}" ;;
+          --reason)   reason="${2:?--reason requires a value}"; shift ;;
+          --reason=*) reason="${1#--reason=}" ;;
+          --help|-h)  usage_exceptions ;;
+          -*)         die "Unknown option for 'exceptions add': $1" ;;
+          *)          specs+=("$1") ;;
+        esac
+        shift
+      done
+      [[ -n "${repo}" ]] || die "Usage: sandbox exceptions add --repo <PATH> <PATH:RULE:LINE>..."
+      [[ "${#specs[@]}" -gt 0 ]] || die "exceptions add: at least one PATH:RULE:LINE is required."
+      repo="${repo/#\~/${HOME}}"
+      validate_repo_path "${repo}"
+
+      command -v betterleaks &>/dev/null || die "exceptions add: betterleaks is required to resolve a finding's value hash, but it was not found on PATH."
+      command -v jq &>/dev/null || die "exceptions add: jq is required but was not found on PATH."
+
+      local config_file="${repo}/.sandbox/config.yaml"
+      local spec relpath rule line rest rc entries added fp
+      for spec in "${specs[@]}"; do
+        # Right-split PATH:RULE:LINE so a ':' in RELPATH is tolerated: LINE is the
+        # last field, RULE the next, RELPATH everything before.
+        line="${spec##*:}"; rest="${spec%:*}"
+        rule="${rest##*:}"; relpath="${rest%:*}"
+        if [[ "${rest}" != *:* ]] || [[ -z "${relpath}" ]] || [[ -z "${rule}" ]] || [[ ! "${line}" =~ ^[0-9]+$ ]]; then
+          die "exceptions add: expected PATH:RULE:LINE (e.g. deploy/values.yaml:generic-api-key:155), got: ${spec}"
+        fi
+        if [[ "${relpath}" == /* ]] || [[ "${relpath}" == ../* ]] || [[ "${relpath}" == */../* ]]; then
+          die "exceptions add: PATH must be relative to the repo root and inside it: ${relpath}"
+        fi
+
+        # Capture the resolver's status without set -e aborting on its non-zero
+        # (not-found / scan-failed) returns, which we handle explicitly below.
+        rc=0
+        entries="$(leakscan_fingerprints_for "${repo}" "${relpath}" "${rule}" "${line}")" || rc=$?
+        case "${rc}" in
+          0) : ;;
+          1) die "exceptions add: no ${rule} finding at ${relpath}:${line} in the current tree. Run 'sandbox run' (or 'sandbox check') to see the gate's findings, and copy the RELPATH:RULE:LINE it prints." ;;
+          2) die "exceptions add: betterleaks failed to scan ${repo}. Nothing was recorded." ;;
+          *) die "exceptions add: betterleaks/jq unavailable." ;;
+        esac
+
+        added=0
+        while IFS= read -r fp; do
+          [[ -z "${fp}" ]] && continue
+          config_add_accepted_secret "${config_file}" "${fp}" "${reason}"
+          echo "Accepted ${fp} in $(basename "${repo}") (${config_file/#${HOME}/\~})."
+          added=$((added + 1))
+        done <<<"${entries}"
+        [[ "${added}" -gt 0 ]] || die "exceptions add: could not fingerprint ${spec}."
+      done
+      echo ""
+      echo "NOTE: the gate honours these only once the repo is vetted ('sandbox vet --repo ${repo}')."
+      ;;
+    list)
+      local repo=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo)    repo="${2:?--repo requires a value}"; shift ;;
+          --repo=*)  repo="${1#--repo=}" ;;
+          --help|-h) usage_exceptions ;;
+          -*)        die "Unknown option for 'exceptions list': $1" ;;
+          *)         die "Unexpected argument for 'exceptions list': $1" ;;
+        esac
+        shift
+      done
+      [[ -n "${repo}" ]] || die "Usage: sandbox exceptions list --repo <PATH>"
+      repo="${repo/#\~/${HOME}}"
+      validate_repo_path "${repo}"
+
+      echo "Accepted secret findings for $(basename "${repo}"):"
+      local any=false fp
+      while IFS= read -r fp; do
+        [[ -z "${fp}" ]] && continue
+        any=true
+        echo "  ${fp}"
+      done < <(load_repo_accepted_secrets "${repo}")
+      [[ "${any}" == false ]] && echo "  (none)"
+      ;;
+    *)
+      die "Unknown 'exceptions' subcommand: ${sub}. Run 'sandbox exceptions --help'."
+      ;;
+  esac
+}
+
+###############################################################################
 # cmd_secret — manage host-side secret store, injected per-session by profile
 ###############################################################################
 usage_secret() {
@@ -2945,7 +3104,7 @@ usage_vet() {
 sandbox vet — Attest that a repo is cleared for use with an AI agent
 
 USAGE:
-  sandbox vet --repo <PATH> [--message <MSG>]
+  sandbox vet --repo <PATH> [--message <MSG>] [--yes]
   sandbox vet --status --repo <PATH>
   sandbox vet --help
 
@@ -2960,9 +3119,15 @@ SSH allowed_signers file by default (vetting_trust_root:), or a GnuPG home when
 vetting_trust_format: gpg. The tag is named 'agent-vetted/<sha>'. A dirty
 working tree is refused: an attestation covers a commit, not uncommitted edits.
 
+If the repo records secret exceptions ('sandbox exceptions'), signing blesses
+them: the secret gate honors that list only on a vetted repo, so before signing
+'vet' lists the finding(s) the agent would then be able to read and asks you to
+acknowledge them. Use --yes to acknowledge non-interactively (e.g. in CI).
+
   --repo <PATH>       Repository to attest (or inspect with --status).
   --status            Print the repo's current vetting state instead of signing.
   --message <MSG>     Tag message (default: "vetted for agent use").
+  --yes, -y           Acknowledge any recorded secret exceptions without prompting.
   --help              Show this help
 
 EXAMPLES:
@@ -2981,7 +3146,7 @@ cmd_vet() {
     usage_vet
   fi
 
-  local action="attest" repo="" msg="vetted for agent use"
+  local action="attest" repo="" msg="vetted for agent use" assume_yes="false"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --help|-h|help) usage_vet ;;
@@ -2990,6 +3155,7 @@ cmd_vet() {
       --repo=*)       repo="${1#--repo=}" ;;
       --message)      msg="${2:?--message requires a value}"; shift ;;
       --message=*)    msg="${1#--message=}" ;;
+      --yes|-y)       assume_yes="true" ;;
       -*)             die "Unknown option for 'vet': $1" ;;
       *)              die "Unexpected argument for 'vet': $1" ;;
     esac
@@ -3031,7 +3197,7 @@ cmd_vet() {
     return 0
   fi
 
-  vetting_attest_repo "${repo}" "${msg}"
+  vetting_attest_repo "${repo}" "${msg}" "${assume_yes}"
 }
 
 cmd_secret() {
@@ -3866,6 +4032,7 @@ main() {
     onboard)    cmd_onboard "$@" ;;
     secret)     cmd_secret "$@" ;;
     mask)       cmd_mask "$@" ;;
+    exceptions) cmd_exceptions "$@" ;;
     vet)        cmd_vet "$@" ;;
     profile)    cmd_profile "$@" ;;
     link)       cmd_link "$@" ;;

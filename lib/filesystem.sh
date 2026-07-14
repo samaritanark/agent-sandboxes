@@ -427,11 +427,16 @@ _betterleaks_run() {
 # plaintext is unrecoverable without a key the workspace does not hold. Two
 # shapes are recognised:
 #
-#   * Bitnami SealedSecret — the finding sits inside a `kind: SealedSecret`
-#     (apiVersion *bitnami.com*) document's spec.encryptedData: block. Scoped to
-#     encryptedData specifically so a plaintext secret smuggled into the same
-#     file is NOT exempted: neither a sibling `kind: Secret` document in a
-#     multi-doc file, nor the SealedSecret's own spec.template.
+#   * Bitnami SealedSecret — the finding sits under the spec.encryptedData: of a
+#     `kind: SealedSecret` (apiVersion *bitnami.com*) object. The object may be a
+#     top-level document OR a mapping nested inside a block sequence (e.g. a
+#     SealedSecret in a Helm `extraObjects:` list), so block-sequence "- "
+#     markers are folded into indentation when walking the tree. kind and
+#     apiVersion must be siblings of that spec: WITHIN the same object (one
+#     sequence element), so a plaintext secret smuggled into the same file is NOT
+#     exempted: not a sibling `kind: Secret` document/list-element, not the
+#     SealedSecret's own spec.template, and not a SealedSecret elsewhere in the
+#     list vouching for a different element.
 #
 #   * Mozilla SOPS — the flagged secret's own column span sits *inside* a SOPS
 #     `ENC[AES256_GCM,...]` envelope on the flagged line. Containment (not mere
@@ -484,12 +489,14 @@ finding_is_encrypted() {
     fi
   fi
 
-  # SealedSecret: cheap top-level pre-filter before buffering the file in awk.
-  grep -Eq '^kind:[[:space:]]*SealedSecret[[:space:]]*$' "${file}" 2>/dev/null || return 1
+  # SealedSecret: cheap pre-filter before buffering the file in awk. Allow the
+  # `kind: SealedSecret` line to be indented and/or introduced by a sequence
+  # marker so a SealedSecret nested in a list (Helm extraObjects:) still primes.
+  grep -Eq '^[[:space:]]*(-[[:space:]]+)?kind:[[:space:]]*SealedSecret[[:space:]]*$' \
+    "${file}" 2>/dev/null || return 1
 
   local verdict
   verdict="$(awk -v target="${line}" '
-    function indent_of(s,   n) { n = 0; while (substr(s, n + 1, 1) == " ") n++; return n }
     { lines[NR] = $0 }
     END {
       if (target < 1 || target > NR) { print "0"; exit }
@@ -502,51 +509,146 @@ finding_is_encrypted() {
           else if (i > target) { de = i - 1; break }
         }
       }
-      # That document must be, at its top level, a Bitnami SealedSecret.
-      kindok = 0; apiok = 0
+      # Precompute, for every line in the document window: its content indent
+      # (leading spaces with each block-sequence "- " marker folded into the two
+      # columns of indentation it introduces, so a mapping nested in a list is
+      # walked at its true depth), whether it is a mapping key (and that key +
+      # value), and whether it starts a sequence element (item[]). item[] is what
+      # bounds one object from its list siblings.
       for (i = ds; i <= de; i++) {
-        if (indent_of(lines[i]) != 0) continue
-        if (lines[i] ~ /^kind:[[:space:]]*SealedSecret[[:space:]]*$/) kindok = 1
-        if (lines[i] ~ /^apiVersion:.*bitnami\.com/) apiok = 1
-      }
-      if (!kindok || !apiok) { print "0"; exit }
-      # Walk the mapping-key ancestry down to the target line; it must nest
-      # directly under a top-level spec: > encryptedData:. depth is the live
-      # ancestor stack. The exemption is pinned to exactly two levels deep with
-      # `spec` at the document root (indent 0), so a value under any *other*
-      # spec:/encryptedData: pair — e.g. one nested inside spec.template — is
-      # NOT exempted and still blocks the launch.
-      depth = 0
-      for (i = ds; i <= target; i++) {
-        if (lines[i] ~ /^[[:space:]]*($|#)/) continue          # blank / comment
-        if (lines[i] !~ /^[[:space:]]*[^[:space:]][^:]*:/) continue  # not a key
-        ind = indent_of(lines[i])
-        key = lines[i]; sub(/^[[:space:]]*/, "", key); sub(/:.*$/, "", key)
-        while (depth > 0 && stackInd[depth] >= ind) depth--
-        if (i == target) {
-          if (depth == 2 && stackKey[depth] == "encryptedData" \
-              && stackKey[depth - 1] == "spec" && stackInd[depth - 1] == 0)
-            print "1"
-          else
-            print "0"
-          exit
+        s = lines[i]
+        t = s; sub(/^[[:space:]]+/, "", t)
+        if (t == "" || substr(t, 1, 1) == "#") { blank[i] = 1; cind[i] = -1; continue }
+        blank[i] = 0
+        L = length(s); pos = 0
+        while (pos < L && substr(s, pos + 1, 1) == " ") pos++
+        it = 0
+        while (pos < L && substr(s, pos + 1, 1) == "-" && (pos + 2 > L || substr(s, pos + 2, 1) == " ")) {
+          it = 1; pos++
+          while (pos < L && substr(s, pos + 1, 1) == " ") pos++
         }
-        depth++; stackInd[depth] = ind; stackKey[depth] = key
+        cind[i] = pos; item[i] = it
+        rest = substr(s, pos + 1)
+        if (rest ~ /^[^[:space:]#][^:]*:([[:space:]].*)?$/) {
+          iskey[i] = 1
+          k = rest; sub(/:.*$/, "", k); key[i] = k
+          v = rest; sub(/^[^:]*:[[:space:]]*/, "", v); val[i] = v
+        } else { iskey[i] = 0; key[i] = ""; val[i] = "" }
       }
-      print "0"
+      if (blank[target]) { print "0"; exit }
+
+      # The target must nest directly under spec: > encryptedData:. Resolve its
+      # parent and grandparent as the nearest preceding key lines at a strictly
+      # smaller content indent (block-YAML structural parents).
+      tInd = cind[target]
+      p = -1
+      for (j = target - 1; j >= ds; j--) {
+        if (blank[j]) continue
+        if (cind[j] < tInd) { if (iskey[j]) p = j; break }
+      }
+      if (p < 0 || key[p] != "encryptedData") { print "0"; exit }
+      gp = -1
+      for (j = p - 1; j >= ds; j--) {
+        if (blank[j]) continue
+        if (cind[j] < cind[p]) { if (iskey[j]) gp = j; break }
+      }
+      if (gp < 0 || key[gp] != "spec") { print "0"; exit }
+      specInd = cind[gp]
+
+      # Bound the SINGLE object (mapping / sequence element) that directly owns
+      # this spec:, then require kind: SealedSecret + apiVersion *bitnami.com*
+      # among the keys at spec: s indent WITHIN that object. Scanning up stops at
+      # the element start (item[]) or a dedent; scanning down stops at the next
+      # sibling element or a dedent. So a SealedSecret in another list element,
+      # or a nested spec.template.spec:, cannot vouch for this value.
+      start = ds
+      for (j = gp; j >= ds; j--) {
+        if (blank[j]) continue
+        if (cind[j] > specInd) continue
+        if (cind[j] < specInd) { start = j + 1; break }
+        start = j
+        if (item[j]) break
+      }
+      end = de + 1
+      for (j = gp + 1; j <= de; j++) {
+        if (blank[j]) continue
+        if (cind[j] < specInd) { end = j; break }
+        if (cind[j] == specInd && item[j]) { end = j; break }
+      }
+      kindok = 0; apiok = 0
+      for (j = start; j < end; j++) {
+        if (blank[j] || cind[j] != specInd || !iskey[j]) continue
+        if (key[j] == "kind" && val[j] ~ /^SealedSecret[[:space:]]*$/) kindok = 1
+        if (key[j] == "apiVersion" && val[j] ~ /bitnami\.com/) apiok = 1
+      }
+      print (kindok && apiok) ? "1" : "0"
     }
   ' "${file}")"
   [[ "${verdict}" == "1" ]] && return 0
   return 1
 }
 
-# scan_repo_secrets <repo> — scan a workspace with betterleaks and emit one TSV
-# line per finding: "<class>\t<relpath>\t<RuleID>\t<line>\t<match>", where class
-# is one of: yes (secret in a masked path, hidden from the agent), sealed
-# (secret is an encrypted-at-rest value — SealedSecret/SOPS — the agent may read
-# safely, see finding_is_encrypted), no (secret in an unmasked path), gitconfig
-# (secret in .git/config), or error (scan failed). Secret values are redacted
-# (--redact).
+# _leakscan_finding_accepted <accept_file> <real_repo> <relpath> <rule> <line>
+# <startcol> <endcol> — return 0 iff this finding is a recorded, honorable
+# false positive: accept_file is non-empty AND lists this finding's
+# `relpath:rule:line:hash` fingerprint (hash recomputed here, so replacing the
+# value breaks the match) AND the file is git-TRACKED (committed content the
+# vetting signature actually covers — a gitignored/untracked file is not, so it
+# is never accepted). Returns 1 otherwise.
+_leakscan_finding_accepted() {
+  local accept_file="$1" real_repo="$2" relpath="$3" rule="$4" line="$5" sc="$6" ec="$7"
+  [[ -n "${accept_file}" && -s "${accept_file}" ]] || return 1
+  local h fp
+  h="$(_leakscan_value_hash "${real_repo}/${relpath}" "${line}" "${sc}" "${ec}")" || return 1
+  [[ -n "${h}" ]] || return 1
+  fp="${relpath}:${rule}:${line}:${h}"
+  grep -qxF "${fp}" "${accept_file}" 2>/dev/null || return 1
+  # Tracked-file gate. fsmonitor/hooks disabled so an untrusted repo config can't
+  # exec anything on this read.
+  git -C "${real_repo}" -c core.fsmonitor= -c core.hooksPath=/dev/null \
+    ls-files --error-unmatch -- "${relpath}" >/dev/null 2>&1
+}
+
+# vetted_accepted_fingerprints <repo> — the accepted_secrets fingerprints to
+# honor for a repo at launch, or NOTHING unless the repo is currently vetted (a
+# signed attestation verifies at HEAD over a clean tree — vetting_status_repo).
+# The committed accept-list carries weight only because the vetting signature
+# covers it; an unvetted (or unsignable) repo's list is ignored, independent of
+# the vetting *posture* (off/advisory/required). Consumed by the secret gate and
+# the `sandbox check` preview to decide what scan_repo_secrets may downgrade to
+# `accepted`.
+#
+# The list is read from the SIGNED commit (vetting_committed_accepted_secrets),
+# not the working tree: "vetted" only guarantees the tracked tree is clean, and
+# `git status --porcelain` does not flag gitignored files, so a working-tree read
+# would honor a gitignored/uncommitted .sandbox/config.yaml the signature never
+# covered. Reading HEAD's blob ties every honored fingerprint to the attestation.
+vetted_accepted_fingerprints() {
+  local repo="$1" line status
+  line="$(vetting_status_repo "${repo}" 2>/dev/null)"
+  IFS=$'\t' read -r status _ <<<"${line}"
+  [[ "${status}" == "vetted" ]] || return 0
+  vetting_committed_accepted_secrets "${repo}"
+}
+
+# scan_repo_secrets <repo> [accept_file] — scan a workspace with betterleaks and
+# emit one TSV line per finding: "<class>\t<relpath>\t<RuleID>\t<line>\t<match>",
+# where class is one of: yes (secret in a masked path, hidden from the agent),
+# sealed (secret is an encrypted-at-rest value — SealedSecret/SOPS — the agent may
+# read safely, see finding_is_encrypted), accepted (a reviewed false positive the
+# operator recorded and the vetting signature blessed — see accept_file below),
+# no (secret in an unmasked path), gitconfig (secret in .git/config), or error
+# (scan failed). Secret values are redacted (--redact).
+#
+# accept_file (optional): a plain list of `relpath:rule:line:hash` fingerprints
+# the CALLER has already decided may be honored — i.e. the repo is vetted (see
+# vetted_accepted_fingerprints); this function applies no vetting policy of its
+# own. A would-be `no` finding is downgraded to `accepted` only when its
+# fingerprint (with hash recomputed here via _leakscan_value_hash, so a changed
+# value no longer matches) is listed AND its file is git-TRACKED. The tracked
+# check is the security boundary: the attestation covers committed content, so a
+# finding in a gitignored/untracked file is never in the signed tree and must
+# never be accepted, even if a fingerprint for it appears in the list.
 #
 # Two scans run. (1) A whole-workspace directory scan — betterleaks excludes
 # .git/ from directory walks, so this never sees anything under .git, and a
@@ -577,7 +679,7 @@ finding_is_encrypted() {
 # Nested (non-root) ignore files are not auto-read, and inline allow comments
 # and a repo-local .gitleaks.toml are already neutralized.
 scan_repo_secrets() {
-  local repo="$1"
+  local repo="$1" accept_file="${2:-}"
   local real_repo
   real_repo="$(realpath "${repo}")"
 
@@ -613,6 +715,9 @@ scan_repo_secrets() {
       printf 'sealed\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
     elif is_path_masked "${repo}" "${relpath}"; then
       printf 'yes\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
+    elif _leakscan_finding_accepted "${accept_file}" "${real_repo}" "${relpath}" \
+           "${ruleid}" "${line}" "${startcol}" "${endcol}"; then
+      printf 'accepted\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
     else
       printf 'no\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
     fi
@@ -638,6 +743,87 @@ scan_repo_secrets() {
 
   rm -f "${report}" "${config}"
   [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
+}
+
+# _leakscan_value_hash <file> <line> <startcol> <endcol> — the single source of
+# truth for a finding's VALUE fingerprint: a 16-hex-char prefix of the SHA-256 of
+# the matched secret value, sliced out of the REAL source file so betterleaks'
+# --redact never has to be lifted. betterleaks reports StartColumn/EndColumn one
+# past the real 1-based match boundaries (see finding_is_encrypted / the tests'
+# colspan_of), so the value occupies columns [startcol-1 .. endcol-1] inclusive,
+# i.e. substr(line, startcol-1, endcol-startcol+1). Both `sandbox exceptions add`
+# (recording an accepted finding) and the launch gate (matching one) call this,
+# so the hash they compute is identical by construction. When the span is absent
+# (betterleaks reports 0/empty columns for some rules) it falls back to the whole
+# trimmed source line — coarser but still value-bearing and equally deterministic
+# for a given file, so add-time and gate-time still agree. Empty on error.
+_leakscan_value_hash() {
+  local file="$1" line="$2" startcol="$3" endcol="$4"
+  [[ -f "${file}" && "${line}" =~ ^[0-9]+$ ]] || return 1
+
+  local value
+  if [[ "${startcol}" =~ ^[0-9]+$ && "${endcol}" =~ ^[0-9]+$ \
+        && "${startcol}" -gt 1 && "${endcol}" -ge "${startcol}" ]]; then
+    value="$(awk -v n="${line}" -v sc="${startcol}" -v ec="${endcol}" \
+      'NR==n { printf "%s", substr($0, sc - 1, ec - sc + 1); exit }' "${file}")"
+  else
+    value="$(awk -v n="${line}" \
+      'NR==n { s=$0; sub(/^[[:space:]]+/,"",s); sub(/[[:space:]]+$/,"",s); printf "%s", s; exit }' \
+      "${file}")"
+  fi
+  [[ -n "${value}" ]] || return 1
+
+  local -a hcmd=()
+  read_into_array hcmd < <(sha256_hash_cmd) || return 1
+  printf '%s' "${value}" | "${hcmd[@]}" 2>/dev/null | awk '{ print substr($1, 1, 16); exit }'
+}
+
+# leakscan_fingerprints_for <repo> <relpath> <rule> <line> — resolve the
+# value-fingerprint entries for a specific finding the caller names by location,
+# for `sandbox exceptions add`. Runs betterleaks over the workspace with the SAME
+# config and ignore baseline the gate uses (so the recorded hash is exactly the
+# one the gate will recompute), selects the finding(s) at relpath+rule+line, and
+# prints one `relpath:rule:line:hash` per distinct matched value (sorted/unique).
+# Prints nothing and returns: 1 if no such finding exists in the current tree,
+# 2 if the scan itself failed, 3 if betterleaks/jq are unavailable.
+leakscan_fingerprints_for() {
+  local repo="$1" relpath="$2" rule="$3" line="$4"
+  command -v betterleaks &>/dev/null || return 3
+  command -v jq &>/dev/null || return 3
+  [[ "${line}" =~ ^[0-9]+$ ]] || return 1
+
+  local real_repo report config ignore_path empty_ignore_dir=""
+  real_repo="$(realpath "${repo}")"
+  report="$(mktemp "${TMPDIR:-/tmp}/sandbox-bl-fp-XXXXXX")"
+  config="$(mktemp "${TMPDIR:-/tmp}/sandbox-bl-cfg-XXXXXX")"
+  _leakscan_write_config "${repo}" "${config}"
+  ignore_path="$(_leakscan_ignore_path)"
+  if [[ -z "${ignore_path}" ]]; then
+    empty_ignore_dir="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-bl-ign-XXXXXX")"
+    ignore_path="${empty_ignore_dir}"
+  fi
+
+  local rc=0
+  if ! _betterleaks_run "${real_repo}" "${report}" "${config}" "${ignore_path}"; then
+    rc=2
+  else
+    local target="${real_repo}/${relpath}" sc ec hash emitted=0
+    while IFS=$'\t' read -r sc ec; do
+      hash="$(_leakscan_value_hash "${target}" "${line}" "${sc}" "${ec}")" || continue
+      [[ -n "${hash}" ]] || continue
+      printf '%s:%s:%s:%s\n' "${relpath}" "${rule}" "${line}" "${hash}"
+      emitted=1
+    done < <(jq -r --arg f "${target}" --arg r "${rule}" --argjson ln "${line}" \
+               '.[] | select(.File == $f and .RuleID == $r and .StartLine == $ln)
+                     | [(.StartColumn|tostring), (.EndColumn|tostring)] | @tsv' \
+               "${report}" 2>/dev/null | sort -u)
+    # Scan succeeded but named no such finding ⇒ not-found.
+    [[ "${emitted}" -eq 1 ]] || rc=1
+  fi
+
+  rm -f "${report}" "${config}"
+  [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
+  return "${rc}"
 }
 
 # _print_unmasked_findings <entry>... — render "repo<TAB>relpath<TAB>rule<TAB>
@@ -666,9 +852,42 @@ _print_mask_add_commands() {
     seen_repos+=("${repo}")
 
     local cmd="        sandbox mask add --repo ${repo}"
+    local -a seen_paths=()
     for e in "$@"; do
       IFS=$'\t' read -r rr rp _ _ _ <<<"${e}"
-      [[ "${rr}" == "${repo}" ]] && cmd+=" $(printf '%q' "${rp}")"
+      [[ "${rr}" == "${repo}" ]] || continue
+      local p pfound=false
+      for p in ${seen_paths[@]+"${seen_paths[@]}"}; do
+        [[ "${p}" == "${rp}" ]] && { pfound=true; break; }
+      done
+      [[ "${pfound}" == true ]] && continue
+      seen_paths+=("${rp}")
+      cmd+=" $(printf '%q' "${rp}")"
+    done
+    echo "${cmd}" >&2
+  done
+}
+
+# _print_exceptions_add_commands <entry>... — emit one ready-to-run
+# `sandbox exceptions add` command per repo, listing that repo's unmasked
+# findings as RELPATH:RULE:LINE specs (the value hash is resolved by the
+# command). Mirrors _print_mask_add_commands.
+_print_exceptions_add_commands() {
+  local entry repo relpath rr rp ru rl r found e
+  local -a seen_repos=()
+  for entry in "$@"; do
+    IFS=$'\t' read -r repo relpath _ _ _ <<<"${entry}"
+    found=false
+    for r in ${seen_repos[@]+"${seen_repos[@]}"}; do
+      [[ "${r}" == "${repo}" ]] && { found=true; break; }
+    done
+    [[ "${found}" == true ]] && continue
+    seen_repos+=("${repo}")
+
+    local cmd="        sandbox exceptions add --repo ${repo}"
+    for e in "$@"; do
+      IFS=$'\t' read -r rr rp ru rl _ <<<"${e}"
+      [[ "${rr}" == "${repo}" ]] && cmd+=" $(printf '%q' "${rp}:${ru}:${rl}")"
     done
     echo "${cmd}" >&2
   done
@@ -700,8 +919,13 @@ secret_gate_repos() {
   local -a gitconfig=()
   local total_masked=0
   local total_encrypted=0
-  local repo m relpath ruleid ln match
+  local total_accepted=0
+  local repo m relpath ruleid ln match accept_file
   for repo in "${repos[@]}"; do
+    # The exceptions list is honored only for a currently-vetted repo; otherwise
+    # this file is empty and nothing is downgraded to `accepted`.
+    accept_file="$(mktemp "${TMPDIR:-/tmp}/sandbox-accept-XXXXXX")"
+    vetted_accepted_fingerprints "${repo}" > "${accept_file}" 2>/dev/null || true
     while IFS=$'\t' read -r m relpath ruleid ln match; do
       [[ -z "${relpath}" ]] && continue
       # An `error` sentinel means betterleaks could not be trusted to have
@@ -709,6 +933,7 @@ secret_gate_repos() {
       # risk passing a repo whose secrets were never inspected. The override
       # does not apply here — it accepts *known* secrets, not an unknown scan.
       if [[ "${m}" == "error" ]]; then
+        rm -f "${accept_file}"
         echo "" >&2
         echo "ERROR: betterleaks failed to scan ${repo} (${relpath})." >&2
         echo "       The workspace could not be verified free of unmasked" >&2
@@ -720,10 +945,12 @@ secret_gate_repos() {
       case "${m}" in
         yes) (( total_masked++ )) || true ;;
         sealed) (( total_encrypted++ )) || true ;;
+        accepted) (( total_accepted++ )) || true ;;
         gitconfig) gitconfig+=("${repo}"$'\t'"${relpath}"$'\t'"${ruleid}"$'\t'"${ln}"$'\t'"${match}") ;;
         *) unmasked+=("${repo}"$'\t'"${relpath}"$'\t'"${ruleid}"$'\t'"${ln}"$'\t'"${match}") ;;
       esac
-    done < <(scan_repo_secrets "${repo}")
+    done < <(scan_repo_secrets "${repo}" "${accept_file}")
+    rm -f "${accept_file}"
   done
 
   if [[ "${total_masked}" -gt 0 ]]; then
@@ -731,6 +958,9 @@ secret_gate_repos() {
   fi
   if [[ "${total_encrypted}" -gt 0 ]]; then
     echo "  ${total_encrypted} secret finding(s) are encrypted at rest (SealedSecret/SOPS); the agent reads only ciphertext."
+  fi
+  if [[ "${total_accepted}" -gt 0 ]]; then
+    echo "  ${total_accepted} secret finding(s) accepted via the vetted exceptions list (reviewed false positives; the agent WILL read these)."
   fi
 
   if [[ "${#unmasked[@]}" -eq 0 && "${#gitconfig[@]}" -eq 0 ]]; then
@@ -762,6 +992,11 @@ secret_gate_repos() {
     echo "      <repo>/.sandbox/config.yaml masked_paths:):" >&2
     echo "" >&2
     _print_mask_add_commands "${unmasked[@]}"
+    echo "" >&2
+    echo "    - Or, if a finding is a reviewed false positive, record it as an" >&2
+    echo "      exception (honored once a reviewer vets the repo — 'sandbox vet'):" >&2
+    echo "" >&2
+    _print_exceptions_add_commands "${unmasked[@]}"
   fi
 
   if [[ "${#gitconfig[@]}" -gt 0 ]]; then

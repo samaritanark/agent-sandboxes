@@ -28,6 +28,13 @@ source "${SANDBOX_ROOT}/lib/config.sh"
 source "${SANDBOX_ROOT}/lib/profile.sh"
 source "${SANDBOX_ROOT}/lib/filesystem.sh"
 source "${SANDBOX_ROOT}/lib/manifest.sh"
+# The gate now consults vetting status to decide whether to honor a repo's
+# accepted_secrets list (Phase 2), so the vetting unit is in scope here too.
+source "${SANDBOX_ROOT}/lib/vetting.sh"
+
+# Hermetic user config so a real ~/.sandbox/config.yaml never leaks into a test.
+USER_SANDBOX_CONFIG="${TEST_DIR}/user-config.yaml"
+: > "${USER_SANDBOX_CONFIG}"
 
 # eq <label> <expected> <actual>
 eq() {
@@ -114,6 +121,49 @@ spec:
   encryptedData:
     good: ${SEALED_TOK}
   template:
+    spec:
+      encryptedData:
+        token: ${PLAIN_TOK}
+EOF
+}
+
+# fixture_sealed_extraobjects <file> — a SealedSecret nested as a Helm
+# `extraObjects:` list element (not a top-level document). The only secret is in
+# spec.encryptedData (line 8); the template block carries none. Exercises the
+# nested-object path: kind/apiVersion sit at the element indent, not indent 0.
+fixture_sealed_extraobjects() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<EOF
+extraObjects:
+  - apiVersion: bitnami.com/v1alpha1
+    kind: SealedSecret
+    metadata:
+      name: creds
+    spec:
+      encryptedData:
+        token: ${SEALED_TOK}
+      template:
+        metadata:
+          name: creds
+EOF
+}
+
+# fixture_extraobjects_mixed <file> — two elements in one extraObjects: list. The
+# first is a real SealedSecret (encryptedData, line 6, safe). The second is a
+# plaintext kind: Secret that reuses a spec.encryptedData: shape (line 11) to try
+# to borrow the first element's SealedSecret-ness. The list-element boundary must
+# keep them separate: line 6 exempt, line 11 still blocks.
+fixture_extraobjects_mixed() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<EOF
+extraObjects:
+  - apiVersion: bitnami.com/v1alpha1
+    kind: SealedSecret
+    spec:
+      encryptedData:
+        token: ${SEALED_TOK}
+  - apiVersion: v1
+    kind: Secret
     spec:
       encryptedData:
         token: ${PLAIN_TOK}
@@ -265,6 +315,102 @@ test_config_add_masked_path() {
      "$(load_extra_allowed_domains_from_file "${cfg2}")"
   eq "mask added alongside" "creds.json" \
      "$(load_repo_masked_paths "${TEST_DIR}/cfgcoexist")"
+}
+
+###############################################################################
+# accepted_secrets: reader/writer (config) + the value-fingerprint hash. The
+# `sandbox exceptions` accept-list; scanner-free.
+###############################################################################
+test_exceptions_accept_list() {
+  info "Testing accepted_secrets reader/writer + value hash..."
+  local cfg="${TEST_DIR}/excwrite/.sandbox/config.yaml"
+  local fp1="deploy/values.yaml:generic-api-key:155:abc123def4567890"
+  local fp2="config/app.env:github-pat:3:0011223344556677"
+
+  config_add_accepted_secret "${cfg}" "${fp1}" "sealed secret, reviewed AH"
+  eq "creates accepted_secrets key" "${fp1}" \
+     "$(load_repo_accepted_secrets "${TEST_DIR}/excwrite")"
+
+  # The reason is a YAML comment the reader strips — the stored value is bare.
+  grep -q '# sealed secret, reviewed AH' "${cfg}" \
+    && pass "reason stored as a comment" || fail "reason comment missing"
+
+  # Idempotent on the fingerprint even with a different reason.
+  config_add_accepted_secret "${cfg}" "${fp1}" "a different note"
+  eq "dedup keeps one entry" "1" \
+     "$(load_repo_accepted_secrets "${TEST_DIR}/excwrite" | wc -l | tr -d ' ')"
+
+  # A second distinct fingerprint (no reason) is appended.
+  config_add_accepted_secret "${cfg}" "${fp2}"
+  eq "second fingerprint appended" "2" \
+     "$(load_repo_accepted_secrets "${TEST_DIR}/excwrite" | wc -l | tr -d ' ')"
+
+  # Coexists with a masked_paths block in the same file.
+  local cfg2="${TEST_DIR}/exccoexist/.sandbox/config.yaml"
+  mkdir -p "$(dirname "${cfg2}")"
+  printf 'masked_paths:\n  - "creds.json"\n' > "${cfg2}"
+  config_add_accepted_secret "${cfg2}" "${fp1}"
+  eq "masked_paths preserved" "creds.json" \
+     "$(load_repo_masked_paths "${TEST_DIR}/exccoexist")"
+  eq "accepted_secret added alongside" "${fp1}" \
+     "$(load_repo_accepted_secrets "${TEST_DIR}/exccoexist")"
+
+  # _leakscan_value_hash: 16-hex, deterministic, and equal to sha256 of the
+  # exact matched value sliced by betterleaks' columns.
+  local f="${TEST_DIR}/hashme.yaml"
+  printf 'token: %s\n' "${PLAIN_TOK}" > "${f}"
+  local h; h="$(_leakscan_value_hash "${f}" 1 $(colspan_of "${f}" 1 "${PLAIN_TOK}"))"
+  case "${h}" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) pass "value hash is a 16-hex prefix" ;;
+    *) fail "value hash not 16 hex: '${h}'" ;;
+  esac
+  local expected
+  expected="$(printf '%s' "${PLAIN_TOK}" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)"
+  eq "value hash matches sha256 of the sliced value" "${expected}" "${h}"
+
+  # Changing the value changes the hash (the property the gate relies on).
+  local f2="${TEST_DIR}/hashme2.yaml"
+  printf 'token: %s\n' "${SEALED_TOK}" > "${f2}"
+  local h2; h2="$(_leakscan_value_hash "${f2}" 1 $(colspan_of "${f2}" 1 "${SEALED_TOK}"))"
+  [[ "${h}" != "${h2}" ]] && pass "different value → different hash" \
+    || fail "hash should change when the value changes"
+}
+
+###############################################################################
+# leakscan_fingerprints_for — resolves a live finding to its recorded entry;
+# reports not-found for a location the scanner does not flag.
+###############################################################################
+test_fingerprint_resolver() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing leakscan_fingerprints_for..."
+
+  local repo="${TEST_DIR}/fpres"
+  mkdir -p "${repo}/deploy"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  printf 'api_key: %s\n' "${PLAIN_TOK}" > "${repo}/deploy/values.yaml"
+  git -C "${repo}" add -A 2>/dev/null
+
+  # Learn the rule+line the scanner assigns (avoid hard-coding a rule name).
+  local m rel rule ln match
+  IFS=$'\t' read -r m rel rule ln match < <(scan_repo_secrets "${repo}" | grep "^no	deploy/values.yaml	" | head -n1)
+  [[ -n "${rule}" ]] || fail "expected a finding in deploy/values.yaml to resolve"
+
+  # Capture rc without set -e aborting on the resolver's non-zero returns.
+  local out rc
+  rc=0; out="$(leakscan_fingerprints_for "${repo}" "deploy/values.yaml" "${rule}" "${ln}")" || rc=$?
+  eq "resolver returns 0 for a live finding" "0" "${rc}"
+  case "${out}" in
+    deploy/values.yaml:${rule}:${ln}:[0-9a-f]*) pass "resolved entry has RELPATH:RULE:LINE:HASH shape" ;;
+    *) fail "unexpected resolver output: '${out}'" ;;
+  esac
+
+  # A line the scanner does not flag → not-found (rc 1), no output.
+  rc=0; out="$(leakscan_fingerprints_for "${repo}" "deploy/values.yaml" "${rule}" 999)" || rc=$?
+  eq "resolver returns 1 for a non-finding location" "1" "${rc}"
+  [[ -z "${out}" ]] && pass "no output for a non-finding location" || fail "expected no output, got: '${out}'"
 }
 
 ###############################################################################
@@ -700,9 +846,27 @@ test_finding_is_encrypted() {
   finding_is_encrypted "${d}/nested.yaml" 7 \
     && pass "top-level encryptedData exempt (nested fixture)" \
     || fail "line 7 top-level encryptedData should be exempt"
-  finding_is_encrypted "${d}/nested.yaml" 12 \
-    && fail "plaintext under nested spec.encryptedData must NOT be exempt" \
+  finding_is_encrypted "${d}/nested.yaml" 11 \
+    && fail "plaintext under nested spec.template.spec.encryptedData must NOT be exempt" \
     || pass "nested spec.encryptedData not exempt"
+
+  # Embedded SealedSecret (Helm extraObjects: list element): the encryptedData
+  # value (line 8) is exempt even though kind/apiVersion are not at indent 0.
+  fixture_sealed_extraobjects "${d}/extra.yaml"
+  finding_is_encrypted "${d}/extra.yaml" 8 \
+    && pass "embedded (extraObjects) SealedSecret value exempt" \
+    || fail "line 8 embedded encryptedData should be exempt"
+
+  # Two list elements: the real SealedSecret's value (line 6) is exempt; a
+  # plaintext element reusing the encryptedData shape (line 11) must NOT be — the
+  # first element's SealedSecret-ness cannot leak across the element boundary.
+  fixture_extraobjects_mixed "${d}/mixed-extra.yaml"
+  finding_is_encrypted "${d}/mixed-extra.yaml" 6 \
+    && pass "mixed extraObjects: real SealedSecret value exempt" \
+    || fail "line 6 SealedSecret element should be exempt"
+  finding_is_encrypted "${d}/mixed-extra.yaml" 11 \
+    && fail "plaintext element borrowing encryptedData shape must NOT be exempt" \
+    || pass "sibling plaintext list element not exempt"
 
   # Multi-doc: encryptedData in the SealedSecret doc (line 7) is exempt; the
   # sibling plaintext Secret doc's stringData (line 14) is not.
@@ -783,6 +947,22 @@ test_encrypted_scan_and_gate() {
     fail "gate should pass on a clean SealedSecret"
   fi
 
+  # (1b) An embedded SealedSecret (Helm extraObjects:) → sealed, gate passes.
+  local erepo="${TEST_DIR}/extrascan"
+  fixture_sealed_extraobjects "${erepo}/base/values.yaml"
+  scan_repo_secrets "${erepo}" > "${TEST_DIR}/extrascan.out"
+  grep -q "$(printf '^sealed\tbase/values.yaml\t')" "${TEST_DIR}/extrascan.out" \
+    && pass "embedded SealedSecret finding classified sealed" \
+    || fail "expected a sealed finding for extraObjects, got: $(cat "${TEST_DIR}/extrascan.out")"
+  grep -q "$(printf '^no\t')" "${TEST_DIR}/extrascan.out" \
+    && fail "embedded SealedSecret should produce no unmasked finding" \
+    || pass "no unmasked finding for embedded SealedSecret"
+  if ( secret_gate_repos "false" "${erepo}" >/dev/null 2>&1 ); then
+    pass "gate passes on an embedded SealedSecret"
+  else
+    fail "gate should pass on an embedded SealedSecret"
+  fi
+
   # (2) A clean SOPS file → sealed, gate passes.
   local srepo="${TEST_DIR}/sopsscan"
   fixture_sops "${srepo}/manifests/sops.yaml"
@@ -818,6 +998,22 @@ test_encrypted_leaks_still_block() {
   fi
   pass "gate refuses on plaintext sibling of a SealedSecret"
 
+  # Mixed extraObjects: the plaintext list element beside a real SealedSecret
+  # element must still block (element boundary holds under real betterleaks).
+  local erepo="${TEST_DIR}/extrablock"
+  fixture_extraobjects_mixed "${erepo}/base/values.yaml"
+  scan_repo_secrets "${erepo}" > "${TEST_DIR}/extrablock.out"
+  grep -q "$(printf '^sealed\tbase/values.yaml\t')" "${TEST_DIR}/extrablock.out" \
+    && pass "mixed extraObjects: SealedSecret element classified sealed" \
+    || fail "expected a sealed finding in mixed extraObjects, got: $(cat "${TEST_DIR}/extrablock.out")"
+  grep -q "$(printf '^no\tbase/values.yaml\t')" "${TEST_DIR}/extrablock.out" \
+    && pass "mixed extraObjects: plaintext element classified unmasked" \
+    || fail "expected an unmasked finding in mixed extraObjects, got: $(cat "${TEST_DIR}/extrablock.out")"
+  if ( secret_gate_repos "false" "${erepo}" >/dev/null 2>&1 ); then
+    fail "gate must refuse on a plaintext element beside a SealedSecret element"
+  fi
+  pass "gate refuses on plaintext sibling list element"
+
   # SOPS file with an unencrypted key alongside ENC values must still block.
   local srepo="${TEST_DIR}/sopsblock"
   fixture_sops_unencrypted_leak "${srepo}/manifests/leak.yaml"
@@ -845,6 +1041,226 @@ test_encrypted_leaks_still_block() {
     fail "gate must refuse plaintext sharing a line with an ENC[...] comment"
   fi
   pass "gate refuses plaintext sharing a line with an ENC[...] comment"
+}
+
+###############################################################################
+# scan_repo_secrets accept-list — a `no` finding whose fingerprint is in the
+# accept-file is downgraded to `accepted`, BUT only for a git-tracked file; a
+# gitignored/untracked file is never accepted (not in the signed tree). A
+# changed value (wrong hash) does not match.
+###############################################################################
+test_scan_acceptance() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing scan_repo_secrets accept-list downgrade + tracked-file guard..."
+
+  local repo="${TEST_DIR}/accept"
+  mkdir -p "${repo}/deploy"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  printf 'api_key: %s\n' "${PLAIN_TOK}" > "${repo}/deploy/values.yaml"
+  # A gitignored local file with its own secret — present at scan time but NOT
+  # part of the tracked/signed tree.
+  printf 'untracked.txt\n' > "${repo}/.gitignore"
+  printf 'SECRET=%s\n' "${SEALED_TOK}" > "${repo}/untracked.txt"
+  git -C "${repo}" add -A 2>/dev/null   # tracks deploy/values.yaml + .gitignore
+
+  # Resolve real fingerprints (Phase 1 resolver) for both files.
+  local rule ln grule gln
+  IFS=$'\t' read -r _ _ rule ln _ < <(scan_repo_secrets "${repo}" | grep "^no	deploy/values.yaml	" | head -n1)
+  IFS=$'\t' read -r _ _ grule gln _ < <(scan_repo_secrets "${repo}" | grep "^no	untracked.txt	" | head -n1)
+  local fp_tracked fp_ignored
+  fp_tracked="$(leakscan_fingerprints_for "${repo}" "deploy/values.yaml" "${rule}" "${ln}")"
+  fp_ignored="$(leakscan_fingerprints_for "${repo}" "untracked.txt" "${grule}" "${gln}")"
+  [[ -n "${fp_tracked}" && -n "${fp_ignored}" ]] || fail "could not resolve fingerprints"
+
+  local accept="${TEST_DIR}/accept.list" out="${TEST_DIR}/accept.out"
+  printf '%s\n%s\n' "${fp_tracked}" "${fp_ignored}" > "${accept}"
+  scan_repo_secrets "${repo}" "${accept}" > "${out}"
+
+  grep -q "$(printf '^accepted\tdeploy/values.yaml\t')" "${out}" \
+    && pass "tracked finding with matching fingerprint → accepted" \
+    || fail "tracked finding should be accepted, got: $(cat "${out}")"
+
+  # SECURITY: gitignored file is not in the signed tree; a matching fingerprint
+  # must NOT accept it.
+  grep -q "$(printf '^accepted\tuntracked.txt\t')" "${out}" \
+    && fail "gitignored file must NOT be accepted (not tracked): $(cat "${out}")" \
+    || pass "gitignored file stays blocking despite an accept-list entry"
+  grep -q "$(printf '^no\tuntracked.txt\t')" "${out}" \
+    && pass "gitignored file classified unmasked" \
+    || fail "expected gitignored file to remain 'no'"
+
+  # A wrong/tampered hash does not match (value-binding).
+  printf 'deploy/values.yaml:%s:%s:deadbeefdeadbeef\n' "${rule}" "${ln}" > "${accept}"
+  scan_repo_secrets "${repo}" "${accept}" > "${out}"
+  grep -q "$(printf '^no\tdeploy/values.yaml\t')" "${out}" \
+    && pass "wrong hash does not accept (value-binding holds)" \
+    || fail "tampered-hash fingerprint should not be accepted, got: $(cat "${out}")"
+
+  # No accept-file → unchanged behavior.
+  scan_repo_secrets "${repo}" > "${out}"
+  grep -q "$(printf '^no\tdeploy/values.yaml\t')" "${out}" \
+    && pass "no accept-file → finding stays 'no'" \
+    || fail "without an accept-file the finding should be 'no'"
+}
+
+###############################################################################
+# secret_gate_repos — the exceptions list is honored ONLY when the repo is
+# vetted (a signed attestation verifies at HEAD). End-to-end with real SSH
+# signing; skips gracefully where signing is unavailable.
+###############################################################################
+test_exceptions_gate_vetted() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  command -v ssh-keygen &>/dev/null || skip "ssh-keygen not installed"
+  info "Testing exceptions honored only when vetted..."
+
+  local signer="reviewer@sandbox.test"
+  local trust_root="${TEST_DIR}/vet-allowed_signers"
+  ssh-keygen -q -t ed25519 -f "${TEST_DIR}/vet-id" -N "" -C "${signer}" 2>/dev/null || skip "ssh-keygen failed"
+  printf '%s %s\n' "${signer}" "$(awk '{print $1" "$2}' "${TEST_DIR}/vet-id.pub")" > "${trust_root}"
+  printf 'x' | ssh-keygen -Y sign -f "${TEST_DIR}/vet-id" -n git >/dev/null 2>&1 || skip "SSH signing unavailable"
+
+  local _saved_user="${USER_SANDBOX_CONFIG}"
+  USER_SANDBOX_CONFIG="${TEST_DIR}/vet-user.yaml"
+  cat > "${USER_SANDBOX_CONFIG}" <<EOF
+vetting_trust_root: ${trust_root}
+vetting_trust_format: ssh
+EOF
+
+  local repo="${TEST_DIR}/vetgate"
+  mkdir -p "${repo}/deploy"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "${signer}"
+  git -C "${repo}" config user.name "Reviewer"
+  printf 'api_key: %s\n' "${PLAIN_TOK}" > "${repo}/deploy/values.yaml"
+  git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m init
+
+  # Record an exception for every unmasked finding (one planted token can trip
+  # more than one betterleaks rule; the gate only passes when all are accepted —
+  # exactly what a reviewer would do from the gate's printed list). Commit them.
+  local frel frule fln fp one recorded=0
+  while IFS=$'\t' read -r _ frel frule fln _; do
+    [[ -z "${frel}" ]] && continue
+    fp="$(leakscan_fingerprints_for "${repo}" "${frel}" "${frule}" "${fln}")"
+    while IFS= read -r one; do
+      [[ -z "${one}" ]] && continue
+      config_add_accepted_secret "${repo}/.sandbox/config.yaml" "${one}" "reviewed FP"
+      recorded=$((recorded + 1))
+    done <<<"${fp}"
+  done < <(scan_repo_secrets "${repo}" | grep "^no	" || true)
+  [[ "${recorded}" -gt 0 ]] || fail "expected at least one finding to record"
+  git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m "record exceptions"
+
+  # UNVETTED (no tag yet): the committed list carries no weight → gate refuses.
+  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "unvetted repo must not honor the exceptions list"
+  fi
+  pass "unvetted repo: exception ignored, gate refuses"
+
+  # Attest HEAD with the trusted key → vetted → exception honored → gate passes.
+  local sha; sha="$(git -C "${repo}" rev-parse HEAD)"
+  git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${TEST_DIR}/vet-id" \
+    tag -s "agent-vetted/${sha}" -m "vetted" 2>/dev/null || { USER_SANDBOX_CONFIG="${_saved_user}"; skip "tag signing failed"; }
+  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+    pass "vetted repo: exception honored, gate passes"
+  else
+    fail "vetted repo should honor the exception and pass"
+  fi
+
+  USER_SANDBOX_CONFIG="${_saved_user}"
+}
+
+###############################################################################
+# secret_gate_repos — only a COMMITTED exceptions list is honored. A vetted repo
+# stays clean (porcelain) even with a gitignored, uncommitted accept-list, but
+# that list is not in the signed commit and must not be honored — the gate keeps
+# blocking. Guards against the "unsigned working-tree accept-list" bypass.
+###############################################################################
+test_exceptions_gate_committed_only() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  command -v ssh-keygen &>/dev/null || skip "ssh-keygen not installed"
+  info "Testing only a committed exceptions list is honored (uncommitted/gitignored is not)..."
+
+  local signer="reviewer@sandbox.test"
+  local trust_root="${TEST_DIR}/vc-allowed_signers"
+  ssh-keygen -q -t ed25519 -f "${TEST_DIR}/vc-id" -N "" -C "${signer}" 2>/dev/null || skip "ssh-keygen failed"
+  printf '%s %s\n' "${signer}" "$(awk '{print $1" "$2}' "${TEST_DIR}/vc-id.pub")" > "${trust_root}"
+  printf 'x' | ssh-keygen -Y sign -f "${TEST_DIR}/vc-id" -n git >/dev/null 2>&1 || skip "SSH signing unavailable"
+
+  local _saved_user="${USER_SANDBOX_CONFIG}"
+  USER_SANDBOX_CONFIG="${TEST_DIR}/vc-user.yaml"
+  cat > "${USER_SANDBOX_CONFIG}" <<EOF
+vetting_trust_root: ${trust_root}
+vetting_trust_format: ssh
+EOF
+
+  local repo="${TEST_DIR}/vetcommitted"
+  mkdir -p "${repo}/deploy"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "${signer}"; git -C "${repo}" config user.name "Reviewer"
+  git -C "${repo}" config gpg.format ssh; git -C "${repo}" config user.signingkey "${TEST_DIR}/vc-id"
+  printf 'api_key: %s\n' "${PLAIN_TOK}" > "${repo}/deploy/values.yaml"
+  git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m init
+
+  # Resolve the finding fingerprints (what an attacker would put in the list).
+  local frel frule fln fp specs=""
+  while IFS=$'\t' read -r _ frel frule fln _; do
+    [[ -z "${frel}" ]] && continue
+    while IFS= read -r fp; do [[ -n "${fp}" ]] && specs+="${fp}"$'\n'; done \
+      < <(leakscan_fingerprints_for "${repo}" "${frel}" "${frule}" "${fln}")
+  done < <(scan_repo_secrets "${repo}" | grep "^no	" || true)
+  [[ -n "${specs}" ]] || fail "expected findings to fingerprint"
+
+  # Vet HEAD with NO committed exceptions (there are none), then confirm the
+  # secret blocks the gate.
+  git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${TEST_DIR}/vc-id" \
+    tag -s "agent-vetted/$(git -C "${repo}" rev-parse HEAD)" -m vetted 2>/dev/null \
+    || { USER_SANDBOX_CONFIG="${_saved_user}"; skip "tag signing failed"; }
+  local vstat _vf
+  IFS=$'\t' read -r vstat _vf < <(vetting_status_repo "${repo}")
+  eq "repo is vetted (baseline)" "vetted" "${vstat}"
+  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "vetted repo with a tracked secret and no committed exception should block"
+  fi
+  pass "vetted repo blocks the secret with no committed exception"
+
+  # THE ATTACK: drop an UNCOMMITTED accept-list and hide it via the local,
+  # uncommitted .git/info/exclude so HEAD is unchanged and the tree stays clean.
+  mkdir -p "${repo}/.sandbox"
+  printf 'accepted_secrets:\n' > "${repo}/.sandbox/config.yaml"
+  while IFS= read -r fp; do [[ -n "${fp}" ]] && printf '  - "%s"\n' "${fp}" >> "${repo}/.sandbox/config.yaml"; done <<<"${specs}"
+  printf '.sandbox/\n' >> "${repo}/.git/info/exclude"
+
+  # Preconditions that made the bypass possible must actually hold here.
+  eq "tree still clean (gitignored list invisible to porcelain)" "" \
+     "$(git -C "${repo}" status --porcelain)"
+  IFS=$'\t' read -r vstat _vf < <(vetting_status_repo "${repo}")
+  eq "repo still reports vetted with the gitignored list present" "vetted" "${vstat}"
+
+  # The fix: the list is not in the signed commit, so it is NOT honored.
+  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "SECURITY: uncommitted/gitignored accept-list must NOT be honored on a vetted repo"
+  fi
+  pass "uncommitted/gitignored accept-list is ignored; gate still blocks"
+
+  # Committing the same list (into the signed tree) and re-vetting DOES honor it
+  # — proving the boundary is committed-vs-not, not merely 'ignore .sandbox'.
+  git -C "${repo}" config --unset-all core.excludesFile 2>/dev/null || true
+  : > "${repo}/.git/info/exclude"
+  git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m "record exceptions"
+  git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${TEST_DIR}/vc-id" \
+    tag -s "agent-vetted/$(git -C "${repo}" rev-parse HEAD)" -m vetted 2>/dev/null
+  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+    pass "committing the list and re-vetting honors it (gate passes)"
+  else
+    fail "a committed, vetted exceptions list should be honored"
+  fi
+
+  USER_SANDBOX_CONFIG="${_saved_user}"
 }
 
 ###############################################################################
@@ -879,6 +1295,8 @@ main() {
 
   test_is_path_masked
   test_config_add_masked_path
+  test_exceptions_accept_list
+  test_fingerprint_resolver
   test_manifest_mount
   test_finding_is_encrypted
   test_scan_classification
@@ -892,6 +1310,9 @@ main() {
   test_scan_failure_fails_closed
   test_encrypted_scan_and_gate
   test_encrypted_leaks_still_block
+  test_scan_acceptance
+  test_exceptions_gate_vetted
+  test_exceptions_gate_committed_only
 
   echo ""
   echo "All secret-gate tests passed."

@@ -54,6 +54,14 @@ sandbox secret list                           # names + sizes + mtimes; values n
 sandbox secret delete <NAME>
 sandbox mask add --repo <PATH> <RELPATH>...    # hide file(s) from the agent (per-repo)
 sandbox mask list --repo <PATH>               # built-in + configured masked paths
+sandbox exceptions add --repo <PATH> <RELPATH:RULE:LINE>... [--reason TEXT]
+                     # record reviewed secret-gate false positive(s); honored
+                     # only on a vetted repo. RELPATH:RULE:LINE is what the gate
+                     # prints. Re-scans to resolve the value hash.
+sandbox exceptions list --repo <PATH>         # recorded accepted_secrets fingerprints
+sandbox vet --repo <PATH> [--message MSG] [--yes]   # sign an agent-vetted/<sha> tag
+                     # --yes: acknowledge recorded secret exceptions non-interactively
+sandbox vet --status --repo <PATH>            # print vetting state, sign nothing
 sandbox cleanup [--older-than DAYS]            default: 90
 sandbox check <WORKSPACE_PATH>
 sandbox status
