@@ -130,21 +130,61 @@ EOF
       # endpoint hostname extracted from OPENCODE_BASE_URL (e.g. an OpenAI
       # proxy, an internal vLLM/Ollama instance, or api.openai.com itself
       # — whichever the operator has chosen to route through).
-      local base_url="${OPENCODE_BASE_URL:-}"
-      if [[ -z "${base_url}" ]]; then
-        echo "ERROR: OPENCODE_BASE_URL not set in host environment." >&2
-        echo "  Set it to the URL of an OpenAI-compatible endpoint." >&2
+      local host
+      host="$(resolve_inference_endpoint opencode)"
+      if [[ -z "${host}" ]]; then
+        if [[ -n "${OPENCODE_BASE_URL:-}" ]]; then
+          echo "ERROR: OPENCODE_BASE_URL ('${OPENCODE_BASE_URL}') has no host." >&2
+          echo "  Set it to the full URL of an OpenAI-compatible endpoint, e.g." >&2
+          echo "  https://api.openai.com/v1 or https://vllm.internal:8000/v1." >&2
+        else
+          echo "ERROR: OPENCODE_BASE_URL not set in host environment." >&2
+          echo "  Set it to the URL of an OpenAI-compatible endpoint." >&2
+        fi
         exit 1
       fi
-      local host="${base_url#*://}"
-      host="${host%%/*}"
-      host="${host%%:*}"
       echo "${host}"
       ;;
     *)
       echo "ERROR: Unknown agent: ${agent}" >&2
       exit 1
       ;;
+  esac
+}
+
+# resolve_inference_endpoint <agent> — print the bare hostname of the model
+# inference endpoint this agent talks to, or NOTHING if the agent uses a fixed
+# vendor API (claude/codex/grok) or the endpoint is unconfigured. Unlike
+# get_agent_domains this is PURE: it never errors or exits, so callers can probe
+# an endpoint's identity without committing to a launch. An empty result means
+# "no caller-chosen endpoint", which callers treat as untrusted.
+#
+# Today only opencode has an operator-chosen endpoint (OPENCODE_BASE_URL). The
+# scheme, userinfo, path, and port are stripped so the result is the same
+# bare-host form the egress allowlist uses and that inference_endpoint_is_trusted
+# matches against the overlay's trusted_inference_endpoints list.
+#
+# Userinfo (`user:pass@`) MUST be stripped before the port: the port strip cuts
+# at the first colon, which in `user:pass@host` is the userinfo separator, not
+# the port. Without the `##*@` step a URL like `https://trusted:x@evil.com/v1`
+# would resolve to `trusted` — matching the trusted list while the client dials
+# evil.com. Path is dropped first so an `@` embedded in the path can't be
+# mistaken for a userinfo separator. A URL with no host after the userinfo
+# (`https://user@/v1`) resolves to empty, which callers treat as untrusted /
+# unconfigured (fail closed).
+resolve_inference_endpoint() {
+  local agent="$1"
+  case "${agent}" in
+    opencode)
+      local base_url="${OPENCODE_BASE_URL:-}"
+      [[ -n "${base_url}" ]] || return 0
+      local host="${base_url#*://}"
+      host="${host%%/*}"      # drop path
+      host="${host##*@}"      # drop userinfo (before the port strip below)
+      host="${host%%:*}"      # drop port
+      echo "${host}"
+      ;;
+    *) return 0 ;;
   esac
 }
 

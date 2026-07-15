@@ -819,8 +819,17 @@ cmd_run() {
     check_masking_paths "${opt_repos[@]}"
     # Gate the launch on secrets the mask would not hide. Fails closed if
     # betterleaks is absent; --i-accept-unmasked-secrets downgrades the
-    # refusal to a printed warning.
-    secret_gate_repos "${opt_accept_unmasked_secrets}" "${opt_repos[@]}"
+    # refusal to a printed warning. When this session's model inference
+    # endpoint is a trusted internal one (per the overlay's
+    # trusted_inference_endpoints list), a would-be block is downgraded to a
+    # single interactive confirmation instead — the model-exfil channel is
+    # closed, so the operator makes the call. See secret_gate_repos.
+    local _endpoint _endpoint_trusted="false"
+    _endpoint="$(resolve_inference_endpoint "${opt_agent}")"
+    if [[ -n "${_endpoint}" ]] && inference_endpoint_is_trusted "${_endpoint}"; then
+      _endpoint_trusted="true"
+    fi
+    secret_gate_repos "${opt_accept_unmasked_secrets}" "${_endpoint_trusted}" "${opt_repos[@]}"
     # Gate the launch on whether each workspace has been vetted for agent use.
     # Posture (off/advisory/required) is operator-controlled; advisory only
     # prints status, required refuses unless a signed attestation verifies at

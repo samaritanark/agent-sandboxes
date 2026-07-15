@@ -893,13 +893,30 @@ _print_exceptions_add_commands() {
   done
 }
 
-# secret_gate_repos <accept_flag> <repo>... — scan every workspace with
-# betterleaks and refuse the launch if any secret lives in a file the mask
-# would not hide. Fail closed: a missing betterleaks aborts. With
-# accept_flag == "true" (the --i-accept-unmasked-secrets override) the
-# findings are printed but the launch proceeds.
+# secret_gate_repos <accept_flag> <endpoint_trusted> <repo>... — scan every
+# workspace with betterleaks and refuse the launch if any secret lives in a file
+# the mask would not hide. Fail closed: a missing betterleaks aborts.
+#
+# There are four outcomes for a would-be-blocking finding (an unmasked secret or
+# one in .git/config); masked / encrypted-at-rest / vetted-accepted findings
+# never block:
+#   1. accept_flag == "true" (--i-accept-unmasked-secrets) → print and proceed,
+#      unconditionally. This is the explicit non-interactive consent and works
+#      regardless of the endpoint.
+#   2. endpoint_trusted == "true" AND an interactive terminal → print, then
+#      prompt once for the whole run; proceed only on an affirmative answer.
+#      The trusted endpoint (an internal model, see inference_endpoint_is_trusted)
+#      closes the model-exfil channel, which is what makes a hard block
+#      disproportionate — but it does NOT make the secret safe (the agent still
+#      reads it and could act on or exfiltrate it via shell egress), so a human
+#      makes the call rather than a wall or a silent pass.
+#   3. endpoint_trusted == "true" AND no terminal → refuse, pointing at
+#      --i-accept-unmasked-secrets. "Prompt the user" needs a human; with none
+#      present (CI, no TTY) the gate fails closed.
+#   4. otherwise → hard refuse with remediation (the default).
 secret_gate_repos() {
   local accept="$1"; shift
+  local endpoint_trusted="$1"; shift
   local -a repos=("$@")
   [[ "${#repos[@]}" -gt 0 ]] || return 0
 
@@ -976,6 +993,35 @@ secret_gate_repos() {
     [[ "${#gitconfig[@]}" -gt 0 ]] && _print_unmasked_findings "${gitconfig[@]}"
     echo "" >&2
     return 0
+  fi
+
+  # Trusted internal endpoint + interactive terminal: one prompt for the whole
+  # run instead of a hard block. Findings across all repos are already collected
+  # above, so this asks once. A trusted endpoint with NO terminal falls through
+  # to the hard block below (refuse, pointing at --i-accept-unmasked-secrets) —
+  # "prompt the user" needs a human.
+  if [[ "${endpoint_trusted}" == "true" && -t 0 ]]; then
+    echo "" >&2
+    echo "  NOTICE: $(( ${#unmasked[@]} + ${#gitconfig[@]} )) unmasked secret(s) found in the workspace(s):" >&2
+    [[ "${#unmasked[@]}" -gt 0 ]] && _print_unmasked_findings "${unmasked[@]}"
+    [[ "${#gitconfig[@]}" -gt 0 ]] && _print_unmasked_findings "${gitconfig[@]}"
+    echo "" >&2
+    echo "  Your inference endpoint is a trusted internal model, so this launch may" >&2
+    echo "  proceed with your confirmation. The agent WILL read the secret(s) above" >&2
+    echo "  and could still act on them or exfiltrate them via shell egress — a" >&2
+    echo "  trusted endpoint only closes the model channel; it does not make the" >&2
+    echo "  secret safe." >&2
+    local reply=""
+    printf '  Start the sandbox anyway? [y/N] ' >&2
+    read -r reply || true
+    if [[ "${reply}" =~ ^[Yy] ]]; then
+      echo "  Proceeding — the agent will read the secret(s) above." >&2
+      echo "" >&2
+      return 0
+    fi
+    echo "  Aborted; the sandbox was not started." >&2
+    echo "" >&2
+    exit 1
   fi
 
   echo "" >&2

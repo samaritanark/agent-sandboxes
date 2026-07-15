@@ -272,6 +272,50 @@ check_egress_target_not_blocked() {
   fi
 }
 
+# inference_endpoint_is_trusted <host> — true if <host> exactly matches an entry
+# in the team overlay's `trusted_inference_endpoints:` list. That list is an
+# operator/overlay-owned GRANT naming the internal model endpoints trusted to
+# receive secret-bearing prompts; its ONLY effect is to downgrade the workspace
+# secret gate from a hard refusal to an interactive confirmation (see
+# secret_gate_repos). Nothing else keys on it, and it never relaxes any other
+# control — a trusted endpoint does not touch the vetting posture or the block
+# list.
+#
+# Operator-side input, not attacker-controlled. The list is read only from the
+# active overlay's config.yaml — selected via $SANDBOX_OVERLAY or the operator's
+# ~/.sandbox/config.yaml (resolve_overlay_path) — and never from a repo-local
+# <repo>/.sandbox/config.yaml. That is the boundary this enforces: the repo and
+# the in-sandbox agent, which are the adversary the secret gate exists to
+# contain, cannot add an entry or point the agent at a listed endpoint, because
+# they can write neither the operator's overlay/config nor the launch
+# environment. It does NOT constrain the launching operator, who selects the
+# overlay and sets OPENCODE_BASE_URL: that operator already controls the gate
+# outright (--i-accept-unmasked-secrets, and the overlay's own .betterleaksignore
+# baseline / leakscan_extra_dep_dirs), so a self-declared trusted endpoint grants
+# them no capability they lacked — it only records intent. (Note this is a weaker
+# guarantee than the signature-anchored accepted_secrets list, which binds to a
+# vetting signature over the tree; the trust list is unsigned operator config.)
+# An empty or absent list means no endpoint is ever trusted, so the gate keeps
+# its hard-block default and this feature is simply off.
+#
+# Matching is on the bare host (no wildcards, no port), consistent with
+# resolve_inference_endpoint and the egress allowlist. Wildcards are refused by
+# construction here: a loose match on the destination the whole prompt flows to
+# is exactly where a subdomain takeover or DNS rebind would masquerade as
+# trusted. A listed host is trusted on any port.
+inference_endpoint_is_trusted() {
+  local host="$1"
+  [[ -n "${host}" ]] || return 1
+  local overlay
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] || return 1
+  local entry
+  while IFS= read -r entry; do
+    [[ "${entry}" == "${host}" ]] && return 0
+  done < <(extract_yaml_list_from_file "${overlay}/config.yaml" trusted_inference_endpoints)
+  return 1
+}
+
 # check_no_privileged_flags — ensure no dangerous kubectl/container flags are present
 check_no_privileged_flags() {
   local manifest="$1"

@@ -218,6 +218,66 @@ operator owns the call. Per-repo exceptions are the right tool for the ordinary
 case: a specific finding, in a specific repo, that a reviewer vouches for as part
 of vetting that repo.
 
+## Trusted internal model endpoints (a different lever)
+
+Exceptions above are for findings that are **not really secrets** — reviewed
+false positives, honored on any endpoint. A separate lever handles the opposite
+case: a finding that **is** a real secret, where the model reading it is one you
+trust.
+
+Everything an agent reads flows to its model endpoint, which makes that endpoint
+the most sensitive egress destination in the system. An **internal** model (a
+vLLM/Ollama box, an in-cluster proxy) keeps that data inside your trust boundary;
+an **external** one exports it. So a secret is tolerable to an internal model but
+not an external one — which is exactly the distinction this lever draws.
+
+When a session's inference endpoint is on the team overlay's
+`trusted_inference_endpoints:` list, a would-be-blocking finding is **downgraded
+from a hard refusal to a single interactive confirmation** for the whole run:
+
+- The gate **still scans** and **still shows** every finding — nothing is skipped
+  or silenced.
+- Instead of refusing, it prints the findings and asks once: *start the sandbox
+  anyway? [y/N]*. Answer `n` and nothing launches.
+- With **no interactive terminal** (CI, headless), there is no one to ask, so the
+  gate **fails closed** and refuses — use `--i-accept-unmasked-secrets` to consent
+  non-interactively there.
+
+The confirmation is deliberate rather than automatic because a trusted endpoint
+closes only the **model** channel. The agent still reads the secret and could act
+on it, or leak it via shell egress to an allowed domain — so a human makes the
+call with eyes open, rather than the launch passing silently.
+
+Configuration lives in the [team overlay](profiles-and-overlays.md)'s
+`config.yaml` — an operator-side input, selected via `SANDBOX_OVERLAY` or your
+`~/.sandbox/config.yaml`, and **not** read from a repo-local
+`<repo>/.sandbox/config.yaml`. That is the boundary that matters: the repo and
+the in-sandbox agent — the party the secret gate exists to contain — cannot add a
+trusted endpoint or point the agent at one, because they can write neither the
+operator's overlay/config nor the launch environment. It does **not** restrict
+the launching operator, who selects the overlay and sets `OPENCODE_BASE_URL`;
+that operator already controls the gate outright (`--i-accept-unmasked-secrets`,
+or an overlay `.betterleaksignore` baseline), so for them the list only records
+intent rather than granting new power. (Unlike `accepted_secrets:` above, the
+trust list is unsigned operator config, not bound to a vetting signature.) Match
+is on the exact bare host (no wildcards, no port). Today only the `opencode`
+agent has a caller-chosen endpoint (`OPENCODE_BASE_URL`); the other agents always
+use their vendor API and are never on the list.
+
+```yaml
+# <overlay>/config.yaml
+trusted_inference_endpoints:
+  - vllm.internal.example.org
+  - llm.corp.example.org
+```
+
+| | `accepted_secrets:` (exceptions) | `trusted_inference_endpoints:` |
+| --- | --- | --- |
+| The finding is | a reviewed **false positive** | a **real secret** |
+| Effect | finding is not counted at all | block → one interactive confirm |
+| Keyed on | the repo (via its vetting signature) | the session's model endpoint |
+| Depends on a TTY | no | yes (else fails closed) |
+
 ## See also
 
 - [Vetting repos for agent use](vetting.md) — the signature that gives an

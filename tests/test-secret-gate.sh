@@ -31,6 +31,10 @@ source "${SANDBOX_ROOT}/lib/manifest.sh"
 # The gate now consults vetting status to decide whether to honor a repo's
 # accepted_secrets list (Phase 2), so the vetting unit is in scope here too.
 source "${SANDBOX_ROOT}/lib/vetting.sh"
+# resolve_inference_endpoint (agents.sh) + inference_endpoint_is_trusted
+# (checks.sh) back the trusted-endpoint gate downgrade.
+source "${SANDBOX_ROOT}/lib/agents.sh"
+source "${SANDBOX_ROOT}/lib/checks.sh"
 
 # Hermetic user config so a real ~/.sandbox/config.yaml never leaks into a test.
 USER_SANDBOX_CONFIG="${TEST_DIR}/user-config.yaml"
@@ -692,13 +696,13 @@ test_gate() {
 
   # Without masking and without override → refuse (exit non-zero). Run in a
   # subshell so the gate's `exit 1` doesn't take down the test.
-  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "gate should refuse on an unmasked secret"
   fi
   pass "gate refuses on unmasked secret"
 
   # Override → proceeds (exit 0) despite the unmasked secret.
-  if ( secret_gate_repos "true" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "true" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "override proceeds despite unmasked secret"
   else
     fail "override should proceed"
@@ -706,7 +710,7 @@ test_gate() {
 
   # Mask the offending file → gate passes.
   config_add_masked_path "${repo}/.sandbox/config.yaml" "nested/config.txt"
-  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "gate passes once the secret is masked"
   else
     fail "gate should pass after masking the file"
@@ -748,13 +752,13 @@ test_gitconfig_secret() {
   pass ".git/config secret value redacted"
 
   # The gate refuses on it...
-  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "gate should refuse on a .git/config secret"
   fi
   pass "gate refuses on .git/config secret"
 
   # ...the override proceeds...
-  if ( secret_gate_repos "true" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "true" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "override proceeds despite .git/config secret"
   else
     fail "override should proceed"
@@ -763,7 +767,7 @@ test_gitconfig_secret() {
   # ...and masking does NOT help (an empty .git/config overlay would break git,
   # so the gitconfig scan ignores masked_paths and the gate still refuses).
   config_add_masked_path "${repo}/.sandbox/config.yaml" ".git/config"
-  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "masking .git/config must not bypass the gate"
   fi
   pass "masking .git/config does not bypass the gate"
@@ -800,14 +804,14 @@ EOF
   fi
 
   # The gate refuses the launch (exit non-zero) on that sentinel...
-  if ( PATH="${stub}:${PATH}" secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( PATH="${stub}:${PATH}" secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "gate should refuse when the scanner fails"
   fi
   pass "gate refuses on scanner failure"
 
   # ...and the override does NOT bypass a failed scan (it accepts known
   # secrets, not an uninspected workspace).
-  if ( PATH="${stub}:${PATH}" secret_gate_repos "true" "${repo}" >/dev/null 2>&1 ); then
+  if ( PATH="${stub}:${PATH}" secret_gate_repos "true" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "override should not bypass a failed scan"
   fi
   pass "override does not bypass a failed scan"
@@ -941,7 +945,7 @@ test_encrypted_scan_and_gate() {
   grep -q "$(printf '^no\t')" "${out}" \
     && fail "clean SealedSecret should produce no unmasked finding" \
     || pass "no unmasked finding for clean SealedSecret"
-  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "gate passes on a clean SealedSecret"
   else
     fail "gate should pass on a clean SealedSecret"
@@ -957,7 +961,7 @@ test_encrypted_scan_and_gate() {
   grep -q "$(printf '^no\t')" "${TEST_DIR}/extrascan.out" \
     && fail "embedded SealedSecret should produce no unmasked finding" \
     || pass "no unmasked finding for embedded SealedSecret"
-  if ( secret_gate_repos "false" "${erepo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${erepo}" >/dev/null 2>&1 ); then
     pass "gate passes on an embedded SealedSecret"
   else
     fail "gate should pass on an embedded SealedSecret"
@@ -970,7 +974,7 @@ test_encrypted_scan_and_gate() {
   grep -q "$(printf '^sealed\tmanifests/sops.yaml\t')" "${TEST_DIR}/sopsscan.out" \
     && pass "SOPS finding classified sealed" \
     || fail "expected a sealed SOPS finding, got: $(cat "${TEST_DIR}/sopsscan.out")"
-  if ( secret_gate_repos "false" "${srepo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${srepo}" >/dev/null 2>&1 ); then
     pass "gate passes on a clean SOPS file"
   else
     fail "gate should pass on a clean SOPS file"
@@ -993,7 +997,7 @@ test_encrypted_leaks_still_block() {
   grep -q "$(printf '^no\tmanifests/mixed.yaml\t')" "${out}" \
     && pass "multi-doc: plaintext sibling classified unmasked" \
     || fail "expected an unmasked finding in multi-doc, got: $(cat "${out}")"
-  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "gate must refuse when a plaintext secret sits beside a SealedSecret"
   fi
   pass "gate refuses on plaintext sibling of a SealedSecret"
@@ -1009,7 +1013,7 @@ test_encrypted_leaks_still_block() {
   grep -q "$(printf '^no\tbase/values.yaml\t')" "${TEST_DIR}/extrablock.out" \
     && pass "mixed extraObjects: plaintext element classified unmasked" \
     || fail "expected an unmasked finding in mixed extraObjects, got: $(cat "${TEST_DIR}/extrablock.out")"
-  if ( secret_gate_repos "false" "${erepo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${erepo}" >/dev/null 2>&1 ); then
     fail "gate must refuse on a plaintext element beside a SealedSecret element"
   fi
   pass "gate refuses on plaintext sibling list element"
@@ -1021,7 +1025,7 @@ test_encrypted_leaks_still_block() {
   grep -q "$(printf '^no\tmanifests/leak.yaml\t')" "${TEST_DIR}/sopsblock.out" \
     && pass "SOPS: unencrypted key classified unmasked" \
     || fail "expected an unmasked SOPS finding, got: $(cat "${TEST_DIR}/sopsblock.out")"
-  if ( secret_gate_repos "false" "${srepo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${srepo}" >/dev/null 2>&1 ); then
     fail "gate must refuse on an unencrypted key in a SOPS file"
   fi
   pass "gate refuses on unencrypted key in a SOPS file"
@@ -1037,7 +1041,7 @@ test_encrypted_leaks_still_block() {
   grep -q "$(printf '^no\tmanifests/sneaky.yaml\t')" "${TEST_DIR}/sopscomment.out" \
     && pass "same-line ENC comment: plaintext classified unmasked" \
     || fail "expected an unmasked finding, got: $(cat "${TEST_DIR}/sopscomment.out")"
-  if ( secret_gate_repos "false" "${crepo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${crepo}" >/dev/null 2>&1 ); then
     fail "gate must refuse plaintext sharing a line with an ENC[...] comment"
   fi
   pass "gate refuses plaintext sharing a line with an ENC[...] comment"
@@ -1155,7 +1159,7 @@ EOF
   git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m "record exceptions"
 
   # UNVETTED (no tag yet): the committed list carries no weight → gate refuses.
-  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "unvetted repo must not honor the exceptions list"
   fi
   pass "unvetted repo: exception ignored, gate refuses"
@@ -1164,7 +1168,7 @@ EOF
   local sha; sha="$(git -C "${repo}" rev-parse HEAD)"
   git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${TEST_DIR}/vet-id" \
     tag -s "agent-vetted/${sha}" -m "vetted" 2>/dev/null || { USER_SANDBOX_CONFIG="${_saved_user}"; skip "tag signing failed"; }
-  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "vetted repo: exception honored, gate passes"
   else
     fail "vetted repo should honor the exception and pass"
@@ -1223,7 +1227,7 @@ EOF
   local vstat _vf
   IFS=$'\t' read -r vstat _vf < <(vetting_status_repo "${repo}")
   eq "repo is vetted (baseline)" "vetted" "${vstat}"
-  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "vetted repo with a tracked secret and no committed exception should block"
   fi
   pass "vetted repo blocks the secret with no committed exception"
@@ -1242,7 +1246,7 @@ EOF
   eq "repo still reports vetted with the gitignored list present" "vetted" "${vstat}"
 
   # The fix: the list is not in the signed commit, so it is NOT honored.
-  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "SECURITY: uncommitted/gitignored accept-list must NOT be honored on a vetted repo"
   fi
   pass "uncommitted/gitignored accept-list is ignored; gate still blocks"
@@ -1254,7 +1258,7 @@ EOF
   git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m "record exceptions"
   git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${TEST_DIR}/vc-id" \
     tag -s "agent-vetted/$(git -C "${repo}" rev-parse HEAD)" -m vetted 2>/dev/null
-  if ( secret_gate_repos "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "committing the list and re-vetting honors it (gate passes)"
   else
     fail "a committed, vetted exceptions list should be honored"
@@ -1287,11 +1291,150 @@ test_manifest_mount() {
     || fail "built-in .env overlay missing"
 }
 
+# resolve_inference_endpoint + inference_endpoint_is_trusted — endpoint identity
+# extraction and the overlay-owned trust list that gates the secret-gate
+# downgrade.
+test_inference_endpoint_trust() {
+  info "Testing resolve_inference_endpoint + inference_endpoint_is_trusted..."
+
+  # Scheme, path, and port are stripped to a bare host.
+  eq "opencode endpoint host extracted" "vllm.internal" \
+     "$(OPENCODE_BASE_URL='https://vllm.internal:8000/v1' resolve_inference_endpoint opencode)"
+  eq "opencode endpoint empty when unset" "" \
+     "$(unset OPENCODE_BASE_URL; resolve_inference_endpoint opencode)"
+  eq "claude has no caller-chosen endpoint" "" \
+     "$(resolve_inference_endpoint claude)"
+
+  # Userinfo must not spoof the host: the real host after '@' is what resolves,
+  # never the userinfo before it, so a crafted URL cannot match a trusted host
+  # while routing elsewhere.
+  eq "userinfo does not spoof the host" "evil.com" \
+     "$(OPENCODE_BASE_URL='https://vllm.internal:x@evil.com/v1' resolve_inference_endpoint opencode)"
+  eq "legit userinfo resolves to real host" "vllm.internal" \
+     "$(OPENCODE_BASE_URL='https://user:pass@vllm.internal:8000/v1' resolve_inference_endpoint opencode)"
+  eq "path-embedded @ does not truncate host" "api.openai.com" \
+     "$(OPENCODE_BASE_URL='https://api.openai.com/v1/@model' resolve_inference_endpoint opencode)"
+  eq "userinfo with empty host resolves empty (fail closed)" "" \
+     "$(OPENCODE_BASE_URL='https://user@/v1' resolve_inference_endpoint opencode)"
+
+  # Overlay trust list: exact-match membership.
+  local overlay="${TEST_DIR}/trust-overlay"
+  mkdir -p "${overlay}"
+  cat > "${overlay}/config.yaml" <<'YAML'
+trusted_inference_endpoints:
+  - vllm.internal
+  - llm.corp.example.org
+YAML
+
+  ( export SANDBOX_OVERLAY="${overlay}"; inference_endpoint_is_trusted "vllm.internal" ) \
+    && pass "listed endpoint is trusted" \
+    || fail "vllm.internal should be trusted"
+  ( export SANDBOX_OVERLAY="${overlay}"; inference_endpoint_is_trusted "api.openai.com" ) \
+    && fail "unlisted endpoint must not be trusted" \
+    || pass "unlisted endpoint is not trusted"
+  ( export SANDBOX_OVERLAY="${overlay}"; inference_endpoint_is_trusted "" ) \
+    && fail "empty host must not be trusted" \
+    || pass "empty host is not trusted"
+
+  # No overlay → nothing trusted (feature off by default).
+  ( unset SANDBOX_OVERLAY; USER_SANDBOX_CONFIG="${TEST_DIR}/no-such.yaml"; \
+    inference_endpoint_is_trusted "vllm.internal" ) \
+    && fail "no overlay must trust nothing" \
+    || pass "no overlay → nothing trusted"
+
+  # Overlay present but no list → nothing trusted.
+  local overlay2="${TEST_DIR}/trust-overlay-empty"
+  mkdir -p "${overlay2}"
+  printf 'vetting: advisory\n' > "${overlay2}/config.yaml"
+  ( export SANDBOX_OVERLAY="${overlay2}"; inference_endpoint_is_trusted "vllm.internal" ) \
+    && fail "absent list must trust nothing" \
+    || pass "absent list → nothing trusted"
+}
+
+# secret_gate_repos — the trusted-endpoint downgrade. Deterministic branches
+# (no pty needed): untrusted still hard-blocks; trusted with no TTY fails closed;
+# the accept flag proceeds regardless. The interactive y/N branch is exercised
+# separately under a pty (test_gate_trusted_interactive).
+test_gate_trusted_endpoint() {
+  command -v betterleaks >/dev/null 2>&1 || { info "betterleaks absent; skipping trusted-endpoint gate"; return; }
+  info "Testing secret_gate_repos trusted-endpoint downgrade (deterministic branches)..."
+
+  local repo="${TEST_DIR}/trust-gate-repo"
+  make_repo "${repo}"
+
+  # (a) Untrusted endpoint → today's hard block (regression). stdin closed so
+  # the trusted-interactive branch could never fire even by accident.
+  if ( secret_gate_repos "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ); then
+    fail "untrusted endpoint should hard-block an unmasked secret"
+  else
+    pass "untrusted endpoint hard-blocks (regression)"
+  fi
+
+  # (b) Trusted endpoint but NO terminal → fail closed (no human to prompt).
+  if ( secret_gate_repos "false" "true" "${repo}" </dev/null >/dev/null 2>&1 ); then
+    fail "trusted endpoint with no TTY should refuse"
+  else
+    pass "trusted endpoint + no TTY fails closed"
+  fi
+
+  # (c) The explicit consent flag proceeds regardless of endpoint/TTY.
+  if ( secret_gate_repos "true" "true" "${repo}" </dev/null >/dev/null 2>&1 ); then
+    pass "trusted endpoint + --i-accept-unmasked-secrets proceeds"
+  else
+    fail "accept flag should proceed even with no TTY"
+  fi
+}
+
+# The interactive y/N branch: requires a pty so `-t 0` is true inside the gate.
+# Uses util-linux `script` to allocate one; skips gracefully where it is absent
+# (e.g. BSD/macOS `script`, which has different semantics). A generated helper
+# re-sources the libs because `script` spawns a fresh shell.
+test_gate_trusted_interactive() {
+  command -v betterleaks >/dev/null 2>&1 || { info "betterleaks absent; skipping interactive gate"; return; }
+  if ! command -v script >/dev/null 2>&1 || ! script --version 2>/dev/null | grep -qi util-linux; then
+    info "util-linux 'script' unavailable; skipping interactive pty cases"
+    return
+  fi
+  info "Testing secret_gate_repos interactive confirm (pty)..."
+
+  local repo="${TEST_DIR}/trust-int-repo"
+  make_repo "${repo}"
+
+  local helper="${TEST_DIR}/gate-helper.sh"
+  cat > "${helper}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+SANDBOX_ROOT="${SANDBOX_ROOT}"
+USER_SANDBOX_CONFIG="${TEST_DIR}/no-such.yaml"
+source "\${SANDBOX_ROOT}/lib/platform.sh"
+source "\${SANDBOX_ROOT}/lib/config.sh"
+source "\${SANDBOX_ROOT}/lib/profile.sh"
+source "\${SANDBOX_ROOT}/lib/vetting.sh"
+source "\${SANDBOX_ROOT}/lib/filesystem.sh"
+secret_gate_repos "false" "true" "${repo}"
+EOF
+
+  if printf 'y\n' | script -qec "bash ${helper}" /dev/null >/dev/null 2>&1; then
+    pass "trusted endpoint + TTY + 'y' proceeds"
+  else
+    fail "trusted endpoint + TTY + 'y' should proceed"
+  fi
+  if printf 'n\n' | script -qec "bash ${helper}" /dev/null >/dev/null 2>&1; then
+    fail "trusted endpoint + TTY + 'n' should refuse"
+  else
+    pass "trusted endpoint + TTY + 'n' refuses"
+  fi
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
   echo "Test directory: ${TEST_DIR}"
   echo ""
+
+  test_inference_endpoint_trust
+  test_gate_trusted_endpoint
+  test_gate_trusted_interactive
 
   test_is_path_masked
   test_config_add_masked_path
