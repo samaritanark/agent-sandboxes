@@ -1587,7 +1587,8 @@ cmd_check() {
   # 'check' is informational. 'sandbox run' applies the real gate.
   if command -v betterleaks &>/dev/null; then
     echo "  Scanning for unmasked secrets with betterleaks (preview)..."
-    local _m _rel _rule _ln _match _unmasked=0 _encrypted=0 _accepted=0 _scan_failed=false
+    local _m _rel _rule _ln _match _unmasked=0 _encrypted=0 _accepted=0 _gitconfig=0 _scan_failed=false
+    local -a _entries=()
     # Honor the vetted exceptions list in the preview exactly as the gate will.
     local _accept_file; _accept_file="$(mktemp "${TMPDIR:-/tmp}/sandbox-accept-XXXXXX")"
     vetted_accepted_fingerprints "${workspace}" > "${_accept_file}" 2>/dev/null || true
@@ -1601,7 +1602,12 @@ cmd_check() {
         (( _accepted++ )) || true
       elif [[ "${_m}" == "no" || "${_m}" == "gitconfig" ]]; then
         (( _unmasked++ )) || true
-        echo "  UNMASKED: ${_rel}  [${_rule}, line ${_ln}]"
+        echo "  UNMASKED: ${_rel}:${_rule}:${_ln}"
+        if [[ "${_m}" == "no" ]]; then
+          _entries+=("${workspace}"$'\t'"${_rel}"$'\t'"${_rule}"$'\t'"${_ln}"$'\t'"${_match}")
+        else
+          (( _gitconfig++ )) || true
+        fi
       fi
     done < <(scan_repo_secrets "${workspace}" "${_accept_file}")
     rm -f "${_accept_file}"
@@ -1615,7 +1621,17 @@ cmd_check() {
       echo "  WARN: betterleaks scan failed; 'sandbox run' would refuse to launch (fail closed)."
     elif [[ "${_unmasked}" -gt 0 ]]; then
       echo "  ${_unmasked} unmasked secret(s) would block 'sandbox run'."
-      echo "  Mask them: sandbox mask add --repo ${workspace} <RELPATH>..."
+      if [[ "${#_entries[@]}" -gt 0 ]]; then
+        echo "  Mask them:"
+        _print_mask_add_commands "${_entries[@]}" 2>&1
+        echo "  Or record reviewed false positives as exceptions (honored once the"
+        echo "  repo is vetted — 'sandbox vet'):"
+        _print_exceptions_add_commands "${_entries[@]}" 2>&1
+      fi
+      if [[ "${_gitconfig}" -gt 0 ]]; then
+        echo "  .git/config finding(s) cannot be masked; scrub the credential instead:"
+        echo "        git -C ${workspace} remote set-url origin <https-url-without-credentials>"
+      fi
     else
       echo "  betterleaks: no unmasked secrets."
     fi
