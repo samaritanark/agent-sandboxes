@@ -19,3 +19,34 @@
 # Left at `advisory` here, which matches the org default (a no-op that documents
 # intent). Change to `required` to enforce, or delete this file to say nothing.
 vetting: advisory
+
+# trusted_inference_endpoints: the model endpoints trusted to receive
+# secret-bearing prompts. This is a GRANT, not a relaxation: its only effect is
+# to downgrade the workspace secret gate from a hard refusal to a single
+# interactive confirmation when a session's inference endpoint is on this list.
+# Everything the agent reads flows to its model endpoint, so an internal
+# endpoint keeps that data inside your trust boundary while an external one
+# exports it — hence secrets are tolerable to an internal model but not an
+# external one.
+#
+# The gate still SCANS and still SURFACES every finding; a trusted endpoint only
+# changes the verdict from "refuse" to "ask". With no interactive terminal
+# (CI/headless) the gate fails closed and refuses — use
+# --i-accept-unmasked-secrets to consent non-interactively. A trusted endpoint
+# closes only the model-exfil channel; the agent can still act on a secret or
+# leak it via shell egress, which is why a human confirms rather than the
+# launch passing silently.
+#
+# Like the vetting trust root, this is deliberately OVERLAY-only: it cannot be
+# set from a repo-local or per-user config, because the party the gate guards
+# against (whoever points the agent at an endpoint) must not be able to declare
+# their own endpoint trusted. Match is on the exact bare host — no wildcards (a
+# loose match on the destination the whole prompt flows to is exactly where a
+# subdomain takeover or DNS rebind would masquerade), no port (a listed host is
+# trusted on any port). Today only the opencode agent has a caller-chosen
+# endpoint (OPENCODE_BASE_URL); the others always use their vendor API and are
+# never on this list. Absent/empty ⇒ no endpoint is trusted (feature off).
+#
+# trusted_inference_endpoints:
+#   - vllm.internal.example.org
+#   - llm.corp.example.org

@@ -116,6 +116,18 @@ allow:
 Full workflow, hand-authoring, and how this compares to an operator-wide
 `.betterleaksignore` baseline: [Accepting secret-gate false positives](../how-to/secret-exceptions.md).
 
+A reviewed false positive is one lever; a real secret plus a **trusted internal
+model** is the other. Everything the agent reads flows to its model endpoint, so
+that endpoint is the system's most sensitive egress destination — an internal
+model keeps the data in-boundary while an external one exports it. When a
+session's endpoint is on the overlay's `trusted_inference_endpoints:` list, the
+gate still scans and still shows every finding, but a would-be block becomes a
+single interactive confirmation (and fails closed with no TTY, since there is no
+one to ask). The confirmation is deliberate because a trusted endpoint closes
+only the model channel — the agent can still act on a secret or leak it via shell
+egress — so a human decides rather than the launch passing silently. See
+[Trusted internal model endpoints](../how-to/secret-exceptions.md#trusted-internal-model-endpoints-a-different-lever).
+
 ## Dependency-tree exclusion
 
 On large, deep repositories the workspace scan can spend most of its time

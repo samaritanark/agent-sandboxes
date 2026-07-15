@@ -130,21 +130,45 @@ EOF
       # endpoint hostname extracted from OPENCODE_BASE_URL (e.g. an OpenAI
       # proxy, an internal vLLM/Ollama instance, or api.openai.com itself
       # — whichever the operator has chosen to route through).
-      local base_url="${OPENCODE_BASE_URL:-}"
-      if [[ -z "${base_url}" ]]; then
+      local host
+      host="$(resolve_inference_endpoint opencode)"
+      if [[ -z "${host}" ]]; then
         echo "ERROR: OPENCODE_BASE_URL not set in host environment." >&2
         echo "  Set it to the URL of an OpenAI-compatible endpoint." >&2
         exit 1
       fi
-      local host="${base_url#*://}"
-      host="${host%%/*}"
-      host="${host%%:*}"
       echo "${host}"
       ;;
     *)
       echo "ERROR: Unknown agent: ${agent}" >&2
       exit 1
       ;;
+  esac
+}
+
+# resolve_inference_endpoint <agent> — print the bare hostname of the model
+# inference endpoint this agent talks to, or NOTHING if the agent uses a fixed
+# vendor API (claude/codex/grok) or the endpoint is unconfigured. Unlike
+# get_agent_domains this is PURE: it never errors or exits, so callers can probe
+# an endpoint's identity without committing to a launch. An empty result means
+# "no caller-chosen endpoint", which callers treat as untrusted.
+#
+# Today only opencode has an operator-chosen endpoint (OPENCODE_BASE_URL). The
+# scheme, path, and port are stripped so the result is the same bare-host form
+# the egress allowlist uses and that inference_endpoint_is_trusted matches
+# against the overlay's trusted_inference_endpoints list.
+resolve_inference_endpoint() {
+  local agent="$1"
+  case "${agent}" in
+    opencode)
+      local base_url="${OPENCODE_BASE_URL:-}"
+      [[ -n "${base_url}" ]] || return 0
+      local host="${base_url#*://}"
+      host="${host%%/*}"
+      host="${host%%:*}"
+      echo "${host}"
+      ;;
+    *) return 0 ;;
   esac
 }
 

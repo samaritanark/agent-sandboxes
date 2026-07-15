@@ -272,6 +272,40 @@ check_egress_target_not_blocked() {
   fi
 }
 
+# inference_endpoint_is_trusted <host> — true if <host> exactly matches an entry
+# in the team overlay's `trusted_inference_endpoints:` list. That list is an
+# operator/overlay-owned GRANT naming the internal model endpoints trusted to
+# receive secret-bearing prompts; its ONLY effect is to downgrade the workspace
+# secret gate from a hard refusal to an interactive confirmation (see
+# secret_gate_repos). Nothing else keys on it, and it never relaxes any other
+# control — a trusted endpoint does not touch the vetting posture or the block
+# list.
+#
+# Deliberately overlay-only: like the vetting posture (resolve_vetting_posture)
+# the trust root is operator-side and cannot be asserted from a repo-local or
+# per-user config — otherwise the party the gate protects against (whoever sets
+# OPENCODE_BASE_URL) could also self-declare their endpoint trusted. An empty or
+# absent list means no endpoint is ever trusted, so the gate keeps its hard-block
+# default and this feature is simply off.
+#
+# Matching is on the bare host (no wildcards, no port), consistent with
+# resolve_inference_endpoint and the egress allowlist. Wildcards are refused by
+# construction here: a loose match on the destination the whole prompt flows to
+# is exactly where a subdomain takeover or DNS rebind would masquerade as
+# trusted. A listed host is trusted on any port.
+inference_endpoint_is_trusted() {
+  local host="$1"
+  [[ -n "${host}" ]] || return 1
+  local overlay
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] || return 1
+  local entry
+  while IFS= read -r entry; do
+    [[ "${entry}" == "${host}" ]] && return 0
+  done < <(extract_yaml_list_from_file "${overlay}/config.yaml" trusted_inference_endpoints)
+  return 1
+}
+
 # check_no_privileged_flags — ensure no dangerous kubectl/container flags are present
 check_no_privileged_flags() {
   local manifest="$1"
