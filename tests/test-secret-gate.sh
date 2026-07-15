@@ -1305,6 +1305,18 @@ test_inference_endpoint_trust() {
   eq "claude has no caller-chosen endpoint" "" \
      "$(resolve_inference_endpoint claude)"
 
+  # Userinfo must not spoof the host: the real host after '@' is what resolves,
+  # never the userinfo before it, so a crafted URL cannot match a trusted host
+  # while routing elsewhere.
+  eq "userinfo does not spoof the host" "evil.com" \
+     "$(OPENCODE_BASE_URL='https://vllm.internal:x@evil.com/v1' resolve_inference_endpoint opencode)"
+  eq "legit userinfo resolves to real host" "vllm.internal" \
+     "$(OPENCODE_BASE_URL='https://user:pass@vllm.internal:8000/v1' resolve_inference_endpoint opencode)"
+  eq "path-embedded @ does not truncate host" "api.openai.com" \
+     "$(OPENCODE_BASE_URL='https://api.openai.com/v1/@model' resolve_inference_endpoint opencode)"
+  eq "userinfo with empty host resolves empty (fail closed)" "" \
+     "$(OPENCODE_BASE_URL='https://user@/v1' resolve_inference_endpoint opencode)"
+
   # Overlay trust list: exact-match membership.
   local overlay="${TEST_DIR}/trust-overlay"
   mkdir -p "${overlay}"

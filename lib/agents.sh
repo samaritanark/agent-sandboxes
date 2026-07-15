@@ -133,8 +133,14 @@ EOF
       local host
       host="$(resolve_inference_endpoint opencode)"
       if [[ -z "${host}" ]]; then
-        echo "ERROR: OPENCODE_BASE_URL not set in host environment." >&2
-        echo "  Set it to the URL of an OpenAI-compatible endpoint." >&2
+        if [[ -n "${OPENCODE_BASE_URL:-}" ]]; then
+          echo "ERROR: OPENCODE_BASE_URL ('${OPENCODE_BASE_URL}') has no host." >&2
+          echo "  Set it to the full URL of an OpenAI-compatible endpoint, e.g." >&2
+          echo "  https://api.openai.com/v1 or https://vllm.internal:8000/v1." >&2
+        else
+          echo "ERROR: OPENCODE_BASE_URL not set in host environment." >&2
+          echo "  Set it to the URL of an OpenAI-compatible endpoint." >&2
+        fi
         exit 1
       fi
       echo "${host}"
@@ -154,9 +160,18 @@ EOF
 # "no caller-chosen endpoint", which callers treat as untrusted.
 #
 # Today only opencode has an operator-chosen endpoint (OPENCODE_BASE_URL). The
-# scheme, path, and port are stripped so the result is the same bare-host form
-# the egress allowlist uses and that inference_endpoint_is_trusted matches
-# against the overlay's trusted_inference_endpoints list.
+# scheme, userinfo, path, and port are stripped so the result is the same
+# bare-host form the egress allowlist uses and that inference_endpoint_is_trusted
+# matches against the overlay's trusted_inference_endpoints list.
+#
+# Userinfo (`user:pass@`) MUST be stripped before the port: the port strip cuts
+# at the first colon, which in `user:pass@host` is the userinfo separator, not
+# the port. Without the `##*@` step a URL like `https://trusted:x@evil.com/v1`
+# would resolve to `trusted` — matching the trusted list while the client dials
+# evil.com. Path is dropped first so an `@` embedded in the path can't be
+# mistaken for a userinfo separator. A URL with no host after the userinfo
+# (`https://user@/v1`) resolves to empty, which callers treat as untrusted /
+# unconfigured (fail closed).
 resolve_inference_endpoint() {
   local agent="$1"
   case "${agent}" in
@@ -164,8 +179,9 @@ resolve_inference_endpoint() {
       local base_url="${OPENCODE_BASE_URL:-}"
       [[ -n "${base_url}" ]] || return 0
       local host="${base_url#*://}"
-      host="${host%%/*}"
-      host="${host%%:*}"
+      host="${host%%/*}"      # drop path
+      host="${host##*@}"      # drop userinfo (before the port strip below)
+      host="${host%%:*}"      # drop port
       echo "${host}"
       ;;
     *) return 0 ;;

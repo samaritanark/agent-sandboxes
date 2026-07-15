@@ -249,11 +249,20 @@ on it, or leak it via shell egress to an allowed domain — so a human makes the
 call with eyes open, rather than the launch passing silently.
 
 Configuration lives in the [team overlay](profiles-and-overlays.md)'s
-`config.yaml`, never in a repo-local or per-user config — otherwise whoever points
-the agent at an endpoint could declare their own endpoint trusted. Match is on the
-exact bare host (no wildcards, no port). Today only the `opencode` agent has a
-caller-chosen endpoint (`OPENCODE_BASE_URL`); the other agents always use their
-vendor API and are never on the list.
+`config.yaml` — an operator-side input, selected via `SANDBOX_OVERLAY` or your
+`~/.sandbox/config.yaml`, and **not** read from a repo-local
+`<repo>/.sandbox/config.yaml`. That is the boundary that matters: the repo and
+the in-sandbox agent — the party the secret gate exists to contain — cannot add a
+trusted endpoint or point the agent at one, because they can write neither the
+operator's overlay/config nor the launch environment. It does **not** restrict
+the launching operator, who selects the overlay and sets `OPENCODE_BASE_URL`;
+that operator already controls the gate outright (`--i-accept-unmasked-secrets`,
+or an overlay `.betterleaksignore` baseline), so for them the list only records
+intent rather than granting new power. (Unlike `accepted_secrets:` above, the
+trust list is unsigned operator config, not bound to a vetting signature.) Match
+is on the exact bare host (no wildcards, no port). Today only the `opencode`
+agent has a caller-chosen endpoint (`OPENCODE_BASE_URL`); the other agents always
+use their vendor API and are never on the list.
 
 ```yaml
 # <overlay>/config.yaml

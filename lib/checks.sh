@@ -281,12 +281,22 @@ check_egress_target_not_blocked() {
 # control — a trusted endpoint does not touch the vetting posture or the block
 # list.
 #
-# Deliberately overlay-only: like the vetting posture (resolve_vetting_posture)
-# the trust root is operator-side and cannot be asserted from a repo-local or
-# per-user config — otherwise the party the gate protects against (whoever sets
-# OPENCODE_BASE_URL) could also self-declare their endpoint trusted. An empty or
-# absent list means no endpoint is ever trusted, so the gate keeps its hard-block
-# default and this feature is simply off.
+# Operator-side input, not attacker-controlled. The list is read only from the
+# active overlay's config.yaml — selected via $SANDBOX_OVERLAY or the operator's
+# ~/.sandbox/config.yaml (resolve_overlay_path) — and never from a repo-local
+# <repo>/.sandbox/config.yaml. That is the boundary this enforces: the repo and
+# the in-sandbox agent, which are the adversary the secret gate exists to
+# contain, cannot add an entry or point the agent at a listed endpoint, because
+# they can write neither the operator's overlay/config nor the launch
+# environment. It does NOT constrain the launching operator, who selects the
+# overlay and sets OPENCODE_BASE_URL: that operator already controls the gate
+# outright (--i-accept-unmasked-secrets, and the overlay's own .betterleaksignore
+# baseline / leakscan_extra_dep_dirs), so a self-declared trusted endpoint grants
+# them no capability they lacked — it only records intent. (Note this is a weaker
+# guarantee than the signature-anchored accepted_secrets list, which binds to a
+# vetting signature over the tree; the trust list is unsigned operator config.)
+# An empty or absent list means no endpoint is ever trusted, so the gate keeps
+# its hard-block default and this feature is simply off.
 #
 # Matching is on the bare host (no wildcards, no port), consistent with
 # resolve_inference_endpoint and the egress allowlist. Wildcards are refused by
