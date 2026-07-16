@@ -103,6 +103,21 @@ isn't configured yet, `vet` offers to set it up with your existing SSH key and
 prints the `allowed_signers` line a trust-root maintainer needs to enroll you —
 nothing private moves; enrollment is public keys only.
 
+**GPG-sign your commits?** Keep doing that. Attestations must be SSH-signed to
+verify against an `allowed_signers` trust root, and a GPG key id in
+`user.signingkey` would make SSH signing fail (`Couldn't load public key
+<id>`). Instead of touching git config, set an attestation-only key:
+
+```yaml
+# ~/.sandbox/config.yaml — used by `sandbox vet` and the launch-time attest,
+# never by git commit/tag signing outside the sandbox CLI
+vetting_signing_key: ~/.ssh/id_ed25519.pub
+```
+
+`vet` detects the OpenPGP case and offers to write this for you. The key is
+personal, so it lives in the user config only — an overlay cannot choose whose
+key an operator signs with.
+
 Check a repo's state without signing anything:
 
 ```bash

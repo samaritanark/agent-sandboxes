@@ -779,6 +779,58 @@ test_ssh_signingkey_mismatch() {
     || fail "signing_configured should be true for an existing key file"
 }
 
+###############################################################################
+# vetting_signing_key — an attestation-only SSH key that overrides git's
+# user.signingkey for vet (the GPG-commit-signer escape hatch). It must win
+# over a mismatched git key, be validated itself, and produce a verifiable
+# attestation without touching git config.
+###############################################################################
+test_vetting_signing_key_knob() {
+  [[ "${SSH_SIGNING}" -eq 1 ]] || { info "SSH signing unavailable — skipping signing-key knob test"; return 0; }
+  info "Testing vetting_signing_key (attestation-only key)..."
+  write_trust_config
+
+  state_of() {
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      _vetting_ssh_signingkey_state "$1"
+  }
+
+  local repo="${TEST_DIR}/knob-repo"
+  make_repo "${repo}"
+  # The Brian scenario: an OpenPGP key id in git config...
+  git -C "${repo}" config user.signingkey "DAC1371AD9A4D709"
+  eq "git GPG id alone -> mismatch" "mismatch" "$(state_of "${repo}")"
+
+  # ...and the knob pointing at a real SSH key wins without touching git.
+  printf 'vetting_signing_key: %s\n' "${TEST_DIR}/id.pub" >> "${USER_SANDBOX_CONFIG}"
+  eq "knob overrides mismatched git key" "ok" "$(state_of "${repo}")"
+
+  if ( GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+       vetting_attest_repo "${repo}" "vetted" "false" </dev/null >/dev/null 2>&1 ); then
+    pass "attest signs with the knob key despite the GPG git config"
+  else
+    fail "attest should succeed using vetting_signing_key"
+  fi
+  eq "knob-signed attestation verifies as vetted" "vetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+  eq "git user.signingkey untouched" "DAC1371AD9A4D709" "$(git -C "${repo}" config user.signingkey)"
+
+  # A bad knob value is its own state and a targeted attest hint.
+  write_trust_config
+  printf 'vetting_signing_key: %s/no-such-key.pub\n' "${TEST_DIR}" >> "${USER_SANDBOX_CONFIG}"
+  eq "bad knob -> knob-bad" "knob-bad" "$(state_of "${repo}")"
+  local repo2="${TEST_DIR}/knob-bad-repo"
+  make_repo "${repo2}"
+  local out=""
+  out="$( ( GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+            vetting_attest_repo "${repo2}" "vetted" "false" </dev/null 2>&1 ) || true )"
+  case "${out}" in
+    *"vetting_signing_key"*) pass "failed attest names the bad knob" ;;
+    *) fail "failed attest should name vetting_signing_key (got: ${out})" ;;
+  esac
+
+  write_trust_config
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -794,6 +846,7 @@ main() {
   test_gate_posture
   test_missing_trust_root_fails_closed
   test_ssh_signingkey_mismatch
+  test_vetting_signing_key_knob
   test_status_hermetic_against_fsmonitor
   test_status_hermetic_against_filter
   test_status_hermetic_against_equals_named_filter

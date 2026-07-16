@@ -143,6 +143,19 @@ vetting_trust_format() {
   case "${v}" in gpg|ssh) echo "${v}" ;; *) echo "ssh" ;; esac
 }
 
+# vetting_signing_key — an SSH key used to sign ATTESTATIONS only, overriding
+# git's user.signingkey for `sandbox vet` / the inline attest and nothing else.
+# This is the clean answer for operators who GPG-sign their commits: git config
+# stays untouched everywhere, and attestations are still SSH-signed so they
+# verify against the org's allowed_signers trust roots. Personal by nature, so
+# it is read from the USER config only — an overlay must never choose whose key
+# an operator signs with. Empty when unset; tilde-expanded.
+vetting_signing_key() {
+  local v=""
+  [[ -f "${USER_SANDBOX_CONFIG}" ]] && v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_signing_key)"
+  echo "${v/#\~/${HOME}}"
+}
+
 # _vetting_extract_signer <verify-output> <format> — pull the signer principal
 # out of `git tag -v` output. Best-effort; empty if it can't be parsed.
 _vetting_extract_signer() {
@@ -611,7 +624,16 @@ vetting_attest_repo() {
   gpg_bin="$(command -v gpg 2>/dev/null || command -v gpg2 2>/dev/null || echo "${false_bin}")"
   local -a gitopts=(-c "gpg.ssh.program=${ssh_keygen}" -c "gpg.program=${gpg_bin}" \
                     -c "gpg.x509.program=${false_bin}" -c gpg.ssh.defaultKeyCommand=)
-  [[ "${fmt}" == "ssh" ]] && gitopts+=(-c gpg.format=ssh)
+  # A configured vetting_signing_key: signs this attestation with that SSH key,
+  # leaving git's own user.signingkey (e.g. an OpenPGP commit-signing identity)
+  # untouched. Passed as -c so no repo-local user.signingkey can shadow it.
+  local vsk
+  vsk="$(vetting_signing_key)"
+  if [[ -n "${vsk}" ]]; then
+    gitopts+=(-c gpg.format=ssh -c "user.signingkey=${vsk}")
+  elif [[ "${fmt}" == "ssh" ]]; then
+    gitopts+=(-c gpg.format=ssh)
+  fi
 
   if _vetting_git "${real_repo}" "${gitopts[@]}" tag -s "${tag}" -m "${msg}"; then
     echo "  ${repo}: created signed attestation tag ${tag}"
@@ -621,40 +643,63 @@ vetting_attest_repo() {
     echo "ERROR: failed to create the signed tag. Check that your signing key is" >&2
     echo "       configured (git config user.signingkey; gpg.format matches your" >&2
     echo "       key type) and that its public key is in the trust root." >&2
-    if [[ "${fmt}" == "ssh" && "$(_vetting_ssh_signingkey_state "${real_repo}")" == "mismatch" ]]; then
+    local keystate
+    keystate="$(_vetting_ssh_signingkey_state "${real_repo}")"
+    if [[ "${keystate}" == "knob-bad" ]]; then
+      echo "" >&2
+      echo "       Likely cause: vetting_signing_key: in your ~/.sandbox/config.yaml" >&2
+      echo "       ('$(vetting_signing_key)') is not an SSH key or an existing key" >&2
+      echo "       file. Fix that config value; git config is not consulted while" >&2
+      echo "       it is set." >&2
+    elif [[ "${fmt}" == "ssh" && "${keystate}" == "mismatch" ]]; then
       local badkey
       badkey="$(_vetting_git "${real_repo}" config user.signingkey 2>/dev/null || true)"
       echo "" >&2
       echo "       Likely cause: user.signingkey ('${badkey}') is not an SSH key or" >&2
       echo "       key file — it looks like a GPG key id from OpenPGP commit signing." >&2
-      echo "       Attestations are SSH-signed here (ssh trust root). Fix it with:" >&2
-      echo "             git config --global gpg.format ssh" >&2
-      echo "             git config --global user.signingkey ~/.ssh/id_ed25519.pub" >&2
-      echo "       (or set both per-repo to leave global commit signing alone), or" >&2
-      echo "       run 'sandbox vet' interactively and let it fix this for you." >&2
+      echo "       Attestations are SSH-signed here (ssh trust root). Keep your GPG" >&2
+      echo "       commit signing and set a key for attestations only:" >&2
+      echo "             # ~/.sandbox/config.yaml" >&2
+      echo "             vetting_signing_key: ~/.ssh/id_ed25519.pub" >&2
+      echo "       (or switch git to SSH signing globally), or run 'sandbox vet'" >&2
+      echo "       interactively and let it set this up for you." >&2
     fi
     return 1
   fi
 }
 
-# _vetting_ssh_signingkey_state <repo> — classify user.signingkey for SSH
-# signing, which treats the value as a literal SSH public key or a path to a
-# key file. Prints one of:
+# _vetting_ssh_key_usable <value> — is a signingkey value usable for SSH
+# signing (a literal SSH public key, or a path to an existing key file)?
+_vetting_ssh_key_usable() {
+  local key="$1"
+  case "${key}" in
+    ssh-*|sk-ssh-*|ecdsa-sha2-*|key::*) return 0 ;;
+  esac
+  [[ -f "${key/#\~/${HOME}}" ]]
+}
+
+# _vetting_ssh_signingkey_state <repo> — classify the signing key vet would use
+# for SSH signing, which treats the value as a literal SSH public key or a path
+# to a key file. A configured vetting_signing_key: takes precedence over git's
+# user.signingkey (it exists precisely so the latter can stay OpenPGP). Prints:
 #   ok            usable for gpg.format=ssh
-#   unconfigured  no user.signingkey at all
-#   mismatch      set, but neither a literal SSH key nor an existing file —
-#                 typically a GPG key id left over from OpenPGP commit signing
-#                 (the exact shape of "Couldn't load public key <id>").
+#   unconfigured  no key configured anywhere
+#   mismatch      git user.signingkey set, but not usable for ssh — typically a
+#                 GPG key id from OpenPGP commit signing (the exact shape of
+#                 "Couldn't load public key <id>")
+#   knob-bad      vetting_signing_key: set but not usable — a config typo,
+#                 fix the config rather than git
 _vetting_ssh_signingkey_state() {
-  local repo="$1" real key
+  local repo="$1" real key vsk
+  vsk="$(vetting_signing_key)"
+  if [[ -n "${vsk}" ]]; then
+    if _vetting_ssh_key_usable "${vsk}"; then echo ok; else echo knob-bad; fi
+    return 0
+  fi
   real="$(cd "${repo}" 2>/dev/null && pwd -P)" || { echo unconfigured; return 0; }
   key="$(_vetting_git "${real}" config user.signingkey 2>/dev/null || true)"
   if [[ -z "${key}" ]]; then echo unconfigured; return 0; fi
-  case "${key}" in
-    ssh-*|sk-ssh-*|ecdsa-sha2-*|key::*) echo ok; return 0 ;;
-  esac
-  key="${key/#\~/${HOME}}"
-  if [[ -f "${key}" ]]; then echo ok; else echo mismatch; fi
+  if _vetting_ssh_key_usable "${key}"; then echo ok; else echo mismatch; fi
 }
 
 # _vetting_signing_configured <repo> — cheap heuristic for whether the operator
@@ -724,6 +769,14 @@ vetting_signing_setup_assist() {
   [[ "$(vetting_trust_format)" == "gpg" ]] && return 0
   state="$(_vetting_ssh_signingkey_state "${repo}")"
   [[ "${state}" == "ok" ]] && return 0
+
+  if [[ "${state}" == "knob-bad" ]]; then
+    echo "  vetting_signing_key: in your ~/.sandbox/config.yaml ('$(vetting_signing_key)')" >&2
+    echo "  is not an SSH key or an existing key file. Fix that config value; git" >&2
+    echo "  config is not consulted while it is set." >&2
+    return 1
+  fi
+
   [[ -t 0 && -t 1 ]] || return 0
 
   local -a candidates=()
@@ -741,6 +794,8 @@ vetting_signing_setup_assist() {
   local pick="${candidates[0]}" reply=""
   echo "" >&2
   if [[ "${state}" == "mismatch" ]]; then
+    # An active OpenPGP commit-signing identity: don't touch git at all — offer
+    # the attestation-only key instead.
     key="$(_vetting_git "${real}" config user.signingkey 2>/dev/null || true)"
     echo "  Your git user.signingkey ('${key}') is not an SSH key or key file — it" >&2
     echo "  looks like a GPG key id from OpenPGP commit signing. Attestations here are" >&2
@@ -748,26 +803,42 @@ vetting_signing_setup_assist() {
     echo "  reads user.signingkey as a key file path, so signing would fail with" >&2
     echo "  \"Couldn't load public key ${key}\"." >&2
     echo "" >&2
-    echo "  NOTE: switching is global git config — if you still GPG-sign commits with" >&2
-    echo "  that key, answer no and set the two keys per-repo instead (shown below)." >&2
+    echo "  Your git config can stay exactly as it is: vetting_signing_key: in" >&2
+    echo "  ~/.sandbox/config.yaml signs attestations (and only attestations) with an" >&2
+    echo "  SSH key, while your commits keep their OpenPGP signature." >&2
+    printf '  Set vetting_signing_key: %s? [y/N] ' "${pick}" >&2
+    read -r reply || true
+    if [[ ! "${reply}" =~ ^[Yy] ]]; then
+      echo "  Skipped. Either set it yourself:" >&2
+      echo "        # ~/.sandbox/config.yaml" >&2
+      echo "        vetting_signing_key: <path-to-your-key.pub>" >&2
+      echo "  or switch git to SSH signing (globally, or per-repo to leave your" >&2
+      echo "  global commit signing alone):" >&2
+      echo "        git config --global gpg.format ssh" >&2
+      echo "        git config --global user.signingkey <path-to-your-key.pub>" >&2
+      return 1
+    fi
+    upsert_yaml_scalar_in_file "${USER_SANDBOX_CONFIG}" vetting_signing_key "${pick}"
+    echo "  Configured: vetting_signing_key: ${pick} (in ${USER_SANDBOX_CONFIG});" >&2
+    echo "  your git signing config was not changed." >&2
   else
     echo "  git signing is not configured. Attestations are signed with your own SSH" >&2
     echo "  key — nothing is shared or fetched; verification uses public keys only." >&2
+    printf '  Configure git (globally) to sign with %s? [y/N] ' "${pick}" >&2
+    read -r reply || true
+    if [[ ! "${reply}" =~ ^[Yy] ]]; then
+      echo "  Skipped. Configure it manually to attest — globally:" >&2
+      echo "        git config --global gpg.format ssh" >&2
+      echo "        git config --global user.signingkey <path-to-your-key.pub>" >&2
+      echo "  or, to sign attestations only (leaving git config untouched):" >&2
+      echo "        # ~/.sandbox/config.yaml" >&2
+      echo "        vetting_signing_key: <path-to-your-key.pub>" >&2
+      return 1
+    fi
+    git config --global gpg.format ssh
+    git config --global user.signingkey "${pick}"
+    echo "  Configured: gpg.format=ssh, user.signingkey=${pick}" >&2
   fi
-  printf '  Configure git (globally) to sign with %s? [y/N] ' "${pick}" >&2
-  read -r reply || true
-  if [[ ! "${reply}" =~ ^[Yy] ]]; then
-    echo "  Skipped. Configure it manually to attest — globally:" >&2
-    echo "        git config --global gpg.format ssh" >&2
-    echo "        git config --global user.signingkey <path-to-your-key.pub>" >&2
-    echo "  or scoped to one repo (leaves your global commit signing alone):" >&2
-    echo "        git -C <repo> config gpg.format ssh" >&2
-    echo "        git -C <repo> config user.signingkey <path-to-your-key.pub>" >&2
-    return 1
-  fi
-  git config --global gpg.format ssh
-  git config --global user.signingkey "${pick}"
-  echo "  Configured: gpg.format=ssh, user.signingkey=${pick}" >&2
 
   local email keyline
   email="$(_vetting_git "${real}" config user.email 2>/dev/null || true)"

@@ -3175,6 +3175,11 @@ maintainer needs to enroll you. At launch time, 'sandbox run' makes the same
 offer inline when a required-but-unvetted repo would otherwise refuse and your
 signing identity is available.
 
+GPG-sign your commits? Set 'vetting_signing_key: <path-to-key.pub>' in
+~/.sandbox/config.yaml — attestations (and only attestations) are then signed
+with that SSH key, and your git signing config is never touched. 'vet' offers
+to set this up when it detects an OpenPGP user.signingkey.
+
 If the repo records secret exceptions ('sandbox exceptions'), signing blesses
 them: the secret gate honors that list only on a vetted repo, so before signing
 'vet' lists the finding(s) the agent would then be able to read and asks you to
