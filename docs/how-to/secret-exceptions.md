@@ -58,6 +58,12 @@ list. Those stay gated, which is correct: no one signed for them.
 
 ## The workflow
 
+> The vetting gate runs before the secret gate at launch, so on an unvetted
+> repo under `vetting: required` you'll meet the
+> [inline attest offer](vetting.md#attest-at-launch-authorized-signers) before
+> the output below. That ordering is what lets steps 4-5 collapse into a single
+> `sandbox run` for an authorized signer.
+
 ### 1. The gate flags a finding
 
 ```
@@ -149,6 +155,13 @@ In CI or any non-interactive context, pass `--yes` to acknowledge explicitly;
 without it (and without a terminal to prompt on) `vet` refuses rather than sign
 off unattended.
 
+An authorized signer doesn't need the separate `vet` step on an interactive
+launch: `sandbox run` offers the same attestation
+[inline](vetting.md#attest-at-launch-authorized-signers) when a required-but-
+unvetted repo would otherwise refuse — same signed tag, same acknowledgment
+prompt shown above — and, because vetting runs before the secret gate, the
+freshly blessed exceptions list is honored in that same launch.
+
 ### 5. The launch passes
 
 ```
@@ -183,9 +196,11 @@ Exceptions and [vetting](vetting.md) are one mechanism seen from two ends. A few
 consequences are worth making explicit:
 
 - **A trust root is required for exceptions to ever count.** "Vetted" means a
-  signed `agent-vetted/<sha>` tag verifies against your operator
-  [trust root](vetting.md#set-up-a-trust-root-one-time). With no trust root
-  configured, no repo is vetted, so no exception is ever honored.
+  signed `agent-vetted/<sha>` tag verifies against an operator-side
+  [trust root](vetting.md#set-up-a-trust-root) — your own file, or the reviewer
+  list a linked team overlay ships (they are a union; either verifying counts).
+  With no trust root available at all, no repo is vetted, so no exception is
+  ever honored.
 - **Posture and honoring are separate.** The `vetting:` posture
   (`off`/`advisory`/`required`) controls whether an *unvetted* repo may launch at
   all. Honoring a *vetted* repo's exceptions does not depend on posture — a valid
@@ -193,7 +208,8 @@ consequences are worth making explicit:
   carries a verifying tag has its exceptions honored; a repo without one simply
   has its list ignored.
 - **The overlay is where the authority is configured.** Teams typically ship the
-  `vetting:` posture and `vetting_trust_root:` in a
+  `vetting:` posture and the reviewer list itself (`vetting_trust_root:
+  allowed_signers`, a relative path resolved against the overlay root) in a
   [team overlay](profiles-and-overlays.md) (delivered via `sandbox link` or
   `SANDBOX_OVERLAY`). That is what decides whose signatures make a repo's
   exceptions count — set once for everyone, not per-developer.

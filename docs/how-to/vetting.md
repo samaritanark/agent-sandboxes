@@ -18,18 +18,37 @@ other guarantees apply. See PRINCIPLES.md ("Repo vetting").
 ## The trust model, in one paragraph
 
 The repo carries only the *artifact* — a signed tag named `agent-vetted/<sha>`.
-The *requirement* (is vetting enforced?) and the *trust root* (whose signatures
+The *requirement* (is vetting enforced?) and the *trust roots* (whose signatures
 count?) live operator-side, so nothing a workspace author can commit weakens the
-decision. Verification runs on the host, before the pod starts, against a signer
-list you control — never the ambient keyring. Freshness is strict: the tag must
+decision. Verification runs on the host, before the pod starts, against signer
+lists you control — never the ambient keyring. Freshness is strict: the tag must
 point at the current `HEAD`, and a dirty working tree is refused, because an
 attestation describes a specific commit rather than whatever is checked out.
 
-## Set up a trust root (one time)
+## Set up a trust root
 
-The default trust root is an SSH `allowed_signers` file at
-`~/.sandbox/vetting/allowed_signers`. Add one line per authorized reviewer —
-their principal (the email they tag with) and their public signing key:
+Two places can hold the reviewer list, and they are a **union** — a signature
+verifying against either one counts:
+
+**The team overlay (recommended).** An overlay can ship its reviewer list as a
+plain `allowed_signers` file in its own tree and point at it with a relative
+path in its `config.yaml`:
+
+```yaml
+# <overlay>/config.yaml — a relative path resolves against the overlay root
+vetting_trust_root: allowed_signers
+```
+
+Everyone who runs `sandbox link` gets the list; `sandbox link sync` — the
+deliberate, diff-showing step — is the only thing that updates it. There is no
+per-operator setup at all. Enrollment is a change to one committed file, and
+[`examples/overlay-template/gen-allowed-signers.sh`](../../examples/overlay-template/gen-allowed-signers.sh)
+can regenerate it from your git forge's `/<username>.keys` endpoints.
+
+**Your own file.** The operator-local root is an SSH `allowed_signers` file at
+`~/.sandbox/vetting/allowed_signers` (or wherever `vetting_trust_root:` in
+`~/.sandbox/config.yaml` points). It *adds to* an overlay-shipped list — useful
+for signers the team list doesn't carry, or when there is no overlay at all:
 
 ```bash
 mkdir -p ~/.sandbox/vetting
@@ -38,8 +57,11 @@ echo "reviewer@example.com ssh-ed25519 AAAAC3NzaC1lZDI1..." \
   >> ~/.sandbox/vetting/allowed_signers
 ```
 
-Prefer GnuPG? Set `vetting_trust_format: gpg` and point `vetting_trust_root:` at
-a GnuPG home directory that holds the reviewers' public keys.
+Both are operator-side inputs: the overlay is something you chose to link,
+pinned to a commit, and moved only by `link sync` — a workspace author can
+write to neither. Prefer GnuPG? Set `vetting_trust_format: gpg` and point
+`vetting_trust_root:` at a GnuPG home directory that holds the reviewers'
+public keys.
 
 ## Choose a posture
 
@@ -76,7 +98,25 @@ git -C ~/repos/app push origin agent-vetted/$(git -C ~/repos/app rev-parse HEAD)
 
 Pushing the tag lets other operators verify the same attestation. `sandbox vet`
 uses your own git signing configuration (`user.signingkey`, `gpg.format`); your
-public key must be in the trust root for the resulting tag to verify.
+public key must be in a trust root for the resulting tag to verify. If signing
+isn't configured yet, `vet` offers to set it up with your existing SSH key and
+prints the `allowed_signers` line a trust-root maintainer needs to enroll you —
+nothing private moves; enrollment is public keys only.
+
+**GPG-sign your commits?** Keep doing that. Attestations must be SSH-signed to
+verify against an `allowed_signers` trust root, and a GPG key id in
+`user.signingkey` would make SSH signing fail (`Couldn't load public key
+<id>`). Instead of touching git config, set an attestation-only key:
+
+```yaml
+# ~/.sandbox/config.yaml — used by `sandbox vet` and the launch-time attest,
+# never by git commit/tag signing outside the sandbox CLI
+vetting_signing_key: ~/.ssh/id_ed25519.pub
+```
+
+`vet` detects the OpenPGP case and offers to write this for you. The key is
+personal, so it lives in the user config only — an overlay cannot choose whose
+key an operator signs with.
 
 Check a repo's state without signing anything:
 
@@ -116,9 +156,36 @@ recorded as an "exception". Pass `--yes` to acknowledge non-interactively (e.g.
 in CI); without it, and with no terminal to prompt on, `vet` refuses rather than
 sign off unattended. A repo with no exceptions signs with no extra prompt.
 
+## Attest at launch (authorized signers)
+
+Repos don't hold still: every new commit — including one the agent itself made
+last session — stales the attestation. So when `required` would refuse an
+interactive launch and your signing identity is available, the gate offers the
+attestation inline instead of sending you away to run `sandbox vet` and retry:
+
+```
+  /home/you/repos/app is not vetted at HEAD 1ff36c4...
+  Your git signing key can attest it right now — the same signed sign-off
+  as 'sandbox vet', honored only if your key is in the trust root. Attest
+  only if you have reviewed what is at this HEAD.
+  Attest HEAD 1ff36c4... continue? [y/N]
+```
+
+Answering `y` is the full `sandbox vet` sign-off, not a shortcut past it: the
+same signed tag, the same [secret-exceptions acknowledgment](#acknowledging-secret-exceptions),
+and the signature is re-verified against the trust roots before the launch
+proceeds — if your key isn't enrolled, the tag is removed again and the launch
+is refused with enrollment guidance. Declining refuses the launch exactly as
+before. The offer only appears on an interactive terminal (CI keeps the hard
+refusal), only for a cleanly unvetted repo (a dirty tree must be committed
+first), and never touches an existing tag someone else created. Unlike
+`--i-accept-unvetted-repo`, saying `y` leaves a portable, signed attestation —
+accountability travels with the repo instead of a line in a local log.
+
 ## When a launch is refused
 
-Under `vetting: required`, an unvetted `--repo` stops the launch:
+Under `vetting: required`, an unvetted `--repo` stops the launch (after the
+inline offer, if one was available, was declined or unavailable):
 
 ```
 ERROR: vetting is required, but the following workspace(s) have no current,

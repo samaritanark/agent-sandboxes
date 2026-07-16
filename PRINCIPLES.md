@@ -261,7 +261,9 @@ Three things keep it honest:
 1. **The trust decision lives with the operator, not the repo.** The repo
    carries only the artifact — a signed git tag. Whether vetting is
    *required*, and *whose* signatures count, are operator-side settings
-   (`vetting:` and a signer trust root in `~/.sandbox/config.yaml`). Nothing
+   (`vetting:` and signer trust roots — the operator's own in
+   `~/.sandbox/config.yaml`, and/or a reviewer list shipped by a team overlay
+   the operator links and pins). Nothing
    a workspace author can commit weakens the gate, because a repo-resident
    flag would be a cooperative-behavior control, and no security property
    here depends on that (see Core principle 1). Verification runs host-side,

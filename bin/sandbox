@@ -817,6 +817,16 @@ cmd_run() {
       workspace_prescan "${_r}"
     done
     check_masking_paths "${opt_repos[@]}"
+    # Gate the launch on whether each workspace has been vetted for agent use.
+    # Posture (off/advisory/required) is operator-controlled; advisory only
+    # prints status, required refuses unless a signed attestation verifies at
+    # HEAD (offering an authorized signer an inline attest on an interactive
+    # terminal). --i-accept-unvetted-repo downgrades a required refusal to a
+    # warning. Runs BEFORE the secret gate deliberately: the secret gate honors
+    # a repo's committed accepted_secrets: exceptions only when the repo is
+    # vetted, so vetting-first lets an inline attest (which acknowledges those
+    # exceptions) take effect in the same launch instead of forcing a second run.
+    vetting_gate_repos "$(resolve_vetting_posture)" "${opt_accept_unvetted_repo}" "${opt_repos[@]}"
     # Gate the launch on secrets the mask would not hide. Fails closed if
     # betterleaks is absent; --i-accept-unmasked-secrets downgrades the
     # refusal to a printed warning. When this session's model inference
@@ -830,11 +840,6 @@ cmd_run() {
       _endpoint_trusted="true"
     fi
     secret_gate_repos "${opt_accept_unmasked_secrets}" "${_endpoint_trusted}" "${opt_repos[@]}"
-    # Gate the launch on whether each workspace has been vetted for agent use.
-    # Posture (off/advisory/required) is operator-controlled; advisory only
-    # prints status, required refuses unless a signed attestation verifies at
-    # HEAD. --i-accept-unvetted-repo downgrades a required refusal to a warning.
-    vetting_gate_repos "$(resolve_vetting_posture)" "${opt_accept_unvetted_repo}" "${opt_repos[@]}"
   fi
 
   ###########################################################################
@@ -3077,7 +3082,7 @@ cmd_exceptions() {
         any=true
         echo "  ${fp}"
       done < <(load_repo_accepted_secrets "${repo}")
-      [[ "${any}" == false ]] && echo "  (none)"
+      if [[ "${any}" == false ]]; then echo "  (none)"; fi
       ;;
     *)
       die "Unknown 'exceptions' subcommand: ${sub}. Run 'sandbox exceptions --help'."
@@ -3155,10 +3160,25 @@ consults this attestation before a Tier 2/3 launch: with 'vetting: required'
 (in ~/.sandbox/config.yaml or a team overlay) a repo without a current,
 verified attestation is refused.
 
-The signature is verified host-side against an operator-held trust root — an
-SSH allowed_signers file by default (vetting_trust_root:), or a GnuPG home when
-vetting_trust_format: gpg. The tag is named 'agent-vetted/<sha>'. A dirty
-working tree is refused: an attestation covers a commit, not uncommitted edits.
+The signature is verified host-side against operator-side trust roots — SSH
+allowed_signers files by default (vetting_trust_root:), or a GnuPG home when
+vetting_trust_format: gpg. A linked team overlay can ship the team's reviewer
+list (its config.yaml vetting_trust_root:, resolved relative to the overlay
+root), and your local ~/.sandbox/vetting/allowed_signers adds to it — a
+signature verifying against either counts. The tag is named
+'agent-vetted/<sha>'. A dirty working tree is refused: an attestation covers a
+commit, not uncommitted edits.
+
+First run: if git signing is not configured yet, 'vet' offers to set it up with
+your existing SSH key and prints the allowed_signers line a trust-root
+maintainer needs to enroll you. At launch time, 'sandbox run' makes the same
+offer inline when a required-but-unvetted repo would otherwise refuse and your
+signing identity is available.
+
+GPG-sign your commits? Set 'vetting_signing_key: <path-to-key.pub>' in
+~/.sandbox/config.yaml — attestations (and only attestations) are then signed
+with that SSH key, and your git signing config is never touched. 'vet' offers
+to set this up when it detects an OpenPGP user.signingkey.
 
 If the repo records secret exceptions ('sandbox exceptions'), signing blesses
 them: the secret gate honors that list only on a vetted repo, so before signing
@@ -3237,6 +3257,10 @@ cmd_vet() {
     esac
     return 0
   fi
+
+  # First-run convenience: offer to wire up SSH signing (and print the
+  # enrollment line) when no signing identity is configured yet.
+  vetting_signing_setup_assist "${repo}" || exit 1
 
   vetting_attest_repo "${repo}" "${msg}" "${assume_yes}"
 }

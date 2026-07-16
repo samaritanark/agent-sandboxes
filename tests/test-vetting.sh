@@ -580,6 +580,257 @@ EOF
     && pass "advisory proceeds without a trust root" || fail "advisory should proceed"
 }
 
+###############################################################################
+# Trust roots — overlay-shipped root (relative path resolves against the
+# overlay), union with the operator's local root, and none-at-all fails closed.
+###############################################################################
+test_trust_roots_overlay_and_union() {
+  [[ "${SSH_SIGNING}" -eq 1 ]] || { info "SSH signing unavailable — skipping trust-roots union test"; return 0; }
+  info "Testing overlay-shipped trust root and union semantics..."
+
+  # Overlay ships its reviewer list as a plain file in its own tree, referenced
+  # by a RELATIVE path — it must resolve against the overlay root.
+  local overlay="${TEST_DIR}/overlay-roots"
+  mkdir -p "${overlay}"
+  printf '%s %s\n' "${SIGNER_EMAIL}" "$(awk '{print $1" "$2}' "${TEST_DIR}/id.pub")" \
+    > "${overlay}/allowed_signers"
+  printf 'vetting_trust_root: allowed_signers\n' > "${overlay}/config.yaml"
+
+  # Local/user root: points at a file that does not exist.
+  cat > "${USER_SANDBOX_CONFIG}" <<EOF
+vetting_trust_root: ${TEST_DIR}/no-such-root
+vetting_trust_format: ssh
+EOF
+  export SANDBOX_OVERLAY="${overlay}"
+
+  local repo="${TEST_DIR}/roots-overlay"
+  make_repo "${repo}"
+  attest_repo "${repo}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; unset SANDBOX_OVERLAY; return 0; }
+  eq "overlay-relative trust root verifies" "vetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+
+  # Union: a signer only in the LOCAL root must also count while the overlay
+  # root is active (the local file adds to the team list, not replaced by it).
+  printf 'untrusted@sandbox.test %s\n' "$(awk '{print $1" "$2}' "${TEST_DIR}/id-untrusted.pub")" \
+    > "${TEST_DIR}/local-extra-signers"
+  cat > "${USER_SANDBOX_CONFIG}" <<EOF
+vetting_trust_root: ${TEST_DIR}/local-extra-signers
+vetting_trust_format: ssh
+EOF
+  local repo2="${TEST_DIR}/roots-local"
+  make_repo "${repo2}"
+  attest_repo "${repo2}" "${TEST_DIR}/id-untrusted" || { warn "signing failed; skipping"; unset SANDBOX_OVERLAY; return 0; }
+  eq "local-root signer counts alongside overlay" "vetted" "$(vetting_status_repo "${repo2}" | cut -f1)"
+  eq "overlay-root signer still counts too" "vetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+
+  # No root ANYWHERE (overlay ships none, local missing): required fails closed
+  # even with the override.
+  local overlay2="${TEST_DIR}/overlay-norootskey"
+  mkdir -p "${overlay2}"
+  printf 'vetting: required\n' > "${overlay2}/config.yaml"
+  cat > "${USER_SANDBOX_CONFIG}" <<EOF
+vetting_trust_root: ${TEST_DIR}/no-such-root
+vetting_trust_format: ssh
+EOF
+  export SANDBOX_OVERLAY="${overlay2}"
+  if ( vetting_gate_repos "required" "true" "${repo}" >/dev/null 2>&1 ); then
+    fail "no trust root anywhere must fail closed despite override"
+  fi
+  pass "no trust root anywhere fails closed despite override"
+
+  unset SANDBOX_OVERLAY
+}
+
+###############################################################################
+# Inline attest offer — non-TTY launches never prompt (straight refusal); on a
+# TTY, decline refuses with no tag, accept attests+verifies and the gate passes.
+# The TTY cases need script(1) with GNU-style -qec; skip gracefully without it.
+###############################################################################
+test_gate_inline_attest() {
+  [[ "${SSH_SIGNING}" -eq 1 ]] || { info "SSH signing unavailable — skipping inline-attest test"; return 0; }
+  info "Testing inline attest offer at the gate..."
+  write_trust_config
+
+  local repo="${TEST_DIR}/inline-repo"
+  make_repo "${repo}"
+  git -C "${repo}" config gpg.format ssh
+  git -C "${repo}" config user.signingkey "${TEST_DIR}/id"
+  local sha; sha="$(git -C "${repo}" rev-parse HEAD)"
+
+  # Non-TTY: no prompt text, straight refusal, no tag.
+  local out=""
+  out="$( ( vetting_gate_repos "required" "false" "${repo}" </dev/null 2>&1 ) || true )"
+  case "${out}" in
+    *"Attest HEAD"*) fail "non-TTY launch must not offer an inline attest" ;;
+    *) pass "non-TTY launch does not prompt" ;;
+  esac
+  git -C "${repo}" rev-parse -q --verify "refs/tags/agent-vetted/${sha}" >/dev/null 2>&1 \
+    && fail "non-TTY refusal must not create a tag" \
+    || pass "non-TTY refusal leaves no tag"
+
+  # TTY cases need a pty.
+  if ! command -v script >/dev/null 2>&1 || ! script -qec true /dev/null >/dev/null 2>&1; then
+    warn "script(1) with -qec unavailable — skipping interactive inline-attest cases"
+    return 0
+  fi
+
+  local runner="${TEST_DIR}/gate-runner.sh"
+  cat > "${runner}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export USER_SANDBOX_CONFIG="${USER_SANDBOX_CONFIG}"
+unset SANDBOX_OVERLAY
+source "${SANDBOX_ROOT}/lib/platform.sh"
+source "${SANDBOX_ROOT}/lib/config.sh"
+source "${SANDBOX_ROOT}/lib/profile.sh"
+source "${SANDBOX_ROOT}/lib/filesystem.sh"
+source "${SANDBOX_ROOT}/lib/vetting.sh"
+vetting_gate_repos "required" "false" "\$1"
+EOF
+
+  # Decline: refusal (non-zero), no tag.
+  if printf 'n\n' | script -qec "bash ${runner} ${repo}" /dev/null >/dev/null 2>&1; then
+    fail "declining the inline attest must still refuse the launch"
+  fi
+  git -C "${repo}" rev-parse -q --verify "refs/tags/agent-vetted/${sha}" >/dev/null 2>&1 \
+    && fail "declined offer must not create a tag" \
+    || pass "declined inline attest refuses and leaves no tag"
+
+  # Accept: gate passes, verified tag exists.
+  if printf 'y\n' | script -qec "bash ${runner} ${repo}" /dev/null >/dev/null 2>&1; then
+    pass "accepted inline attest passes the gate"
+  else
+    fail "accepting the inline attest should pass the gate"
+  fi
+  eq "repo is vetted after inline attest" "vetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+
+  # Not-enrolled signer: attest succeeds but cannot verify → tag rolled back,
+  # launch refused. Point the trust root at a list without our key.
+  local repo3="${TEST_DIR}/inline-notenrolled"
+  make_repo "${repo3}"
+  git -C "${repo3}" config gpg.format ssh
+  git -C "${repo3}" config user.signingkey "${TEST_DIR}/id"
+  local sha3; sha3="$(git -C "${repo3}" rev-parse HEAD)"
+  printf 'someone-else@sandbox.test %s\n' "$(awk '{print $1" "$2}' "${TEST_DIR}/id-untrusted.pub")" \
+    > "${TEST_DIR}/other-signers"
+  cat > "${USER_SANDBOX_CONFIG}" <<EOF
+vetting_trust_root: ${TEST_DIR}/other-signers
+vetting_trust_format: ssh
+EOF
+  if printf 'y\n' | script -qec "bash ${runner} ${repo3}" /dev/null >/dev/null 2>&1; then
+    fail "an unenrolled signer's inline attest must not pass the gate"
+  fi
+  git -C "${repo3}" rev-parse -q --verify "refs/tags/agent-vetted/${sha3}" >/dev/null 2>&1 \
+    && fail "unverifiable inline attestation must be rolled back" \
+    || pass "unenrolled signer: attest rolled back, launch refused"
+
+  write_trust_config
+}
+
+###############################################################################
+# SSH signing-key mismatch — a GPG key id left in user.signingkey (the classic
+# legacy-config case) must be classified, must produce the targeted hint on a
+# failed attest, and must suppress the inline attest offer.
+###############################################################################
+test_ssh_signingkey_mismatch() {
+  info "Testing GPG-keyid-in-user.signingkey detection..."
+  write_trust_config
+
+  # Null the global/system git scopes so the developer's own signing config
+  # can't leak into the classification under test (repo-local config only).
+  # An env prefix on the function call propagates to the git children it runs.
+  state_of() {
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      _vetting_ssh_signingkey_state "$1"
+  }
+
+  local repo="${TEST_DIR}/mismatch-repo"
+  make_repo "${repo}"
+
+  eq "no signingkey -> unconfigured" "unconfigured" "$(state_of "${repo}")"
+
+  git -C "${repo}" config user.signingkey "DAC1371AD9A4D709"
+  eq "GPG key id -> mismatch" "mismatch" "$(state_of "${repo}")"
+
+  git -C "${repo}" config user.signingkey "${TEST_DIR}/id.pub"
+  eq "existing key file -> ok" "ok" "$(state_of "${repo}")"
+
+  git -C "${repo}" config user.signingkey "ssh-ed25519 AAAATESTLITERALKEY comment"
+  eq "literal ssh key -> ok" "ok" "$(state_of "${repo}")"
+
+  # Failed attest with a mismatched key prints the targeted hint.
+  git -C "${repo}" config user.signingkey "DAC1371AD9A4D709"
+  local out=""
+  out="$( ( GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+            vetting_attest_repo "${repo}" "vetted" "false" </dev/null 2>&1 ) || true )"
+  case "${out}" in
+    *"looks like a GPG key id"*) pass "failed attest names the GPG-keyid cause" ;;
+    *) fail "failed attest should include the GPG-keyid hint (got: ${out})" ;;
+  esac
+
+  # The inline-offer gate condition is false for a mismatched key (an offer
+  # would just fail after 'y') and true again once the key is usable.
+  if GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null _vetting_signing_configured "${repo}"; then
+    fail "signing_configured must be false for an unusable (GPG id) key in ssh mode"
+  fi
+  pass "inline offer condition false for an unusable signing key"
+  git -C "${repo}" config user.signingkey "${TEST_DIR}/id.pub"
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null _vetting_signing_configured "${repo}" \
+    && pass "inline offer condition true for a usable key file" \
+    || fail "signing_configured should be true for an existing key file"
+}
+
+###############################################################################
+# vetting_signing_key — an attestation-only SSH key that overrides git's
+# user.signingkey for vet (the GPG-commit-signer escape hatch). It must win
+# over a mismatched git key, be validated itself, and produce a verifiable
+# attestation without touching git config.
+###############################################################################
+test_vetting_signing_key_knob() {
+  [[ "${SSH_SIGNING}" -eq 1 ]] || { info "SSH signing unavailable — skipping signing-key knob test"; return 0; }
+  info "Testing vetting_signing_key (attestation-only key)..."
+  write_trust_config
+
+  state_of() {
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      _vetting_ssh_signingkey_state "$1"
+  }
+
+  local repo="${TEST_DIR}/knob-repo"
+  make_repo "${repo}"
+  # The Brian scenario: an OpenPGP key id in git config...
+  git -C "${repo}" config user.signingkey "DAC1371AD9A4D709"
+  eq "git GPG id alone -> mismatch" "mismatch" "$(state_of "${repo}")"
+
+  # ...and the knob pointing at a real SSH key wins without touching git.
+  printf 'vetting_signing_key: %s\n' "${TEST_DIR}/id.pub" >> "${USER_SANDBOX_CONFIG}"
+  eq "knob overrides mismatched git key" "ok" "$(state_of "${repo}")"
+
+  if ( GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+       vetting_attest_repo "${repo}" "vetted" "false" </dev/null >/dev/null 2>&1 ); then
+    pass "attest signs with the knob key despite the GPG git config"
+  else
+    fail "attest should succeed using vetting_signing_key"
+  fi
+  eq "knob-signed attestation verifies as vetted" "vetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+  eq "git user.signingkey untouched" "DAC1371AD9A4D709" "$(git -C "${repo}" config user.signingkey)"
+
+  # A bad knob value is its own state and a targeted attest hint.
+  write_trust_config
+  printf 'vetting_signing_key: %s/no-such-key.pub\n' "${TEST_DIR}" >> "${USER_SANDBOX_CONFIG}"
+  eq "bad knob -> knob-bad" "knob-bad" "$(state_of "${repo}")"
+  local repo2="${TEST_DIR}/knob-bad-repo"
+  make_repo "${repo2}"
+  local out=""
+  out="$( ( GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+            vetting_attest_repo "${repo2}" "vetted" "false" </dev/null 2>&1 ) || true )"
+  case "${out}" in
+    *"vetting_signing_key"*) pass "failed attest names the bad knob" ;;
+    *) fail "failed attest should name vetting_signing_key (got: ${out})" ;;
+  esac
+
+  write_trust_config
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -594,6 +845,8 @@ main() {
   test_status_classification
   test_gate_posture
   test_missing_trust_root_fails_closed
+  test_ssh_signingkey_mismatch
+  test_vetting_signing_key_knob
   test_status_hermetic_against_fsmonitor
   test_status_hermetic_against_filter
   test_status_hermetic_against_equals_named_filter
@@ -606,6 +859,8 @@ main() {
     test_status_vetted
     test_gate_required_passes_when_vetted
     test_verify_hermetic_against_program_hijack
+    test_trust_roots_overlay_and_union
+    test_gate_inline_attest
   else
     echo "SKIP: signature cases (test_status_vetted, test_gate_required_passes_when_vetted, test_verify_hermetic_against_program_hijack) — SSH signing unavailable"
   fi

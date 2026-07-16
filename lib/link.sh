@@ -310,7 +310,8 @@ link_validate_shape() {
     base="$(basename "${entry}")"
     case "${base}" in
       profiles|catalogue|extra-ca-certs|blocked-destinations.yaml|config.yaml|\
-      README.md|GOVERNANCE.md|README|LICENSE|NOTICE) ;;
+      README.md|GOVERNANCE.md|README|LICENSE|NOTICE|docs|\
+      allowed_signers|signers.txt|gen-allowed-signers.sh|.betterleaksignore|.gitleaksignore) ;;
       *) warn "overlay ships an unrecognized top-level entry: ${base} (ignored by the CLI)" ;;
     esac
   done
@@ -334,7 +335,24 @@ link_validate_shape() {
     done
   fi
 
-  echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )$( [[ -n "${overlay_vetting}" ]] && echo ", vetting: ${overlay_vetting}" )" >&2
+  # Confirm a shipped trust root the same way the posture is confirmed: it is
+  # consumed at run time (lib/vetting.sh vetting_trust_roots), and the signer
+  # count makes an empty or unreadable list visible at link time.
+  local overlay_troot="" troot_note=""
+  if [[ -f "${dir}/config.yaml" ]]; then
+    overlay_troot="$(extract_yaml_scalar_from_file "${dir}/config.yaml" vetting_trust_root)"
+  fi
+  if [[ -n "${overlay_troot}" ]]; then
+    local troot_path="${overlay_troot/#\~/${HOME}}"
+    [[ "${troot_path}" != /* ]] && troot_path="${dir}/${troot_path}"
+    if [[ -f "${troot_path}" ]]; then
+      troot_note=", trust root: ${overlay_troot} ($(grep -Ecv '^[[:space:]]*($|#)' "${troot_path}" 2>/dev/null || echo 0) signer(s))"
+    else
+      troot_note=", trust root: ${overlay_troot} (MISSING)"
+      warn "overlay config.yaml names vetting_trust_root: ${overlay_troot}, but no such file ships in the overlay."
+    fi
+  fi
+  echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )$( [[ -n "${overlay_vetting}" ]] && echo ", vetting: ${overlay_vetting}" )${troot_note}" >&2
   return 0
 }
 
