@@ -827,12 +827,14 @@ leakscan_fingerprints_for() {
 }
 
 # _print_unmasked_findings <entry>... — render "repo<TAB>relpath<TAB>rule<TAB>
-# line<TAB>match" entries to stderr as a human-readable list.
+# line<TAB>match" entries to stderr as a human-readable list. Each finding is
+# printed as RELPATH:RULE:LINE — the exact spec `sandbox exceptions add`
+# accepts, so a reviewed false positive can be copy-pasted straight into it.
 _print_unmasked_findings() {
   local entry repo relpath ruleid ln match
   for entry in "$@"; do
     IFS=$'\t' read -r repo relpath ruleid ln match <<<"${entry}"
-    echo "    ${relpath}  [${ruleid}, line ${ln}]" >&2
+    echo "    ${relpath}:${ruleid}:${ln}" >&2
     [[ -n "${match}" ]] && echo "        match: ${match}" >&2
   done
 }

@@ -461,7 +461,7 @@ _vetting_acknowledge_exceptions() {
   local m rel rule ln _rest
   while IFS=$'\t' read -r m rel rule ln _rest; do
     [[ "${m}" == "accepted" ]] || continue
-    accepted+=("${rel}  [${rule}, line ${ln}]")
+    accepted+=("${rel}:${rule}:${ln}")
   done < <(scan_repo_secrets "${real_repo}" "${accept_file}")
   rm -f "${accept_file}"
 

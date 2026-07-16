@@ -66,7 +66,7 @@ $ sandbox run --tier 2 --repo ~/repos/app --agent claude
 ERROR: betterleaks found secret(s) the sandbox mask will NOT hide. The
        agent would be able to read them, so the launch is refused:
 
-    deploy/values.yaml  [generic-api-key, line 155]
+    deploy/values.yaml:generic-api-key:155
         match: REDACTED
 
   Resolve this in one of these ways:
@@ -139,7 +139,7 @@ $ sandbox vet --repo ~/repos/app
   This repo records 1 secret exception(s). Signing this attestation
   vouches that they are reviewed false positives — the agent WILL be able to
   read these values once the repo is vetted:
-      deploy/values.yaml  [generic-api-key, line 155]
+      deploy/values.yaml:generic-api-key:155
 
   Acknowledge and sign? [y/N] y
   ~/repos/app: created signed attestation tag agent-vetted/1ff36c4...

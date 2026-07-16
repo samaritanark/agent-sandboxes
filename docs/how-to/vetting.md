@@ -106,7 +106,7 @@ $ sandbox vet --repo ~/repos/app
   This repo records 1 secret exception(s). Signing this attestation
   vouches that they are reviewed false positives — the agent WILL be able to
   read these values once the repo is vetted:
-      deploy/values.yaml  [generic-api-key, line 155]
+      deploy/values.yaml:generic-api-key:155
 
   Acknowledge and sign? [y/N] y
 ```
