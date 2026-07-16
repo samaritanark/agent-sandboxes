@@ -79,9 +79,17 @@ overlay-myteam/
 ├── GOVERNANCE.md                your team's policy doc (referenced
 │                                from PRINCIPLES.md as the team layer)
 ├── config.yaml                  overlay-level defaults: `vetting:` posture (may
-│                                only ratchet UP) + `leakscan_extra_dep_dirs:`
-│                                (operator-only secret-scan skips) — see
+│                                only ratchet UP), `vetting_trust_root:` (ship
+│                                the team's reviewer list; relative paths resolve
+│                                against the overlay root) +
+│                                `leakscan_extra_dep_dirs:` (operator-only
+│                                secret-scan skips) — see
 │                                docs/reference/configuration.md
+├── allowed_signers              the reviewer list `vetting_trust_root:` points
+│                                at; regenerate from your forge's /<user>.keys
+│                                with gen-allowed-signers.sh (+ signers.txt)
+├── gen-allowed-signers.sh       enrollment helper: signers.txt + forge URL →
+│                                allowed_signers (review the diff, commit)
 ├── blocked-destinations.yaml    additional blocked domains/patterns
 ├── .betterleaksignore           operator-owned secret-scan baseline: betterleaks
 │                                fingerprints the gate should accept (operator-only,

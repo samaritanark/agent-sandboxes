@@ -835,7 +835,14 @@ _print_unmasked_findings() {
   for entry in "$@"; do
     IFS=$'\t' read -r repo relpath ruleid ln match <<<"${entry}"
     echo "    ${relpath}:${ruleid}:${ln}" >&2
-    [[ -n "${match}" ]] && echo "        match: ${match}" >&2
+    # betterleaks --redact replaces the secret but keeps any surrounding span
+    # characters (a quote, a trailing comma) in Match; normalize so the operator
+    # sees a clean REDACTED rather than an artifact like 'REDACTED"'.
+    case "${match}" in
+      "")          ;;
+      *REDACTED*)  echo "        match: REDACTED" >&2 ;;
+      *)           echo "        match: ${match}" >&2 ;;
+    esac
   done
 }
 

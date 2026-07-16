@@ -15,10 +15,17 @@
 # the *trust root* live operator-side, so nothing a workspace author can write
 # weakens the decision:
 #
-#   - Trust root: an operator-held SSH allowed_signers file (default) or a GnuPG
-#     home listing the public keys of authorized reviewers. Verification runs
-#     host-side, pre-pod, against this root explicitly — never the ambient
-#     keyring — so repo/session context cannot influence whose signature counts.
+#   - Trust roots: SSH allowed_signers files (default) or a GnuPG home listing
+#     the public keys of authorized reviewers. Two may exist side by side — the
+#     operator's own (~/.sandbox/vetting/allowed_signers, or vetting_trust_root:
+#     in the user config) and one a linked team overlay ships (its config.yaml
+#     vetting_trust_root:, resolved relative to the overlay root). A signature
+#     verifying against EITHER counts: the overlay distributes the org's
+#     reviewer list via `sandbox link`, and a local file can add to it. Both are
+#     operator-side inputs — the overlay is operator-linked, pinned to a commit,
+#     and only moved by a deliberate `link sync` — so nothing a WORKSPACE author
+#     can write influences whose signature counts. Verification runs host-side,
+#     pre-pod, against these roots explicitly — never the ambient keyring.
 #   - Freshness is strict: the tag must point at HEAD (annotated tags peel to the
 #     commit, so `git tag --points-at HEAD` enforces this by construction). A
 #     dirty working tree is refused — an attestation covers a commit, and
@@ -96,11 +103,37 @@ resolve_vetting_posture() {
   echo "${eff}"
 }
 
-# vetting_trust_root — path to the operator's signer trust root (tilde-expanded).
+# vetting_trust_root — path to the operator's OWN signer trust root (user
+# config else the built-in default; tilde-expanded). This is where enrollment
+# guidance points; verification consults vetting_trust_roots (plural), which
+# also includes an overlay-shipped root.
 vetting_trust_root() {
-  local v
-  v="$(_vetting_config_get vetting_trust_root)"
+  local v=""
+  [[ -f "${USER_SANDBOX_CONFIG}" ]] && v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_trust_root)"
   if [[ -n "${v}" ]]; then echo "${v/#\~/${HOME}}"; else echo "${SANDBOX_VETTING_TRUST_ROOT_DEFAULT}"; fi
+}
+
+# vetting_trust_roots — every EXISTING trust root, one per line, operator-local
+# first, then the overlay-shipped one. A signature verifying against any listed
+# root counts (union): the overlay distributes the team's reviewer list, and the
+# operator's local file can hold additional signers. An overlay value that is a
+# relative path resolves against the overlay root, so an overlay can ship its
+# allowed_signers as a plain file in its own tree. Paths that do not exist are
+# omitted; empty output means no trust root is available at all.
+vetting_trust_roots() {
+  local user_root overlay overlay_v
+  user_root="$(vetting_trust_root)"
+  [[ -e "${user_root}" ]] && printf '%s\n' "${user_root}"
+
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  if [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]]; then
+    overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_trust_root)"
+    if [[ -n "${overlay_v}" ]]; then
+      overlay_v="${overlay_v/#\~/${HOME}}"
+      [[ "${overlay_v}" != /* ]] && overlay_v="${overlay}/${overlay_v}"
+      [[ -e "${overlay_v}" && "${overlay_v}" != "${user_root}" ]] && printf '%s\n' "${overlay_v}"
+    fi
+  fi
 }
 
 # vetting_trust_format — "ssh" (default) or "gpg".
@@ -268,11 +301,13 @@ vetting_status_repo() {
     printf 'dirty\t%s\n' "${head_sha}"; return 0
   fi
 
-  local trust_root trust_format
-  trust_root="$(vetting_trust_root)"
+  local trust_format
   trust_format="$(vetting_trust_format)"
-  if [[ ! -e "${trust_root}" ]]; then
-    printf 'error\ttrust root not found: %s\n' "${trust_root}"; return 0
+  local -a trust_roots=()
+  read_into_array trust_roots < <(vetting_trust_roots)
+  if [[ "${#trust_roots[@]}" -eq 0 ]]; then
+    printf 'error\tno trust root found (%s; none shipped by the overlay)\n' \
+      "$(vetting_trust_root)"; return 0
   fi
 
   local -a tags=()
@@ -283,13 +318,16 @@ vetting_status_repo() {
     return 0
   fi
 
-  local tag signer
+  local tag signer root
   for tag in "${tags[@]}"; do
     [[ -z "${tag}" ]] && continue
-    if signer="$(_vetting_verify_tag "${real_repo}" "${tag}" "${trust_root}" "${trust_format}")"; then
-      printf 'vetted\t%s\t%s\t%s\n' "${head_sha}" "${tag}" "${signer:-unknown}"
-      return 0
-    fi
+    for root in "${trust_roots[@]}"; do
+      [[ -z "${root}" ]] && continue
+      if signer="$(_vetting_verify_tag "${real_repo}" "${tag}" "${root}" "${trust_format}")"; then
+        printf 'vetted\t%s\t%s\t%s\n' "${head_sha}" "${tag}" "${signer:-unknown}"
+        return 0
+      fi
+    done
   done
 
   printf 'unvetted\t%s\t%s tag(s) at HEAD but none verified against the trust root\n' \
@@ -327,23 +365,24 @@ vetting_gate_repos() {
   SESSION_VETTING_SUMMARY="posture=${posture}"
   [[ "${posture}" == "off" ]] && return 0
 
-  local trust_root
-  trust_root="$(vetting_trust_root)"
-  if [[ ! -e "${trust_root}" ]]; then
+  local -a trust_roots=()
+  read_into_array trust_roots < <(vetting_trust_roots)
+  if [[ "${#trust_roots[@]}" -eq 0 ]]; then
     if [[ "${posture}" == "required" ]]; then
       echo "" >&2
-      echo "ERROR: vetting is required but the signer trust root is missing:" >&2
-      echo "         ${trust_root}" >&2
-      echo "       Create it (an SSH allowed_signers file, or a GnuPG home if" >&2
-      echo "       vetting_trust_format: gpg) and add the public key(s) of the" >&2
-      echo "       reviewers you authorize to attest repos. See" >&2
-      echo "       docs/how-to/vetting.md. This is a config error, so the" >&2
+      echo "ERROR: vetting is required but no signer trust root exists. Provide one:" >&2
+      echo "         - link a team overlay that ships its reviewer list" >&2
+      echo "           (config.yaml vetting_trust_root:), or" >&2
+      echo "         - create $(vetting_trust_root)" >&2
+      echo "           (an SSH allowed_signers file, or a GnuPG home if" >&2
+      echo "           vetting_trust_format: gpg) with the reviewers' public keys." >&2
+      echo "       See docs/how-to/vetting.md. This is a config error, so the" >&2
       echo "       --i-accept-unvetted-repo override does not apply." >&2
       echo "" >&2
       exit 1
     fi
-    echo "  Vetting (advisory): no trust root at ${trust_root} — cannot verify, skipping."
-    SESSION_VETTING_SUMMARY="posture=${posture}; no trust root (${trust_root}) — not verified"
+    echo "  Vetting (advisory): no trust root ($(vetting_trust_root), none from the overlay) — cannot verify, skipping."
+    SESSION_VETTING_SUMMARY="posture=${posture}; no trust root — not verified"
     return 0
   fi
 
@@ -385,7 +424,41 @@ vetting_gate_repos() {
     return 0
   fi
 
-  # posture == required
+  # posture == required: before refusing, offer an authorized signer the chance
+  # to attest right here. This is the full `sandbox vet` sign-off — the same
+  # signed tag, the same secret-exceptions acknowledgment — just without the
+  # refuse/vet/re-run round-trip, so the low-friction path and the accountable
+  # path are the same path. Only for interactive launches; CI keeps today's
+  # refusal. Only offered for repos that are cleanly unvetted (no tag at HEAD):
+  # a dirty tree still must be committed first, and an existing-but-unverified
+  # tag means someone else's attestation we must not touch.
+  if [[ "${accept}" != "true" && -t 0 && -t 1 ]]; then
+    local -a remaining=()
+    local attested=0 ir is if2 if3
+    for (( i=0; i<${#unvetted[@]}; i++ )); do
+      IFS=$'\t' read -r ir is if2 if3 <<<"${unvetted[$i]}"
+      if [[ "${is}" == "unvetted" && "${if3}" == no\ * ]] \
+         && _vetting_signing_configured "${ir}" \
+         && _vetting_inline_attest "${ir}" "${if2}"; then
+        attested=$((attested + 1))
+      else
+        remaining+=("${unvetted[$i]}")
+      fi
+    done
+    if [[ "${#remaining[@]}" -eq 0 ]]; then
+      echo "  All workspace(s) now carry a current, verified attestation."
+      SESSION_VETTING_SUMMARY="posture=required; ${attested} workspace(s) attested at launch; all vetted"
+      return 0
+    fi
+    unvetted=("${remaining[@]}")
+    detail=""
+    for (( i=0; i<${#unvetted[@]}; i++ )); do
+      IFS=$'\t' read -r dr ds _ _ <<<"${unvetted[$i]}"
+      detail="${detail:+${detail}, }${dr}(${ds})"
+    done
+    [[ "${attested}" -gt 0 ]] && detail="${detail} (${attested} other(s) attested at launch)"
+  fi
+
   if [[ "${accept}" == "true" ]]; then
     echo "" >&2
     echo "  NOTICE: proceeding despite ${#unvetted[@]} unvetted workspace(s) because" >&2
@@ -548,6 +621,165 @@ vetting_attest_repo() {
     echo "ERROR: failed to create the signed tag. Check that your signing key is" >&2
     echo "       configured (git config user.signingkey; gpg.format matches your" >&2
     echo "       key type) and that its public key is in the trust root." >&2
+    if [[ "${fmt}" == "ssh" && "$(_vetting_ssh_signingkey_state "${real_repo}")" == "mismatch" ]]; then
+      local badkey
+      badkey="$(_vetting_git "${real_repo}" config user.signingkey 2>/dev/null || true)"
+      echo "" >&2
+      echo "       Likely cause: user.signingkey ('${badkey}') is not an SSH key or" >&2
+      echo "       key file — it looks like a GPG key id from OpenPGP commit signing." >&2
+      echo "       Attestations are SSH-signed here (ssh trust root). Fix it with:" >&2
+      echo "             git config --global gpg.format ssh" >&2
+      echo "             git config --global user.signingkey ~/.ssh/id_ed25519.pub" >&2
+      echo "       (or set both per-repo to leave global commit signing alone), or" >&2
+      echo "       run 'sandbox vet' interactively and let it fix this for you." >&2
+    fi
     return 1
   fi
+}
+
+# _vetting_ssh_signingkey_state <repo> — classify user.signingkey for SSH
+# signing, which treats the value as a literal SSH public key or a path to a
+# key file. Prints one of:
+#   ok            usable for gpg.format=ssh
+#   unconfigured  no user.signingkey at all
+#   mismatch      set, but neither a literal SSH key nor an existing file —
+#                 typically a GPG key id left over from OpenPGP commit signing
+#                 (the exact shape of "Couldn't load public key <id>").
+_vetting_ssh_signingkey_state() {
+  local repo="$1" real key
+  real="$(cd "${repo}" 2>/dev/null && pwd -P)" || { echo unconfigured; return 0; }
+  key="$(_vetting_git "${real}" config user.signingkey 2>/dev/null || true)"
+  if [[ -z "${key}" ]]; then echo unconfigured; return 0; fi
+  case "${key}" in
+    ssh-*|sk-ssh-*|ecdsa-sha2-*|key::*) echo ok; return 0 ;;
+  esac
+  key="${key/#\~/${HOME}}"
+  if [[ -f "${key}" ]]; then echo ok; else echo mismatch; fi
+}
+
+# _vetting_signing_configured <repo> — cheap heuristic for whether the operator
+# has a signing identity git could actually use, gating whether the inline
+# attest offer is worth making. In ssh mode the key must be USABLE for ssh
+# signing (a GPG key id left in user.signingkey would just fail after the
+# operator says yes); in gpg mode git can fall back to the committer identity,
+# so the offer stands. Never a security decision — the signature is verified
+# against the trust roots after signing regardless.
+_vetting_signing_configured() {
+  local repo="$1"
+  if [[ "$(vetting_trust_format)" == "gpg" ]]; then return 0; fi
+  [[ "$(_vetting_ssh_signingkey_state "${repo}")" == "ok" ]]
+}
+
+# _vetting_inline_attest <repo> <head_sha> — the launch-time attest offer. Asks,
+# signs via vetting_attest_repo (which surfaces any secret exceptions for
+# acknowledgment), then RE-VERIFIES against the trust roots: a signature that
+# does not verify (signer not enrolled as a reviewer) is removed again and the
+# offer fails, so saying "y" can never manufacture authority the trust root does
+# not grant. Caller guarantees an interactive TTY and that no attestation tag
+# already exists at HEAD (we must never delete a tag we did not just create).
+_vetting_inline_attest() {
+  local repo="$1" head_sha="$2" reply=""
+  echo "" >&2
+  echo "  ${repo} is not vetted at HEAD ${head_sha:0:12}." >&2
+  echo "  Your git signing key can attest it right now — the same signed sign-off" >&2
+  echo "  as 'sandbox vet', honored only if your key is in the trust root. Attest" >&2
+  echo "  only if you have reviewed what is at this HEAD." >&2
+  printf '  Attest HEAD %s... continue? [y/N] ' "${head_sha:0:12}" >&2
+  read -r reply || true
+  if [[ ! "${reply}" =~ ^[Yy] ]]; then
+    echo "  Not attested." >&2
+    return 1
+  fi
+
+  vetting_attest_repo "${repo}" "vetted for agent use (attested at launch)" "false" || return 1
+
+  local line status f2 f3 f4
+  line="$(vetting_status_repo "${repo}")"
+  IFS=$'\t' read -r status f2 f3 f4 <<<"${line}"
+  if [[ "${status}" == "vetted" ]]; then
+    echo "  ✓ ${repo}: attested and verified (signer ${f4:-unknown})" >&2
+    return 0
+  fi
+
+  local real_repo
+  real_repo="$(cd "${repo}" 2>/dev/null && pwd -P)" || return 1
+  _vetting_git "${real_repo}" tag -d "${SANDBOX_VETTING_TAG_PREFIX}${head_sha}" >/dev/null 2>&1 || true
+  echo "  ERROR: the attestation you just signed does not verify against the trust" >&2
+  echo "         root(s), so it was removed. Your signing key is likely not enrolled" >&2
+  echo "         as a reviewer — ask your overlay maintainer to add your public key," >&2
+  echo "         or add it to $(vetting_trust_root)." >&2
+  return 1
+}
+
+# vetting_signing_setup_assist <repo> — one-time signing setup for `sandbox
+# vet`. When no signing identity is configured (ssh trust format, interactive
+# terminal), offer to wire the operator's existing SSH public key into git's
+# global config, then print the allowed_signers line a trust-root maintainer
+# needs to enroll them. Returns 0 when signing is (now) configured or when the
+# situation was left for vetting_attest_repo's own error path (non-TTY, gpg
+# format); returns 1 when the operator declined or no key exists.
+vetting_signing_setup_assist() {
+  local repo="$1" real state key=""
+  real="$(cd "${repo}" 2>/dev/null && pwd -P)" || return 0
+  [[ "$(vetting_trust_format)" == "gpg" ]] && return 0
+  state="$(_vetting_ssh_signingkey_state "${repo}")"
+  [[ "${state}" == "ok" ]] && return 0
+  [[ -t 0 && -t 1 ]] || return 0
+
+  local -a candidates=()
+  local k
+  for k in "${HOME}/.ssh/id_ed25519.pub" "${HOME}/.ssh/id_ecdsa.pub" "${HOME}/.ssh/id_rsa.pub"; do
+    [[ -f "${k}" ]] && candidates+=("${k}")
+  done
+  if [[ "${#candidates[@]}" -eq 0 ]]; then
+    echo "  git signing is not usable for SSH attestations, and no SSH public key was" >&2
+    echo "  found under ~/.ssh. Create one (ssh-keygen -t ed25519), then re-run" >&2
+    echo "  'sandbox vet'." >&2
+    return 1
+  fi
+
+  local pick="${candidates[0]}" reply=""
+  echo "" >&2
+  if [[ "${state}" == "mismatch" ]]; then
+    key="$(_vetting_git "${real}" config user.signingkey 2>/dev/null || true)"
+    echo "  Your git user.signingkey ('${key}') is not an SSH key or key file — it" >&2
+    echo "  looks like a GPG key id from OpenPGP commit signing. Attestations here are" >&2
+    echo "  SSH-signed (the trust root is an allowed_signers file), and SSH signing" >&2
+    echo "  reads user.signingkey as a key file path, so signing would fail with" >&2
+    echo "  \"Couldn't load public key ${key}\"." >&2
+    echo "" >&2
+    echo "  NOTE: switching is global git config — if you still GPG-sign commits with" >&2
+    echo "  that key, answer no and set the two keys per-repo instead (shown below)." >&2
+  else
+    echo "  git signing is not configured. Attestations are signed with your own SSH" >&2
+    echo "  key — nothing is shared or fetched; verification uses public keys only." >&2
+  fi
+  printf '  Configure git (globally) to sign with %s? [y/N] ' "${pick}" >&2
+  read -r reply || true
+  if [[ ! "${reply}" =~ ^[Yy] ]]; then
+    echo "  Skipped. Configure it manually to attest — globally:" >&2
+    echo "        git config --global gpg.format ssh" >&2
+    echo "        git config --global user.signingkey <path-to-your-key.pub>" >&2
+    echo "  or scoped to one repo (leaves your global commit signing alone):" >&2
+    echo "        git -C <repo> config gpg.format ssh" >&2
+    echo "        git -C <repo> config user.signingkey <path-to-your-key.pub>" >&2
+    return 1
+  fi
+  git config --global gpg.format ssh
+  git config --global user.signingkey "${pick}"
+  echo "  Configured: gpg.format=ssh, user.signingkey=${pick}" >&2
+
+  local email keyline
+  email="$(_vetting_git "${real}" config user.email 2>/dev/null || true)"
+  keyline="$(awk '{print $1" "$2; exit}' "${pick}" 2>/dev/null || true)"
+  if [[ -n "${email}" && -n "${keyline}" ]]; then
+    echo "" >&2
+    echo "  To be enrolled as a reviewer, your public key must be in the trust root." >&2
+    echo "  Your allowed_signers line (send it to your overlay maintainer, or append" >&2
+    echo "  it to $(vetting_trust_root)):" >&2
+    echo "" >&2
+    echo "      ${email} ${keyline}" >&2
+    echo "" >&2
+  fi
+  return 0
 }

@@ -12,13 +12,24 @@
 # Tier 2/3 launch unless every --repo carries a current, verified
 # agent-vetted/<sha> tag at HEAD. See docs/how-to/vetting.md.
 #
-# The trust root — WHOSE signatures count — is deliberately operator-side and
-# cannot be shipped in an overlay; each operator configures it once in their own
-# ~/.sandbox/config.yaml (vetting_trust_root / vetting_trust_format).
-#
 # Left at `advisory` here, which matches the org default (a no-op that documents
 # intent). Change to `required` to enforce, or delete this file to say nothing.
 vetting: advisory
+
+# vetting_trust_root: the team's reviewer list — WHOSE signatures count — shipped
+# WITH the overlay. A relative path resolves against the overlay root, so the
+# value below names a plain `allowed_signers` file at the top of this overlay;
+# `sandbox link` then distributes the list and `link sync` (deliberate, shows a
+# diff) is the only thing that updates it. This is a UNION with the operator's
+# own root (~/.sandbox/vetting/allowed_signers, or vetting_trust_root: in their
+# ~/.sandbox/config.yaml): a signature verifying against either file counts, so
+# the overlay enrolls the team and a local file can add signers. Both inputs are
+# operator-side — nothing a WORKSPACE author commits can touch either one, which
+# is the boundary that matters (PRINCIPLES.md, "Repo vetting"). Regenerate the
+# file from your forge's /<username>.keys endpoints with this template's
+# gen-allowed-signers.sh, review the diff, and commit.
+#
+# vetting_trust_root: allowed_signers
 
 # trusted_inference_endpoints: the model endpoints trusted to receive
 # secret-bearing prompts. This is a GRANT, not a relaxation: its only effect is
