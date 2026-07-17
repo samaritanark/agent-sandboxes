@@ -96,6 +96,48 @@ overlay_blocked_destinations_file() {
   [[ -f "${path}" ]] && echo "${path}"
 }
 
+# overlay_min_sandbox_version <overlay-dir> — print the minimum CLI version
+# the overlay's config.yaml declares (min_sandbox_version:), empty when the
+# file or key is absent.
+overlay_min_sandbox_version() {
+  local cfg="$1/config.yaml"
+  [[ -f "${cfg}" ]] || return 0
+  extract_yaml_scalar_from_file "${cfg}" min_sandbox_version
+}
+
+# overlay_min_version_unmet <overlay-dir> — print the overlay's required
+# minimum CLI version when the running CLI does NOT satisfy it; print nothing
+# when it does (or when no requirement is declared). The gate exists because an
+# older CLI does not fail on a newer overlay — it silently ignores keys it
+# doesn't know (a new posture, a new profile field), which is exactly the
+# cross-team drift min_sandbox_version is shipped to prevent. Callers turn
+# non-empty output into their own die wording. Two soft spots, both surfaced
+# rather than enforced: an unparseable value warns and is ignored (same stance
+# as an unrecognized vetting posture — visible, not launch-breaking), and a
+# "dev" build (an uninstalled checkout carries no version identity) warns and
+# passes, since there is nothing to compare.
+overlay_min_version_unmet() {
+  local min
+  min="$(overlay_min_sandbox_version "$1")"
+  [[ -n "${min}" ]] || return 0
+
+  # Dotted-numeric with an optional leading v (the release-tag form). The ERE
+  # lives in a variable: bash 3.2 mis-parses a parenthesized group written
+  # inline in [[ =~ ]].
+  local re='^v?[0-9]+(\.[0-9]+)*$'
+  if ! [[ "${min}" =~ ${re} ]]; then
+    warn "overlay config.yaml sets an unparseable min_sandbox_version '${min}' — ignoring it."
+    return 0
+  fi
+
+  local cur="${SANDBOX_VERSION:-dev}"
+  if [[ "${cur}" == "dev" ]]; then
+    warn "overlay requires agent-sandboxes >= ${min}, but this is an unversioned dev checkout — cannot compare, continuing."
+    return 0
+  fi
+  version_ge "${cur}" "${min}" || printf '%s\n' "${min}"
+}
+
 # user_profiles_dir — print the per-user profiles directory. `sandbox profile
 # save`/`delete` only ever write here; overlay profiles are team-shipped and
 # managed outside this CLI.

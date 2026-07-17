@@ -8,8 +8,9 @@
 # lib/config.sh upsert/remove helpers directly. Covers: name derivation,
 # clone + pointer wiring, validation gate (accept/reject), pinned-tag vs
 # branch tracking, status ahead/behind, sync (advance + roll-back on bad
-# tree + refuse-on-dirty), the run-path notify hook (TTL + behind), and
-# unlink.
+# tree + refuse-on-dirty), the run-path auto-sync hook (advance, opt-out,
+# dirty/invalid fail-safes, min-version hard stop), the min_sandbox_version
+# gate, and unlink.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"
 
@@ -30,6 +31,10 @@ export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 command -v git >/dev/null 2>&1 || skip "git not available"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# lib code calls die() on hard stops; bin/sandbox defines it. Mirror it here
+# for the sourced-lib tests — the run-sync min-version test asserts on the
+# exit it causes (inside a subshell, so the suite itself survives).
+die() { echo "FATAL: $*" >&2; exit 1; }
 cleanup() { rm -rf "${TEST_DIR}"; }
 trap cleanup EXIT
 
@@ -339,33 +344,142 @@ test_sync_refuses_dirty() {
 }
 
 ###############################################################################
-# Unit: run-path notify hook — silent within TTL, warns when behind + expired
+# Unit: min_sandbox_version reader + comparison edge cases
 ###############################################################################
-test_notify_hook() {
-  info "Testing link_notify_if_behind..."
-  local up="${TEST_DIR}/up-notify"
+test_min_version_unit() {
+  info "Testing overlay_min_sandbox_version / overlay_min_version_unmet..."
+  local d="${TEST_DIR}/minver"; mkdir -p "${d}"
+
+  # No config.yaml / no key → no requirement.
+  eq "no config.yaml → met" "" "$(overlay_min_version_unmet "${d}")"
+  printf 'vetting: advisory\n' > "${d}/config.yaml"
+  eq "no key → met" "" "$(overlay_min_version_unmet "${d}")"
+
+  printf 'min_sandbox_version: 2.12.0\n' > "${d}/config.yaml"
+  eq "reader prints the key" "2.12.0" "$(overlay_min_sandbox_version "${d}")"
+  eq "older CLI is unmet"    "2.12.0" "$(SANDBOX_VERSION=2.11.3 overlay_min_version_unmet "${d}" 2>/dev/null)"
+  eq "equal CLI is met"      ""       "$(SANDBOX_VERSION=2.12.0 overlay_min_version_unmet "${d}" 2>/dev/null)"
+  eq "newer CLI is met"      ""       "$(SANDBOX_VERSION=3.0.0  overlay_min_version_unmet "${d}" 2>/dev/null)"
+  eq "v-prefixed CLI is met" ""       "$(SANDBOX_VERSION=v2.12.0 overlay_min_version_unmet "${d}" 2>/dev/null)"
+
+  # v-prefixed requirement + short form compare like release tags (2.12 == 2.12.0).
+  printf 'min_sandbox_version: v2.12\n' > "${d}/config.yaml"
+  eq "v/short requirement met" "" "$(SANDBOX_VERSION=2.12.0 overlay_min_version_unmet "${d}" 2>/dev/null)"
+
+  # Unparseable value → visible warning, gates nothing.
+  printf 'min_sandbox_version: latest\n' > "${d}/config.yaml"
+  local out; out="$(SANDBOX_VERSION=1.0.0 overlay_min_version_unmet "${d}" 2>&1)"
+  echo "${out}" | grep -q "unparseable" || fail "expected unparseable warning, got: ${out}"
+  eq "unparseable gates nothing" "" "$(SANDBOX_VERSION=1.0.0 overlay_min_version_unmet "${d}" 2>/dev/null)"
+
+  # A dev (unversioned) build cannot compare → warns and passes.
+  printf 'min_sandbox_version: 99.0.0\n' > "${d}/config.yaml"
+  out="$(overlay_min_version_unmet "${d}" 2>&1)"   # SANDBOX_VERSION unset here
+  echo "${out}" | grep -q "dev checkout" || fail "expected dev-checkout warning, got: ${out}"
+  eq "dev build passes" "" "$(overlay_min_version_unmet "${d}" 2>/dev/null)"
+  pass "min_sandbox_version comparison and edge cases behave"
+}
+
+###############################################################################
+# Unit: run-path auto-sync hook — advances to the pinned ref's tip, honors the
+# opt-out, fails safe on dirty/invalid trees, hard-stops on min-version
+###############################################################################
+test_run_sync_hook() {
+  info "Testing link_sync_on_run..."
+  local up="${TEST_DIR}/up-runsync"
   make_upstream "${up}"
-  "${SB}" link "${up}" --name notifylink >/dev/null 2>&1 || fail "link failed"
-  local dir="${LINK_OVERLAYS_DIR}/notifylink"
+  "${SB}" link "${up}" --name runsync >/dev/null 2>&1 || fail "link failed"
+  local dir="${LINK_OVERLAYS_DIR}/runsync"
   echo behind > "${up}/n"; git -C "${up}" add -A; git -C "${up}" commit -qm v2
+  local tip; tip="$(git -C "${up}" rev-parse HEAD)"
 
-  # Fresh stamp => within TTL => no fetch, no warning even though behind.
-  : > "$(_link_fetch_stamp "${dir}")"
-  local within; within="$(link_notify_if_behind 2>&1)"
-  eq "silent within TTL" "" "${within}"
+  # Opt-out env var short-circuits entirely: no output, no advance.
+  local off; off="$(SANDBOX_NO_LINK_CHECK=1 link_sync_on_run 2>&1)"
+  eq "SANDBOX_NO_LINK_CHECK skips the sync" "" "${off}"
+  [[ "$(git -C "${dir}" rev-parse HEAD)" == "${tip}" ]] \
+    && fail "opt-out must not advance the clone"
 
-  # Expire the stamp => fetch => detect behind => single warning line.
-  touch -t 200001010000 "$(_link_fetch_stamp "${dir}")"
-  local expired; expired="$(link_notify_if_behind 2>&1)"
-  echo "${expired}" | grep -q "behind 'main'" || fail "expected behind warning, got: ${expired}"
-  pass "notify hook is TTL-gated and warns when behind"
+  # Behind + clean → auto-advance to the tip and record the new commit.
+  link_sync_on_run >/dev/null 2>&1 || fail "run-path sync failed on a clean, behind clone"
+  eq "auto-synced to the ref tip" "${tip}" "$(git -C "${dir}" rev-parse HEAD)"
+  eq "link_commit re-recorded"    "${tip}" "$(link_commit_config)"
+  pass "run-path sync advances a clean clone to the pinned ref's tip"
 
-  # Opt-out env var short-circuits entirely.
-  touch -t 200001010000 "$(_link_fetch_stamp "${dir}")"
-  local off; off="$(SANDBOX_NO_LINK_CHECK=1 link_notify_if_behind 2>&1)"
-  eq "SANDBOX_NO_LINK_CHECK silences" "" "${off}"
+  # Local uncommitted edits → warn, no advance, launch path survives.
+  echo more > "${up}/m"; git -C "${up}" add -A; git -C "${up}" commit -qm v3
+  echo local-edit >> "${dir}/README.md"
+  local dirty_out
+  dirty_out="$(link_sync_on_run 2>&1)" || fail "dirty clone must not fail the launch path"
+  echo "${dirty_out}" | grep -q "local uncommitted edits" \
+    || fail "expected dirty-clone warning, got: ${dirty_out}"
+  eq "dirty clone not advanced" "${tip}" "$(git -C "${dir}" rev-parse HEAD)"
+  git -C "${dir}" checkout -- README.md
+  pass "run-path sync refuses to clobber local edits and lets the launch proceed"
+
+  # Upstream turns invalid → advance is rolled back, warn, launch path survives.
+  printf 'profile: bad\ntier: 9\n' > "${up}/profiles/bad.yaml"
+  git -C "${up}" add -A; git -C "${up}" commit -qm badtree
+  local bad_out
+  bad_out="$(link_sync_on_run 2>&1)" || fail "invalid new tree must not fail the launch path"
+  echo "${bad_out}" | grep -q "failed validation" \
+    || fail "expected validation warning, got: ${bad_out}"
+  eq "rolled back to previous commit" "${tip}" "$(git -C "${dir}" rev-parse HEAD)"
+  pass "run-path sync rolls back an invalid tree and lets the launch proceed"
+
+  # Upstream now requires a newer CLI → roll back + hard stop (die → exit 1).
+  git -C "${up}" rm -q profiles/bad.yaml
+  printf 'min_sandbox_version: 99.0.0\n' > "${up}/config.yaml"
+  git -C "${up}" add -A; git -C "${up}" commit -qm needs-newer
+  if ( SANDBOX_VERSION=2.0.0 link_sync_on_run >/dev/null 2>&1 ); then
+    fail "run-path sync must hard-stop when the overlay requires a newer CLI"
+  fi
+  eq "rolled back after min-version stop" "${tip}" "$(git -C "${dir}" rev-parse HEAD)"
+  pass "run-path sync blocks the launch (and rolls back) on min_sandbox_version"
+
+  # The same tree on a dev build: warns it cannot compare, then syncs.
+  local dev_out
+  dev_out="$(link_sync_on_run 2>&1)" || fail "dev build must not hard-stop"
+  echo "${dev_out}" | grep -q "dev checkout" \
+    || fail "expected cannot-compare warning, got: ${dev_out}"
+  eq "dev build synced to tip" "$(git -C "${up}" rev-parse HEAD)" "$(git -C "${dir}" rev-parse HEAD)"
+  pass "dev build warns and syncs (nothing to compare)"
 
   "${SB}" link unlink --yes >/dev/null 2>&1 || fail "unlink failed"
+}
+
+###############################################################################
+# Integration: min_sandbox_version at link time. This checkout may be stamped
+# (a .version file) or not, and both sides of that are worth pinning down: a
+# stamped CLI must refuse an overlay demanding 99.0.0; an unstamped (dev) one
+# must link it with a cannot-compare warning. Either way the summary line
+# surfaces the requirement.
+###############################################################################
+test_min_version_link_gate() {
+  info "Testing min_sandbox_version link gate..."
+  local mv="${TEST_DIR}/up-minver"
+  make_upstream "${mv}"
+  printf 'min_sandbox_version: 99.0.0\n' > "${mv}/config.yaml"
+  git -C "${mv}" add -A; git -C "${mv}" commit -qm minver
+
+  local out
+  if [[ -f "${SANDBOX_ROOT}/.version" ]]; then
+    if "${SB}" link "${mv}" --name minver >/dev/null 2>&1; then
+      fail "stamped CLI should refuse an overlay requiring 99.0.0"
+    fi
+    [[ -d "${LINK_OVERLAYS_DIR}/minver" ]] && fail "clone left behind after min-version refusal"
+    [[ -z "$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" link_url)" ]] \
+      || fail "link_url written despite min-version refusal"
+    pass "stamped CLI refuses an overlay requiring a newer version, leaves no trace"
+  else
+    out="$("${SB}" link "${mv}" --name minver 2>&1)" \
+      || fail "dev CLI should link a min-versioned overlay (with a warning), got: ${out}"
+    echo "${out}" | grep -q "min CLI: 99.0.0" \
+      || fail "min version not surfaced in the link summary, got: ${out}"
+    echo "${out}" | grep -q "dev checkout" \
+      || fail "expected cannot-compare warning, got: ${out}"
+    "${SB}" link unlink --yes >/dev/null 2>&1 || fail "unlink failed"
+    pass "dev CLI links a min-versioned overlay, warns, and surfaces the requirement"
+  fi
 }
 
 ###############################################################################
@@ -394,7 +508,9 @@ test_validation_rejects
 test_value_validation
 test_config_yaml_recognized
 test_sync_refuses_dirty
-test_notify_hook
+test_min_version_unit
+test_run_sync_hook
+test_min_version_link_gate
 test_unlink
 
 echo "All link tests passed."

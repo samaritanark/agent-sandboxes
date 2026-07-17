@@ -16,6 +16,17 @@
 # intent). Change to `required` to enforce, or delete this file to say nothing.
 vetting: advisory
 
+# min_sandbox_version: the minimum agent-sandboxes CLI version this overlay
+# needs. An older CLI does not fail on a newer overlay — it silently ignores
+# keys it does not know — so when your overlay starts relying on a newer
+# feature (a new config key here, a new profile field), declare the version
+# that introduced it. 'sandbox link', 'sandbox link sync', and 'sandbox run'
+# all refuse while the installed CLI is older; 'sandbox upgrade' is the fix.
+# Absent means any version is accepted. A leading 'v' is fine (v2.12.0 and
+# 2.12.0 compare equal), and short forms pad with zeros (2.12 == 2.12.0).
+#
+# min_sandbox_version: 2.12.0
+
 # vetting_trust_root: the team's reviewer list — WHOSE signatures count — shipped
 # WITH the overlay. A relative path resolves against the overlay root, so the
 # value below names a plain `allowed_signers` file at the top of this overlay;

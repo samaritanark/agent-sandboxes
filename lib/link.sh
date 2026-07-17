@@ -16,14 +16,20 @@
 # Trust model (see PRINCIPLES.md — supply-chain compromise is out of scope):
 #   * Overlays are additive-only on the safety side; that invariant is enforced
 #     at consume-time and cannot be weakened here.
-#   * A link is PINNED to a ref (tag/branch/commit) the operator names. It never
-#     moves on its own. `sandbox link sync` is the only thing that advances the
-#     checked-out commit, and it is an explicit, operator-driven, reviewed step
-#     (it prints a `git diff --stat` of what changes and re-validates shape).
-#   * `sandbox run` performs a cached, rate-limited fetch and, if the linked
-#     overlay is behind its ref, prints a one-line hint. It NEVER mutates the
-#     overlay mid-launch. Set SANDBOX_NO_LINK_CHECK=1 to skip the check
-#     entirely (air-gapped / CI).
+#   * A link is PINNED to a ref (tag/branch/commit) the operator names, and the
+#     checked-out commit only ever moves to that ref's tip. `sandbox link sync`
+#     is the deliberate, reviewed form (prints a `git diff --stat` of what
+#     changes); `sandbox run` performs the same sync automatically before every
+#     launch, so a team never drifts across members (one launching from last
+#     month's overlay, another from today's). Every advance — deliberate or
+#     run-path — re-validates shape and rolls back a failing tree.
+#   * The run-path sync is fail-safe: offline, a dirty clone, or an invalid new
+#     tree warns and the launch proceeds on the previously validated commit.
+#     The one hard stop is an overlay that now requires a newer CLI
+#     (`min_sandbox_version:` in its config.yaml) — that blocks the launch
+#     until `sandbox upgrade`, because an older CLI would silently ignore
+#     whatever the new version gates. Set SANDBOX_NO_LINK_CHECK=1 to skip the
+#     run-path sync entirely (air-gapped / CI).
 #
 # State recorded in ~/.sandbox/config.yaml (flat keys, parsed by lib/config.sh):
 #   overlay:      <managed dir>          # the pointer the rest of the CLI reads
@@ -34,11 +40,8 @@ set -euo pipefail
 
 # Where managed clones live. One subdirectory per link, named for the link.
 LINK_OVERLAYS_DIR="${LINK_OVERLAYS_DIR:-${HOME}/.sandbox/overlays}"
-# How long a run-path fetch result is trusted before we re-fetch, in seconds.
-# Kept off the run hot-path: within this window `sandbox run` does no network.
-LINK_FETCH_TTL_SECONDS="${LINK_FETCH_TTL_SECONDS:-3600}"
-# Best-effort timeout (seconds) on the background-ish run-path fetch so a slow
-# or unreachable remote can never wedge a launch.
+# Best-effort timeout (seconds) on the run-path fetch so a slow or unreachable
+# remote can never wedge a launch.
 LINK_FETCH_TIMEOUT_SECONDS="${LINK_FETCH_TIMEOUT_SECONDS:-10}"
 
 # link_is_valid_name <name> — same ruleset as is_valid_profile_name /
@@ -103,9 +106,10 @@ _link_require_git() {
     || die "'git' is required for 'sandbox link' but was not found on PATH."
 }
 
-# _link_fetch_stamp <dir> — path to the run-path fetch timestamp. Stored under
-# .git/ so it never shows up as an untracked file (which would trip the
-# working-tree-dirty guard in sync) and is removed with the clone.
+# _link_fetch_stamp <dir> — path to the last-fetch timestamp (informational —
+# records when the run path last reached the remote). Stored under .git/ so it
+# never shows up as an untracked file (which would trip the working-tree-dirty
+# guard in sync) and is removed with the clone.
 _link_fetch_stamp() {
   echo "$1/.git/sandbox-last-fetch"
 }
@@ -352,7 +356,13 @@ link_validate_shape() {
       warn "overlay config.yaml names vetting_trust_root: ${overlay_troot}, but no such file ships in the overlay."
     fi
   fi
-  echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )$( [[ -n "${overlay_vetting}" ]] && echo ", vetting: ${overlay_vetting}" )${troot_note}" >&2
+  # Surface a declared minimum CLI version the same way: it is enforced by the
+  # callers (clone/sync/run), so the summary only has to make it visible.
+  local overlay_minver="" minver_note=""
+  overlay_minver="$(overlay_min_sandbox_version "${dir}")"
+  [[ -n "${overlay_minver}" ]] && minver_note=", min CLI: ${overlay_minver}"
+
+  echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )$( [[ -n "${overlay_vetting}" ]] && echo ", vetting: ${overlay_vetting}" )${troot_note}${minver_note}" >&2
   return 0
 }
 
@@ -382,42 +392,78 @@ link_clear_config() {
   remove_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" link_commit
 }
 
-# link_notify_if_behind — run-path hook. Cached, rate-limited, best-effort, and
-# NON-FATAL: any failure returns silently so it can never break a launch. Emits
-# a single stderr hint when the linked overlay is behind its pinned ref.
-link_notify_if_behind() {
+# link_sync_on_run — run-path hook: sync the linked overlay to its pinned
+# ref's current tip before a launch, so every team member launches from the
+# same overlay commit. This replaces the old notify-only hint — drift between
+# team members proved the worse failure mode than an unreviewed fast-forward,
+# and the advance is still bounded: it only ever moves to the tip of the ref
+# the operator pinned, it re-validates shape, and it rolls back a failing
+# tree.
+#
+# Fail-safe so a launch is never wedged by the network or by overlay content:
+#   * fetch failure (offline/slow; bounded by LINK_FETCH_TIMEOUT_SECONDS)
+#       -> warn, launch from the current commit
+#   * local uncommitted edits in the clone
+#       -> warn, launch from the current tree (never clobber operator edits)
+#   * new tree fails shape validation
+#       -> roll back, warn, launch from the previous commit
+# The one deliberate hard stop: a new tree that requires a newer CLI
+# (min_sandbox_version) rolls back and DIES — launching anyway would mean
+# staying on an overlay the team has moved past, on a tool that would silently
+# ignore whatever the new version gates. 'sandbox upgrade' is the fix.
+# SANDBOX_NO_LINK_CHECK=1 skips the hook entirely (air-gapped / CI).
+link_sync_on_run() {
   [[ -n "${SANDBOX_NO_LINK_CHECK:-}" ]] && return 0
   command -v git >/dev/null 2>&1 || return 0
   link_is_active || return 0
 
-  local dir ref stamp ttl_min
+  local dir ref
   dir="$(link_active_dir)" || return 0
   [[ -n "${dir}" ]] || return 0
   ref="$(link_ref_config)"
   [[ -n "${ref}" ]] || return 0
 
-  # Rate-limit with a stamp file's mtime via `find -mmin` (portable across GNU
-  # and BSD find; avoids stat(1) portability and Date arithmetic). If the stamp
-  # is newer than the TTL window, do nothing this run.
-  stamp="$(_link_fetch_stamp "${dir}")"
-  ttl_min=$(( LINK_FETCH_TTL_SECONDS / 60 ))
-  [[ "${ttl_min}" -lt 1 ]] && ttl_min=1
-  if [[ -f "${stamp}" ]] && [[ -n "$(find "${stamp}" -mmin "-${ttl_min}" 2>/dev/null)" ]]; then
+  local head
+  head="$(_link_head_commit "${dir}")"
+  if ! _link_fetch "${dir}" >/dev/null 2>&1; then
+    warn "linked overlay: could not fetch '$(link_url_config)' — launching from the current commit ${head:0:12}."
     return 0
   fi
+  : > "$(_link_fetch_stamp "${dir}")" 2>/dev/null || true
 
-  _link_fetch "${dir}" >/dev/null 2>&1 || { : > "${stamp}" 2>/dev/null || true; return 0; }
-  : > "${stamp}" 2>/dev/null || true
-
-  local head target behind
-  head="$(_link_head_commit "${dir}")"
+  local target
   target="$(_link_target_commit "${dir}" "${ref}")"
   [[ -n "${head}" && -n "${target}" ]] || return 0
   [[ "${head}" == "${target}" ]] && return 0
 
-  behind="$(git -C "${dir}" rev-list --count "${head}..${target}" 2>/dev/null || echo 0)"
-  [[ "${behind}" =~ ^[0-9]+$ ]] || behind=0
-  if [[ "${behind}" -gt 0 ]]; then
-    warn "linked overlay is ${behind} commit(s) behind '${ref}'; run 'sandbox link sync' to review and update."
+  if _link_worktree_dirty "${dir}"; then
+    warn "linked overlay is behind '${ref}' but has local uncommitted edits at ${dir/#${HOME}/\~}; not auto-syncing. Commit, stash, or discard them, then run 'sandbox link sync'."
+    return 0
   fi
+
+  echo "==> Syncing linked overlay to '${ref}' (${head:0:12} -> ${target:0:12})"
+  git -C "${dir}" --no-pager diff --stat "${head}" "${target}" 2>/dev/null || true
+
+  git -C "${dir}" checkout --quiet "${ref}" 2>/dev/null || true
+  if ! git -C "${dir}" reset --hard --quiet "${target}"; then
+    git -C "${dir}" reset --hard --quiet "${head}" 2>/dev/null || true
+    warn "could not advance the linked overlay to ${target:0:12}; launching from ${head:0:12}."
+    return 0
+  fi
+
+  if ! link_validate_shape "${dir}"; then
+    git -C "${dir}" reset --hard --quiet "${head}" 2>/dev/null || true
+    warn "updated overlay tree ('${ref}' @ ${target:0:12}) failed validation; rolled back — launching from ${head:0:12}. Review with 'sandbox link sync' once the overlay is fixed."
+    return 0
+  fi
+
+  local min_unmet
+  min_unmet="$(overlay_min_version_unmet "${dir}")"
+  if [[ -n "${min_unmet}" ]]; then
+    git -C "${dir}" reset --hard --quiet "${head}" 2>/dev/null || true
+    die "linked overlay '${ref}' now requires agent-sandboxes >= ${min_unmet}, but this is ${SANDBOX_VERSION:-dev}. Run 'sandbox upgrade', then launch again. (Rolled back to ${head:0:12}; SANDBOX_NO_LINK_CHECK=1 skips the run-path sync entirely.)"
+  fi
+
+  link_write_config "${dir}" "$(link_url_config)" "${ref}" "${target}"
+  echo "    linked overlay updated to '${ref}' (${target:0:12})"
 }
