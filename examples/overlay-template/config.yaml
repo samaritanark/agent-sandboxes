@@ -40,6 +40,19 @@ vetting: advisory
 #
 # vetting_max_commits_behind: 20
 
+# vetting_exceptions_require_head: honor a repo's committed accepted_secrets:
+# exceptions ONLY while the verified attestation sits exactly at HEAD. An accepted
+# exception exposes a plaintext value to the agent, and that is blessed by a
+# signer at attest time — not by the code review behind ordinary drift — so under
+# drift (HEAD past the signed commit) HEAD's list was never acknowledged. The
+# DEFAULT (omit, or false) honors it through drift anyway, trading that risk for
+# frictionless launches; set true to refuse it under any drift (re-attest HEAD to
+# restore exceptions). Tightening-only: `true` wins if EITHER this overlay or the
+# operator sets it, so an overlay can ratchet it up and never down, the same
+# safety-additive rule the posture and the cap follow. See docs/how-to/vetting.md.
+#
+# vetting_exceptions_require_head: true
+
 # vetting_trust_root: the team's reviewer list — WHOSE signatures count — shipped
 # WITH the overlay. A relative path resolves against the overlay root, so the
 # value below names a plain `allowed_signers` file at the top of this overlay;

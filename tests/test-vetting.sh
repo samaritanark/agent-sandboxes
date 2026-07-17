@@ -961,6 +961,98 @@ test_gate_drift() {
   write_trust_config
 }
 
+###############################################################################
+# vetting_exceptions_require_head — user + overlay layering, tightening-only
+# (strict wins if set anywhere; default is the permissive "false").
+###############################################################################
+test_exceptions_require_head_config() {
+  info "Testing vetting_exceptions_require_head layering..."
+  : > "${USER_SANDBOX_CONFIG}"
+  unset SANDBOX_OVERLAY
+  eq "unset -> permissive (false)" "false" "$(vetting_exceptions_require_head)"
+
+  printf 'vetting_exceptions_require_head: false\n' > "${USER_SANDBOX_CONFIG}"
+  eq "explicit false stays false" "false" "$(vetting_exceptions_require_head)"
+
+  printf 'vetting_exceptions_require_head: true\n' > "${USER_SANDBOX_CONFIG}"
+  eq "user opts into strict" "true" "$(vetting_exceptions_require_head)"
+
+  local overlay="${TEST_DIR}/reqhead-overlay"
+  mkdir -p "${overlay}"
+  export SANDBOX_OVERLAY="${overlay}"
+
+  # Tightening-only: strict wins if set anywhere, never relaxed by the other.
+  printf 'vetting_exceptions_require_head: false\n' > "${overlay}/config.yaml"
+  printf 'vetting_exceptions_require_head: true\n'  > "${USER_SANDBOX_CONFIG}"
+  eq "overlay false cannot relax user true" "true" "$(vetting_exceptions_require_head)"
+
+  printf 'vetting_exceptions_require_head: true\n'  > "${overlay}/config.yaml"
+  printf 'vetting_exceptions_require_head: false\n' > "${USER_SANDBOX_CONFIG}"
+  eq "overlay ratchets false->true" "true" "$(vetting_exceptions_require_head)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+  printf 'vetting_exceptions_require_head: true\n' > "${overlay}/config.yaml"
+  eq "overlay-only strict applies" "true" "$(vetting_exceptions_require_head)"
+
+  # Anything but a literal `true` is not strict — leave the permissive default.
+  printf 'vetting_exceptions_require_head: yes\n' > "${USER_SANDBOX_CONFIG}"
+  rm -f "${overlay}/config.yaml"
+  unset SANDBOX_OVERLAY
+  eq "non-true value -> permissive" "false" "$(vetting_exceptions_require_head)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+}
+
+###############################################################################
+# vetted_accepted_fingerprints under drift — the default honors HEAD's list, the
+# strict knob honors it only at HEAD (needs SSH signing).
+###############################################################################
+test_exceptions_require_head_gate() {
+  info "Testing exception honoring under drift (default vs require-head)..."
+  write_trust_config
+  unset SANDBOX_OVERLAY
+
+  local repo="${TEST_DIR}/exc-drift"
+  make_repo "${repo}"
+  config_add_accepted_secret "${repo}/.sandbox/config.yaml" \
+    "deploy/values.yaml:generic-api-key:155:aaaa1111" "reviewed FP"
+  git -C "${repo}" add -A; git -C "${repo}" commit -q -m "base with one exception"
+  attest_repo "${repo}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; return 0; }
+
+  # At HEAD (behind 0) the signature covers the list, so it is honored under BOTH
+  # the default and the strict knob.
+  case "$(vetted_accepted_fingerprints "${repo}")" in
+    *aaaa1111*) pass "at HEAD, default honors the signed exception" ;;
+    *) fail "at HEAD, default should honor the signed exception" ;;
+  esac
+  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_exceptions_require_head: true\n' \
+    "${TRUST_ROOT}" > "${USER_SANDBOX_CONFIG}"
+  case "$(vetted_accepted_fingerprints "${repo}")" in
+    *aaaa1111*) pass "at HEAD, strict still honors it (behind 0)" ;;
+    *) fail "at HEAD, strict should honor the signed exception (behind 0)" ;;
+  esac
+
+  # A drift commit records a brand-new exception no signer ever acknowledged.
+  config_add_accepted_secret "${repo}/.sandbox/config.yaml" \
+    "deploy/secret.yaml:generic-api-key:9:bbbb2222" "smuggled"
+  git -C "${repo}" add -A; git -C "${repo}" commit -q -m "drift adds an exception"
+  eq "drift repo reports behind 1" "1" "$(vetting_status_repo "${repo}" | cut -f5)"
+
+  # Strict (config still set): behind != 0 -> honor NOTHING, so neither the
+  # smuggled entry nor the originally-signed one clears. Re-attest to restore.
+  eq "strict + drift honors nothing" "" "$(vetted_accepted_fingerprints "${repo}")"
+
+  # Default (permissive): HEAD's whole list is honored, smuggled entry included —
+  # the accepted risk the team chose.
+  write_trust_config
+  case "$(vetted_accepted_fingerprints "${repo}")" in
+    *bbbb2222*) pass "default + drift honors HEAD's list (accepted risk)" ;;
+    *) fail "default should honor HEAD's drift-added exception" ;;
+  esac
+
+  write_trust_config
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -973,6 +1065,7 @@ main() {
 
   test_posture_layering
   test_max_commits_behind_config
+  test_exceptions_require_head_config
   test_status_classification
   test_gate_posture
   test_missing_trust_root_fails_closed
@@ -990,6 +1083,7 @@ main() {
     test_status_vetted
     test_gate_required_passes_when_vetted
     test_gate_drift
+    test_exceptions_require_head_gate
     test_verify_hermetic_against_program_hijack
     test_trust_roots_overlay_and_union
     test_gate_inline_attest

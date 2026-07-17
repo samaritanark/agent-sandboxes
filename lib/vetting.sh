@@ -137,6 +137,35 @@ vetting_max_commits_behind() {
   echo "${eff}"
 }
 
+# vetting_exceptions_require_head — "true" when a repo's committed secret
+# exceptions (accepted_secrets:) may be honored ONLY while the verified
+# attestation sits exactly at HEAD; "false" (the default) honors the list
+# whenever the repo is vetted, drift included. This governs the ONE trust
+# decision the drift tolerance must not extend to: honoring an accepted_secrets:
+# entry exposes a plaintext value to the agent, and that exposure is blessed by a
+# signer's acknowledgment at attest time (_vetting_acknowledge_exceptions), not
+# by the code review that covers ordinary drift. Under drift HEAD is not the
+# signed commit, so an entry added on top was never acknowledged — the strict
+# setting refuses to honor it; the permissive default accepts that risk to keep
+# launches frictionless. Read from BOTH the user config and the overlay config,
+# TIGHTENING-ONLY: strict ("true") wins if EITHER sets it, so an overlay can
+# ratchet exception-handling up and never down — the same "additive on the safety
+# side" rule the posture and the drift cap follow. Anything but a literal `true`
+# (unset, false, a typo) leaves the permissive default.
+vetting_exceptions_require_head() {
+  local user_v="" overlay_v="" overlay
+  [[ -f "${USER_SANDBOX_CONFIG}" ]] && \
+    user_v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_exceptions_require_head)"
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] && \
+    overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_exceptions_require_head)"
+  if [[ "${user_v}" == "true" || "${overlay_v}" == "true" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
 # vetting_trust_root — path to the operator's OWN signer trust root (user
 # config else the built-in default; tilde-expanded). This is where enrollment
 # guidance points; verification consults vetting_trust_roots (plural), which

@@ -373,7 +373,20 @@ link_validate_shape() {
   elif [[ -n "${overlay_cap}" ]]; then
     warn "overlay config.yaml sets a non-integer vetting_max_commits_behind: '${overlay_cap}' — it will be ignored (no cap) at run time."
   fi
-  echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )$( [[ -n "${overlay_vetting}" ]] && echo ", vetting: ${overlay_vetting}" )${troot_note}${minver_note}${cap_note}" >&2
+  # An overlay-shipped strict-exceptions knob (lib/vetting.sh
+  # vetting_exceptions_require_head) is a run-time security control as well;
+  # confirm it at link/sync time so an operator sees the overlay tightening how
+  # committed secret exceptions are honored under drift.
+  local overlay_reqhead="" reqhead_note=""
+  if [[ -f "${dir}/config.yaml" ]]; then
+    overlay_reqhead="$(extract_yaml_scalar_from_file "${dir}/config.yaml" vetting_exceptions_require_head)"
+  fi
+  if [[ "${overlay_reqhead}" == "true" ]]; then
+    reqhead_note=", exceptions require attestation at HEAD"
+  elif [[ -n "${overlay_reqhead}" && "${overlay_reqhead}" != "false" ]]; then
+    warn "overlay config.yaml sets vetting_exceptions_require_head: '${overlay_reqhead}' — only 'true' tightens; any other value leaves the permissive default."
+  fi
+  echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )$( [[ -n "${overlay_vetting}" ]] && echo ", vetting: ${overlay_vetting}" )${troot_note}${minver_note}${cap_note}${reqhead_note}" >&2
   return 0
 }
 

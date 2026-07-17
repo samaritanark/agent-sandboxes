@@ -614,9 +614,9 @@ _leakscan_finding_accepted() {
 
 # vetted_accepted_fingerprints <repo> — the repo-root ignore-file fingerprints
 # (`relpath:rule:line`) to honor for a repo at launch, or NOTHING unless the
-# repo is currently vetted (a signed attestation verifies at HEAD over a clean
-# tree — vetting_status_repo). The committed list carries weight only because
-# the vetting signature covers it; an unvetted (or unsignable) repo's list is
+# repo is currently vetted (a signed attestation verifies over a clean tree —
+# vetting_status_repo). The committed list carries weight only because the
+# vetting signature covers it; an unvetted (or unsignable) repo's list is
 # ignored, independent of the vetting *posture* (off/advisory/required).
 # Consumed by the secret gate and the `sandbox check` preview to decide what
 # scan_repo_secrets may downgrade to `accepted`.
@@ -626,11 +626,27 @@ _leakscan_finding_accepted() {
 # `git status --porcelain` does not flag gitignored files, so a working-tree read
 # would honor a gitignored/uncommitted ignore file the signature never covered.
 # Reading HEAD's blob ties every honored fingerprint to the attestation.
+#
+# DRIFT AND THE SIGNATURE. Since the vetting gate accepts an attestation that is
+# an ANCESTOR of HEAD (see lib/vetting.sh), a `vetted` repo may be N commits
+# behind: HEAD is then NOT the signed commit, so HEAD's .betterleaksignore list
+# was never acknowledged by a signer. Honoring an exception exposes a plaintext
+# value to the agent — a signer-blessed decision, not one the code review behind
+# ordinary drift covers — so this is the one trust call the drift tolerance must
+# not silently extend. vetting_exceptions_require_head governs it: the default
+# (`false`) honors HEAD's list through drift (an accepted risk — a contributor
+# who can land a reviewed commit could self-add an exception); the strict knob
+# (`true`, overlay- or user-set, tightening-only) honors the list only at
+# behind==0, where the signature genuinely covers it. When strict and behind is
+# unknown, fail closed (honor nothing).
 vetted_accepted_fingerprints() {
-  local repo="$1" line status
+  local repo="$1" line status behind
   line="$(vetting_status_repo "${repo}" 2>/dev/null)"
-  IFS=$'\t' read -r status _ <<<"${line}"
+  IFS=$'\t' read -r status _ _ _ behind <<<"${line}"
   [[ "${status}" == "vetted" ]] || return 0
+  if [[ "$(vetting_exceptions_require_head)" == "true" && "${behind:-1}" -ne 0 ]]; then
+    return 0
+  fi
   vetting_committed_ignore_fingerprints "${repo}"
 }
 

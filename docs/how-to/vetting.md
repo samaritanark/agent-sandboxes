@@ -203,6 +203,36 @@ recorded as an "exception". Pass `--yes` to acknowledge non-interactively (e.g.
 in CI); without it, and with no terminal to prompt on, `vet` refuses rather than
 sign off unattended. A repo with no exceptions signs with no extra prompt.
 
+### Exceptions and drift
+
+The acknowledgment above binds an exception to the *signed* commit. But an
+attestation clears a repo while it is [behind `HEAD`](#when-the-attestation-is-behind-head),
+and drift is reviewed code layered on a vetted base — whereas an
+`accepted_secrets:` entry is not code, it is a standing permission for the agent
+to read a plaintext value. A commit added on top of the vetted base can record a
+brand-new exception that **no signer ever acknowledged**, so honoring `HEAD`'s
+list under drift trusts whoever can land a reviewed commit not to weaponize it.
+
+Two settings, both operator-controlled:
+
+| `vetting_exceptions_require_head:` | Behavior |
+| --- | --- |
+| *omitted* / `false` (**default**) | Exceptions are honored whenever the repo is vetted, drift included. The frictionless default — the same "reviewed changes ride along" bargain the rest of drift makes, extended to the exception list. |
+| `true` | Exceptions are honored **only** when the attestation sits exactly at `HEAD` (`behind: 0`), where the signature genuinely covers the list. Under any drift the list is ignored and those findings block the launch again; re-attest `HEAD` to restore them. |
+
+```yaml
+# <overlay>/config.yaml — or ~/.sandbox/config.yaml
+vetting_exceptions_require_head: true
+```
+
+Read from both the overlay and your own config, this is **tightening-only**:
+`true` wins if either sets it, so an overlay can ratchet exception-handling up
+and a user can opt in further, but neither can relax the other's — the same
+safety-additive rule the [posture](#choose-a-posture) and the
+[drift cap](#cap-how-far-behind-an-attestation-may-be) follow. The knob is
+independent of posture: it decides only *which* exceptions count, not whether
+vetting is enforced.
+
 ## Attest at launch (authorized signers)
 
 Sometimes you'd rather sign than accept drift — or the repo is unvetted, or the
