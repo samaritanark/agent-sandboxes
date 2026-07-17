@@ -21,9 +21,13 @@ The repo carries only the *artifact* — a signed tag named `agent-vetted/<sha>`
 The *requirement* (is vetting enforced?) and the *trust roots* (whose signatures
 count?) live operator-side, so nothing a workspace author can commit weakens the
 decision. Verification runs on the host, before the pod starts, against signer
-lists you control — never the ambient keyring. Freshness is strict: the tag must
-point at the current `HEAD`, and a dirty working tree is refused, because an
-attestation describes a specific commit rather than whatever is checked out.
+lists you control — never the ambient keyring. The tag need not point at the
+current `HEAD`: a verified tag that is an **ancestor** of `HEAD` counts, and the
+gate reports how many commits behind `HEAD` it is. The commits in between are
+trusted because nothing reaches the branch without code review — so the drift is
+reviewed changes layered on a vetted base. A tag on a divergent line (not an
+ancestor of `HEAD`) does not count, and a dirty working tree is always refused,
+because uncommitted edits are unreviewed and would ride along unattested.
 
 ## Set up a trust root
 
@@ -77,8 +81,8 @@ vetting_trust_format: ssh  # optional; ssh (default) or gpg
 | Posture | Behavior at launch |
 | --- | --- |
 | `off` | No gate, no output. |
-| `advisory` | Prints each `--repo`'s vetting status and proceeds. The default. |
-| `required` | Refuses the launch unless every `--repo` carries a current, verified attestation at `HEAD`. |
+| `advisory` | Prints each `--repo`'s vetting status — including how many commits behind `HEAD` the attestation is — and proceeds. The default. |
+| `required` | Refuses the launch unless every `--repo` carries a verified attestation reachable from `HEAD`. Drift behind `HEAD` is accepted per the [drift rules](#when-the-attestation-is-behind-head) below. |
 
 A team [overlay](profiles-and-overlays.md) can ship its own `config.yaml` with a
 `vetting:` key. An overlay may only **ratchet the posture up** (`advisory →
@@ -86,6 +90,45 @@ required`), never relax it — the same "additive on the safety side" rule the
 overlay's block list follows. So an organization can make vetting mandatory for
 everyone who uses its overlay, and an individual operator can opt themselves into
 `required` even when the overlay does not.
+
+### When the attestation is behind `HEAD`
+
+A single attestation clears a repo, and it keeps clearing it as work lands on
+top — because the intervening commits went through code review, the gate treats
+them as reviewed changes on a vetted base rather than forcing a re-attestation
+every commit. This is the whole point of the compromise: a developer who is
+**not** an approved signer can still launch on a repo their team vetted earlier,
+without waiting for someone to re-sign `HEAD`.
+
+Under `required`, when the freshest verified attestation is *N* commits behind
+`HEAD`:
+
+- **With a drift cap set** (`vetting_max_commits_behind:`, below) and *N* within
+  it — the launch **proceeds automatically**, and the "*N* commits behind" shows
+  up in the launch output and the audit log. The organization has already
+  decided that much drift is acceptable, so there is no per-session prompt.
+- **With no cap set** — the launch **prompts** you to accept the *N* commits of
+  unattested drift. In a non-interactive context (CI, no terminal), pass
+  `--i-accept-vetting-drift` to accept it, or the launch refuses.
+- **Over the cap** — the launch refuses. Re-attest `HEAD` (`sandbox vet`), raise
+  the cap, or use `--i-accept-unvetted-repo` to override for this launch (audited).
+
+### Cap how far behind an attestation may be
+
+An overlay (or your own config) can bound the drift with an integer:
+
+```yaml
+# <overlay>/config.yaml — or ~/.sandbox/config.yaml
+vetting_max_commits_behind: 20   # attestations may be at most 20 commits behind HEAD
+```
+
+Both configs are read and the **most restrictive** (smallest) value wins, so an
+overlay can only tighten the bound and a user can only tighten it further —
+neither can loosen the other's, the same safety-additive rule the posture
+follows. A cap of `0` means the attestation must sit exactly at `HEAD` — the
+strict, re-attest-every-commit behavior. With no cap set, drift is unbounded but
+each session requires the interactive acceptance (or `--i-accept-vetting-drift`)
+described above.
 
 ## Attest a repo
 
@@ -127,11 +170,14 @@ sandbox vet --status --repo ~/repos/app
 #   HEAD:   1ff36c4...
 #   tag:    agent-vetted/1ff36c4...
 #   signer: reviewer@example.com
+#   behind: 0 (attestation is at HEAD)
 ```
 
-Any new commit moves `HEAD` past the tag, so the attestation goes stale and the
-repo must be re-vetted — which is the point: a review covers the code that was
-reviewed, not whatever lands on top of it.
+New commits move `HEAD` past the tag, and `--status` reports the growing
+distance (`behind: 3 commit(s) — the attestation is an ancestor of HEAD`). The
+repo stays vetted through that drift; whether a launch accepts it depends on the
+[drift rules](#when-the-attestation-is-behind-head) and any cap. Re-vetting
+`HEAD` resets the distance to zero and is always available to a signer.
 
 ## Acknowledging secret exceptions
 
@@ -159,10 +205,10 @@ sign off unattended. A repo with no exceptions signs with no extra prompt.
 
 ## Attest at launch (authorized signers)
 
-Repos don't hold still: every new commit — including one the agent itself made
-last session — stales the attestation. So when `required` would refuse an
-interactive launch and your signing identity is available, the gate offers the
-attestation inline instead of sending you away to run `sandbox vet` and retry:
+Sometimes you'd rather sign than accept drift — or the repo is unvetted, or the
+drift is over the cap. So when `required` would refuse an interactive launch and
+your signing identity is available, the gate offers the attestation inline
+instead of sending you away to run `sandbox vet` and retry:
 
 ```
   /home/you/repos/app is not vetted at HEAD 1ff36c4...
@@ -178,30 +224,38 @@ and the signature is re-verified against the trust roots before the launch
 proceeds — if your key isn't enrolled, the tag is removed again and the launch
 is refused with enrollment guidance. Declining refuses the launch exactly as
 before. The offer only appears on an interactive terminal (CI keeps the hard
-refusal), only for a cleanly unvetted repo (a dirty tree must be committed
-first), and never touches an existing tag someone else created. Unlike
-`--i-accept-unvetted-repo`, saying `y` leaves a portable, signed attestation —
-accountability travels with the repo instead of a line in a local log.
+refusal), for a cleanly unvetted repo or one blocked on drift — in both cases
+attesting `HEAD` is the fix — but never for a dirty tree (commit first) and never
+touching an existing tag someone else created. Unlike `--i-accept-unvetted-repo`,
+saying `y` leaves a portable, signed attestation — accountability travels with
+the repo instead of a line in a local log.
 
 ## When a launch is refused
 
-Under `vetting: required`, an unvetted `--repo` stops the launch (after the
-inline offer, if one was available, was declined or unavailable):
+Under `vetting: required`, a `--repo` with no accepted, verified attestation
+stops the launch (after the inline offer, if one was available, was declined or
+unavailable) — whether it is wholly unvetted or vetted but too far behind `HEAD`:
 
 ```
-ERROR: vetting is required, but the following workspace(s) have no current,
-       verified agent-vetting attestation, so the launch is refused:
+ERROR: vetting is required, but the following workspace(s) have no accepted,
+       verified agent-vetting attestation at HEAD, so the launch is refused:
 
-    /home/you/repos/app: no verified attestation (HEAD 1ff36c4...; no agent-vetted/* tag at HEAD)
+    /home/you/repos/app: no verified attestation (HEAD 1ff36c4...; no reachable agent-vetted/* tag)
+    /home/you/repos/api: vetted but 34 commit(s) behind HEAD (over the cap, or drift not accepted) (HEAD 9ac21be...)
 
   A trusted reviewer must attest the current HEAD:
         sandbox vet --repo <PATH>
+  Or, for a repo that is vetted but behind HEAD, accept the reviewed drift:
+        re-run with --i-accept-vetting-drift, or raise
+        vetting_max_commits_behind: in your config/overlay.
   Override (audited), accepting the risk for this launch:
         re-run with --i-accept-unvetted-repo
 ```
 
-`--i-accept-unvetted-repo` proceeds anyway and records the acceptance (which
-repos, and that the override was used) in the session's audit log. A **missing
+`--i-accept-vetting-drift` accepts a verified-but-behind attestation
+non-interactively (within any cap); `--i-accept-unvetted-repo` proceeds
+regardless and records the acceptance (which repos, and that the override was
+used) in the session's audit log. A **missing
 trust root** under `required` is treated as an operator misconfiguration and
 fails closed regardless of the override — fix the trust root rather than
 overriding past it.

@@ -9,8 +9,8 @@
 # only ratchet this UP relative to the operator's ~/.sandbox/config.yaml
 # (advisory → required), never down. Shipping `required` here makes signed-tag
 # vetting mandatory for everyone who uses this overlay: `sandbox run` refuses a
-# Tier 2/3 launch unless every --repo carries a current, verified
-# agent-vetted/<sha> tag at HEAD. See docs/how-to/vetting.md.
+# Tier 2/3 launch unless every --repo carries a verified agent-vetted/<sha> tag
+# reachable from HEAD. See docs/how-to/vetting.md.
 #
 # Left at `advisory` here, which matches the org default (a no-op that documents
 # intent). Change to `required` to enforce, or delete this file to say nothing.
@@ -26,6 +26,19 @@ vetting: advisory
 # 2.12.0 compare equal), and short forms pad with zeros (2.12 == 2.12.0).
 #
 # min_sandbox_version: 2.12.0
+
+# vetting_max_commits_behind: cap how far behind HEAD a verified attestation may
+# be and still clear a repo under `required`. The attestation need not sit at
+# HEAD — the intervening commits are trusted because they reached the branch
+# through code review — so a developer who is not an approved signer can launch on
+# a repo their team vetted earlier. Within this cap, drift is accepted with no
+# per-session prompt (and logged); over it, the launch refuses. Read together
+# with the operator's own value, the SMALLEST wins (an overlay can only tighten
+# it). 0 means "must be exactly at HEAD" (re-attest every commit); omit for no
+# cap, where each session accepts the drift interactively (or with
+# --i-accept-vetting-drift). See docs/how-to/vetting.md.
+#
+# vetting_max_commits_behind: 20
 
 # vetting_trust_root: the team's reviewer list — WHOSE signatures count — shipped
 # WITH the overlay. A relative path resolves against the overlay root, so the

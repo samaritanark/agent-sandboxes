@@ -26,23 +26,35 @@
 #     and only moved by a deliberate `link sync` — so nothing a WORKSPACE author
 #     can write influences whose signature counts. Verification runs host-side,
 #     pre-pod, against these roots explicitly — never the ambient keyring.
-#   - Freshness is strict: the tag must point at HEAD (annotated tags peel to the
-#     commit, so `git tag --points-at HEAD` enforces this by construction). A
-#     dirty working tree is refused — an attestation covers a commit, and
-#     uncommitted edits would ride along unreviewed.
+#   - Freshness: the tag must be a verified ANCESTOR of HEAD — reachable, so HEAD
+#     is a descendant of the vetted commit and every intervening commit is a
+#     reviewed change layered on a vetted base (nothing reaches the branch
+#     without code review; that review is what covers the drift). The gate reports
+#     how many commits behind HEAD the attestation is; under `required` the
+#     operator accepts that drift, or an overlay bounds it with
+#     vetting_max_commits_behind: (0 meaning "must sit exactly at HEAD" — the
+#     strict pre-drift behavior). A tag on a divergent line — not an ancestor of
+#     HEAD — does not count. A dirty working tree is always refused: uncommitted
+#     edits are unreviewed and would ride along unattested.
 #
 # POSTURE. Operator-controlled, three values:
 #   off       — no gate, no banner.
 #   advisory  — never refuses; prints the vetting status and proceeds (default).
-#   required  — fail closed: refuse launch unless every --repo carries a current,
-#               verified attestation. `--i-accept-unvetted-repo` downgrades the
-#               refusal to a printed warning (audited).
+#   required  — fail closed: refuse launch unless every --repo carries a verified
+#               attestation reachable from HEAD. When the attestation is behind
+#               HEAD, the drift is auto-accepted within an overlay cap, otherwise
+#               accepted interactively (or via --i-accept-vetting-drift when there
+#               is no terminal). `--i-accept-unvetted-repo` downgrades any
+#               remaining refusal — an unvetted repo, or drift over the cap — to a
+#               printed warning (audited).
 #
 # Posture is resolved from the user's ~/.sandbox/config.yaml (`vetting:` key),
 # falling back to the `advisory` org default; a team overlay's `config.yaml` can
 # only ratchet the posture UP (additive on the safety side — an overlay can make
-# vetting required, never relax it). Trust root / format are read user-first,
-# then overlay, then the built-in default.
+# vetting required, never relax it). The drift cap (vetting_max_commits_behind:)
+# is read from both and the most restrictive value wins, so an overlay can only
+# tighten it. Trust root / format are read user-first, then overlay, then the
+# built-in default.
 set -euo pipefail
 
 # Operator-overridable knobs (config keys shadow these; env is an escape hatch).
@@ -100,6 +112,28 @@ resolve_vetting_posture() {
       eff="${overlay_p}"
     fi
   fi
+  echo "${eff}"
+}
+
+# vetting_max_commits_behind — effective cap on how many commits an attestation
+# may sit behind HEAD, or empty for "no cap". Read from BOTH the user config and
+# the overlay config; the MOST RESTRICTIVE (smallest) value wins, so an overlay
+# can tighten the bound and a user can tighten it further, but neither can loosen
+# the other's — the same "additive on the safety side" rule the posture follows.
+# A cap of 0 means the attestation must point exactly at HEAD (the strict
+# pre-drift behavior). A non-integer value is ignored (treated as unset) so a
+# typo fails toward the interactive-accept path rather than a nonsense bound.
+vetting_max_commits_behind() {
+  local user_v="" overlay_v="" overlay eff="" v
+  [[ -f "${USER_SANDBOX_CONFIG}" ]] && \
+    user_v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_max_commits_behind)"
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] && \
+    overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_max_commits_behind)"
+  for v in "${user_v}" "${overlay_v}"; do
+    [[ "${v}" =~ ^[0-9]+$ ]] || continue
+    if [[ -z "${eff}" || "${v}" -lt "${eff}" ]]; then eff="${v}"; fi
+  done
   echo "${eff}"
 }
 
@@ -289,13 +323,16 @@ _vetting_verify_tag() (
 
 # vetting_status_repo <repo> — classify a workspace's vetting state and print a
 # single TSV line the gate consumes:
-#   vetted<TAB>sha<TAB>tag<TAB>signer
+#   vetted<TAB>sha<TAB>tag<TAB>signer<TAB>behind
 #   unvetted<TAB>sha<TAB>reason
 #   dirty<TAB>sha
 #   not-git<TAB>reason
 #   error<TAB>reason
-# Never exits; the caller (vetting_gate_repos) decides what a status means for
-# the launch. Verification uses the operator trust root explicitly.
+# `behind` is the number of commits HEAD is ahead of the attestation tag (0 when
+# the tag sits at HEAD). The reported attestation is the freshest — smallest
+# behind — verified tag that is an ANCESTOR of HEAD. Never exits; the caller
+# (vetting_gate_repos) decides what a status and its drift mean for the launch.
+# Verification uses the operator trust root explicitly.
 vetting_status_repo() {
   local repo="$1"
   local real_repo
@@ -323,28 +360,54 @@ vetting_status_repo() {
       "$(vetting_trust_root)"; return 0
   fi
 
-  local -a tags=()
-  read_into_array tags < <(_vetting_git "${real_repo}" tag --points-at HEAD \
-                             --list "${SANDBOX_VETTING_TAG_PREFIX}*" 2>/dev/null || true)
-  if [[ "${#tags[@]}" -eq 0 ]]; then
-    printf 'unvetted\t%s\tno %s* tag at HEAD\n' "${head_sha}" "${SANDBOX_VETTING_TAG_PREFIX}"
+  # Collect every prefix tag that is an ANCESTOR of HEAD, with its distance
+  # behind HEAD ("behind" = commits in HEAD not reachable from the tag). A tag
+  # that is not reachable from HEAD (a divergent line) is skipped: the review
+  # trust argument only holds when HEAD descends from the vetted commit, so the
+  # drift is reviewed commits layered on a vetted base. `merge-base
+  # --is-ancestor` returns 0 when the tag's commit is an ancestor of HEAD; a tag
+  # AT HEAD is its own ancestor, so behind==0 is included by construction.
+  local -a all_tags=()
+  read_into_array all_tags < <(_vetting_git "${real_repo}" tag \
+                                 --list "${SANDBOX_VETTING_TAG_PREFIX}*" 2>/dev/null || true)
+
+  local -a ranked=()
+  local t behind
+  for t in "${all_tags[@]}"; do
+    [[ -z "${t}" ]] && continue
+    _vetting_git "${real_repo}" merge-base --is-ancestor "${t}" HEAD 2>/dev/null || continue
+    behind="$(_vetting_git "${real_repo}" rev-list --count "${t}..HEAD" 2>/dev/null || echo "")"
+    [[ "${behind}" =~ ^[0-9]+$ ]] || continue
+    ranked+=("${behind}"$'\t'"${t}")
+  done
+
+  if [[ "${#ranked[@]}" -eq 0 ]]; then
+    printf 'unvetted\t%s\tno reachable %s* attestation tag\n' \
+      "${head_sha}" "${SANDBOX_VETTING_TAG_PREFIX}"
     return 0
   fi
 
-  local tag signer root
-  for tag in "${tags[@]}"; do
-    [[ -z "${tag}" ]] && continue
+  # Verify from the least-stale ancestor outward, so the reported attestation is
+  # the freshest one that verifies and we stop at the first good signature.
+  local -a sorted=()
+  read_into_array sorted < <(printf '%s\n' "${ranked[@]}" | sort -n -k1,1)
+
+  local entry tag signer root
+  for entry in "${sorted[@]}"; do
+    [[ -z "${entry}" ]] && continue
+    behind="${entry%%$'\t'*}"
+    tag="${entry#*$'\t'}"
     for root in "${trust_roots[@]}"; do
       [[ -z "${root}" ]] && continue
       if signer="$(_vetting_verify_tag "${real_repo}" "${tag}" "${root}" "${trust_format}")"; then
-        printf 'vetted\t%s\t%s\t%s\n' "${head_sha}" "${tag}" "${signer:-unknown}"
+        printf 'vetted\t%s\t%s\t%s\t%s\n' "${head_sha}" "${tag}" "${signer:-unknown}" "${behind}"
         return 0
       fi
     done
   done
 
-  printf 'unvetted\t%s\t%s tag(s) at HEAD but none verified against the trust root\n' \
-    "${head_sha}" "${#tags[@]}"
+  printf 'unvetted\t%s\t%d reachable tag(s) but none verified against the trust root\n' \
+    "${head_sha}" "${#ranked[@]}"
 }
 
 # _vetting_print_findings <entry>... — render "repo<TAB>status<TAB>f2<TAB>f3"
@@ -355,6 +418,7 @@ _vetting_print_findings() {
     IFS=$'\t' read -r repo status f2 f3 <<<"${entry}"
     case "${status}" in
       unvetted) echo "    ${repo}: no verified attestation (HEAD ${f2:0:12}; ${f3})" >&2 ;;
+      drift)    echo "    ${repo}: ${f3} (HEAD ${f2:0:12})" >&2 ;;
       dirty)    echo "    ${repo}: uncommitted changes — commit or stash, then attest (HEAD ${f2:0:12})" >&2 ;;
       not-git)  echo "    ${repo}: not a git repository — cannot carry an attestation" >&2 ;;
       error)    echo "    ${repo}: ${f2}" >&2 ;;
@@ -363,14 +427,72 @@ _vetting_print_findings() {
   done
 }
 
-# vetting_gate_repos <posture> <accept_flag> <repo>... — the launch gate. In
-# `advisory` it prints status and proceeds; in `required` it refuses unless
-# every repo is vetted, with --i-accept-unvetted-repo (accept_flag == "true")
-# downgrading the refusal to a warning. A missing trust root under `required`
-# is an operator misconfiguration and fails closed regardless of the override.
+# _vetting_drift_decision <repo> <tag> <signer> <behind> <cap> <accept_unvetted>
+#                         <accept_drift>
+# Decide, under REQUIRED, whether a repo whose freshest verified attestation is
+# <behind> commits behind HEAD may launch. The trust that the drift is safe rests
+# on the review process: the tag is a verified ANCESTOR of HEAD, so <behind> is
+# reviewed commits layered on a vetted base. Prints its reasoning and returns 0
+# to proceed, 1 to block (the caller then refuses / offers an inline attest).
+# advisory and off never reach here. Decision table:
+#   cap set & behind <= cap : auto-proceed — the overlay pre-approved the bound
+#   cap set & behind >  cap : block, unless --i-accept-unvetted-repo overrides
+#   no cap, flag given      : proceed (--i-accept-vetting-drift / -unvetted-repo)
+#   no cap, interactive     : prompt to accept the drift
+#   no cap, no TTY, no flag  : block (nothing to accept the drift with)
+_vetting_drift_decision() {
+  local repo="$1" tag="$2" signer="$3" behind="$4" cap="$5" accept_unvetted="$6" accept_drift="$7"
+
+  if [[ -n "${cap}" ]]; then
+    if [[ "${behind}" -le "${cap}" ]]; then
+      echo "  ✓ ${repo}: vetted ${behind} commit(s) behind HEAD, within cap ${cap} (tag ${tag}, signer ${signer:-unknown})"
+      return 0
+    fi
+    if [[ "${accept_unvetted}" == "true" ]]; then
+      echo "  ${repo}: vetted but ${behind} commit(s) behind HEAD — over cap ${cap}, proceeding via --i-accept-unvetted-repo." >&2
+      return 0
+    fi
+    echo "  ${repo}: vetted at ${tag} but ${behind} commit(s) behind HEAD, exceeding the cap of ${cap}." >&2
+    return 1
+  fi
+
+  # No cap: an explicit acceptance flag, else an interactive y/N.
+  if [[ "${accept_unvetted}" == "true" || "${accept_drift}" == "true" ]]; then
+    echo "  ${repo}: vetted ${behind} commit(s) behind HEAD — accepted non-interactively (tag ${tag}, signer ${signer:-unknown})." >&2
+    return 0
+  fi
+  if [[ -t 0 && -t 1 ]]; then
+    local reply=""
+    echo "" >&2
+    echo "  ${repo}: the freshest verified attestation (${tag}, signer ${signer:-unknown})" >&2
+    echo "  is ${behind} commit(s) behind HEAD. Those commits reached the branch through" >&2
+    echo "  your normal code review, but no reviewer has attested this exact HEAD." >&2
+    printf '  Accept %s commit(s) of unattested drift and launch? [y/N] ' "${behind}" >&2
+    read -r reply || true
+    if [[ "${reply}" =~ ^[Yy] ]]; then
+      echo "  Accepted." >&2
+      return 0
+    fi
+    echo "  Declined." >&2
+    return 1
+  fi
+  echo "  ${repo}: vetted ${behind} commit(s) behind HEAD; no cap is set and there is" >&2
+  echo "  no terminal to accept the drift on. Re-run with --i-accept-vetting-drift," >&2
+  echo "  or set vetting_max_commits_behind: to bound it." >&2
+  return 1
+}
+
+# vetting_gate_repos <posture> <accept_unvetted> <accept_drift> <repo>... — the
+# launch gate. In `advisory` it prints status (including any drift) and proceeds;
+# in `required` it refuses unless every repo is vetted, accepting an attestation
+# that is behind HEAD per _vetting_drift_decision, with --i-accept-unvetted-repo
+# (accept_unvetted == "true") downgrading a remaining refusal to a warning. A
+# missing trust root under `required` is an operator misconfiguration and fails
+# closed regardless of the override.
 vetting_gate_repos() {
   local posture="$1"; shift
   local accept="$1"; shift
+  local accept_drift="$1"; shift
   local -a repos=("$@")
   [[ "${#repos[@]}" -gt 0 ]] || return 0
   # SESSION_VETTING_SUMMARY is read by the audit hook once session.json exists;
@@ -401,21 +523,53 @@ vetting_gate_repos() {
 
   echo "  Checking workspace vetting attestation(s) [posture: ${posture}]..."
 
+  local cap; cap="$(vetting_max_commits_behind)"
+  [[ -n "${cap}" ]] && echo "  Drift cap: attestations may be at most ${cap} commit(s) behind HEAD."
+
   local -a unvetted=()
-  local repo line status f2 f3 f4
+  local drift_accepted=0 drift_detail=""
+  local repo line status f2 f3 f4 f5
   for repo in "${repos[@]}"; do
     line="$(vetting_status_repo "${repo}")"
-    IFS=$'\t' read -r status f2 f3 f4 <<<"${line}"
-    if [[ "${status}" == "vetted" ]]; then
+    IFS=$'\t' read -r status f2 f3 f4 f5 <<<"${line}"
+
+    if [[ "${status}" == "vetted" && "${f5:-0}" -eq 0 ]]; then
       echo "  ✓ ${repo}: vetted at ${f2:0:12} (tag ${f3}, signer ${f4:-unknown})"
-    else
-      unvetted+=("${repo}"$'\t'"${status}"$'\t'"${f2}"$'\t'"${f3}")
+      continue
     fi
+
+    if [[ "${status}" == "vetted" ]]; then
+      # Verified attestation, but ${f5} commit(s) behind HEAD.
+      drift_detail="${drift_detail:+${drift_detail}, }${repo}(${f5} behind)"
+      if [[ "${posture}" == "advisory" ]]; then
+        # advisory never blocks; just report the drift (and any cap overrun).
+        if [[ -n "${cap}" && "${f5}" -gt "${cap}" ]]; then
+          echo "  ${repo}: vetted at ${f2:0:12}, ${f5} commit(s) behind HEAD — over cap ${cap} (advisory, proceeding)." >&2
+        else
+          echo "  ${repo}: vetted at ${f2:0:12}, ${f5} commit(s) behind HEAD (tag ${f3}, signer ${f4:-unknown})."
+        fi
+        continue
+      fi
+      # required: accept the drift, or fall through to the refuse/attest path.
+      if _vetting_drift_decision "${repo}" "${f3}" "${f4}" "${f5}" "${cap}" "${accept}" "${accept_drift}"; then
+        drift_accepted=$((drift_accepted + 1))
+        continue
+      fi
+      # Blocked drift → carry it as its own status so the refuse path can still
+      # offer an inline attest and print a drift-specific reason.
+      unvetted+=("${repo}"$'\t'"drift"$'\t'"${f2}"$'\t'"vetted but ${f5} commit(s) behind HEAD (over the cap, or drift not accepted)")
+      continue
+    fi
+
+    unvetted+=("${repo}"$'\t'"${status}"$'\t'"${f2}"$'\t'"${f3}")
   done
 
   if [[ "${#unvetted[@]}" -eq 0 ]]; then
-    echo "  All workspace(s) carry a current, verified attestation."
-    SESSION_VETTING_SUMMARY="posture=${posture}; all ${#repos[@]} workspace(s) vetted"
+    local sum="posture=${posture}; all ${#repos[@]} workspace(s) vetted"
+    [[ "${drift_accepted}" -gt 0 ]] && sum="${sum}; ${drift_accepted} accepted with drift"
+    [[ -n "${drift_detail}" ]] && sum="${sum} [${drift_detail}]"
+    echo "  All workspace(s) carry a verified attestation reachable from HEAD."
+    SESSION_VETTING_SUMMARY="${sum}"
     return 0
   fi
 
@@ -433,7 +587,9 @@ vetting_gate_repos() {
     echo "  Proceeding because posture is advisory (set 'vetting: required' to enforce):" >&2
     _vetting_print_findings "${unvetted[@]}"
     echo "" >&2
-    SESSION_VETTING_SUMMARY="posture=advisory; ${#unvetted[@]} unvetted, proceeded: ${detail}"
+    local asum="posture=advisory; ${#unvetted[@]} unvetted, proceeded: ${detail}"
+    [[ -n "${drift_detail}" ]] && asum="${asum}; drift: ${drift_detail}"
+    SESSION_VETTING_SUMMARY="${asum}"
     return 0
   fi
 
@@ -442,15 +598,17 @@ vetting_gate_repos() {
   # signed tag, the same secret-exceptions acknowledgment — just without the
   # refuse/vet/re-run round-trip, so the low-friction path and the accountable
   # path are the same path. Only for interactive launches; CI keeps today's
-  # refusal. Only offered for repos that are cleanly unvetted (no tag at HEAD):
-  # a dirty tree still must be committed first, and an existing-but-unverified
-  # tag means someone else's attestation we must not touch.
+  # refusal. Offered for a cleanly unvetted repo (no tag at HEAD) and for a repo
+  # blocked on DRIFT (a verified ancestor tag, but too far behind / not accepted):
+  # in both cases attesting the current HEAD is the correct fix and does not touch
+  # an existing tag AT HEAD. A dirty tree must be committed first, and an
+  # existing-but-unverified tag is someone else's attestation we must not touch.
   if [[ "${accept}" != "true" && -t 0 && -t 1 ]]; then
     local -a remaining=()
     local attested=0 ir is if2 if3
     for (( i=0; i<${#unvetted[@]}; i++ )); do
       IFS=$'\t' read -r ir is if2 if3 <<<"${unvetted[$i]}"
-      if [[ "${is}" == "unvetted" && "${if3}" == no\ * ]] \
+      if { [[ "${is}" == "unvetted" && "${if3}" == no\ * ]] || [[ "${is}" == "drift" ]]; } \
          && _vetting_signing_configured "${ir}" \
          && _vetting_inline_attest "${ir}" "${if2}"; then
         attested=$((attested + 1))
@@ -482,14 +640,28 @@ vetting_gate_repos() {
     return 0
   fi
 
+  # Is any remaining refusal a drift block (vetted, just too far behind / not
+  # accepted) rather than an outright-unvetted repo? If so, surface the lighter
+  # drift remedies alongside the re-attest/override guidance.
+  local any_drift="false" us
+  for (( i=0; i<${#unvetted[@]}; i++ )); do
+    IFS=$'\t' read -r _ us _ _ <<<"${unvetted[$i]}"
+    [[ "${us}" == "drift" ]] && { any_drift="true"; break; }
+  done
+
   echo "" >&2
-  echo "ERROR: vetting is required, but the following workspace(s) have no current," >&2
-  echo "       verified agent-vetting attestation, so the launch is refused:" >&2
+  echo "ERROR: vetting is required, but the following workspace(s) have no accepted," >&2
+  echo "       verified agent-vetting attestation at HEAD, so the launch is refused:" >&2
   echo "" >&2
   _vetting_print_findings "${unvetted[@]}"
   echo "" >&2
   echo "  A trusted reviewer must attest the current HEAD:" >&2
   echo "        sandbox vet --repo <PATH>" >&2
+  if [[ "${any_drift}" == "true" ]]; then
+    echo "  Or, for a repo that is vetted but behind HEAD, accept the reviewed drift:" >&2
+    echo "        re-run with --i-accept-vetting-drift, or raise" >&2
+    echo "        vetting_max_commits_behind: in your config/overlay." >&2
+  fi
   echo "  Override (audited), accepting the risk for this launch:" >&2
   echo "        re-run with --i-accept-unvetted-repo" >&2
   echo "" >&2

@@ -281,6 +281,7 @@ _sandbox_run() {
     '--keep-alive[Leave the pod running after disconnect (default: tear down)]' \
     '--i-accept-unmasked-secrets[Launch despite unmasked secrets (agent will see them)]' \
     '--i-accept-unvetted-repo[Launch despite an unvetted repo when vetting is required]' \
+    '--i-accept-vetting-drift[Non-interactively accept an attestation behind HEAD (within cap)]' \
     '--help[Show help]'
 }
 

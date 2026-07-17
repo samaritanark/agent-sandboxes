@@ -244,9 +244,15 @@ OPTIONS:
                                     be able to read them. Without this flag
                                     such a finding aborts the launch.
   --i-accept-unvetted-repo          Launch even when 'vetting: required' and a
-                                    --repo has no verified attestation at HEAD.
-                                    The unvetted repo(s) are printed and the
-                                    acceptance is recorded in the audit log.
+                                    --repo has no verified attestation reachable
+                                    from HEAD (or its drift exceeds the cap). The
+                                    repo(s) are printed and the acceptance is
+                                    recorded in the audit log.
+  --i-accept-vetting-drift          Non-interactively accept an attestation that
+                                    is behind HEAD (within any cap) when there is
+                                    no terminal to prompt on, e.g. in CI. Does not
+                                    accept a wholly unvetted repo or over-cap
+                                    drift — use --i-accept-unvetted-repo for those.
   --help                            Show this help
 
 TIERS:
@@ -272,12 +278,18 @@ SECRET GATE (tier 2/3):
 
 VETTING GATE (tier 2/3):
   Each --repo is checked for a signed attestation that a trusted reviewer
-  cleared its current HEAD for agent use. Posture is operator-controlled via
-  'vetting:' in ~/.sandbox/config.yaml (an overlay may ratchet it up):
+  cleared it for agent use. The attestation tag need not sit at HEAD: a verified
+  tag that is an ANCESTOR of HEAD counts, and the gate reports how many commits
+  behind HEAD it is (the intervening commits are trusted because they reached the
+  branch through code review). Posture is operator-controlled via 'vetting:' in
+  ~/.sandbox/config.yaml (an overlay may ratchet it up):
     off       no gate.
-    advisory  print status and proceed (default).
-    required  refuse launch unless every --repo carries a verified attestation
-              at HEAD; override with --i-accept-unvetted-repo.
+    advisory  print status (and any drift) and proceed (default).
+    required  refuse launch unless every --repo carries a verified, reachable
+              attestation. Drift behind HEAD is auto-accepted within
+              vetting_max_commits_behind: (an overlay/config cap; 0 = must be at
+              HEAD), else accepted interactively or with --i-accept-vetting-drift.
+              Override anything with --i-accept-unvetted-repo.
   Attest a repo with 'sandbox vet --repo <PATH>'. See 'sandbox vet --help'.
 
 OVERLAYS:
@@ -422,6 +434,7 @@ cmd_run() {
   local opt_keep_alive="false"
   local opt_accept_unmasked_secrets="false"
   local opt_accept_unvetted_repo="false"
+  local opt_accept_vetting_drift="false"
   local opt_base_url=""
   local -a opt_allow_domains=()
   local -a opt_infra_endpoints=()
@@ -457,6 +470,7 @@ cmd_run() {
       --keep-alive)            opt_keep_alive="true" ;;
       --i-accept-unmasked-secrets) opt_accept_unmasked_secrets="true" ;;
       --i-accept-unvetted-repo) opt_accept_unvetted_repo="true" ;;
+      --i-accept-vetting-drift) opt_accept_vetting_drift="true" ;;
       *)                       die "Unknown option: $1. Run 'sandbox run --help' for usage." ;;
     esac
     shift
@@ -844,7 +858,7 @@ cmd_run() {
     # the repo is vetted, so vetting-first lets an inline attest (which
     # acknowledges those exceptions) take effect in the same launch instead of
     # forcing a second run.
-    vetting_gate_repos "$(resolve_vetting_posture)" "${opt_accept_unvetted_repo}" "${opt_repos[@]}"
+    vetting_gate_repos "$(resolve_vetting_posture)" "${opt_accept_unvetted_repo}" "${opt_accept_vetting_drift}" "${opt_repos[@]}"
     # Gate the launch on secrets the mask would not hide. Fails closed if
     # betterleaks is absent; --i-accept-unmasked-secrets downgrades the
     # refusal to a printed warning. When this session's model inference
@@ -3323,15 +3337,20 @@ cmd_vet() {
   validate_repo_path "${repo}"
 
   if [[ "${action}" == "status" ]]; then
-    local line status f2 f3 f4
+    local line status f2 f3 f4 f5
     line="$(vetting_status_repo "${repo}")"
-    IFS=$'\t' read -r status f2 f3 f4 <<<"${line}"
+    IFS=$'\t' read -r status f2 f3 f4 f5 <<<"${line}"
     case "${status}" in
       vetted)
         echo "vetted:   ${repo}"
         echo "  HEAD:   ${f2}"
         echo "  tag:    ${f3}"
         echo "  signer: ${f4:-unknown}"
+        if [[ "${f5:-0}" -eq 0 ]]; then
+          echo "  behind: 0 (attestation is at HEAD)"
+        else
+          echo "  behind: ${f5} commit(s) — the attestation is an ancestor of HEAD"
+        fi
         ;;
       unvetted)
         echo "UNVETTED: ${repo}"

@@ -362,7 +362,18 @@ link_validate_shape() {
   overlay_minver="$(overlay_min_sandbox_version "${dir}")"
   [[ -n "${overlay_minver}" ]] && minver_note=", min CLI: ${overlay_minver}"
 
-  echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )$( [[ -n "${overlay_vetting}" ]] && echo ", vetting: ${overlay_vetting}" )${troot_note}${minver_note}" >&2
+  # An overlay-shipped drift cap (lib/vetting.sh vetting_max_commits_behind) is a
+  # run-time control too, so confirm it at link/sync time alongside the posture.
+  local overlay_cap="" cap_note=""
+  if [[ -f "${dir}/config.yaml" ]]; then
+    overlay_cap="$(extract_yaml_scalar_from_file "${dir}/config.yaml" vetting_max_commits_behind)"
+  fi
+  if [[ "${overlay_cap}" =~ ^[0-9]+$ ]]; then
+    cap_note=", max commits behind HEAD: ${overlay_cap}"
+  elif [[ -n "${overlay_cap}" ]]; then
+    warn "overlay config.yaml sets a non-integer vetting_max_commits_behind: '${overlay_cap}' — it will be ignored (no cap) at run time."
+  fi
+  echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )$( [[ -n "${overlay_vetting}" ]] && echo ", vetting: ${overlay_vetting}" )${troot_note}${minver_note}${cap_note}" >&2
   return 0
 }
 
