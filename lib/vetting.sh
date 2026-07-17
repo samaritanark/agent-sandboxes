@@ -497,26 +497,45 @@ vetting_gate_repos() {
 }
 
 # _vetting_acknowledge_exceptions <real_repo> <repo> <assume_yes> — the honesty
-# gate for `sandbox vet`. A repo's committed accepted_secrets: list (see `sandbox
-# exceptions`) only takes effect once THIS attestation signs the tree, so before
-# signing we surface which findings that list will expose to the agent and make
-# the signer acknowledge them — otherwise a rubber-stamp signature could launder
-# a real secret a contributor recorded as an "exception". Uses the same match
-# logic the gate will (value-hash + tracked file), so the preview is exactly what
-# gets honored. Returns 0 to proceed (nothing recorded, the list is inert, or the
-# signer acknowledged), 1 to abort (declined, or cannot preview / cannot prompt).
-# vetting_committed_accepted_secrets <repo> — the accepted_secrets: fingerprints
-# recorded in the repo's HEAD *commit*, one per line. This deliberately reads the
-# COMMITTED blob (`HEAD:.sandbox/config.yaml`), never the working-tree file, and
-# that is the security boundary: an attestation signs HEAD's tree, so only a list
-# that is actually in that commit is covered by the signature. A gitignored or
-# otherwise-uncommitted .sandbox/config.yaml is NOT in HEAD — and, being ignored,
-# would not even register as a dirty tree — so it must never be honored. Reading
-# it from HEAD closes that gap at the source. Hardened via _vetting_git
-# (fsmonitor/hooks/filter drivers neutralized); `git show <rev>:<path>` emits the
-# stored blob and applies no smudge filters. Empty if the file is absent at HEAD,
-# the repo has no commit, or it is not a git repo.
-vetting_committed_accepted_secrets() {
+# gate for `sandbox vet`. A repo's committed root ignore file (.betterleaksignore,
+# see `sandbox exceptions`) only takes effect once THIS attestation signs the
+# tree, so before signing we surface which findings that list will expose to the
+# agent and make the signer acknowledge them — otherwise a rubber-stamp signature
+# could launder a real secret a contributor recorded as an "exception". Uses the
+# same match logic the gate will (fingerprint + tracked file), so the preview is
+# exactly what gets honored. Returns 0 to proceed (nothing recorded, the list is
+# inert, or the signer acknowledged), 1 to abort (declined, or cannot preview /
+# cannot prompt).
+# vetting_committed_ignore_fingerprints <repo> — the `relpath:rule:line`
+# fingerprints recorded in the repo-root betterleaks ignore file at the repo's
+# HEAD *commit*, one per line (comments/blank lines stripped). This deliberately
+# reads the COMMITTED blob (`HEAD:.betterleaksignore`, falling back to
+# `HEAD:.gitleaksignore`), never the working-tree file, and that is the security
+# boundary: an attestation signs HEAD's tree, so only a list that is actually in
+# that commit is covered by the signature. A gitignored or otherwise-uncommitted
+# ignore file is NOT in HEAD — and, being ignored, would not even register as a
+# dirty tree — so it must never be honored. Reading it from HEAD closes that gap
+# at the source. Hardened via _vetting_git (fsmonitor/hooks/filter drivers
+# neutralized); `git show <rev>:<path>` emits the stored blob and applies no
+# smudge filters. Empty if no ignore file exists at HEAD, the repo has no
+# commit, or it is not a git repo.
+vetting_committed_ignore_fingerprints() {
+  local repo="$1" name tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/sandbox-accept-src-XXXXXX")" || return 0
+  for name in "${SANDBOX_REPO_IGNORE_NAME}" "${SANDBOX_REPO_IGNORE_FALLBACK}"; do
+    if _vetting_git "${repo}" show "HEAD:${name}" > "${tmp}" 2>/dev/null; then
+      strip_ignore_file_comments < "${tmp}"
+      break
+    fi
+  done
+  rm -f "${tmp}"
+}
+
+# vetting_committed_legacy_accepted_secrets <repo> — the RETIRED
+# `accepted_secrets:` list in HEAD's .sandbox/config.yaml. No longer honored by
+# any gate; read only so vet/launch can warn a repo that has not migrated to the
+# repo-root ignore file (`sandbox exceptions migrate`).
+vetting_committed_legacy_accepted_secrets() {
   local repo="$1" tmp
   tmp="$(mktemp "${TMPDIR:-/tmp}/sandbox-accept-src-XXXXXX")" || return 0
   _vetting_git "${repo}" show "HEAD:${SANDBOX_REPO_CONFIG_NAME}" > "${tmp}" 2>/dev/null || true
@@ -527,15 +546,24 @@ vetting_committed_accepted_secrets() {
 _vetting_acknowledge_exceptions() {
   local real_repo="$1" repo="$2" assume_yes="$3"
 
+  # A repo that still records exceptions in the retired accepted_secrets: key
+  # gets a loud heads-up at signing time — the gate no longer honors that list,
+  # so signing would not do what the signer likely expects.
+  local -a legacy=()
+  read_into_array legacy < <(vetting_committed_legacy_accepted_secrets "${repo}")
+  if [[ "${#legacy[@]}" -gt 0 ]]; then
+    warn "this repo still records ${#legacy[@]} secret exception(s) under accepted_secrets: in ${SANDBOX_REPO_CONFIG_NAME} — that list is NO LONGER honored. Run 'sandbox exceptions migrate --repo ${repo}' to move them to the repo-root ${SANDBOX_REPO_IGNORE_NAME}, commit, and vet again."
+  fi
+
   # Read the list from the commit about to be signed (HEAD), not the working
   # tree — the signer must acknowledge exactly what the signature will cover and
-  # the gate will later honor. See vetting_committed_accepted_secrets.
+  # the gate will later honor. See vetting_committed_ignore_fingerprints.
   local -a entries=()
-  read_into_array entries < <(vetting_committed_accepted_secrets "${repo}")
+  read_into_array entries < <(vetting_committed_ignore_fingerprints "${repo}")
   [[ "${#entries[@]}" -gt 0 ]] || return 0
 
   if ! command -v betterleaks >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-    echo "ERROR: ${repo} has an accepted_secrets: list, but betterleaks/jq are not" >&2
+    echo "ERROR: ${repo} records secret exceptions (${SANDBOX_REPO_IGNORE_NAME}), but betterleaks/jq are not" >&2
     echo "       available to show what signing it would let the agent read. Install" >&2
     echo "       them and re-run so the attestation is not a blind sign-off." >&2
     return 1

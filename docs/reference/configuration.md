@@ -38,9 +38,17 @@ extra_allowed_domains:
   - go.private.example.com
 masked_paths:                        # written by `sandbox mask add`; hidden from the agent
   - config/prod/secrets.yaml
-accepted_secrets:                    # written by `sandbox exceptions add`; reviewed
-  - "deploy/values.yaml:generic-api-key:155:3cd3c4be828647be"  # false positives, honored only when vetted
 leakscan_dep_exclusions: off         # scan gitignored dependency trees too (stricter)
+```
+
+Reviewed secret-gate false positives are **not** in this file — they live in a
+`.betterleaksignore` at the repo root (betterleaks' native format, so the same
+file serves the team's CI/pre-commit scans), written by `sandbox exceptions add`:
+
+```
+# <repo>/.betterleaksignore
+# documented example key, reviewed
+deploy/values.yaml:generic-api-key:155
 ```
 
 The **team overlay** `config.yaml` additionally holds:
@@ -56,7 +64,7 @@ trusted_inference_endpoints:         # internal model endpoints trusted with sec
 - `extra_allowed_domains` — see [Persistent extra domains](../how-to/persistent-domains.md).
 - `blocked_domains` / `blocked_cidrs` — see [Never-allow block list](../how-to/persistent-domains.md#never-allow-a-personal-block-list). All three domain sources are still subject to the blocked-destinations check.
 - `masked_paths` — see [Extending the mask](../explanation/security-model.md#extending-the-mask).
-- `accepted_secrets` — reviewed secret-gate false positives, written by `sandbox exceptions add`. Each is a value-bound `relpath:rule:line:hash` fingerprint the gate honors **only when the repo is vetted** (the vetting signature over the tree is its authority); an unvetted repo's list is ignored. See [Accepting secret-gate false positives](../how-to/secret-exceptions.md).
+- `.betterleaksignore` (repo-root file, **not** a `config.yaml` key) — reviewed secret-gate false positives, written by `sandbox exceptions add`. Each is a native betterleaks `relpath:rule:line` fingerprint, so the same committed file is honored by the team's CI and pre-commit betterleaks runs. The sandbox launch gate honors it **only when the repo is vetted** (the vetting signature over the tree is its authority — CI tools honor it unconditionally); an unvetted repo's list is ignored by the sandbox. Fingerprints must be repo-relative; an absolute entry fails the gate closed. Repos on the retired `accepted_secrets:` key convert with `sandbox exceptions migrate`. See [Accepting secret-gate false positives](../how-to/secret-exceptions.md).
 - `leakscan_dep_exclusions` / `leakscan_extra_dep_dirs` — control which gitignored dependency trees the secret gate skips; see [Dependency-tree exclusion](../explanation/security-model.md#dependency-tree-exclusion). `leakscan_extra_dep_dirs` is honored **only** in the overlay: adding a skip loosens the scan, so a repo or user cannot do it (only disable exclusions, which is stricter).
 - The overlay may also ship a `.betterleaksignore` / `.gitleaksignore` **file** at its root (not a `config.yaml` key) — a baseline of betterleaks fingerprints the secret gate should accept. Like `leakscan_extra_dep_dirs` it is operator-only, since suppressing a finding loosens the scan; see [Owning betterleaks' allowlist inputs](../explanation/security-model.md#owning-betterleaks-allowlist-inputs).
 - `trusted_inference_endpoints` — exact bare hosts of internal model endpoints trusted to receive secret-bearing prompts. When a session's inference endpoint is on this list, a would-be-blocking secret finding is downgraded from a hard refusal to a single interactive confirmation (fails closed with no TTY). Read only from the overlay (an operator-side input, never a repo-local config, so the in-sandbox agent cannot add one), no wildcards; today only the `opencode` agent (`OPENCODE_BASE_URL`) can match. See [Trusted internal model endpoints](../how-to/secret-exceptions.md#trusted-internal-model-endpoints-a-different-lever).

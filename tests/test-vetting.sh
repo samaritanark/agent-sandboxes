@@ -510,7 +510,7 @@ test_attest_acknowledges_exceptions() {
     [[ -z "${frel}" ]] && continue
     while IFS= read -r one; do
       [[ -z "${one}" ]] && continue
-      config_add_accepted_secret "${repo}/.sandbox/config.yaml" "${one}" "reviewed FP"
+      ignorefile_add_fingerprint "$(repo_ignore_file "${repo}")" "${one}" "reviewed FP"
       recorded=$((recorded + 1))
     done < <(leakscan_fingerprints_for "${repo}" "${frel}" "${frule}" "${fln}")
   done < <(scan_repo_secrets "${repo}" | grep "^no	" || true)

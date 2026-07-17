@@ -22,39 +22,59 @@ This page is about the third one.
 ## What an exception is
 
 An exception records a single finding as a reviewed false positive. Each entry
-is a **fingerprint**:
+is a betterleaks **fingerprint**:
 
 ```
-<relpath>:<rule>:<line>:<hash>
-deploy/values.yaml:generic-api-key:155:3cd3c4be828647be
+<relpath>:<rule>:<line>
+deploy/values.yaml:generic-api-key:155
 ```
 
-— the finding's path, its betterleaks rule, its line, and a short SHA-256 of the
-**matched value**. Entries live under `accepted_secrets:` in the repo's own
-`<repo>/.sandbox/config.yaml`, right beside `masked_paths:`.
+— the finding's path, its betterleaks rule, and its line. Entries live in a
+`.betterleaksignore` file at the **repo root**, one fingerprint per line, with
+optional `#` comments. This is betterleaks' own native ignore format, which is
+the whole point: **one committed file is the single source of truth for every
+scanner the team runs.** Your pre-commit hook, your CI pipeline, and the sandbox
+launch gate all read the same list, so a finding a reviewer clears once stops
+nagging everywhere at once instead of being re-accepted in three different
+places. (If a repo already carries a `.gitleaksignore`, betterleaks reads that
+too, and `sandbox exceptions` appends to it rather than starting a second file.)
 
-Two properties make this safe rather than a backdoor:
+Two properties keep this safe rather than a backdoor:
 
-- **It only counts on a vetted repo, and only when committed.** A committed
-  accept-list means nothing on its own — anyone who can push to the repo
-  (including a prompt-injected agent) could add one. What gives it authority is
-  the [vetting](vetting.md) signature: a reviewer signs the whole tree,
-  *including* this list, so accepting a finding carries a human's cryptographic
-  sign-off. The gate reads the list from the **signed commit** (`HEAD`), not your
-  working copy, so an entry that is uncommitted — or hidden by `.gitignore` —
-  is never honored; you must commit it and (re-)vet. On an unvetted repo the list
-  is ignored and the gate blocks exactly as before. (More on this in
+- **The sandbox honors it only on a vetted repo, and only when committed.** A
+  committed ignore file means nothing to the *sandbox* on its own — anyone who
+  can push to the repo (including a prompt-injected agent) could add a line, and
+  a plain `betterleaks` run in CI honors it unconditionally, which is fine for a
+  linting tool but not for a security boundary. What gives it authority *at
+  launch* is the [vetting](vetting.md) signature: a reviewer signs the whole
+  tree, *including* this file, so accepting a finding carries a human's
+  cryptographic sign-off. The gate reads the list from the **signed commit**
+  (`HEAD`), not your working copy, so an entry that is uncommitted — or hidden by
+  `.gitignore` — is never honored; you must commit it and (re-)vet. On an
+  unvetted repo the sandbox ignores the list and the gate blocks exactly as
+  before. (More on this in
   [Integration with vetting](#integration-with-vetting-and-team-overlays).)
-- **It's bound to the value.** The hash is of the secret value the scanner
-  matched. Replace that value — rotate the token, or slip a *real* secret onto
-  the same line — and the hash no longer matches, so the finding blocks again.
-  Accepting a line never blesses whatever lands there later.
+- **The value binding rides on the signature, not a hash.** Older exceptions
+  carried a SHA-256 of the matched value so a rotated token re-blocked. A native
+  betterleaks fingerprint has no hash — it names a location — so the binding
+  moves to the vetting anchor instead. Change the value on that line and the tree
+  is dirty (or a new HEAD): the repo stops being vetted, and re-vetting
+  re-surfaces every currently-matching exception for the signer to acknowledge
+  again. Accepting a line never silently blesses whatever lands there later; a
+  human re-confirms.
 
-One more boundary: an exception is honored **only for a git-tracked file**. The
-vetting signature covers committed content, so a finding in a gitignored or
-untracked local file (a `.env` you never committed, say) is not part of the
-signed tree and is never accepted — even if a fingerprint for it appears in the
-list. Those stay gated, which is correct: no one signed for them.
+One more boundary: the sandbox honors an exception **only for a git-tracked
+file**. The vetting signature covers committed content, so a finding in a
+gitignored or untracked local file (a `.env` you never committed, say) is not
+part of the signed tree and is never accepted — even if a fingerprint for it
+appears in the list. Those stay gated, which is correct: no one signed for them.
+
+> **Repo-relative fingerprints only.** Entries must be repo-relative
+> (`deploy/values.yaml:github-pat:1`), which is what `sandbox exceptions add`
+> and `betterleaks dir .` both produce. An *absolute*-path fingerprint would be
+> honored by betterleaks' unconditional root-file read but sits outside the
+> gate's control, so the gate **refuses to launch** while the ignore file
+> carries one — remove it and use the relative form.
 
 ## The workflow
 
@@ -99,15 +119,16 @@ sandbox exceptions add --repo ~/repos/app \
     --reason "documented example key from upstream docs"
 ```
 
-`add` re-scans to resolve the value hash, so a matching finding must actually
-exist in the current tree (you cannot pre-accept something the scanner doesn't
-flag). The `--reason` is optional and is stored as a comment for the next person
-reading the file. The result:
+`add` re-scans to confirm the finding actually exists in the current tree (you
+cannot pre-accept something the scanner doesn't flag). The `--reason` is optional
+and is written as a `#` comment above the entry — betterleaks treats a trailing
+inline comment as part of the fingerprint, so the reason goes on its own line.
+The result:
 
-```yaml
-# ~/repos/app/.sandbox/config.yaml
-accepted_secrets:
-  - "deploy/values.yaml:generic-api-key:155:3cd3c4be828647be"  # documented example key from upstream docs
+```
+# ~/repos/app/.betterleaksignore
+# documented example key from upstream docs
+deploy/values.yaml:generic-api-key:155
 ```
 
 Review what's recorded any time:
@@ -123,12 +144,14 @@ sandbox exceptions list --repo ~/repos/app
 
 ### 3. Commit it
 
-`accepted_secrets:` is checked in like any other repo config. That's the point —
-it's visible in code review, and a junior developer inherits the judgment of
-whoever reviewed it rather than re-litigating each finding.
+`.betterleaksignore` is checked in like any other repo file. That's the point —
+it's visible in code review, a junior developer inherits the judgment of whoever
+reviewed it rather than re-litigating each finding, and the team's pre-commit and
+CI betterleaks runs pick up the same clearance the moment it merges (they scan
+from the repo root with `betterleaks dir .`, so the relative fingerprints match).
 
 ```bash
-git -C ~/repos/app add .sandbox/config.yaml
+git -C ~/repos/app add .betterleaksignore
 git -C ~/repos/app commit -m "Accept reviewed secret-gate false positive in values.yaml"
 ```
 
@@ -177,18 +200,31 @@ run.
 
 ## Authoring or auditing an entry by hand
 
-The subcommand is only a convenience — the file is plain text, so a reviewer can
-add or check an entry with an editor and standard tools. The hash is a 16-hex
-prefix of the SHA-256 of the exact bytes betterleaks matched:
+The subcommand is only a convenience — `.betterleaksignore` is plain text in a
+format the whole team already understands, so a reviewer can add or check an
+entry with an editor. Each line is exactly what the gate prints: `RELPATH:RULE:LINE`,
+repo-relative. A `#` line is a comment. There is no hash to compute and nothing
+tool-specific about the format, which is why the same file serves CI and
+pre-commit unchanged. `sandbox exceptions add` is still the easy path — it
+confirms the finding exists before recording it, so you can't accept a typo.
+
+## Migrating from `accepted_secrets:`
+
+Repos vetted before this change recorded exceptions under `accepted_secrets:` in
+`<repo>/.sandbox/config.yaml`, with a value hash on each entry. **That list is no
+longer honored.** One command converts a repo:
 
 ```bash
-printf '%s' 'the-matched-value' | sha256sum | cut -c1-16
+sandbox exceptions migrate --repo ~/repos/app
 ```
 
-The one subtlety is "exact bytes": the hash covers precisely the span the
-scanner flagged (surrounding quotes or trailing whitespace matter), so hand-
-computing it is best used to *audit* an entry the tool produced rather than to
-author from scratch. When in doubt, let `exceptions add` compute it.
+It rewrites each `relpath:rule:line:hash` entry as the native `relpath:rule:line`
+in `.betterleaksignore` (carrying any `# reason` comment across), removes the
+`accepted_secrets:` block from `.sandbox/config.yaml`, and leaves every other key
+in that file alone. Review the diff, commit **both** files, and re-vet so the
+gate honors the new list. Until you do, `sandbox run`, `sandbox check`, and
+`sandbox vet` all print a one-line nudge when they notice a leftover
+`accepted_secrets:` list, and the findings it used to cover block again.
 
 ## Integration with vetting and team overlays
 
@@ -216,23 +252,25 @@ consequences are worth making explicit:
 
 ### Per-repo exceptions vs. an operator baseline
 
-There are two ways to tell the gate "accept this finding," with different trust
-models. Use the one that matches where the judgment lives:
+Both stores now use betterleaks' native fingerprint format; what differs is
+*where the file lives* and *what makes the sandbox trust it*. Use the one that
+matches where the judgment lives:
 
-| | `accepted_secrets:` (this page) | Overlay `.betterleaksignore` |
+| | Repo `.betterleaksignore` (this page) | Overlay `.betterleaksignore` |
 | --- | --- | --- |
-| Lives in | the **repo** (`.sandbox/config.yaml`) | the **team overlay** |
+| Lives in | the **repo root** (committed) | the **team overlay** |
 | Authored by | anyone who can commit; blessed by the vetting signer | the operator who ships the overlay |
-| Authority | the repo's vetting attestation | trust in the overlay itself (org-wide) |
+| Authority at launch | the repo's vetting attestation | trust in the overlay itself (org-wide) |
 | Scope | that one repo | every repo the overlay applies to |
-| Fingerprint | value-bound (`…:hash`); a changed value re-blocks | betterleaks' own path/rule fingerprint |
+| Also read by | the team's own CI / pre-commit betterleaks | operator-side only |
 | Best for | a false positive specific to one repo | a finding that recurs across many repos |
 
 The [operator baseline](../explanation/security-model.md#owning-betterleaks-allowlist-inputs)
 is the right tool when the same false positive shows up everywhere and a single
 operator owns the call. Per-repo exceptions are the right tool for the ordinary
 case: a specific finding, in a specific repo, that a reviewer vouches for as part
-of vetting that repo.
+of vetting that repo — and, because the file is the repo's own
+`.betterleaksignore`, the same clearance the developers' local scans already use.
 
 ## Trusted internal model endpoints (a different lever)
 
@@ -274,7 +312,7 @@ operator's overlay/config nor the launch environment. It does **not** restrict
 the launching operator, who selects the overlay and sets `OPENCODE_BASE_URL`;
 that operator already controls the gate outright (`--i-accept-unmasked-secrets`,
 or an overlay `.betterleaksignore` baseline), so for them the list only records
-intent rather than granting new power. (Unlike `accepted_secrets:` above, the
+intent rather than granting new power. (Unlike the repo exceptions above, the
 trust list is unsigned operator config, not bound to a vetting signature.) Match
 is on the exact bare host (no wildcards, no port). Today only the `opencode`
 agent has a caller-chosen endpoint (`OPENCODE_BASE_URL`); the other agents always
@@ -287,7 +325,7 @@ trusted_inference_endpoints:
   - llm.corp.example.org
 ```
 
-| | `accepted_secrets:` (exceptions) | `trusted_inference_endpoints:` |
+| | `.betterleaksignore` (exceptions) | `trusted_inference_endpoints:` |
 | --- | --- | --- |
 | The finding is | a reviewed **false positive** | a **real secret** |
 | Effect | finding is not counted at all | block → one interactive confirm |
@@ -301,5 +339,5 @@ trusted_inference_endpoints:
 - [Security model → the secret gate](../explanation/security-model.md) — what
   the gate scans, the mask, and the encrypted-at-rest exemption (which handles
   SealedSecret / SOPS values without needing an exception at all).
-- [Configuration reference](../reference/configuration.md) — the
-  `accepted_secrets:` key.
+- [Configuration reference](../reference/configuration.md) — the repo-root
+  `.betterleaksignore` and the per-repo config file beside it.

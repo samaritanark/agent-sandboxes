@@ -322,62 +322,66 @@ test_config_add_masked_path() {
 }
 
 ###############################################################################
-# accepted_secrets: reader/writer (config) + the value-fingerprint hash. The
-# `sandbox exceptions` accept-list; scanner-free.
+# Repo-root ignore file: writer/reader for the `sandbox exceptions` store —
+# betterleaks-native `relpath:rule:line` fingerprints with own-line comments.
+# Scanner-free.
 ###############################################################################
 test_exceptions_accept_list() {
-  info "Testing accepted_secrets reader/writer + value hash..."
-  local cfg="${TEST_DIR}/excwrite/.sandbox/config.yaml"
-  local fp1="deploy/values.yaml:generic-api-key:155:abc123def4567890"
-  local fp2="config/app.env:github-pat:3:0011223344556677"
+  info "Testing repo-root ignore-file reader/writer..."
+  local repo="${TEST_DIR}/excwrite"; mkdir -p "${repo}"
+  local ign; ign="$(repo_ignore_file "${repo}")"
+  eq "defaults to .betterleaksignore" "${repo}/.betterleaksignore" "${ign}"
+  local fp1="deploy/values.yaml:generic-api-key:155"
+  local fp2="config/app.env:github-pat:3"
 
-  config_add_accepted_secret "${cfg}" "${fp1}" "sealed secret, reviewed AH"
-  eq "creates accepted_secrets key" "${fp1}" \
-     "$(load_repo_accepted_secrets "${TEST_DIR}/excwrite")"
+  ignorefile_add_fingerprint "${ign}" "${fp1}" "sealed secret, reviewed AH"
+  eq "creates the ignore file with the entry" "${fp1}" \
+     "$(load_repo_ignore_fingerprints "${repo}")"
 
-  # The reason is a YAML comment the reader strips — the stored value is bare.
-  grep -q '# sealed secret, reviewed AH' "${cfg}" \
-    && pass "reason stored as a comment" || fail "reason comment missing"
+  # The reason is a full-line comment ABOVE the entry — betterleaks does not
+  # support trailing inline comments, so the entry line must stay bare.
+  grep -q '^# sealed secret, reviewed AH$' "${ign}" \
+    && pass "reason stored as an own-line comment" || fail "reason comment missing"
+  grep -qxF "${fp1}" "${ign}" \
+    && pass "entry line is the bare fingerprint" || fail "entry line not bare"
 
   # Idempotent on the fingerprint even with a different reason.
-  config_add_accepted_secret "${cfg}" "${fp1}" "a different note"
+  ignorefile_add_fingerprint "${ign}" "${fp1}" "a different note"
   eq "dedup keeps one entry" "1" \
-     "$(load_repo_accepted_secrets "${TEST_DIR}/excwrite" | wc -l | tr -d ' ')"
+     "$(load_repo_ignore_fingerprints "${repo}" | wc -l | tr -d ' ')"
 
   # A second distinct fingerprint (no reason) is appended.
-  config_add_accepted_secret "${cfg}" "${fp2}"
+  ignorefile_add_fingerprint "${ign}" "${fp2}"
   eq "second fingerprint appended" "2" \
-     "$(load_repo_accepted_secrets "${TEST_DIR}/excwrite" | wc -l | tr -d ' ')"
+     "$(load_repo_ignore_fingerprints "${repo}" | wc -l | tr -d ' ')"
 
-  # Coexists with a masked_paths block in the same file.
-  local cfg2="${TEST_DIR}/exccoexist/.sandbox/config.yaml"
-  mkdir -p "$(dirname "${cfg2}")"
-  printf 'masked_paths:\n  - "creds.json"\n' > "${cfg2}"
-  config_add_accepted_secret "${cfg2}" "${fp1}"
+  # The reader strips comments/blank lines but returns entries verbatim.
+  printf '\n# a stray note\n' >> "${ign}"
+  eq "comments and blanks are stripped" "2" \
+     "$(load_repo_ignore_fingerprints "${repo}" | wc -l | tr -d ' ')"
+
+  # A repo that already carries a .gitleaksignore gets appended there instead
+  # of growing a second, conflicting store.
+  local repo2="${TEST_DIR}/excgitleaks"; mkdir -p "${repo2}"
+  printf 'old/entry.txt:github-pat:9\n' > "${repo2}/.gitleaksignore"
+  eq "existing .gitleaksignore is preferred" "${repo2}/.gitleaksignore" \
+     "$(repo_ignore_file "${repo2}")"
+  ignorefile_add_fingerprint "$(repo_ignore_file "${repo2}")" "${fp1}"
+  eq "appends to the existing file" "2" \
+     "$(load_repo_ignore_fingerprints "${repo2}" | wc -l | tr -d ' ')"
+
+  # remove_yaml_list_from_file — the migrate helper retires an
+  # accepted_secrets: block but leaves every other key intact.
+  local cfg="${TEST_DIR}/excmigrate/.sandbox/config.yaml"
+  mkdir -p "$(dirname "${cfg}")"
+  printf 'masked_paths:\n  - "creds.json"\naccepted_secrets:\n  - "a:b:1:deadbeef00000000"  # note\n  - "c:d:2:deadbeef11111111"\nextra_allowed_domains:\n  - git.example.com\n' > "${cfg}"
+  remove_yaml_list_from_file "${cfg}" "accepted_secrets"
+  eq "accepted_secrets block removed" "" \
+     "$(load_repo_accepted_secrets "${TEST_DIR}/excmigrate")"
   eq "masked_paths preserved" "creds.json" \
-     "$(load_repo_masked_paths "${TEST_DIR}/exccoexist")"
-  eq "accepted_secret added alongside" "${fp1}" \
-     "$(load_repo_accepted_secrets "${TEST_DIR}/exccoexist")"
-
-  # _leakscan_value_hash: 16-hex, deterministic, and equal to sha256 of the
-  # exact matched value sliced by betterleaks' columns.
-  local f="${TEST_DIR}/hashme.yaml"
-  printf 'token: %s\n' "${PLAIN_TOK}" > "${f}"
-  local h; h="$(_leakscan_value_hash "${f}" 1 $(colspan_of "${f}" 1 "${PLAIN_TOK}"))"
-  case "${h}" in
-    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) pass "value hash is a 16-hex prefix" ;;
-    *) fail "value hash not 16 hex: '${h}'" ;;
-  esac
-  local expected
-  expected="$(printf '%s' "${PLAIN_TOK}" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)"
-  eq "value hash matches sha256 of the sliced value" "${expected}" "${h}"
-
-  # Changing the value changes the hash (the property the gate relies on).
-  local f2="${TEST_DIR}/hashme2.yaml"
-  printf 'token: %s\n' "${SEALED_TOK}" > "${f2}"
-  local h2; h2="$(_leakscan_value_hash "${f2}" 1 $(colspan_of "${f2}" 1 "${SEALED_TOK}"))"
-  [[ "${h}" != "${h2}" ]] && pass "different value → different hash" \
-    || fail "hash should change when the value changes"
+     "$(load_repo_masked_paths "${TEST_DIR}/excmigrate")"
+  eq "domains preserved" "git.example.com" \
+     "$(load_extra_allowed_domains_from_file "${cfg}")"
 }
 
 ###############################################################################
@@ -406,10 +410,8 @@ test_fingerprint_resolver() {
   local out rc
   rc=0; out="$(leakscan_fingerprints_for "${repo}" "deploy/values.yaml" "${rule}" "${ln}")" || rc=$?
   eq "resolver returns 0 for a live finding" "0" "${rc}"
-  case "${out}" in
-    deploy/values.yaml:${rule}:${ln}:[0-9a-f]*) pass "resolved entry has RELPATH:RULE:LINE:HASH shape" ;;
-    *) fail "unexpected resolver output: '${out}'" ;;
-  esac
+  eq "resolved entry is the native RELPATH:RULE:LINE fingerprint" \
+     "deploy/values.yaml:${rule}:${ln}" "${out}"
 
   # A line the scanner does not flag → not-found (rc 1), no output.
   rc=0; out="$(leakscan_fingerprints_for "${repo}" "deploy/values.yaml" "${rule}" 999)" || rc=$?
@@ -1051,7 +1053,7 @@ test_encrypted_leaks_still_block() {
 # scan_repo_secrets accept-list — a `no` finding whose fingerprint is in the
 # accept-file is downgraded to `accepted`, BUT only for a git-tracked file; a
 # gitignored/untracked file is never accepted (not in the signed tree). A
-# changed value (wrong hash) does not match.
+# fingerprint for a different location does not match.
 ###############################################################################
 test_scan_acceptance() {
   command -v betterleaks &>/dev/null || skip "betterleaks not installed"
@@ -1096,18 +1098,76 @@ test_scan_acceptance() {
     && pass "gitignored file classified unmasked" \
     || fail "expected gitignored file to remain 'no'"
 
-  # A wrong/tampered hash does not match (value-binding).
-  printf 'deploy/values.yaml:%s:%s:deadbeefdeadbeef\n' "${rule}" "${ln}" > "${accept}"
+  # A fingerprint for a different location (wrong line) does not match, and a
+  # legacy 4-field `path:rule:line:hash` entry matches nothing (exact compare).
+  printf 'deploy/values.yaml:%s:999\ndeploy/values.yaml:%s:%s:deadbeefdeadbeef\n' \
+    "${rule}" "${rule}" "${ln}" > "${accept}"
   scan_repo_secrets "${repo}" "${accept}" > "${out}"
   grep -q "$(printf '^no\tdeploy/values.yaml\t')" "${out}" \
-    && pass "wrong hash does not accept (value-binding holds)" \
-    || fail "tampered-hash fingerprint should not be accepted, got: $(cat "${out}")"
+    && pass "wrong-location and legacy 4-field entries do not accept" \
+    || fail "non-matching fingerprints should not be accepted, got: $(cat "${out}")"
 
   # No accept-file → unchanged behavior.
   scan_repo_secrets "${repo}" > "${out}"
   grep -q "$(printf '^no\tdeploy/values.yaml\t')" "${out}" \
     && pass "no accept-file → finding stays 'no'" \
     || fail "without an accept-file the finding should be 'no'"
+}
+
+###############################################################################
+# scan_repo_secrets — a repo-root ignore file is safe to coexist with the scan:
+# relative fingerprints (the sanctioned, committed form) do not suppress the
+# gate's absolute-target scan, and an ABSOLUTE fingerprint — which betterleaks'
+# unconditional root-file auto-read WOULD honor, silently blinding the gate —
+# fails the scan closed until removed.
+###############################################################################
+test_root_ignore_file_guard() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing root ignore-file guard (relative inert, absolute fails closed)..."
+
+  local repo="${TEST_DIR}/rootign"
+  mkdir -p "${repo}/deploy"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  printf 'api_key: %s\n' "${PLAIN_TOK}" > "${repo}/deploy/values.yaml"
+  git -C "${repo}" add -A 2>/dev/null
+
+  # Learn the real rule/line, then commit a RELATIVE fingerprint for it in the
+  # root ignore file — exactly what `sandbox exceptions add` records.
+  local rule ln out="${TEST_DIR}/rootign.out"
+  IFS=$'\t' read -r _ _ rule ln _ < <(scan_repo_secrets "${repo}" | grep "^no	deploy/values.yaml	" | head -n1)
+  [[ -n "${rule}" ]] || fail "expected a finding to resolve"
+  printf '# reviewed FP\ndeploy/values.yaml:%s:%s\n' "${rule}" "${ln}" > "${repo}/.betterleaksignore"
+  git -C "${repo}" add -A 2>/dev/null
+
+  # Unvetted (no accept-file): the committed relative fingerprint must NOT
+  # suppress the finding inside betterleaks — the gate still sees and blocks it.
+  scan_repo_secrets "${repo}" > "${out}"
+  grep -q "$(printf '^no\tdeploy/values.yaml\t')" "${out}" \
+    && pass "relative root-ignore fingerprint is inert to the gate's scan" \
+    || fail "finding vanished — root ignore file suppressed the scan: $(cat "${out}")"
+
+  # An absolute fingerprint would be honored by the auto-read → fail closed.
+  printf '%s/deploy/values.yaml:%s:%s\n' "$(realpath "${repo}")" "${rule}" "${ln}" \
+    > "${repo}/.betterleaksignore"
+  scan_repo_secrets "${repo}" > "${out}"
+  grep -q "$(printf '^error\t')" "${out}" \
+    && pass "absolute root-ignore fingerprint fails the scan closed" \
+    || fail "expected an error sentinel for an absolute fingerprint, got: $(cat "${out}")"
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "gate must refuse while the root ignore file carries an absolute entry"
+  fi
+  pass "gate refuses on an absolute root-ignore fingerprint"
+
+  # Same guard for a .gitleaksignore (betterleaks auto-reads it too).
+  rm -f "${repo}/.betterleaksignore"
+  printf '/etc/passwd:%s:1\n' "${rule}" > "${repo}/.gitleaksignore"
+  scan_repo_secrets "${repo}" > "${out}"
+  grep -q "$(printf '^error\t')" "${out}" \
+    && pass ".gitleaksignore absolute entry also fails closed" \
+    || fail "expected an error sentinel for .gitleaksignore, got: $(cat "${out}")"
 }
 
 ###############################################################################
@@ -1151,7 +1211,7 @@ EOF
     fp="$(leakscan_fingerprints_for "${repo}" "${frel}" "${frule}" "${fln}")"
     while IFS= read -r one; do
       [[ -z "${one}" ]] && continue
-      config_add_accepted_secret "${repo}/.sandbox/config.yaml" "${one}" "reviewed FP"
+      ignorefile_add_fingerprint "$(repo_ignore_file "${repo}")" "${one}" "reviewed FP"
       recorded=$((recorded + 1))
     done <<<"${fp}"
   done < <(scan_repo_secrets "${repo}" | grep "^no	" || true)
@@ -1232,12 +1292,10 @@ EOF
   fi
   pass "vetted repo blocks the secret with no committed exception"
 
-  # THE ATTACK: drop an UNCOMMITTED accept-list and hide it via the local,
+  # THE ATTACK: drop an UNCOMMITTED root ignore file and hide it via the local,
   # uncommitted .git/info/exclude so HEAD is unchanged and the tree stays clean.
-  mkdir -p "${repo}/.sandbox"
-  printf 'accepted_secrets:\n' > "${repo}/.sandbox/config.yaml"
-  while IFS= read -r fp; do [[ -n "${fp}" ]] && printf '  - "%s"\n' "${fp}" >> "${repo}/.sandbox/config.yaml"; done <<<"${specs}"
-  printf '.sandbox/\n' >> "${repo}/.git/info/exclude"
+  while IFS= read -r fp; do [[ -n "${fp}" ]] && printf '%s\n' "${fp}" >> "${repo}/.betterleaksignore"; done <<<"${specs}"
+  printf '.betterleaksignore\n' >> "${repo}/.git/info/exclude"
 
   # Preconditions that made the bypass possible must actually hold here.
   eq "tree still clean (gitignored list invisible to porcelain)" "" \
@@ -1265,6 +1323,40 @@ EOF
   fi
 
   USER_SANDBOX_CONFIG="${_saved_user}"
+}
+
+###############################################################################
+# sandbox exceptions migrate — converts a legacy accepted_secrets: list to the
+# repo-root ignore file: hash dropped, reasons carried over as comments, the
+# YAML key removed, other config keys untouched. Driven through the real CLI.
+###############################################################################
+test_exceptions_migrate() {
+  info "Testing 'sandbox exceptions migrate'..."
+  local SB="${SANDBOX_ROOT}/bin/sandbox"
+  local repo="${TEST_DIR}/migrate"
+  mkdir -p "${repo}/.sandbox"
+  git -C "${repo}" init -q
+  printf 'masked_paths:\n  - "creds.json"\naccepted_secrets:\n  - "deploy/values.yaml:generic-api-key:155:3cd3c4be828647be"  # sealed, reviewed AH\n  - "config/app.env:github-pat:3:0011223344556677"\n' \
+    > "${repo}/.sandbox/config.yaml"
+
+  "${SB}" exceptions migrate --repo "${repo}" >/dev/null 2>&1 \
+    || fail "exceptions migrate failed"
+
+  # Entries land in .betterleaksignore in native 3-field form.
+  eq "hash dropped on migrate" \
+     "deploy/values.yaml:generic-api-key:155
+config/app.env:github-pat:3" \
+     "$(load_repo_ignore_fingerprints "${repo}")"
+  grep -q '^# sealed, reviewed AH$' "${repo}/.betterleaksignore" \
+    && pass "reason carried over as a comment" || fail "reason comment lost in migration"
+
+  # The legacy key is gone; unrelated keys survive.
+  eq "accepted_secrets removed from config" "" "$(load_repo_accepted_secrets "${repo}")"
+  eq "masked_paths untouched" "creds.json" "$(load_repo_masked_paths "${repo}")"
+
+  # Idempotent-ish: a second run reports nothing to migrate and changes nothing.
+  "${SB}" exceptions migrate --repo "${repo}" 2>/dev/null | grep -q "nothing to migrate" \
+    && pass "re-running migrate is a no-op" || fail "second migrate should find nothing"
 }
 
 ###############################################################################
@@ -1454,8 +1546,10 @@ main() {
   test_encrypted_scan_and_gate
   test_encrypted_leaks_still_block
   test_scan_acceptance
+  test_root_ignore_file_guard
   test_exceptions_gate_vetted
   test_exceptions_gate_committed_only
+  test_exceptions_migrate
 
   echo ""
   echo "All secret-gate tests passed."

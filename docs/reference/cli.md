@@ -55,10 +55,12 @@ sandbox secret delete <NAME>
 sandbox mask add --repo <PATH> <RELPATH>...    # hide file(s) from the agent (per-repo)
 sandbox mask list --repo <PATH>               # built-in + configured masked paths
 sandbox exceptions add --repo <PATH> <RELPATH:RULE:LINE>... [--reason TEXT]
-                     # record reviewed secret-gate false positive(s); honored
-                     # only on a vetted repo. RELPATH:RULE:LINE is what the gate
-                     # prints. Re-scans to resolve the value hash.
-sandbox exceptions list --repo <PATH>         # recorded accepted_secrets fingerprints
+                     # record reviewed secret-gate false positive(s) into the
+                     # repo-root .betterleaksignore (native betterleaks format,
+                     # shared with CI/pre-commit). Sandbox honors them only on a
+                     # vetted repo. RELPATH:RULE:LINE is what the gate prints.
+sandbox exceptions list --repo <PATH>         # recorded .betterleaksignore fingerprints
+sandbox exceptions migrate --repo <PATH>      # convert a legacy accepted_secrets: list
 sandbox vet --repo <PATH> [--message MSG] [--yes]   # sign an agent-vetted/<sha> tag
                      # --yes: acknowledge recorded secret exceptions non-interactively
 sandbox vet --status --repo <PATH>            # print vetting state, sign nothing

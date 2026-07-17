@@ -176,58 +176,104 @@ config_add_masked_path() {
   fi
 }
 
-# load_repo_accepted_secrets <repo> — print the per-repo `accepted_secrets:`
-# list, one fingerprint per line. Each is a `relpath:rule:line:hash` string a
-# reviewer has recorded as a reviewed false positive (see `sandbox exceptions`).
-# The launch gate honours these ONLY when the repo is vetted (a signed attestation
-# covers this exact tree, hence the reviewer's judgment); this reader just returns
-# the raw list. Empty if the repo has no config or no accepted_secrets key.
+# SANDBOX_REPO_IGNORE_NAME — the canonical per-repo secret-exception store: a
+# betterleaks ignore file at the REPO ROOT, in betterleaks' native fingerprint
+# format (`relpath:rule:line`, one per line, `#` full-line comments). One file
+# now serves every scanner the team runs — pre-commit hooks and CI call
+# `betterleaks dir .` from the repo root and honor it natively, and the sandbox
+# launch gate honors it (only once the repo is vetted; see
+# vetted_accepted_fingerprints). betterleaks also auto-reads a .gitleaksignore
+# at the root, so a repo that already carries one is read as a fallback.
+SANDBOX_REPO_IGNORE_NAME=".betterleaksignore"
+SANDBOX_REPO_IGNORE_FALLBACK=".gitleaksignore"
+
+# repo_ignore_file <repo> — print the repo-root ignore file to use: an existing
+# .betterleaksignore, else an existing .gitleaksignore, else the canonical
+# .betterleaksignore path (for a writer creating it). Always prints one path.
+repo_ignore_file() {
+  local repo="$1" f
+  for f in "${SANDBOX_REPO_IGNORE_NAME}" "${SANDBOX_REPO_IGNORE_FALLBACK}"; do
+    [[ -f "${repo}/${f}" ]] && { echo "${repo}/${f}"; return 0; }
+  done
+  echo "${repo}/${SANDBOX_REPO_IGNORE_NAME}"
+}
+
+# strip_ignore_file_comments — filter stdin (an ignore file) down to bare
+# fingerprint lines: full-line `#` comments and blank lines removed, surrounding
+# whitespace trimmed. betterleaks does NOT support trailing inline comments (a
+# `fp  # note` line simply matches nothing), so this deliberately does not strip
+# them — a malformed line stays visible to the callers that validate.
+strip_ignore_file_comments() {
+  sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^#' | grep -v '^$' || true
+}
+
+# load_repo_ignore_fingerprints <repo> — print the working-tree fingerprints
+# recorded in the repo-root ignore file, one `relpath:rule:line` per line.
+# This is the WORKING-TREE view (for `sandbox exceptions list` and the vet-time
+# preview); the launch gate reads the committed blob at HEAD instead
+# (vetting_committed_ignore_fingerprints) so only signature-covered entries are
+# ever honored. Empty if the repo has no ignore file.
+load_repo_ignore_fingerprints() {
+  local f
+  f="$(repo_ignore_file "$1")"
+  [[ -f "${f}" ]] || return 0
+  strip_ignore_file_comments < "${f}"
+}
+
+# load_repo_accepted_secrets <repo> — LEGACY reader: the retired
+# `accepted_secrets:` list (`relpath:rule:line:hash` entries) in
+# <repo>/.sandbox/config.yaml. The gate no longer honors it — the store moved
+# to the repo-root betterleaks ignore file so one list serves CI, pre-commit,
+# and the sandbox. Kept only so `sandbox exceptions migrate` can convert it and
+# the gate/vet can warn when a repo still carries one.
 load_repo_accepted_secrets() {
   extract_yaml_list_from_file "$1/${SANDBOX_REPO_CONFIG_NAME}" "accepted_secrets"
 }
 
-# config_add_accepted_secret <config_file> <fingerprint> [reason] — add a
-# `relpath:rule:line:hash` fingerprint to the `accepted_secrets:` list in a
-# per-repo config file, creating the file (and its .sandbox/ parent) if needed.
-# Idempotent on the fingerprint (a reason change does not re-add). An optional
-# reason is appended as a YAML `# comment`; the reader (extract_yaml_list_from_file)
-# strips inline comments, so it is purely for humans reading the file/PR — which is
-# why it is optional. Mirrors config_add_masked_path. bash 3.2-safe.
-config_add_accepted_secret() {
-  local config_file="$1" fingerprint="$2" reason="${3:-}"
+# ignorefile_add_fingerprint <ignore_file> <fingerprint> [reason] — add a
+# `relpath:rule:line` fingerprint to a betterleaks ignore file, creating it if
+# needed. Idempotent on the fingerprint (a reason change does not re-add). An
+# optional reason lands as a full-line `#` comment ABOVE the entry — betterleaks
+# treats a trailing inline comment as part of the fingerprint (the line then
+# matches nothing), so own-line comments are the only format that keeps the
+# file native to every consumer. bash 3.2-safe.
+ignorefile_add_fingerprint() {
+  local ignore_file="$1" fingerprint="$2" reason="${3:-}"
 
-  # Already present? The reader strips quoting and the comment, so compare bare.
   local existing
-  while IFS= read -r existing; do
-    [[ "${existing}" == "${fingerprint}" ]] && return 0
-  done < <(extract_yaml_list_from_file "${config_file}" "accepted_secrets")
+  if [[ -f "${ignore_file}" ]]; then
+    while IFS= read -r existing; do
+      [[ "${existing}" == "${fingerprint}" ]] && return 0
+    done < <(strip_ignore_file_comments < "${ignore_file}")
+    # Ensure the file ends with a newline before appending.
+    [[ -n "$(tail -c1 "${ignore_file}")" ]] && printf '\n' >> "${ignore_file}"
+  fi
 
-  mkdir -p "$(dirname "${config_file}")"
-
-  local item="  - \"${fingerprint}\""
   if [[ -n "${reason}" ]]; then
-    # One line only: strip CR/LF and a leading '#' so the comment can't wrap or
-    # look like a new key.
+    # One line only: strip CR/LF so the comment cannot wrap into a bogus entry.
     reason="$(printf '%s' "${reason}" | tr -d '\r\n')"
     reason="${reason#\#}"
-    item="${item}  # ${reason}"
+    printf '# %s\n' "${reason# }" >> "${ignore_file}"
   fi
+  printf '%s\n' "${fingerprint}" >> "${ignore_file}"
+}
 
-  if [[ ! -f "${config_file}" ]]; then
-    printf 'accepted_secrets:\n%s\n' "${item}" > "${config_file}"
-    return 0
-  fi
-
-  if grep -q '^accepted_secrets:' "${config_file}"; then
-    local tmp="${config_file}.tmp.$$"
-    awk -v item="${item}" '
-      { print }
-      /^accepted_secrets:/ && !done { print item; done = 1 }
-    ' "${config_file}" > "${tmp}" && mv "${tmp}" "${config_file}"
-  else
-    [[ -n "$(tail -c1 "${config_file}")" ]] && printf '\n' >> "${config_file}"
-    printf 'accepted_secrets:\n%s\n' "${item}" >> "${config_file}"
-  fi
+# remove_yaml_list_from_file <file> <key> — remove a `key:` block list (the key
+# line and its `- item` lines) from a YAML file. Comment lines inside the block
+# (indented `#`) go with it; anything else is preserved byte-for-byte. Used by
+# `sandbox exceptions migrate` to retire an accepted_secrets: block after its
+# entries move to the repo-root ignore file. No-op when the key is absent.
+remove_yaml_list_from_file() {
+  local file="$1" key="$2"
+  [[ -f "${file}" ]] || return 0
+  grep -q "^${key}:" "${file}" || return 0
+  local tmp="${file}.tmp.$$"
+  awk -v key="${key}" '
+    $0 ~ "^"key":" { inblock = 1; next }
+    inblock && /^[[:space:]]+(-|#)/ { next }
+    inblock && /^[[:space:]]*$/ { next }
+    { inblock = 0; print }
+  ' "${file}" > "${tmp}" && mv "${tmp}" "${file}"
 }
 
 # load_user_blocked_domains / load_user_blocked_cidrs — print the per-user

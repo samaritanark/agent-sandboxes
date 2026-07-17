@@ -589,46 +589,49 @@ finding_is_encrypted() {
 }
 
 # _leakscan_finding_accepted <accept_file> <real_repo> <relpath> <rule> <line>
-# <startcol> <endcol> — return 0 iff this finding is a recorded, honorable
-# false positive: accept_file is non-empty AND lists this finding's
-# `relpath:rule:line:hash` fingerprint (hash recomputed here, so replacing the
-# value breaks the match) AND the file is git-TRACKED (committed content the
+# — return 0 iff this finding is a recorded, honorable false positive:
+# accept_file is non-empty AND lists this finding's `relpath:rule:line`
+# fingerprint (betterleaks' native form, so the same entry serves the team's
+# CI/pre-commit scans) AND the file is git-TRACKED (committed content the
 # vetting signature actually covers — a gitignored/untracked file is not, so it
 # is never accepted). Returns 1 otherwise.
+#
+# Unlike the retired accepted_secrets: format there is no value hash: location
+# fingerprints are what betterleaks understands, and the value binding the hash
+# provided is preserved by the vetting anchor instead — changing the value
+# dirties the tree (or makes a new HEAD), the repo stops being vetted, and
+# re-vetting re-surfaces every currently-matching exception for explicit
+# acknowledgment (_vetting_acknowledge_exceptions).
 _leakscan_finding_accepted() {
-  local accept_file="$1" real_repo="$2" relpath="$3" rule="$4" line="$5" sc="$6" ec="$7"
+  local accept_file="$1" real_repo="$2" relpath="$3" rule="$4" line="$5"
   [[ -n "${accept_file}" && -s "${accept_file}" ]] || return 1
-  local h fp
-  h="$(_leakscan_value_hash "${real_repo}/${relpath}" "${line}" "${sc}" "${ec}")" || return 1
-  [[ -n "${h}" ]] || return 1
-  fp="${relpath}:${rule}:${line}:${h}"
-  grep -qxF "${fp}" "${accept_file}" 2>/dev/null || return 1
+  grep -qxF "${relpath}:${rule}:${line}" "${accept_file}" 2>/dev/null || return 1
   # Tracked-file gate. fsmonitor/hooks disabled so an untrusted repo config can't
   # exec anything on this read.
   git -C "${real_repo}" -c core.fsmonitor= -c core.hooksPath=/dev/null \
     ls-files --error-unmatch -- "${relpath}" >/dev/null 2>&1
 }
 
-# vetted_accepted_fingerprints <repo> — the accepted_secrets fingerprints to
-# honor for a repo at launch, or NOTHING unless the repo is currently vetted (a
-# signed attestation verifies at HEAD over a clean tree — vetting_status_repo).
-# The committed accept-list carries weight only because the vetting signature
-# covers it; an unvetted (or unsignable) repo's list is ignored, independent of
-# the vetting *posture* (off/advisory/required). Consumed by the secret gate and
-# the `sandbox check` preview to decide what scan_repo_secrets may downgrade to
-# `accepted`.
+# vetted_accepted_fingerprints <repo> — the repo-root ignore-file fingerprints
+# (`relpath:rule:line`) to honor for a repo at launch, or NOTHING unless the
+# repo is currently vetted (a signed attestation verifies at HEAD over a clean
+# tree — vetting_status_repo). The committed list carries weight only because
+# the vetting signature covers it; an unvetted (or unsignable) repo's list is
+# ignored, independent of the vetting *posture* (off/advisory/required).
+# Consumed by the secret gate and the `sandbox check` preview to decide what
+# scan_repo_secrets may downgrade to `accepted`.
 #
-# The list is read from the SIGNED commit (vetting_committed_accepted_secrets),
+# The list is read from the SIGNED commit (vetting_committed_ignore_fingerprints),
 # not the working tree: "vetted" only guarantees the tracked tree is clean, and
 # `git status --porcelain` does not flag gitignored files, so a working-tree read
-# would honor a gitignored/uncommitted .sandbox/config.yaml the signature never
-# covered. Reading HEAD's blob ties every honored fingerprint to the attestation.
+# would honor a gitignored/uncommitted ignore file the signature never covered.
+# Reading HEAD's blob ties every honored fingerprint to the attestation.
 vetted_accepted_fingerprints() {
   local repo="$1" line status
   line="$(vetting_status_repo "${repo}" 2>/dev/null)"
   IFS=$'\t' read -r status _ <<<"${line}"
   [[ "${status}" == "vetted" ]] || return 0
-  vetting_committed_accepted_secrets "${repo}"
+  vetting_committed_ignore_fingerprints "${repo}"
 }
 
 # scan_repo_secrets <repo> [accept_file] — scan a workspace with betterleaks and
@@ -640,15 +643,15 @@ vetted_accepted_fingerprints() {
 # no (secret in an unmasked path), gitconfig (secret in .git/config), or error
 # (scan failed). Secret values are redacted (--redact).
 #
-# accept_file (optional): a plain list of `relpath:rule:line:hash` fingerprints
-# the CALLER has already decided may be honored — i.e. the repo is vetted (see
-# vetted_accepted_fingerprints); this function applies no vetting policy of its
-# own. A would-be `no` finding is downgraded to `accepted` only when its
-# fingerprint (with hash recomputed here via _leakscan_value_hash, so a changed
-# value no longer matches) is listed AND its file is git-TRACKED. The tracked
-# check is the security boundary: the attestation covers committed content, so a
-# finding in a gitignored/untracked file is never in the signed tree and must
-# never be accepted, even if a fingerprint for it appears in the list.
+# accept_file (optional): a plain list of `relpath:rule:line` fingerprints
+# (betterleaks' native ignore-file form) the CALLER has already decided may be
+# honored — i.e. the repo is vetted (see vetted_accepted_fingerprints); this
+# function applies no vetting policy of its own. A would-be `no` finding is
+# downgraded to `accepted` only when its fingerprint is listed AND its file is
+# git-TRACKED. The tracked check is the security boundary: the attestation
+# covers committed content, so a finding in a gitignored/untracked file is
+# never in the signed tree and must never be accepted, even if a fingerprint
+# for it appears in the list.
 #
 # Two scans run. (1) A whole-workspace directory scan — betterleaks excludes
 # .git/ from directory walks, so this never sees anything under .git, and a
@@ -670,18 +673,47 @@ vetted_accepted_fingerprints() {
 # (both in _betterleaks_run). -i points at an operator-owned fingerprint
 # baseline when the overlay ships one, else a neutral empty dir.
 #
-# KNOWN LIMITATION: betterleaks always reads a .gitleaksignore/.betterleaksignore
-# at the SCAN-TARGET ROOT (here the workspace root and .git/config's dir) and
-# 1.6.0 has no flag to disable that, so a workspace committing a root ignore
-# file listing its own findings' fingerprints can still suppress them below the
-# gate. -i is additive and cannot override it; neutralizing it would mean
-# removing/relocating the file or refusing the scan. Tracked as a follow-up.
+# ROOT IGNORE FILE: a repo-root .betterleaksignore/.gitleaksignore is now the
+# SANCTIONED exception store (see `sandbox exceptions`) — the same file the
+# team's CI/pre-commit betterleaks runs honor natively. Two mechanics keep the
+# gate in control of when it applies:
+#   * betterleaks auto-reads the root file at the SCAN-TARGET ROOT and 1.6.0
+#     has no flag to disable that — but fingerprints only match in the path
+#     form of the scan target, and this scan always targets the ABSOLUTE repo
+#     path, so the committed (relative, portable) fingerprints are inert here.
+#     The gate re-applies them itself, post-scan, only when vetted (accept_file).
+#   * an ABSOLUTE fingerprint in the root file WOULD match the auto-read and
+#     silently blind both this scan and the vet-time acknowledgment preview, so
+#     any root ignore file carrying an absolute (or `..`) entry fails the scan
+#     closed (an `error` sentinel) until the entry is removed. Legitimate
+#     entries are always repo-relative; there is no honest use for an absolute
+#     one.
 # Nested (non-root) ignore files are not auto-read, and inline allow comments
-# and a repo-local .gitleaks.toml are already neutralized.
+# and a repo-local .gitleaks.toml are already neutralized (-c ownership,
+# --ignore-gitleaks-allow).
 scan_repo_secrets() {
   local repo="$1" accept_file="${2:-}"
   local real_repo
   real_repo="$(realpath "${repo}")"
+
+  # Refuse to scan around a root ignore file that could blind the scanner: an
+  # absolute-path (or parent-escaping) fingerprint would be honored by
+  # betterleaks' unconditional root-file auto-read, and a suppressed finding
+  # never reaches this function's classification (or the vet-time preview) at
+  # all. Working-tree read on purpose — betterleaks reads the working tree.
+  local ignf entry
+  for ignf in "${SANDBOX_REPO_IGNORE_NAME}" "${SANDBOX_REPO_IGNORE_FALLBACK}"; do
+    [[ -f "${real_repo}/${ignf}" ]] || continue
+    while IFS= read -r entry; do
+      case "${entry}" in
+        /*|../*|*/../*)
+          printf 'error\t%s carries a non-relative fingerprint (%s) that could silently suppress scan findings; remove it — entries must be repo-relative (relpath:rule:line)\n' \
+            "${ignf}" "${entry}"
+          return 0
+          ;;
+      esac
+    done < <(strip_ignore_file_comments < "${real_repo}/${ignf}")
+  done
 
   local report config
   report="$(mktemp "${TMPDIR:-/tmp}/sandbox-leakscan-XXXXXX")"
@@ -716,7 +748,7 @@ scan_repo_secrets() {
     elif is_path_masked "${repo}" "${relpath}"; then
       printf 'yes\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
     elif _leakscan_finding_accepted "${accept_file}" "${real_repo}" "${relpath}" \
-           "${ruleid}" "${line}" "${startcol}" "${endcol}"; then
+           "${ruleid}" "${line}"; then
       printf 'accepted\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
     else
       printf 'no\t%s\t%s\t%s\t%s\n' "${relpath}" "${ruleid}" "${line}" "${match}"
@@ -745,47 +777,14 @@ scan_repo_secrets() {
   [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
 }
 
-# _leakscan_value_hash <file> <line> <startcol> <endcol> — the single source of
-# truth for a finding's VALUE fingerprint: a 16-hex-char prefix of the SHA-256 of
-# the matched secret value, sliced out of the REAL source file so betterleaks'
-# --redact never has to be lifted. betterleaks reports StartColumn/EndColumn one
-# past the real 1-based match boundaries (see finding_is_encrypted / the tests'
-# colspan_of), so the value occupies columns [startcol-1 .. endcol-1] inclusive,
-# i.e. substr(line, startcol-1, endcol-startcol+1). Both `sandbox exceptions add`
-# (recording an accepted finding) and the launch gate (matching one) call this,
-# so the hash they compute is identical by construction. When the span is absent
-# (betterleaks reports 0/empty columns for some rules) it falls back to the whole
-# trimmed source line — coarser but still value-bearing and equally deterministic
-# for a given file, so add-time and gate-time still agree. Empty on error.
-_leakscan_value_hash() {
-  local file="$1" line="$2" startcol="$3" endcol="$4"
-  [[ -f "${file}" && "${line}" =~ ^[0-9]+$ ]] || return 1
-
-  local value
-  if [[ "${startcol}" =~ ^[0-9]+$ && "${endcol}" =~ ^[0-9]+$ \
-        && "${startcol}" -gt 1 && "${endcol}" -ge "${startcol}" ]]; then
-    value="$(awk -v n="${line}" -v sc="${startcol}" -v ec="${endcol}" \
-      'NR==n { printf "%s", substr($0, sc - 1, ec - sc + 1); exit }' "${file}")"
-  else
-    value="$(awk -v n="${line}" \
-      'NR==n { s=$0; sub(/^[[:space:]]+/,"",s); sub(/[[:space:]]+$/,"",s); printf "%s", s; exit }' \
-      "${file}")"
-  fi
-  [[ -n "${value}" ]] || return 1
-
-  local -a hcmd=()
-  read_into_array hcmd < <(sha256_hash_cmd) || return 1
-  printf '%s' "${value}" | "${hcmd[@]}" 2>/dev/null | awk '{ print substr($1, 1, 16); exit }'
-}
-
-# leakscan_fingerprints_for <repo> <relpath> <rule> <line> — resolve the
-# value-fingerprint entries for a specific finding the caller names by location,
-# for `sandbox exceptions add`. Runs betterleaks over the workspace with the SAME
-# config and ignore baseline the gate uses (so the recorded hash is exactly the
-# one the gate will recompute), selects the finding(s) at relpath+rule+line, and
-# prints one `relpath:rule:line:hash` per distinct matched value (sorted/unique).
-# Prints nothing and returns: 1 if no such finding exists in the current tree,
-# 2 if the scan itself failed, 3 if betterleaks/jq are unavailable.
+# leakscan_fingerprints_for <repo> <relpath> <rule> <line> — validate that a
+# finding the caller names by location actually exists in the current tree, and
+# print its `relpath:rule:line` fingerprint (betterleaks' native ignore-file
+# form), for `sandbox exceptions add`. Runs betterleaks over the workspace with
+# the SAME config and ignore baseline the gate uses, so what gets recorded is
+# exactly what the gate (and the team's CI/pre-commit betterleaks runs) will
+# match. Prints nothing and returns: 1 if no such finding exists in the current
+# tree, 2 if the scan itself failed, 3 if betterleaks/jq are unavailable.
 leakscan_fingerprints_for() {
   local repo="$1" relpath="$2" rule="$3" line="$4"
   command -v betterleaks &>/dev/null || return 3
@@ -807,18 +806,16 @@ leakscan_fingerprints_for() {
   if ! _betterleaks_run "${real_repo}" "${report}" "${config}" "${ignore_path}"; then
     rc=2
   else
-    local target="${real_repo}/${relpath}" sc ec hash emitted=0
-    while IFS=$'\t' read -r sc ec; do
-      hash="$(_leakscan_value_hash "${target}" "${line}" "${sc}" "${ec}")" || continue
-      [[ -n "${hash}" ]] || continue
-      printf '%s:%s:%s:%s\n' "${relpath}" "${rule}" "${line}" "${hash}"
-      emitted=1
-    done < <(jq -r --arg f "${target}" --arg r "${rule}" --argjson ln "${line}" \
-               '.[] | select(.File == $f and .RuleID == $r and .StartLine == $ln)
-                     | [(.StartColumn|tostring), (.EndColumn|tostring)] | @tsv' \
-               "${report}" 2>/dev/null | sort -u)
-    # Scan succeeded but named no such finding ⇒ not-found.
-    [[ "${emitted}" -eq 1 ]] || rc=1
+    local target="${real_repo}/${relpath}" count
+    count="$(jq -r --arg f "${target}" --arg r "${rule}" --argjson ln "${line}" \
+               '[ .[] | select(.File == $f and .RuleID == $r and .StartLine == $ln) ] | length' \
+               "${report}" 2>/dev/null || echo 0)"
+    if [[ "${count}" =~ ^[0-9]+$ ]] && [[ "${count}" -gt 0 ]]; then
+      printf '%s:%s:%s\n' "${relpath}" "${rule}" "${line}"
+    else
+      # Scan succeeded but named no such finding ⇒ not-found.
+      rc=1
+    fi
   fi
 
   rm -f "${report}" "${config}"
@@ -879,8 +876,8 @@ _print_mask_add_commands() {
 
 # _print_exceptions_add_commands <entry>... — emit one ready-to-run
 # `sandbox exceptions add` command per repo, listing that repo's unmasked
-# findings as RELPATH:RULE:LINE specs (the value hash is resolved by the
-# command). Mirrors _print_mask_add_commands.
+# findings as RELPATH:RULE:LINE specs (exactly the fingerprint form recorded in
+# the repo-root ignore file). Mirrors _print_mask_add_commands.
 _print_exceptions_add_commands() {
   local entry repo relpath rr rp ru rl r found e
   local -a seen_repos=()
@@ -948,6 +945,12 @@ secret_gate_repos() {
   local total_accepted=0
   local repo m relpath ruleid ln match accept_file
   for repo in "${repos[@]}"; do
+    # A repo still carrying the retired accepted_secrets: list gets a loud
+    # nudge — those entries are inert now, and the findings they used to cover
+    # will block below until migrated to the repo-root ignore file.
+    if [[ -n "$(load_repo_accepted_secrets "${repo}" 2>/dev/null)" ]]; then
+      warn "$(basename "${repo}"): accepted_secrets: in ${SANDBOX_REPO_CONFIG_NAME} is no longer honored — run 'sandbox exceptions migrate --repo ${repo}' to move it to ${SANDBOX_REPO_IGNORE_NAME}."
+    fi
     # The exceptions list is honored only for a currently-vetted repo; otherwise
     # this file is empty and nothing is downgraded to `accepted`.
     accept_file="$(mktemp "${TMPDIR:-/tmp}/sandbox-accept-XXXXXX")"
