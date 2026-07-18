@@ -471,11 +471,28 @@ cmd_run() {
     opt_infra_kubeconfig="${opt_infra_kubeconfig/#\~/${HOME}}"
   fi
 
-  # If a git-linked team overlay is configured, do a cached, rate-limited
-  # fetch and hint (once, to stderr) when it's behind its pinned ref. This is
-  # notify-only: it never mutates the overlay mid-launch. Skipped entirely by
-  # SANDBOX_NO_LINK_CHECK=1 and non-fatal on any failure.
-  link_notify_if_behind || true
+  # If a git-linked team overlay is configured, sync it to its pinned ref's
+  # tip before launching (validated, rolled back on a bad tree) so every team
+  # member launches from the same overlay commit. Fail-safe on network and
+  # content problems — the launch proceeds on the previously validated commit
+  # — with one hard stop: an overlay that now requires a newer CLI. Skipped
+  # entirely by SANDBOX_NO_LINK_CHECK=1.
+  link_sync_on_run || true
+
+  # Any active overlay — linked or hand-set — may declare the minimum CLI
+  # version it needs (min_sandbox_version in its config.yaml). An older CLI
+  # would not fail on a newer overlay; it would silently ignore the keys it
+  # doesn't know, which is precisely the drift the key exists to prevent, so
+  # "too old" blocks the launch. link/sync enforce the same gate at update
+  # time; this check catches a hand-set overlay and a CLI downgraded after
+  # linking.
+  local _run_overlay _run_min_unmet
+  _run_overlay="$(resolve_overlay_path)"
+  if [[ -n "${_run_overlay}" && -d "${_run_overlay}" ]]; then
+    _run_min_unmet="$(overlay_min_version_unmet "${_run_overlay}")"
+    [[ -z "${_run_min_unmet}" ]] \
+      || die "overlay '${_run_overlay/#${HOME}/\~}' requires agent-sandboxes >= ${_run_min_unmet}, but this is ${SANDBOX_VERSION}. Run 'sandbox upgrade' and launch again."
+  fi
 
   # Profile resolution. Numeric profiles ('1'|'2'|'3') are pure aliases for
   # --tier <N>. Named profiles resolve to a YAML in ~/.sandbox/profiles or
@@ -3458,10 +3475,15 @@ Overlays are additive-only on the safety side: nothing in one can weaken
 the org's controls or the tier model (enforced at consume time — see
 PRINCIPLES.md, "Default-deny egress").
 
-A link never advances on its own. 'sandbox run' does a cached, rate-limited
-fetch and only HINTS when the overlay is behind its ref; 'sandbox link sync'
-is the one deliberate step that moves the checked-out commit — it shows a
-diff of what changes and re-validates before applying.
+A link tracks the ref you pin, and only ever advances to that ref's tip.
+'sandbox run' syncs the overlay to the tip before every launch — validated,
+rolled back on a bad tree, fail-safe when offline — so every team member
+launches from the same overlay commit. 'sandbox link sync' is the same step
+run deliberately (it shows a diff of what changes first) and is where you
+move the pin to a new ref.
+
+An overlay's config.yaml may declare 'min_sandbox_version: X.Y.Z'. link,
+sync, and run all refuse while this CLI is older ('sandbox upgrade' fixes).
 
 LINK OPTIONS:
   --name <NAME>   Directory name under ~/.sandbox/overlays/ (default: derived
@@ -3477,7 +3499,7 @@ UNLINK OPTIONS:
   --yes, -y       Don't prompt for confirmation.
 
 ENV:
-  SANDBOX_NO_LINK_CHECK=1   Disable the run-path behind-ref check (CI/air-gap).
+  SANDBOX_NO_LINK_CHECK=1   Skip the run-path overlay sync (CI/air-gap).
 
 EXAMPLES:
   sandbox link git@github.com:acme/sandbox-overlay.git --ref v1.4.0
@@ -3551,6 +3573,13 @@ _link_clone() {
   if ! link_validate_shape "${dir}"; then
     rm -rf "${dir}"
     die "overlay at '${url}' (${ref}) failed validation; nothing was linked."
+  fi
+
+  local min_unmet
+  min_unmet="$(overlay_min_version_unmet "${dir}")"
+  if [[ -n "${min_unmet}" ]]; then
+    rm -rf "${dir}"
+    die "overlay at '${url}' (${ref}) requires agent-sandboxes >= ${min_unmet}, but this is ${SANDBOX_VERSION}. Run 'sandbox upgrade' first, then re-link."
   fi
 
   link_write_config "${dir}" "${url}" "${ref}" "${commit}"
@@ -3656,6 +3685,13 @@ _link_sync() {
   if ! link_validate_shape "${dir}"; then
     git -C "${dir}" reset --hard --quiet "${old}" 2>/dev/null || true
     die "New overlay tree (${ref} @ ${target:0:12}) failed validation; rolled back to ${old:0:12}."
+  fi
+
+  local min_unmet
+  min_unmet="$(overlay_min_version_unmet "${dir}")"
+  if [[ -n "${min_unmet}" ]]; then
+    git -C "${dir}" reset --hard --quiet "${old}" 2>/dev/null || true
+    die "New overlay tree (${ref} @ ${target:0:12}) requires agent-sandboxes >= ${min_unmet}, but this is ${SANDBOX_VERSION}; rolled back to ${old:0:12}. Run 'sandbox upgrade', then sync again."
   fi
 
   link_write_config "${dir}" "$(link_url_config)" "${ref}" "${target}"

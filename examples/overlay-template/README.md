@@ -57,13 +57,21 @@ sandbox link unlink
 
 `link` clones into `~/.sandbox/overlays/<name>/` and records the source
 URL, ref, and checked-out commit in `~/.sandbox/config.yaml`. The link is
-**pinned**: it never advances on its own. `sandbox run` does a cached,
-rate-limited fetch and only *hints* when the overlay is behind its ref
-(set `SANDBOX_NO_LINK_CHECK=1` to disable that check for CI/air-gapped
-hosts); `sandbox link sync` is the one deliberate, reviewed step that
-moves the checked-out commit. Every clone and sync re-validates the
-overlay's shape, and the additive-only safety rule below still holds —
-nothing a linked repo ships can weaken the org's controls.
+**pinned to the ref you chose** and only ever advances to that ref's tip:
+`sandbox run` syncs the clone to the tip before every launch — validated,
+rolled back if the new tree fails, fail-safe when offline — so every team
+member launches from the same overlay commit (set
+`SANDBOX_NO_LINK_CHECK=1` to skip that sync on CI/air-gapped hosts).
+`sandbox link sync` is the same step run deliberately — it shows a diff
+first — and is how you move the pin to a new ref. Every clone and sync
+re-validates the overlay's shape, and the additive-only safety rule below
+still holds — nothing a linked repo ships can weaken the org's controls.
+
+An overlay may also declare `min_sandbox_version:` in its `config.yaml`
+(see the template) when it starts relying on a newer CLI feature; `link`,
+`sync`, and `run` all refuse while the installed tool is older, and
+`sandbox upgrade` is the fix. Without it, an older CLI would silently
+ignore the keys it does not know.
 
 `sandbox run --profile <name>` will then resolve `<name>` against
 `overlay/profiles/<name>.yaml` (after checking

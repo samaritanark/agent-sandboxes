@@ -39,9 +39,10 @@ path in its `config.yaml`:
 vetting_trust_root: allowed_signers
 ```
 
-Everyone who runs `sandbox link` gets the list; `sandbox link sync` — the
-deliberate, diff-showing step — is the only thing that updates it. There is no
-per-operator setup at all. Enrollment is a change to one committed file, and
+Everyone who runs `sandbox link` gets the list — and stays current with it,
+because `sandbox run` syncs a linked overlay to its pinned ref before every
+launch (`sandbox link sync` is the same step run deliberately, showing the
+diff). There is no per-operator setup at all. Enrollment is a change to one committed file, and
 [`examples/overlay-template/gen-allowed-signers.sh`](../../examples/overlay-template/gen-allowed-signers.sh)
 can regenerate it from your git forge's `/<username>.keys` endpoints.
 
@@ -58,8 +59,8 @@ echo "reviewer@example.com ssh-ed25519 AAAAC3NzaC1lZDI1..." \
 ```
 
 Both are operator-side inputs: the overlay is something you chose to link,
-pinned to a commit, and moved only by `link sync` — a workspace author can
-write to neither. Prefer GnuPG? Set `vetting_trust_format: gpg` and point
+pinned to a ref your team controls and advanced only to that ref's tip — a
+workspace author can write to neither. Prefer GnuPG? Set `vetting_trust_format: gpg` and point
 `vetting_trust_root:` at a GnuPG home directory that holds the reviewers'
 public keys.
 
