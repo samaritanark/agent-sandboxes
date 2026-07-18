@@ -57,7 +57,7 @@ vetting: advisory
 # already controls the gate outright (--i-accept-unmasked-secrets, an overlay
 # .betterleaksignore baseline), so for them the list only records intent. Note it
 # is unsigned operator config, a weaker guarantee than the signature-anchored
-# accepted_secrets list. Match is on the exact bare host — no wildcards (a loose
+# repo exceptions (the vetted .betterleaksignore). Match is on the exact bare host — no wildcards (a loose
 # match on the destination the whole prompt flows to is exactly where a subdomain
 # takeover or DNS rebind would masquerade), no port (a listed host is trusted on
 # any port). Today only the opencode agent has a caller-chosen endpoint

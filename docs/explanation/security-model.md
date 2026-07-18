@@ -98,20 +98,27 @@ sandbox exceptions add --repo ~/repos/app deploy/values.yaml:generic-api-key:155
     --reason "documented example key"
 ```
 
-Each entry is a value-bound fingerprint (`relpath:rule:line:sha256(value)`) under
-`accepted_secrets:` in the repo's `.sandbox/config.yaml`. Two properties keep this
-from being a workspace-authored bypass — the thing the gate otherwise refuses to
-allow:
+Each entry is a native betterleaks fingerprint (`relpath:rule:line`) in a
+`.betterleaksignore` at the repo root — the same file, in the same format, that
+the team's CI and pre-commit betterleaks runs read, so a finding cleared once is
+cleared everywhere. Two properties keep this from being a workspace-authored
+bypass — the thing the gate otherwise refuses to allow:
 
-- **It counts only on a vetted repo.** A committed list carries no weight on its
-  own; the [vetting](../how-to/vetting.md) signature over the tree — including the
-  list — is its authority, so accepting a finding is a reviewer's cryptographic
-  sign-off, not the say-so of an untrusted workspace. `sandbox vet` surfaces the
-  exceptions and requires the signer to acknowledge them.
-- **It is bound to the value and to tracked content.** The hash is of the matched
-  value, so replacing the secret at that line re-blocks; and only a git-tracked
-  file (the signed content) can be excepted, so a gitignored/untracked local
-  secret is never accepted even if a fingerprint for it is listed.
+- **The sandbox counts it only on a vetted repo.** A committed ignore file
+  carries no weight to the gate on its own (a plain `betterleaks` run in CI
+  honors it, which is fine for a linter but not a security boundary); the
+  [vetting](../how-to/vetting.md) signature over the tree — including the file —
+  is its authority at launch, so accepting a finding is a reviewer's
+  cryptographic sign-off, not the say-so of an untrusted workspace. `sandbox vet`
+  surfaces the exceptions and requires the signer to acknowledge them.
+- **The value binding rides on the signature, and only tracked content counts.**
+  A native fingerprint names a location, not a value; the binding comes from
+  vetting — change the value on that line and the tree is dirty (or a new HEAD),
+  the repo un-vets, and re-vetting re-surfaces the exception to acknowledge. Only
+  a git-tracked file (the signed content) can be excepted, so a
+  gitignored/untracked local secret is never accepted even if a fingerprint for
+  it is listed. A non-relative (absolute) fingerprint — which betterleaks' own
+  root-file read would honor outside the gate's control — fails the scan closed.
 
 Full workflow, hand-authoring, and how this compares to an operator-wide
 `.betterleaksignore` baseline: [Accepting secret-gate false positives](../how-to/secret-exceptions.md).

@@ -136,9 +136,9 @@ reviewed, not whatever lands on top of it.
 
 Vetting is also what gives a repo's
 [secret-gate exceptions](secret-exceptions.md) their authority. If the repo
-records any under `accepted_secrets:`, signing the tree vouches for them — so
-before it signs, `sandbox vet` lists the finding(s) that list would let the agent
-read and asks you to acknowledge them:
+records any in its root `.betterleaksignore`, signing the tree vouches for them —
+so before it signs, `sandbox vet` lists the finding(s) that file would let the
+agent read and asks you to acknowledge them:
 
 ```
 $ sandbox vet --repo ~/repos/app

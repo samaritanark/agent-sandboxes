@@ -159,7 +159,7 @@ COMMANDS:
   onboard      Stage host-side agent OAuth state for first-run convenience
   secret       Manage host-side secret store (injected per-session by profile)
   mask         Manage per-repo file masking (add/list masked_paths)
-  exceptions   Record reviewed false positives for the secret gate (add/list)
+  exceptions   Record reviewed false positives for the secret gate (add/list/migrate)
   vet          Attest a repo as cleared for agent use (signed tag; see run gate)
   profile      Create and manage launch profiles (save/list/show/delete)
   link         Link a git-backed team overlay and keep it pinned (status/sync/unlink)
@@ -823,9 +823,10 @@ cmd_run() {
     # HEAD (offering an authorized signer an inline attest on an interactive
     # terminal). --i-accept-unvetted-repo downgrades a required refusal to a
     # warning. Runs BEFORE the secret gate deliberately: the secret gate honors
-    # a repo's committed accepted_secrets: exceptions only when the repo is
-    # vetted, so vetting-first lets an inline attest (which acknowledges those
-    # exceptions) take effect in the same launch instead of forcing a second run.
+    # a repo's committed exception list (the root .betterleaksignore) only when
+    # the repo is vetted, so vetting-first lets an inline attest (which
+    # acknowledges those exceptions) take effect in the same launch instead of
+    # forcing a second run.
     vetting_gate_repos "$(resolve_vetting_posture)" "${opt_accept_unvetted_repo}" "${opt_repos[@]}"
     # Gate the launch on secrets the mask would not hide. Fails closed if
     # betterleaks is absent; --i-accept-unmasked-secrets downgrades the
@@ -1595,6 +1596,9 @@ cmd_check() {
     local _m _rel _rule _ln _match _unmasked=0 _encrypted=0 _accepted=0 _gitconfig=0 _scan_failed=false
     local -a _entries=()
     # Honor the vetted exceptions list in the preview exactly as the gate will.
+    if [[ -n "$(load_repo_accepted_secrets "${workspace}" 2>/dev/null)" ]]; then
+      warn "accepted_secrets: in ${SANDBOX_REPO_CONFIG_NAME} is no longer honored — run 'sandbox exceptions migrate --repo ${workspace}' to move it to ${SANDBOX_REPO_IGNORE_NAME}."
+    fi
     local _accept_file; _accept_file="$(mktemp "${TMPDIR:-/tmp}/sandbox-accept-XXXXXX")"
     vetted_accepted_fingerprints "${workspace}" > "${_accept_file}" 2>/dev/null || true
     while IFS=$'\t' read -r _m _rel _rule _ln _match; do
@@ -2942,8 +2946,9 @@ cmd_mask() {
 }
 
 ###############################################################################
-# cmd_exceptions — manage per-repo accepted secret findings (accepted_secrets in
-# .sandbox/config.yaml), the reviewed-false-positive accept-list for the gate.
+# cmd_exceptions — manage per-repo accepted secret findings, recorded in the
+# repo-root betterleaks ignore file (.betterleaksignore) so the SAME list drives
+# the team's CI/pre-commit betterleaks runs and this gate.
 ###############################################################################
 usage_exceptions() {
   cat <<EOF
@@ -2952,28 +2957,36 @@ sandbox exceptions — Record reviewed false positives for the secret gate
 USAGE:
   sandbox exceptions add --repo <PATH> <PATH:RULE:LINE>... [--reason <TEXT>]
   sandbox exceptions list --repo <PATH>
+  sandbox exceptions migrate --repo <PATH>
   sandbox exceptions --help
 
 The Tier 2/3 secret gate refuses to launch when betterleaks finds a secret in a
 file the mask would not hide. When a finding is a reviewed false positive, record
 it here instead of masking the whole file or accepting every secret at launch.
-Each entry is a fingerprint 'RELPATH:RULE:LINE:HASH' — the finding's path, rule,
-line, and a short SHA-256 of the matched value — appended under accepted_secrets:
-in <repo>/.sandbox/config.yaml.
+Each entry is a betterleaks fingerprint 'RELPATH:RULE:LINE' in the repo-root
+ignore file (.betterleaksignore, or an existing .gitleaksignore) — the native
+format betterleaks reads, so ONE committed list serves the team's pre-commit
+hooks, CI pipeline scans (run 'betterleaks dir .' from the repo root), and this
+gate. An optional --reason is written as a '#' comment above the entry.
 
 The gate honours these ONLY when the repo is VETTED (see 'sandbox vet'): the
-signed attestation covers this whole tree, including this list, so accepting a
+signed attestation covers this whole tree, including this file, so accepting a
 finding carries a reviewer's cryptographic sign-off rather than the say-so of an
-unreviewed workspace. Because the fingerprint pins the matched value, replacing
-the secret at that location changes the hash and the finding blocks again.
+unreviewed workspace — CI tools honor the file unconditionally; the sandbox does
+not. Replacing the value behind an entry dirties the tree (or makes a new HEAD),
+the repo stops being vetted, and re-vetting re-surfaces every matching exception
+for explicit acknowledgment.
 
-'exceptions add' names findings the way the gate prints them (RELPATH, RULE, LINE);
-it re-scans to resolve and record the value hash, so a matching finding must
-exist in the current tree. The written entry is plain text — a reviewer can add
-or audit one by hand.
+'exceptions add' names findings the way the gate prints them (RELPATH, RULE, LINE)
+and re-scans to confirm the finding exists in the current tree. The written entry
+is plain text — a reviewer can add or audit one by hand.
 
-  --repo <PATH>       Repository whose accepted_secrets: list to edit/inspect.
-  --reason <TEXT>     Optional note, stored as a YAML comment beside the entry.
+'exceptions migrate' converts a repo's retired accepted_secrets: list (in
+.sandbox/config.yaml) to the root ignore file and removes the old key. The gate
+no longer honors the old list. Review, commit, and re-vet after migrating.
+
+  --repo <PATH>       Repository whose exception list to edit/inspect.
+  --reason <TEXT>     Optional note, stored as a comment above the entry.
   --help              Show this help
 
 EXAMPLES:
@@ -2981,8 +2994,11 @@ EXAMPLES:
   sandbox exceptions add --repo ~/repos/app \\
       deploy/values.yaml:generic-api-key:155 --reason "sealed secret, reviewed AH"
 
-  # Show the recorded accept-list for a repo
+  # Show the recorded exceptions for a repo
   sandbox exceptions list --repo ~/repos/app
+
+  # Move a pre-2.12 accepted_secrets: list to .betterleaksignore
+  sandbox exceptions migrate --repo ~/repos/app
 EOF
   exit 0
 }
@@ -3019,10 +3035,10 @@ cmd_exceptions() {
       repo="${repo/#\~/${HOME}}"
       validate_repo_path "${repo}"
 
-      command -v betterleaks &>/dev/null || die "exceptions add: betterleaks is required to resolve a finding's value hash, but it was not found on PATH."
+      command -v betterleaks &>/dev/null || die "exceptions add: betterleaks is required to confirm the finding exists, but it was not found on PATH."
       command -v jq &>/dev/null || die "exceptions add: jq is required but was not found on PATH."
 
-      local config_file="${repo}/.sandbox/config.yaml"
+      local ignore_file; ignore_file="$(repo_ignore_file "${repo}")"
       local spec relpath rule line rest rc entries added fp
       for spec in "${specs[@]}"; do
         # Right-split PATH:RULE:LINE so a ':' in RELPATH is tolerated: LINE is the
@@ -3050,14 +3066,17 @@ cmd_exceptions() {
         added=0
         while IFS= read -r fp; do
           [[ -z "${fp}" ]] && continue
-          config_add_accepted_secret "${config_file}" "${fp}" "${reason}"
-          echo "Accepted ${fp} in $(basename "${repo}") (${config_file/#${HOME}/\~})."
+          ignorefile_add_fingerprint "${ignore_file}" "${fp}" "${reason}"
+          echo "Accepted ${fp} in $(basename "${repo}") (${ignore_file/#${HOME}/\~})."
           added=$((added + 1))
         done <<<"${entries}"
         [[ "${added}" -gt 0 ]] || die "exceptions add: could not fingerprint ${spec}."
       done
       echo ""
-      echo "NOTE: the gate honours these only once the repo is vetted ('sandbox vet --repo ${repo}')."
+      echo "NOTE: commit ${ignore_file##*/} — the gate honours it only once the repo is"
+      echo "      vetted ('sandbox vet --repo ${repo}'). Your CI/pre-commit betterleaks"
+      echo "      runs read the same file natively (scan with 'betterleaks dir .' from"
+      echo "      the repo root so its relative fingerprints match)."
       ;;
     list)
       local repo=""
@@ -3075,14 +3094,73 @@ cmd_exceptions() {
       repo="${repo/#\~/${HOME}}"
       validate_repo_path "${repo}"
 
-      echo "Accepted secret findings for $(basename "${repo}"):"
+      local ignore_file; ignore_file="$(repo_ignore_file "${repo}")"
+      echo "Accepted secret findings for $(basename "${repo}") (${ignore_file/#${HOME}/\~}):"
       local any=false fp
       while IFS= read -r fp; do
         [[ -z "${fp}" ]] && continue
         any=true
         echo "  ${fp}"
-      done < <(load_repo_accepted_secrets "${repo}")
+      done < <(load_repo_ignore_fingerprints "${repo}")
       if [[ "${any}" == false ]]; then echo "  (none)"; fi
+
+      # A retired accepted_secrets: list is worth surfacing wherever an operator
+      # goes looking for the exception state — it silently covers nothing now.
+      local legacy_any=false
+      while IFS= read -r fp; do
+        [[ -z "${fp}" ]] && continue
+        if [[ "${legacy_any}" == false ]]; then
+          legacy_any=true
+          echo ""
+          echo "  LEGACY (no longer honored — run 'sandbox exceptions migrate --repo ${repo}'):"
+        fi
+        echo "    ${fp}"
+      done < <(load_repo_accepted_secrets "${repo}")
+      ;;
+    migrate)
+      local repo=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo)    repo="${2:?--repo requires a value}"; shift ;;
+          --repo=*)  repo="${1#--repo=}" ;;
+          --help|-h) usage_exceptions ;;
+          -*)        die "Unknown option for 'exceptions migrate': $1" ;;
+          *)         die "Unexpected argument for 'exceptions migrate': $1" ;;
+        esac
+        shift
+      done
+      [[ -n "${repo}" ]] || die "Usage: sandbox exceptions migrate --repo <PATH>"
+      repo="${repo/#\~/${HOME}}"
+      validate_repo_path "${repo}"
+
+      local config_file="${repo}/${SANDBOX_REPO_CONFIG_NAME}"
+      local -a legacy_entries=()
+      read_into_array legacy_entries < <(load_repo_accepted_secrets "${repo}")
+      if [[ "${#legacy_entries[@]}" -eq 0 ]]; then
+        echo "No accepted_secrets: entries in ${config_file/#${HOME}/\~} — nothing to migrate."
+        return 0
+      fi
+
+      # Convert each legacy `relpath:rule:line:hash` to the native
+      # `relpath:rule:line` by dropping the trailing value hash, carrying any
+      # inline YAML `# reason` over as a comment line above the new entry.
+      local ignore_file; ignore_file="$(repo_ignore_file "${repo}")"
+      local entry fp reason
+      for entry in "${legacy_entries[@]}"; do
+        fp="${entry%:*}"
+        # Defensive: an entry without the 4th (hash) field migrates verbatim.
+        [[ "${fp}" == *:*:* ]] || fp="${entry}"
+        # Recover the reason comment from the raw YAML line, if one was recorded.
+        reason="$(grep -F -- "${entry}" "${config_file}" 2>/dev/null | head -1 | sed -n 's/.*#[[:space:]]*//p')"
+        ignorefile_add_fingerprint "${ignore_file}" "${fp}" "${reason}"
+        echo "Migrated ${entry} -> ${fp}"
+      done
+
+      remove_yaml_list_from_file "${config_file}" "accepted_secrets"
+      echo ""
+      echo "Wrote ${ignore_file/#${HOME}/\~} and removed accepted_secrets: from"
+      echo "${config_file/#${HOME}/\~}. Review the diff, commit BOTH files, then"
+      echo "re-vet ('sandbox vet --repo ${repo}') so the gate honours the new list."
       ;;
     *)
       die "Unknown 'exceptions' subcommand: ${sub}. Run 'sandbox exceptions --help'."
