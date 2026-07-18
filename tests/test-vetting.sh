@@ -1008,46 +1008,52 @@ test_exceptions_require_head_config() {
 # strict knob honors it only at HEAD (needs SSH signing).
 ###############################################################################
 test_exceptions_require_head_gate() {
-  info "Testing exception honoring under drift (default vs require-head)..."
+  info "Testing exception honoring under drift (gate reads the attested commit)..."
   write_trust_config
   unset SANDBOX_OVERLAY
 
   local repo="${TEST_DIR}/exc-drift"
+  local ignore="${repo}/${SANDBOX_REPO_IGNORE_NAME}"
   make_repo "${repo}"
-  config_add_accepted_secret "${repo}/.sandbox/config.yaml" \
-    "deploy/values.yaml:generic-api-key:155:aaaa1111" "reviewed FP"
+  # A reviewed false-positive fingerprint, in the tree the signer will attest.
+  printf 'deploy/values.yaml:generic-api-key:155\n' > "${ignore}"
   git -C "${repo}" add -A; git -C "${repo}" commit -q -m "base with one exception"
   attest_repo "${repo}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; return 0; }
 
   # At HEAD (behind 0) the signature covers the list, so it is honored under BOTH
   # the default and the strict knob.
   case "$(vetted_accepted_fingerprints "${repo}")" in
-    *aaaa1111*) pass "at HEAD, default honors the signed exception" ;;
+    *deploy/values.yaml:generic-api-key:155*) pass "at HEAD, default honors the signed exception" ;;
     *) fail "at HEAD, default should honor the signed exception" ;;
   esac
   printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_exceptions_require_head: true\n' \
     "${TRUST_ROOT}" > "${USER_SANDBOX_CONFIG}"
   case "$(vetted_accepted_fingerprints "${repo}")" in
-    *aaaa1111*) pass "at HEAD, strict still honors it (behind 0)" ;;
+    *deploy/values.yaml:generic-api-key:155*) pass "at HEAD, strict honors it (behind 0)" ;;
     *) fail "at HEAD, strict should honor the signed exception (behind 0)" ;;
   esac
 
-  # A drift commit records a brand-new exception no signer ever acknowledged.
-  config_add_accepted_secret "${repo}/.sandbox/config.yaml" \
-    "deploy/secret.yaml:generic-api-key:9:bbbb2222" "smuggled"
-  git -C "${repo}" add -A; git -C "${repo}" commit -q -m "drift adds an exception"
+  # Drift: a later, unsigned commit rewrites .betterleaksignore to smuggle in a
+  # brand-new exception no signer acknowledged (and drop the reviewed one). In
+  # this tool's own workflow that commit can be the agent's own workspace edit.
+  printf 'deploy/secret.yaml:generic-api-key:9\n' > "${ignore}"
+  git -C "${repo}" add -A; git -C "${repo}" commit -q -m "drift rewrites the exception list"
   eq "drift repo reports behind 1" "1" "$(vetting_status_repo "${repo}" | cut -f5)"
 
-  # Strict (config still set): behind != 0 -> honor NOTHING, so neither the
-  # smuggled entry nor the originally-signed one clears. Re-attest to restore.
+  # Strict (config still set): behind != 0 -> honor NOTHING. Re-attest to restore.
   eq "strict + drift honors nothing" "" "$(vetted_accepted_fingerprints "${repo}")"
 
-  # Default (permissive): HEAD's whole list is honored, smuggled entry included —
-  # the accepted risk the team chose.
+  # Default: the gate reads the ATTESTED commit, so the drift-added entry is NOT
+  # honored, and the originally-signed one still IS — drift introduces nothing.
   write_trust_config
-  case "$(vetted_accepted_fingerprints "${repo}")" in
-    *bbbb2222*) pass "default + drift honors HEAD's list (accepted risk)" ;;
-    *) fail "default should honor HEAD's drift-added exception" ;;
+  local out; out="$(vetted_accepted_fingerprints "${repo}")"
+  case "${out}" in
+    *deploy/secret.yaml*) fail "SECURITY: drift-added exception was honored — gate read HEAD, not the attested commit" ;;
+    *) pass "default + drift does NOT honor the smuggled exception" ;;
+  esac
+  case "${out}" in
+    *deploy/values.yaml:generic-api-key:155*) pass "default + drift still honors the attested commit's exception" ;;
+    *) fail "default + drift should still honor the attested commit's original exception" ;;
   esac
 
   write_trust_config

@@ -138,20 +138,21 @@ vetting_max_commits_behind() {
 }
 
 # vetting_exceptions_require_head — "true" when a repo's committed secret
-# exceptions (accepted_secrets:) may be honored ONLY while the verified
-# attestation sits exactly at HEAD; "false" (the default) honors the list
-# whenever the repo is vetted, drift included. This governs the ONE trust
-# decision the drift tolerance must not extend to: honoring an accepted_secrets:
-# entry exposes a plaintext value to the agent, and that exposure is blessed by a
-# signer's acknowledgment at attest time (_vetting_acknowledge_exceptions), not
-# by the code review that covers ordinary drift. Under drift HEAD is not the
-# signed commit, so an entry added on top was never acknowledged — the strict
-# setting refuses to honor it; the permissive default accepts that risk to keep
-# launches frictionless. Read from BOTH the user config and the overlay config,
-# TIGHTENING-ONLY: strict ("true") wins if EITHER sets it, so an overlay can
-# ratchet exception-handling up and never down — the same "additive on the safety
-# side" rule the posture and the drift cap follow. Anything but a literal `true`
-# (unset, false, a typo) leaves the permissive default.
+# exceptions (the root .betterleaksignore) may be honored ONLY while the verified
+# attestation sits exactly at HEAD; "false" (the default) honors them whenever
+# the repo is vetted, drift included. This is an OPTIONAL extra-strict mode, not
+# the primary safety control: the gate reads the honored list from the ATTESTED
+# tag's commit (vetted_accepted_fingerprints), so every honored exception is one
+# a signer acknowledged at attest time (_vetting_acknowledge_exceptions) no
+# matter how far HEAD has drifted — an entry added on a later, unsigned commit is
+# never read until a signer re-attests. The default is therefore already safe.
+# Setting this "true" adds a stricter posture for teams that want every honored
+# exception to ride a *current* attestation (behind==0) rather than an older but
+# still-valid acknowledgment. Read from BOTH the user config and the overlay
+# config, TIGHTENING-ONLY: strict ("true") wins if EITHER sets it, so an overlay
+# can ratchet exception-handling up and never down — the same "additive on the
+# safety side" rule the posture and the drift cap follow. Anything but a literal
+# `true` (unset, false, a typo) leaves the default.
 vetting_exceptions_require_head() {
   local user_v="" overlay_v="" overlay
   [[ -f "${USER_SANDBOX_CONFIG}" ]] && \
@@ -707,24 +708,34 @@ vetting_gate_repos() {
 # exactly what gets honored. Returns 0 to proceed (nothing recorded, the list is
 # inert, or the signer acknowledged), 1 to abort (declined, or cannot preview /
 # cannot prompt).
-# vetting_committed_ignore_fingerprints <repo> — the `relpath:rule:line`
-# fingerprints recorded in the repo-root betterleaks ignore file at the repo's
-# HEAD *commit*, one per line (comments/blank lines stripped). This deliberately
-# reads the COMMITTED blob (`HEAD:.betterleaksignore`, falling back to
-# `HEAD:.gitleaksignore`), never the working-tree file, and that is the security
-# boundary: an attestation signs HEAD's tree, so only a list that is actually in
-# that commit is covered by the signature. A gitignored or otherwise-uncommitted
-# ignore file is NOT in HEAD — and, being ignored, would not even register as a
-# dirty tree — so it must never be honored. Reading it from HEAD closes that gap
-# at the source. Hardened via _vetting_git (fsmonitor/hooks/filter drivers
-# neutralized); `git show <rev>:<path>` emits the stored blob and applies no
-# smudge filters. Empty if no ignore file exists at HEAD, the repo has no
-# commit, or it is not a git repo.
+# vetting_committed_ignore_fingerprints <repo> [rev] — the `relpath:rule:line`
+# fingerprints recorded in the repo-root betterleaks ignore file at <rev>
+# (default HEAD), one per line (comments/blank lines stripped). This deliberately
+# reads the COMMITTED blob (`<rev>:.betterleaksignore`, falling back to
+# `<rev>:.gitleaksignore`), never the working-tree file, and that is the security
+# boundary: an attestation signs a commit's tree, so only a list that is actually
+# in that commit is covered by the signature. A gitignored or otherwise-
+# uncommitted ignore file is NOT in the commit — and, being ignored, would not
+# even register as a dirty tree — so it must never be honored. Reading it from a
+# commit closes that gap at the source.
+#
+# The two callers pass two revs, deliberately:
+#   - the vet-time acknowledgment (_vetting_acknowledge_exceptions) uses the
+#     default HEAD, because at signing time HEAD *is* the commit being tagged, so
+#     the signer acknowledges exactly the list the signature will cover;
+#   - the launch gate (vetted_accepted_fingerprints) passes the ATTESTED tag, so
+#     under drift it honors the list the signer acknowledged, not a later,
+#     unsigned HEAD's.
+#
+# Hardened via _vetting_git (fsmonitor/hooks/filter drivers neutralized);
+# `git show <rev>:<path>` emits the stored blob and applies no smudge filters.
+# Empty if no ignore file exists at <rev>, the repo has no commit, or it is not
+# a git repo.
 vetting_committed_ignore_fingerprints() {
-  local repo="$1" name tmp
+  local repo="$1" rev="${2:-HEAD}" name tmp
   tmp="$(mktemp "${TMPDIR:-/tmp}/sandbox-accept-src-XXXXXX")" || return 0
   for name in "${SANDBOX_REPO_IGNORE_NAME}" "${SANDBOX_REPO_IGNORE_FALLBACK}"; do
-    if _vetting_git "${repo}" show "HEAD:${name}" > "${tmp}" 2>/dev/null; then
+    if _vetting_git "${repo}" show "${rev}:${name}" > "${tmp}" 2>/dev/null; then
       strip_ignore_file_comments < "${tmp}"
       break
     fi

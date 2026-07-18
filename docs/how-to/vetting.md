@@ -205,20 +205,24 @@ sign off unattended. A repo with no exceptions signs with no extra prompt.
 
 ### Exceptions and drift
 
-The acknowledgment above binds an exception to the *signed* commit. But an
-attestation clears a repo while it is [behind `HEAD`](#when-the-attestation-is-behind-head),
-and drift is reviewed code layered on a vetted base — whereas an
-`accepted_secrets:` entry is not code, it is a standing permission for the agent
-to read a plaintext value. A commit added on top of the vetted base can record a
-brand-new exception that **no signer ever acknowledged**, so honoring `HEAD`'s
-list under drift trusts whoever can land a reviewed commit not to weaponize it.
+The acknowledgment above binds an exception to the *signed* commit — and the gate
+honors it from exactly that commit. An attestation clears a repo while it is
+[behind `HEAD`](#when-the-attestation-is-behind-head), and drift is reviewed code
+layered on a vetted base — but an exception is not code, it is a standing
+permission for the agent to read a plaintext value, so the gate does **not** take
+it from `HEAD`. It reads the honored `.betterleaksignore` list from the **attested
+commit**. The consequence is the property you want, for free: an exception added
+on a later, unsigned commit — by a contributor, or by the agent writing the
+workspace — is **never honored** until a signer re-attests the new `HEAD` (which
+re-runs the acknowledgment above). No drift distance changes this, and there is
+no knob to get wrong.
 
-Two settings, both operator-controlled:
+One optional setting, for teams that want to go further:
 
 | `vetting_exceptions_require_head:` | Behavior |
 | --- | --- |
-| *omitted* / `false` (**default**) | Exceptions are honored whenever the repo is vetted, drift included. The frictionless default — the same "reviewed changes ride along" bargain the rest of drift makes, extended to the exception list. |
-| `true` | Exceptions are honored **only** when the attestation sits exactly at `HEAD` (`behind: 0`), where the signature genuinely covers the list. Under any drift the list is ignored and those findings block the launch again; re-attest `HEAD` to restore them. |
+| *omitted* / `false` (**default**) | Exceptions are honored whenever the repo is vetted, read from the attested commit. Every honored exception is signer-acknowledged regardless of drift — the safe, frictionless default. |
+| `true` | A stricter posture: honor exceptions **only** when the attestation sits exactly at `HEAD` (`behind: 0`), so every honored exception rides a *current* attestation rather than an older but still-valid acknowledgment. Under any drift the list is ignored and those findings block the launch again; re-attest `HEAD` to restore them. |
 
 ```yaml
 # <overlay>/config.yaml — or ~/.sandbox/config.yaml

@@ -40,15 +40,19 @@ vetting: advisory
 #
 # vetting_max_commits_behind: 20
 
-# vetting_exceptions_require_head: honor a repo's committed accepted_secrets:
-# exceptions ONLY while the verified attestation sits exactly at HEAD. An accepted
-# exception exposes a plaintext value to the agent, and that is blessed by a
-# signer at attest time — not by the code review behind ordinary drift — so under
-# drift (HEAD past the signed commit) HEAD's list was never acknowledged. The
-# DEFAULT (omit, or false) honors it through drift anyway, trading that risk for
-# frictionless launches; set true to refuse it under any drift (re-attest HEAD to
-# restore exceptions). Tightening-only: `true` wins if EITHER this overlay or the
-# operator sets it, so an overlay can ratchet it up and never down, the same
+# vetting_exceptions_require_head: an OPTIONAL extra-strict posture for a repo's
+# committed secret exceptions (the root .betterleaksignore). You usually do NOT
+# need this: the gate already reads the honored exception list from the ATTESTED
+# commit, not HEAD, so every honored exception is one a signer acknowledged at
+# attest time, no matter how far HEAD has drifted — an entry added on a later,
+# unsigned commit (by a contributor, or by the agent writing the workspace) is
+# simply not honored until a signer re-attests. Setting this true tightens that
+# further: honor exceptions ONLY while the verified attestation sits exactly at
+# HEAD (behind: 0), for teams that want every honored exception to ride a
+# *current* attestation rather than an older but still-valid acknowledgment.
+# Under any drift the list is then ignored and those findings block the launch
+# until you re-attest HEAD. Tightening-only: `true` wins if EITHER this overlay
+# or the operator sets it, so it can ratchet up and never down, the same
 # safety-additive rule the posture and the cap follow. See docs/how-to/vetting.md.
 #
 # vetting_exceptions_require_head: true
