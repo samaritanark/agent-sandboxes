@@ -124,6 +124,26 @@ load_extra_allowed_domains_from_file() {
   extract_yaml_list_from_file "$1" "extra_allowed_domains"
 }
 
+# honor_repo_allowed_domains — "true" when the active team overlay opts in to
+# honoring a per-repo <repo>/.sandbox/config.yaml `extra_allowed_domains:` list,
+# else "false" (the default). Widening egress LOOSENS containment, and a repo's
+# tree is writable by the in-sandbox agent (and any workspace author), so by
+# default a repo cannot grant itself an egress destination — the agent could
+# otherwise self-add an exfil host just by committing a domain and having the
+# operator relaunch. Restoring the convenience is therefore an operator decision
+# confined to the OVERLAY, exactly like leakscan_extra_dep_dirs (lib/filesystem.sh):
+# the key is read ONLY from the overlay's config.yaml; a per-repo or per-user
+# setting is ignored. Absent, non-`true`, or no overlay ⇒ "false". (Overlay
+# resolution via resolve_overlay_path — lib/profile.sh — so this is called after
+# the libs are loaded, as everything in the run path is.)
+honor_repo_allowed_domains() {
+  local overlay v=""
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] || { echo "false"; return 0; }
+  v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" honor_repo_allowed_domains)"
+  [[ "${v}" == "true" ]] && echo "true" || echo "false"
+}
+
 # SANDBOX_REPO_CONFIG_NAME — the per-repo config file, relative to a repo
 # root. Single source of truth so the masked-paths reader, the writer, and
 # the secret gate all point at the same file.

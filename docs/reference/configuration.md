@@ -11,7 +11,7 @@ linked from each section show them in context.
 | Location | Scope | Notes |
 |----------|-------|-------|
 | `~/.sandbox/config.yaml` | per-user | your personal defaults |
-| `<repo>/.sandbox/config.yaml` | per-repo | checked in alongside code; every session start prints a banner listing what it contributed |
+| `<repo>/.sandbox/config.yaml` | per-repo | checked in alongside code; loosening keys (e.g. `extra_allowed_domains`) are **not** honored from here — the launch prints what it requested |
 | `<overlay>/…` | team overlay | shipped by a team; see [profiles & overlays](../how-to/profiles-and-overlays.md) |
 
 ## Keys
@@ -22,7 +22,7 @@ linked from each section show them in context.
 overlay: /path/to/overlay-myteam     # team overlay dir (or SANDBOX_OVERLAY env)
 
 extra_allowed_domains:               # merged with the tier allowlist on every run
-  - git.example.com                  #   (also settable per-repo and via env)
+  - git.example.com                  #   (also settable via env or an overlay profile)
   - artifactory.example.com
 
 blocked_domains:                     # deny-only, additive; a block always beats an allow
@@ -34,12 +34,18 @@ blocked_cidrs:
 Per-repo `<repo>/.sandbox/config.yaml` additionally holds:
 
 ```yaml
-extra_allowed_domains:
-  - go.private.example.com
+extra_allowed_domains:               # requested, but NOT honored from a repo config
+  - go.private.example.com           #   (loosens egress; the launch only surfaces it —
+                                     #    see persistent-domains.md). Grant it operator-side.
 masked_paths:                        # written by `sandbox mask add`; hidden from the agent
   - config/prod/secrets.yaml
 leakscan_dep_exclusions: off         # scan gitignored dependency trees too (stricter)
 ```
+
+A repo's `extra_allowed_domains:` is **not** honored by default because a repo
+tree is writable by the in-sandbox agent; a team that wants it honored opts in
+once in the overlay with `honor_repo_allowed_domains: true` (overlay-only). See
+[Persistent extra domains](../how-to/persistent-domains.md).
 
 Reviewed secret-gate false positives are **not** in this file — they live in a
 `.betterleaksignore` at the repo root (betterleaks' native format, so the same

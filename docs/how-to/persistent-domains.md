@@ -6,8 +6,8 @@
 
 If your team always needs the same extra domain reachable (an internal Git
 host, an artifact registry, etc.), you don't have to type `--allow-domain`
-on every invocation. Three persistent sources are loaded automatically on
-every `sandbox run` and merged with the built-in tier allowlist:
+on every invocation. These **operator-side** sources are loaded automatically
+on every `sandbox run` and merged with the built-in tier allowlist:
 
 ```yaml
 # ~/.sandbox/config.yaml — per-user defaults
@@ -22,23 +22,53 @@ export SANDBOX_EXTRA_ALLOWED_DOMAINS="git.example.com,artifactory.example.com"
 ```
 
 ```yaml
-# <repo>/.sandbox/config.yaml — per-repo defaults, checked in alongside code
+# <overlay>/profiles/<name>.yaml — team overlay profile (reviewed at link time)
 extra_allowed_domains:
   - go.private.example.com   # private Go module proxy
   - npm.private.example.com
 ```
 
-The per-repo source lets a project ship its own allow-list additions
-(private package indexes, internal mirrors, etc.) without every
-contributor having to add them to their personal config. **Because anyone
-with push access to the repo can edit it, every session start prints a
-banner listing what each repo's `.sandbox/config.yaml` contributed** —
-that keeps slipped-in additions visible to the operator launching the
-session.
-
-All three sources are subject to the same blocked-destinations check as
+All of these are subject to the same blocked-destinations check as
 `--allow-domain`, so an entry that matches `config/blocked-destinations.yaml`
 is still rejected.
+
+### A repo's own `.sandbox/config.yaml` is not honored by default
+
+A `<repo>/.sandbox/config.yaml` may also carry an `extra_allowed_domains:`
+list, but **the sandbox does not honor it by default**. Widening egress
+*loosens* containment, and a repo's tree is writable by the in-sandbox agent
+(and by anyone with push access) — so honoring a repo's own list would let the
+contained agent grant itself a new exfil destination just by committing a
+domain and having you relaunch. Instead, the launch prints a NOTICE listing
+what the repo requested and how to allow it deliberately:
+
+```
+==> NOTICE: 2 extra egress domain(s) are requested by a repo's
+    .sandbox/config.yaml but were NOT granted — a repo config cannot widen egress
+    (an in-sandbox agent could otherwise self-add an exfil destination):
+      - myapp: go.private.example.com
+      - myapp: npm.private.example.com
+    To allow one, grant it operator-side: --allow-domain <domain> (this launch),
+    extra_allowed_domains: in ~/.sandbox/config.yaml, or an overlay profile; or set
+    honor_repo_allowed_domains: true in your team overlay to honor repo lists.
+```
+
+This mirrors how the leak scanner treats its own loosening knob
+(`leakscan_extra_dep_dirs`): adding to a containment-relaxing list is
+**operator authority, confined to the team overlay**. A team that trusts its
+repos and wants the check-it-in convenience back can opt in, once, in the
+overlay:
+
+```yaml
+# <overlay>/config.yaml — team-shipped, operator-controlled
+honor_repo_allowed_domains: true
+```
+
+With that set, per-repo `extra_allowed_domains:` are honored again (and each
+still passes the blocked-destinations check, with a banner at launch). The key
+is read **only** from the overlay — a repo or a personal `~/.sandbox/config.yaml`
+setting it is ignored, so the decision to trust repo lists cannot itself be made
+by an untrusted repo.
 
 ## Never-allow: a personal block list
 
