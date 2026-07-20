@@ -117,6 +117,57 @@ test_cli_rejects_blocked_infra_endpoint() {
   fi
 }
 
+# An over-broad wildcard allow entry (e.g. bare '*', '*.com') renders to a Cilium
+# matchPattern the block list cannot constrain — a full egress-containment bypass.
+# check_egress_target_not_blocked must refuse it at input. A bounded '*.<domain>.<tld>'
+# wildcard (how the shipped agent allowlists are written) must still pass.
+test_rejects_overbroad_wildcards() {
+  info "Testing check_egress_target_not_blocked refuses over-broad wildcards..."
+  local d
+  # Rejected: matches everything / a public suffix / malformed wildcard.
+  for d in "*" "*." "*.com" "*.io" "*.co.uk.*" "*.*.com" "*evil.com" "foo*.com" "*.*"; do
+    if ( check_egress_target_not_blocked "${d}" ) 2>/dev/null; then
+      fail "over-broad wildcard '${d}' should be rejected but passed"
+    else
+      pass "over-broad wildcard '${d}' is refused"
+    fi
+  done
+  # Uppercase / trailing dot must not sneak a bare '*' past normalization.
+  if ( check_egress_target_not_blocked "*.COM." ) 2>/dev/null; then
+    fail "'*.COM.' should normalize and be rejected"
+  else
+    pass "'*.COM.' is refused after normalization"
+  fi
+  # Allowed: a bounded wildcard under a registrable domain, and plain hosts.
+  for d in "*.internal.example.com" "*.githubcopilot.com" "*.example.co.uk" "api.example.com"; do
+    if ( check_egress_target_not_blocked "${d}" ) 2>/dev/null; then
+      pass "bounded / plain egress target '${d}' still passes"
+    else
+      fail "bounded / plain egress target '${d}' should not be rejected"
+    fi
+  done
+}
+
+# End-to-end: the run path must refuse '--allow-domain *'. Tier 1 reaches input
+# validation without a cluster or --repo (same as the infra-endpoint case), so
+# this exercises the real cmd_run allow-list loop, not just the helper.
+test_cli_rejects_overbroad_wildcard() {
+  info "Testing CLI rejects --allow-domain '*'..."
+  local output
+  if output="$("${SANDBOX_ROOT}/bin/sandbox" run \
+    --agent claude --tier 1 \
+    --allow-domain '*' \
+    --dry-run 2>&1)"; then
+    fail "CLI should have rejected --allow-domain '*' but exited 0"
+  else
+    if echo "${output}" | grep -qi "too broad\|containment bypass"; then
+      pass "CLI refuses --allow-domain '*' (containment bypass closed)"
+    else
+      fail "CLI rejected the wildcard but message was unclear: ${output}"
+    fi
+  fi
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -170,9 +221,13 @@ main() {
   # Combiner: IP-literal targets route to the blocked-CIDR check.
   test_combiner_ip_routes_to_cidr
 
+  # Over-broad wildcard allow entries are a containment bypass; refuse them.
+  test_rejects_overbroad_wildcards
+
   # Test CLI integration
   test_cli_rejects_blocked_domain
   test_cli_rejects_blocked_infra_endpoint
+  test_cli_rejects_overbroad_wildcard
 
   echo ""
   echo "All blocked domain tests passed."

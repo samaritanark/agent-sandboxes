@@ -261,11 +261,50 @@ check_ip_not_in_blocked_cidrs() {
   done < <(get_blocked_cidrs)
 }
 
+# _egress_wildcard_too_broad <normalized-domain> — return 0 (true) if an egress
+# ALLOW entry is a wildcard so broad the block list cannot constrain it. Such an
+# entry renders (indent_fqdn_entry / indent_dns_entry, lib/policy.sh) to a Cilium
+# toFQDNs + L7-DNS matchPattern. The block check compares the LITERAL entry
+# against each blocked_domains pattern, and a bare '*' (or '*.<tld>') matches no
+# specific blocked domain, so it sails straight through — and the only remaining
+# backstop, the egressDeny blocked-CIDR rule, matches on resolved IP, which does
+# not fire for exfil to an attacker-controlled public domain that resolves to an
+# ordinary public IP outside any blocked CIDR. Net: such an entry is a full
+# egress-containment bypass over both 443 and DNS, so it must be refused at input.
+#
+# The ONLY wildcard shape permitted is a single leading '*.' under a registrable
+# domain — '*.<label>.<label>[.<label>…]', e.g. '*.internal.example.com' — which
+# is exactly how the shipped agent allowlists are written (*.githubcopilot.com,
+# *.claude.ai, …). Everything else with a '*' is rejected: bare '*', '*.', a
+# public-suffix wildcard like '*.com', a '*' anywhere but the leading label, or
+# more than one '*'. A non-wildcard host is never too broad here (it becomes an
+# exact matchName). bash 3.2-safe (case globs only, no regex/mapfile).
+_egress_wildcard_too_broad() {
+  local d="$1"
+  case "${d}" in *'*'*) : ;; *) return 1 ;; esac    # no '*' at all → not our concern
+  case "${d}" in \*.*) : ;; *) return 0 ;; esac      # a '*' not in a leading '*.' → too broad
+  local rest="${d#\*.}"                               # remainder after the leading '*.'
+  case "${rest}" in *'*'*) return 0 ;; esac           # a second '*' in the remainder → too broad
+  case "${rest}" in .*|*.|*..*) return 0 ;; esac      # empty label (leading/interior/trailing) → too broad
+  case "${rest}" in *.*) return 1 ;; esac             # ≥2 labels (registrable domain) → OK
+  return 0                                             # single label like '*.com' → too broad
+}
+
 # check_egress_target_not_blocked <host-or-ip> — the single entry point callers
-# should use to validate any egress destination. Runs the domain block check
-# and, when the target is an IPv4 literal, the blocked-CIDR membership check.
+# should use to validate any egress destination. Refuses an over-broad wildcard
+# (which the block list cannot constrain — see _egress_wildcard_too_broad), then
+# runs the domain block check and, when the target is an IPv4 literal, the
+# blocked-CIDR membership check.
 check_egress_target_not_blocked() {
   local target="$1"
+  if _egress_wildcard_too_broad "$(_normalize_domain "${target}")"; then
+    echo "ERROR: egress allow entry '${target}' is too broad to be allowed." >&2
+    echo "       It would render to a Cilium DNS/toFQDNs matchPattern the block list" >&2
+    echo "       cannot constrain, opening egress (and DNS) to arbitrary hosts — a" >&2
+    echo "       containment bypass. Allow specific hosts, or a bounded wildcard of the" >&2
+    echo "       form '*.<domain>.<tld>' (e.g. '*.internal.example.com')." >&2
+    exit 1
+  fi
   check_domain_not_blocked "${target}"
   if _is_ipv4_literal "${target}"; then
     check_ip_not_in_blocked_cidrs "${target}"
