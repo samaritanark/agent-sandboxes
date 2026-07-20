@@ -171,6 +171,59 @@ test_status_vetted() {
   eq "untrusted signer -> unvetted" "unvetted" "$(vetting_status_repo "${repo2}" | cut -f1)"
 }
 
+# vetted_repo_allowed_domains — per-repo egress domains are honored only from the
+# SIGNED HEAD blob and only while the repo verifies as vetted; a working-tree edit
+# (agent self-widening) is never honored, and re-vetting picks up a new list.
+write_repo_domains() {
+  local repo="$1"; shift
+  mkdir -p "${repo}/.sandbox"
+  { echo "extra_allowed_domains:"; local d; for d in "$@"; do echo "  - ${d}"; done; } \
+    > "${repo}/.sandbox/config.yaml"
+}
+count_lines() { [[ -z "$1" ]] && echo 0 || printf '%s\n' "$1" | wc -l | tr -d ' '; }
+
+test_vetted_repo_allowed_domains() {
+  info "Testing vetted_repo_allowed_domains (committed + vetted only)..."
+  write_trust_config
+
+  local repo="${TEST_DIR}/repo-domains" out
+  make_repo "${repo}"
+  write_repo_domains "${repo}" one.example.com two.example.com
+  git -C "${repo}" add -A
+  git -C "${repo}" commit -q -m "add repo egress domains"
+
+  # Committed but not yet attested → nothing honored.
+  out="$(vetted_repo_allowed_domains "${repo}")"
+  eq "committed, unvetted -> no domains" "0" "$(count_lines "${out}")"
+
+  # Attest at HEAD → the committed list is honored.
+  attest_repo "${repo}" "${TEST_DIR}/id" || { warn "git SSH tag signing failed; skipping"; return 0; }
+  out="$(vetted_repo_allowed_domains "${repo}")"
+  eq "vetted -> committed list honored"       "2"               "$(count_lines "${out}")"
+  eq "vetted -> first committed domain"        "one.example.com" "$(printf '%s\n' "${out}" | sed -n 1p)"
+
+  # Agent self-widening: edit the working-tree config to add a host, DON'T commit.
+  # The edit dirties the tree, so the repo is no longer vetted and NOTHING is honored
+  # — the working-tree value (evil.example.com) is never granted.
+  write_repo_domains "${repo}" one.example.com two.example.com evil.example.com
+  eq "working-tree edit -> repo dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+  out="$(vetted_repo_allowed_domains "${repo}")"
+  eq "dirty tree -> nothing honored" "0" "$(count_lines "${out}")"
+  printf '%s\n' "${out}" | grep -q "evil.example.com" \
+    && fail "SECURITY: uncommitted working-tree domain was honored" \
+    || pass "uncommitted working-tree domain is not honored"
+
+  # Re-vet the updated list: commit the new domain and attest the new HEAD.
+  git -C "${repo}" add -A
+  git -C "${repo}" commit -q -m "add third domain"
+  attest_repo "${repo}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; return 0; }
+  out="$(vetted_repo_allowed_domains "${repo}")"
+  eq "re-vetted -> updated list honored" "3" "$(count_lines "${out}")"
+  printf '%s\n' "${out}" | grep -q "evil.example.com" \
+    && pass "re-vetted commit picks up the new domain" \
+    || fail "re-vetted list should include the newly committed domain"
+}
+
 ###############################################################################
 # vetting_gate_repos — posture behavior.
 ###############################################################################
@@ -857,6 +910,7 @@ main() {
   test_attest_acknowledges_exceptions
   if [[ "${SSH_SIGNING}" -eq 1 ]]; then
     test_status_vetted
+    test_vetted_repo_allowed_domains
     test_gate_required_passes_when_vetted
     test_verify_hermetic_against_program_hijack
     test_trust_roots_overlay_and_union

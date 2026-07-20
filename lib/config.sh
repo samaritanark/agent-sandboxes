@@ -136,6 +136,13 @@ load_extra_allowed_domains_from_file() {
 # setting is ignored. Absent, non-`true`, or no overlay ⇒ "false". (Overlay
 # resolution via resolve_overlay_path — lib/profile.sh — so this is called after
 # the libs are loaded, as everything in the run path is.)
+#
+# The opt-in does NOT trust the writable working tree. When it is on, cmd_run
+# honors only the VETTED committed list (vetted_repo_allowed_domains, lib/vetting.sh):
+# the domains in the repo's signed HEAD, and only while a current attestation
+# verifies. So the same signature that anchors secret exceptions anchors egress
+# widening; an agent editing the working-tree config still cannot self-grant a
+# host (its edit goes unvetted, or a human must re-vet and acknowledge it).
 honor_repo_allowed_domains() {
   local overlay v=""
   overlay="$(resolve_overlay_path 2>/dev/null || true)"

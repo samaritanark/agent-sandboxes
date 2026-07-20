@@ -84,8 +84,13 @@ vetting: advisory
 # can turn it on: widening egress loosens containment, and a repo's tree is
 # writable by the in-sandbox agent, so by default a repo cannot grant itself an
 # egress destination (the launch only surfaces what it requested). Set true here
-# if your team trusts its repos and wants the check-it-in convenience back;
-# honored entries still pass the blocked-destinations check. A repo or a personal
+# if your team wants per-repo lists — a repo carrying just the hosts that app
+# needs, instead of one giant global allowlist. Even then only the repo's VETTED
+# committed list is honored: the domains in its signed HEAD, while an
+# agent-vetted/<sha> attestation verifies (the same signature that anchors the
+# .betterleaksignore secret exceptions), so an agent editing the working-tree
+# config still cannot self-grant a host without a human re-vetting. Honored
+# entries still pass the blocked-destinations check. A repo or a personal
 # ~/.sandbox/config.yaml setting this is ignored — the same overlay-only rule
 # leakscan_extra_dep_dirs follows. See docs/how-to/persistent-domains.md.
 #

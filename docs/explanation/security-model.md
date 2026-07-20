@@ -242,3 +242,15 @@ team that wants per-repo lists honored opts in with `honor_repo_allowed_domains:
 true` in the overlay (overlay-only, exactly like `leakscan_extra_dep_dirs`; a repo
 or user config setting it is ignored). Everything still passes the
 blocked-destinations check.
+
+The opt-in stops short of trusting the writable working tree. When it is on, the
+sandbox honors only the repo's **vetted committed** list: the `extra_allowed_domains:`
+in its signed `HEAD`, and only while an `agent-vetted/<sha>` attestation verifies —
+read from the committed blob, never the working tree, exactly as the secret-gate
+exceptions are (see "The sandbox counts it only on a vetted repo" above). The
+attestation is the authority for both loosening controls. So an agent that edits
+the config self-widens nothing: its edit dirties the tree (the repo goes unvetted)
+or lands in a new commit the tag no longer covers, and nothing is honored until a
+human re-vets — which re-surfaces the change for acknowledgment. The result gives
+a team the check-it-in convenience and repo-scoped lists without handing the
+contained party a lever on its own containment.

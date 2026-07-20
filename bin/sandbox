@@ -266,7 +266,10 @@ PERSISTENT EXTRAS:
   A <repo>/.sandbox/config.yaml may also list extra_allowed_domains, but a repo
   config is NOT honored by default: its tree is writable by the in-sandbox agent,
   so a repo cannot widen its own egress (the launch prints what it requested).
-  Set honor_repo_allowed_domains: true in your team overlay to honor repo lists.
+  Set honor_repo_allowed_domains: true in your team overlay to honor each repo's
+  list — and even then only its VETTED committed entries (the domains in the
+  repo's signed HEAD, while an attestation verifies), so an agent editing the
+  working-tree config still cannot self-grant a host without a human re-vetting.
 
 SECRET GATE (tier 2/3):
   Before launch, each --repo is scanned with betterleaks. A secret in a
@@ -658,35 +661,66 @@ cmd_run() {
   # a new egress (exfil) destination just by committing a domain and having the
   # operator relaunch. Widening egress is operator authority, confined to the team
   # overlay, the same rule leakscan_extra_dep_dirs follows: the overlay opt-in
-  # honor_repo_allowed_domains: true (lib/config.sh) restores the old
-  # honor-with-banner behavior. Either way we SURFACE what each repo asked for, so
-  # an operator can grant it deliberately (and honored entries still go through the
-  # blocked-destinations check below).
-  local _repo _repo_config _d _honor_repo_domains
+  # honor_repo_allowed_domains: true (lib/config.sh) turns honoring ON — but even
+  # then we trust only the VETTED committed list (vetted_repo_allowed_domains),
+  # i.e. the domains in the repo's signed HEAD, and only while an attestation
+  # verifies. That is the same signature that anchors secret exceptions, so an
+  # agent editing the working-tree config still cannot self-grant a host: its edit
+  # dirties the tree (repo goes unvetted → nothing honored) or forces a human to
+  # re-vet and acknowledge the change. Either way we SURFACE the gap between what a
+  # repo's working tree asks for and what is actually granted, so an operator knows
+  # why a freshly-added domain is not yet live (honored entries still go through
+  # the blocked-destinations check below).
+  local _repo _repo_config _d _h _honor_repo_domains _is_honored
   _honor_repo_domains="$(honor_repo_allowed_domains)"
-  local -a _repo_requested=()
+  local -a _repo_honored=() _repo_ungranted=() _honored_domains=()
   for _repo in "${opt_repos[@]+"${opt_repos[@]}"}"; do
     _repo_config="${_repo}/.sandbox/config.yaml"
     [[ -f "${_repo_config}" ]] || continue
+    # Honored set: the vetted committed list, only when the overlay opted in.
+    _honored_domains=()
+    if [[ "${_honor_repo_domains}" == "true" ]]; then
+      while IFS= read -r _extra_domain; do
+        [[ -z "${_extra_domain}" ]] && continue
+        _honored_domains+=("${_extra_domain}")
+        opt_allow_domains+=("${_extra_domain}")
+        _repo_honored+=("$(basename "${_repo}"): ${_extra_domain}")
+      done < <(vetted_repo_allowed_domains "${_repo}")
+    fi
+    # Working-tree request: anything the repo config asks for that is NOT in the
+    # honored (vetted) set is surfaced as "requested but not granted".
     while IFS= read -r _extra_domain; do
       [[ -z "${_extra_domain}" ]] && continue
-      _repo_requested+=("$(basename "${_repo}"): ${_extra_domain}")
-      [[ "${_honor_repo_domains}" == "true" ]] && opt_allow_domains+=("${_extra_domain}")
+      _is_honored=false
+      for _h in "${_honored_domains[@]+"${_honored_domains[@]}"}"; do
+        [[ "${_h}" == "${_extra_domain}" ]] && { _is_honored=true; break; }
+      done
+      [[ "${_is_honored}" == "true" ]] && continue
+      _repo_ungranted+=("$(basename "${_repo}"): ${_extra_domain}")
     done < <(load_extra_allowed_domains_from_file "${_repo_config}")
   done
-  if [[ "${#_repo_requested[@]}" -gt 0 ]]; then
+  if [[ "${#_repo_honored[@]}" -gt 0 ]]; then
+    echo "==> Honoring ${#_repo_honored[@]} vetted per-repo egress domain(s) (overlay opted in via honor_repo_allowed_domains; read from each repo's signed HEAD, not its working tree); each still passes the block-list check:"
+    for _d in "${_repo_honored[@]}"; do echo "      - ${_d}"; done
+  fi
+  if [[ "${#_repo_ungranted[@]}" -gt 0 ]]; then
     if [[ "${_honor_repo_domains}" == "true" ]]; then
-      echo "==> Honoring ${#_repo_requested[@]} per-repo egress domain(s) (overlay opted in via honor_repo_allowed_domains); each still passes the block-list check:"
-      for _d in "${_repo_requested[@]}"; do echo "      - ${_d}"; done
+      echo "==> NOTICE: ${#_repo_ungranted[@]} extra egress domain(s) requested by a repo's" >&2
+      echo "    .sandbox/config.yaml were NOT granted — they are not in that repo's current" >&2
+      echo "    vetting attestation (the repo is unvetted, or the list changed since it was" >&2
+      echo "    signed, so the signature does not cover them):" >&2
+      for _d in "${_repo_ungranted[@]}"; do echo "      - ${_d}" >&2; done
+      echo "    Re-vet the repo ('sandbox vet') to cover the updated list, or grant one this" >&2
+      echo "    launch with --allow-domain <domain>. See docs/how-to/persistent-domains.md." >&2
     else
-      echo "==> NOTICE: ${#_repo_requested[@]} extra egress domain(s) are requested by a repo's" >&2
+      echo "==> NOTICE: ${#_repo_ungranted[@]} extra egress domain(s) are requested by a repo's" >&2
       echo "    .sandbox/config.yaml but were NOT granted — a repo config cannot widen egress" >&2
       echo "    (an in-sandbox agent could otherwise self-add an exfil destination):" >&2
-      for _d in "${_repo_requested[@]}"; do echo "      - ${_d}" >&2; done
+      for _d in "${_repo_ungranted[@]}"; do echo "      - ${_d}" >&2; done
       echo "    To allow one, grant it operator-side: --allow-domain <domain> (this launch)," >&2
       echo "    extra_allowed_domains: in ~/.sandbox/config.yaml, or an overlay profile; or set" >&2
-      echo "    honor_repo_allowed_domains: true in your team overlay to honor repo lists." >&2
-      echo "    See docs/how-to/persistent-domains.md." >&2
+      echo "    honor_repo_allowed_domains: true in your team overlay to honor each repo's" >&2
+      echo "    VETTED domain list. See docs/how-to/persistent-domains.md." >&2
     fi
   fi
 

@@ -44,8 +44,11 @@ leakscan_dep_exclusions: off         # scan gitignored dependency trees too (str
 
 A repo's `extra_allowed_domains:` is **not** honored by default because a repo
 tree is writable by the in-sandbox agent; a team that wants it honored opts in
-once in the overlay with `honor_repo_allowed_domains: true` (overlay-only). See
-[Persistent extra domains](../how-to/persistent-domains.md).
+once in the overlay with `honor_repo_allowed_domains: true` (overlay-only). Even
+then only the repo's **vetted committed** list is honored — the domains in its
+signed `HEAD`, while an `agent-vetted/<sha>` attestation verifies — so an agent
+editing the working-tree config still cannot self-grant a host without a human
+re-vetting. See [Persistent extra domains](../how-to/persistent-domains.md).
 
 Reviewed secret-gate false positives are **not** in this file — they live in a
 `.betterleaksignore` at the repo root (betterleaks' native format, so the same

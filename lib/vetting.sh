@@ -543,6 +543,43 @@ vetting_committed_legacy_accepted_secrets() {
   rm -f "${tmp}"
 }
 
+# vetting_committed_allowed_domains <repo> — the `extra_allowed_domains:` list in
+# the repo's HEAD .sandbox/config.yaml *commit*, one domain per line. Like
+# vetting_committed_ignore_fingerprints it reads the COMMITTED blob, never the
+# working tree, and that is the security boundary: widening egress is a loosening
+# control, so it may only be honored for a list an attestation actually signed.
+# An operator flips honor_repo_allowed_domains: true in the overlay to opt in;
+# the vetted gate (vetted_repo_allowed_domains) then honors only what is here, so
+# an in-sandbox agent editing the working-tree config cannot self-grant an egress
+# (exfil) host — its edit dirties the tree (repo goes unvetted) or requires a new
+# signed attestation, which re-surfaces the change for a human to acknowledge.
+# Hardened via _vetting_git; `git show <rev>:<path>` applies no smudge filters.
+# Empty if no config exists at HEAD, the repo has no commit, or it is not a repo.
+vetting_committed_allowed_domains() {
+  local repo="$1" tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/sandbox-allow-src-XXXXXX")" || return 0
+  _vetting_git "${repo}" show "HEAD:${SANDBOX_REPO_CONFIG_NAME}" > "${tmp}" 2>/dev/null || true
+  extract_yaml_list_from_file "${tmp}" "extra_allowed_domains"
+  rm -f "${tmp}"
+}
+
+# vetted_repo_allowed_domains <repo> — the per-repo egress domains to honor at
+# launch, or NOTHING unless the repo is currently vetted (a signed attestation
+# verifies at HEAD over a clean tree — vetting_status_repo). The exact sibling of
+# vetted_accepted_fingerprints (lib/filesystem.sh): the committed list carries
+# weight only because the vetting signature covers it, so an unvetted (or
+# unsignable) repo's list is ignored, independent of the vetting posture
+# (off/advisory/required). Consumed by cmd_run only when the overlay set
+# honor_repo_allowed_domains: true; honored entries still pass the block-list
+# check. Reads HEAD's blob, not the working tree (vetting_committed_allowed_domains).
+vetted_repo_allowed_domains() {
+  local repo="$1" line status
+  line="$(vetting_status_repo "${repo}" 2>/dev/null)"
+  IFS=$'\t' read -r status _ <<<"${line}"
+  [[ "${status}" == "vetted" ]] || return 0
+  vetting_committed_allowed_domains "${repo}"
+}
+
 _vetting_acknowledge_exceptions() {
   local real_repo="$1" repo="$2" assume_yes="$3"
 

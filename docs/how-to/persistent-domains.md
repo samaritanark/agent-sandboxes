@@ -55,20 +55,53 @@ what the repo requested and how to allow it deliberately:
 
 This mirrors how the leak scanner treats its own loosening knob
 (`leakscan_extra_dep_dirs`): adding to a containment-relaxing list is
-**operator authority, confined to the team overlay**. A team that trusts its
-repos and wants the check-it-in convenience back can opt in, once, in the
-overlay:
+**operator authority, confined to the team overlay**. A team that wants
+per-repo lists — so a repo carries the handful of hosts *that app* actually
+needs, instead of everyone hauling a giant global allowlist between repos — can
+opt in, once, in the overlay:
 
 ```yaml
 # <overlay>/config.yaml — team-shipped, operator-controlled
 honor_repo_allowed_domains: true
 ```
 
-With that set, per-repo `extra_allowed_domains:` are honored again (and each
-still passes the blocked-destinations check, with a banner at launch). The key
-is read **only** from the overlay — a repo or a personal `~/.sandbox/config.yaml`
-setting it is ignored, so the decision to trust repo lists cannot itself be made
-by an untrusted repo.
+### Honored lists are anchored to the repo's vetting attestation
+
+Opting in does **not** trust the writable working tree. With
+`honor_repo_allowed_domains: true`, the launch honors a repo's
+`extra_allowed_domains:` only from its **vetted committed state** — the domains
+in the repo's signed `HEAD`, and only while an `agent-vetted/<sha>` attestation
+verifies against your trust root. This is the same signature that anchors the
+secret-gate exceptions in `.betterleaksignore` (see
+[Accepting secret-gate false positives](secret-exceptions.md)), applied to a
+control that is arguably more sensitive.
+
+The effect is that a repo can keep a stable, checked-in, tightly-scoped list
+that survives across sessions — and the in-sandbox agent still cannot grant
+itself an egress host. If the agent edits `.sandbox/config.yaml`, the working
+tree goes dirty (or the new commit no longer matches the tag), the repo stops
+being vetted, and *nothing* from it is honored until a human re-vets. Re-vetting
+(`sandbox vet`) re-surfaces the change for explicit acknowledgment, so a new
+domain only goes live once a signer has seen it. So the everyday loop for your
+patch workflow is: edit the repo's domain list, commit, `sandbox vet`, relaunch.
+
+Honored domains print a banner at launch (and each still passes the
+blocked-destinations check):
+
+```
+==> Honoring 2 vetted per-repo egress domain(s) (overlay opted in via
+    honor_repo_allowed_domains; read from each repo's signed HEAD, not its
+    working tree); each still passes the block-list check:
+      - myapp: go.private.example.com
+      - myapp: npm.private.example.com
+```
+
+If the working tree lists a domain the current attestation does not cover (an
+unvetted repo, or a list edited since it was signed), the launch says so and
+names the ungranted domains, so you know a freshly-added host is not live until
+you re-vet. The `honor_repo_allowed_domains` key is read **only** from the
+overlay — a repo or a personal `~/.sandbox/config.yaml` setting it is ignored,
+so the decision to trust repo lists cannot itself be made by an untrusted repo.
 
 ## Never-allow: a personal block list
 
