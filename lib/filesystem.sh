@@ -614,24 +614,44 @@ _leakscan_finding_accepted() {
 
 # vetted_accepted_fingerprints <repo> — the repo-root ignore-file fingerprints
 # (`relpath:rule:line`) to honor for a repo at launch, or NOTHING unless the
-# repo is currently vetted (a signed attestation verifies at HEAD over a clean
-# tree — vetting_status_repo). The committed list carries weight only because
-# the vetting signature covers it; an unvetted (or unsignable) repo's list is
+# repo is currently vetted (a signed attestation verifies over a clean tree —
+# vetting_status_repo). The committed list carries weight only because the
+# vetting signature covers it; an unvetted (or unsignable) repo's list is
 # ignored, independent of the vetting *posture* (off/advisory/required).
 # Consumed by the secret gate and the `sandbox check` preview to decide what
 # scan_repo_secrets may downgrade to `accepted`.
 #
-# The list is read from the SIGNED commit (vetting_committed_ignore_fingerprints),
-# not the working tree: "vetted" only guarantees the tracked tree is clean, and
+# The list is read from a COMMITTED blob (vetting_committed_ignore_fingerprints),
+# never the working tree: "vetted" only guarantees the tracked tree is clean, and
 # `git status --porcelain` does not flag gitignored files, so a working-tree read
 # would honor a gitignored/uncommitted ignore file the signature never covered.
-# Reading HEAD's blob ties every honored fingerprint to the attestation.
+#
+# DRIFT AND THE SIGNATURE. The vetting gate accepts an attestation that is an
+# ANCESTOR of HEAD (see lib/vetting.sh), so a `vetted` repo may be N commits
+# behind: HEAD is then NOT the signed commit, and HEAD's .betterleaksignore was
+# never acknowledged by a signer. Honoring an exception exposes a plaintext value
+# to the agent, and that exposure is blessed by a signer at attest time
+# (_vetting_acknowledge_exceptions), not by the code review behind ordinary
+# drift — and in this tool's own workflow the drifting commits can be the agent's
+# own unreviewed work on the workspace. So we read the list from the ATTESTED
+# tag's commit, never HEAD: every honored fingerprint is one a signer actually
+# acknowledged, and drift can introduce nothing — an entry added on a later,
+# unsigned commit is simply not read until a signer re-attests the new HEAD.
+# This holds at any drift distance, so no cap or prompt gates it. The optional
+# vetting_exceptions_require_head knob (default off; see lib/vetting.sh) layers a
+# stricter "attestation must be exactly at HEAD" posture on top for teams that
+# want it; failing closed (honor nothing) when strict and behind is unknown.
 vetted_accepted_fingerprints() {
-  local repo="$1" line status
+  local repo="$1" line status tag behind
   line="$(vetting_status_repo "${repo}" 2>/dev/null)"
-  IFS=$'\t' read -r status _ <<<"${line}"
-  [[ "${status}" == "vetted" ]] || return 0
-  vetting_committed_ignore_fingerprints "${repo}"
+  IFS=$'\t' read -r status _ tag _ behind _ <<<"${line}"
+  [[ "${status}" == "vetted" && -n "${tag}" ]] || return 0
+  if [[ "$(vetting_exceptions_require_head)" == "true" && "${behind:-1}" -ne 0 ]]; then
+    return 0
+  fi
+  # Read from the attested tag's commit, not HEAD, so drift cannot introduce an
+  # exception no signer acknowledged. See the DRIFT note above.
+  vetting_committed_ignore_fingerprints "${repo}" "${tag}"
 }
 
 # scan_repo_secrets <repo> [accept_file] — scan a workspace with betterleaks and

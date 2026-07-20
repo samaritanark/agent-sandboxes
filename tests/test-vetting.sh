@@ -69,6 +69,15 @@ vetting_trust_format: ssh
 EOF
 }
 
+# write_config_with <extra-line>... — trust config plus one or more extra config
+# lines (e.g. a cap or window), so a gate test can set a knob without dropping the
+# trust root.
+write_config_with() {
+  write_trust_config
+  local line
+  for line in "$@"; do printf '%s\n' "${line}" >> "${USER_SANDBOX_CONFIG}"; done
+}
+
 make_repo() {
   local repo="$1"
   mkdir -p "${repo}"
@@ -85,6 +94,17 @@ attest_repo() {
   local repo="$1" keyfile="$2" sha
   sha="$(git -C "${repo}" rev-parse HEAD)"
   git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${keyfile}" \
+    tag -s "agent-vetted/${sha}" -m "vetted for agent use" 2>/dev/null
+}
+
+# attest_repo_dated <repo> <keyfile> <epoch> — like attest_repo, but stamp the
+# tag's tagger date at <epoch> (a unix timestamp) so the recency window can be
+# exercised. The tagger date is what vetting_max_age_days measures against.
+attest_repo_dated() {
+  local repo="$1" keyfile="$2" epoch="$3" sha
+  sha="$(git -C "${repo}" rev-parse HEAD)"
+  GIT_COMMITTER_DATE="@${epoch} +0000" GIT_AUTHOR_DATE="@${epoch} +0000" \
+    git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${keyfile}" \
     tag -s "agent-vetted/${sha}" -m "vetted for agent use" 2>/dev/null
 }
 
@@ -156,13 +176,40 @@ test_status_vetted() {
   local repo="${TEST_DIR}/repo-vetted"
   make_repo "${repo}"
   attest_repo "${repo}" "${TEST_DIR}/id" || { warn "git SSH tag signing failed; skipping"; return 0; }
-  eq "trusted signature -> vetted" "vetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+  local line status behind
+  line="$(vetting_status_repo "${repo}")"
+  status="$(cut -f1 <<<"${line}")"; behind="$(cut -f5 <<<"${line}")"
+  eq "trusted signature -> vetted" "vetted" "${status}"
+  eq "attestation at HEAD -> behind 0" "0" "${behind}"
 
-  # A new commit invalidates the attestation (tag no longer points at HEAD).
+  # A new commit no longer invalidates the attestation: the tag is now a verified
+  # ANCESTOR of HEAD, so the repo stays vetted and the drift count rises to 1.
   echo "more" >> "${repo}/README.md"
   git -C "${repo}" add -A
   git -C "${repo}" commit -q -m "second"
-  eq "new commit -> unvetted (stale)" "unvetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+  line="$(vetting_status_repo "${repo}")"
+  status="$(cut -f1 <<<"${line}")"; behind="$(cut -f5 <<<"${line}")"
+  eq "new commit -> still vetted (ancestor)" "vetted" "${status}"
+  eq "new commit -> behind 1" "1" "${behind}"
+
+  # A second commit deepens the drift to 2.
+  echo "yet more" >> "${repo}/README.md"
+  git -C "${repo}" add -A
+  git -C "${repo}" commit -q -m "third"
+  eq "two commits -> behind 2" "2" "$(vetting_status_repo "${repo}" | cut -f5)"
+
+  # A tag on a DIVERGENT line (not an ancestor of HEAD) does not count.
+  local repo3="${TEST_DIR}/repo-divergent"
+  make_repo "${repo3}"
+  git -C "${repo3}" checkout -q -b sidebranch
+  echo "side" >> "${repo3}/side.txt"
+  git -C "${repo3}" add -A
+  git -C "${repo3}" commit -q -m "side commit"
+  attest_repo "${repo3}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; return 0; }
+  # Back on the mainline, the side-branch attestation is not reachable from HEAD.
+  git -C "${repo3}" checkout -q "$(git -C "${repo3}" rev-list --max-parents=0 HEAD)"
+  git -C "${repo3}" checkout -q -B main
+  eq "divergent-line tag -> unvetted" "unvetted" "$(vetting_status_repo "${repo3}" | cut -f1)"
 
   # A signature by a key NOT in the trust root does not count.
   local repo2="${TEST_DIR}/repo-untrusted"
@@ -182,21 +229,21 @@ test_gate_posture() {
   make_repo "${repo}"
 
   # off: always proceeds (no verification at all).
-  ( vetting_gate_repos "off" "false" "${repo}" >/dev/null 2>&1 ) \
+  ( vetting_gate_repos "off" "false" "false" "${repo}" >/dev/null 2>&1 ) \
     && pass "off proceeds" || fail "off should proceed"
 
   # advisory: proceeds despite the repo being unvetted.
-  ( vetting_gate_repos "advisory" "false" "${repo}" >/dev/null 2>&1 ) \
+  ( vetting_gate_repos "advisory" "false" "false" "${repo}" >/dev/null 2>&1 ) \
     && pass "advisory proceeds on unvetted" || fail "advisory should proceed"
 
   # required: refuses an unvetted repo.
-  if ( vetting_gate_repos "required" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( vetting_gate_repos "required" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "required should refuse an unvetted repo"
   fi
   pass "required refuses unvetted repo"
 
   # required + override: proceeds.
-  ( vetting_gate_repos "required" "true" "${repo}" >/dev/null 2>&1 ) \
+  ( vetting_gate_repos "required" "true" "false" "${repo}" >/dev/null 2>&1 ) \
     && pass "override proceeds despite unvetted" || fail "override should proceed"
 }
 
@@ -211,7 +258,7 @@ test_gate_required_passes_when_vetted() {
   make_repo "${repo}"
   attest_repo "${repo}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; return 0; }
 
-  ( vetting_gate_repos "required" "false" "${repo}" >/dev/null 2>&1 ) \
+  ( vetting_gate_repos "required" "false" "false" "${repo}" >/dev/null 2>&1 ) \
     && pass "required proceeds on a vetted repo" || fail "required should pass a vetted repo"
 }
 
@@ -564,19 +611,19 @@ EOF
   make_repo "${repo}"
 
   # required, no override -> refuse.
-  if ( vetting_gate_repos "required" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( vetting_gate_repos "required" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "required with missing trust root should refuse"
   fi
   pass "required refuses when trust root is missing"
 
   # required + override -> STILL refuses (config error, not an accepted risk).
-  if ( vetting_gate_repos "required" "true" "${repo}" >/dev/null 2>&1 ); then
+  if ( vetting_gate_repos "required" "true" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "override must not bypass a missing trust root"
   fi
   pass "override does not bypass a missing trust root"
 
   # advisory -> proceeds (can't verify, but doesn't block).
-  ( vetting_gate_repos "advisory" "false" "${repo}" >/dev/null 2>&1 ) \
+  ( vetting_gate_repos "advisory" "false" "false" "${repo}" >/dev/null 2>&1 ) \
     && pass "advisory proceeds without a trust root" || fail "advisory should proceed"
 }
 
@@ -632,7 +679,7 @@ vetting_trust_root: ${TEST_DIR}/no-such-root
 vetting_trust_format: ssh
 EOF
   export SANDBOX_OVERLAY="${overlay2}"
-  if ( vetting_gate_repos "required" "true" "${repo}" >/dev/null 2>&1 ); then
+  if ( vetting_gate_repos "required" "true" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "no trust root anywhere must fail closed despite override"
   fi
   pass "no trust root anywhere fails closed despite override"
@@ -658,7 +705,7 @@ test_gate_inline_attest() {
 
   # Non-TTY: no prompt text, straight refusal, no tag.
   local out=""
-  out="$( ( vetting_gate_repos "required" "false" "${repo}" </dev/null 2>&1 ) || true )"
+  out="$( ( vetting_gate_repos "required" "false" "false" "${repo}" </dev/null 2>&1 ) || true )"
   case "${out}" in
     *"Attest HEAD"*) fail "non-TTY launch must not offer an inline attest" ;;
     *) pass "non-TTY launch does not prompt" ;;
@@ -684,7 +731,7 @@ source "${SANDBOX_ROOT}/lib/config.sh"
 source "${SANDBOX_ROOT}/lib/profile.sh"
 source "${SANDBOX_ROOT}/lib/filesystem.sh"
 source "${SANDBOX_ROOT}/lib/vetting.sh"
-vetting_gate_repos "required" "false" "\$1"
+vetting_gate_repos "required" "false" "false" "\$1"
 EOF
 
   # Decline: refusal (non-zero), no tag.
@@ -831,6 +878,311 @@ test_vetting_signing_key_knob() {
   write_trust_config
 }
 
+###############################################################################
+# vetting_max_commits_behind — user + overlay layering, most-restrictive wins.
+###############################################################################
+test_max_commits_behind_config() {
+  info "Testing vetting_max_commits_behind layering..."
+  : > "${USER_SANDBOX_CONFIG}"
+  unset SANDBOX_OVERLAY
+  eq "unset -> no cap (empty)" "" "$(vetting_max_commits_behind)"
+
+  printf 'vetting_max_commits_behind: 5\n' > "${USER_SANDBOX_CONFIG}"
+  eq "user sets a cap" "5" "$(vetting_max_commits_behind)"
+
+  local overlay="${TEST_DIR}/cap-overlay"
+  mkdir -p "${overlay}"
+  # Most restrictive (smallest) wins, in both directions.
+  printf 'vetting_max_commits_behind: 20\n' > "${overlay}/config.yaml"
+  printf 'vetting_max_commits_behind: 5\n'  > "${USER_SANDBOX_CONFIG}"
+  export SANDBOX_OVERLAY="${overlay}"
+  eq "user tighter than overlay wins" "5" "$(vetting_max_commits_behind)"
+
+  printf 'vetting_max_commits_behind: 3\n'  > "${overlay}/config.yaml"
+  printf 'vetting_max_commits_behind: 50\n' > "${USER_SANDBOX_CONFIG}"
+  eq "overlay tighter than user wins" "3" "$(vetting_max_commits_behind)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+  printf 'vetting_max_commits_behind: 7\n' > "${overlay}/config.yaml"
+  eq "overlay-only cap applies" "7" "$(vetting_max_commits_behind)"
+
+  # A non-integer value is ignored (fails toward no cap, not a nonsense bound).
+  printf 'vetting_max_commits_behind: lots\n' > "${USER_SANDBOX_CONFIG}"
+  rm -f "${overlay}/config.yaml"
+  unset SANDBOX_OVERLAY
+  eq "non-integer -> no cap" "" "$(vetting_max_commits_behind)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+}
+
+###############################################################################
+# vetting_max_age_days — user + overlay layering, most-restrictive (smallest)
+# wins; _vetting_age_days converts a tagger epoch to whole days.
+###############################################################################
+test_max_age_days_config() {
+  info "Testing vetting_max_age_days layering and age computation..."
+  : > "${USER_SANDBOX_CONFIG}"
+  unset SANDBOX_OVERLAY
+  eq "unset -> no expiry (empty)" "" "$(vetting_max_age_days)"
+
+  printf 'vetting_max_age_days: 30\n' > "${USER_SANDBOX_CONFIG}"
+  eq "user sets a window" "30" "$(vetting_max_age_days)"
+
+  local overlay="${TEST_DIR}/age-overlay"
+  mkdir -p "${overlay}"
+  export SANDBOX_OVERLAY="${overlay}"
+  # Most restrictive (smallest) wins in both directions.
+  printf 'vetting_max_age_days: 90\n' > "${overlay}/config.yaml"
+  printf 'vetting_max_age_days: 30\n' > "${USER_SANDBOX_CONFIG}"
+  eq "user tighter than overlay wins" "30" "$(vetting_max_age_days)"
+
+  printf 'vetting_max_age_days: 14\n' > "${overlay}/config.yaml"
+  printf 'vetting_max_age_days: 60\n' > "${USER_SANDBOX_CONFIG}"
+  eq "overlay tighter than user wins" "14" "$(vetting_max_age_days)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+  printf 'vetting_max_age_days: 45\n' > "${overlay}/config.yaml"
+  eq "overlay-only window applies" "45" "$(vetting_max_age_days)"
+
+  # A non-integer value is ignored (fails toward no expiry).
+  printf 'vetting_max_age_days: soon\n' > "${USER_SANDBOX_CONFIG}"
+  rm -f "${overlay}/config.yaml"
+  unset SANDBOX_OVERLAY
+  eq "non-integer -> no expiry" "" "$(vetting_max_age_days)"
+
+  # _vetting_age_days: garbage/empty -> empty; a future stamp -> 0; ~40d -> 40.
+  eq "empty epoch -> unknown" "" "$(_vetting_age_days "")"
+  eq "non-numeric epoch -> unknown" "" "$(_vetting_age_days "notanumber")"
+  local now; now="$(date +%s)"
+  eq "future epoch -> 0 (no negative age)" "0" "$(_vetting_age_days "$(( now + 86400 ))")"
+  eq "40 days ago -> 40" "40" "$(_vetting_age_days "$(( now - 40 * 86400 ))")"
+
+  : > "${USER_SANDBOX_CONFIG}"
+}
+
+###############################################################################
+# vetting_gate_repos — drift acceptance and the overlay cap (needs SSH signing).
+###############################################################################
+test_gate_drift() {
+  info "Testing required-posture drift acceptance and cap..."
+  write_trust_config
+  unset SANDBOX_OVERLAY
+
+  local repo="${TEST_DIR}/gate-drift"
+  make_repo "${repo}"
+  attest_repo "${repo}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; return 0; }
+  local i
+  for i in 1 2; do
+    echo "c${i}" >> "${repo}/README.md"
+    git -C "${repo}" add -A
+    git -C "${repo}" commit -q -m "c${i}"
+  done
+  eq "drift repo reports behind 2" "2" "$(vetting_status_repo "${repo}" | cut -f5)"
+
+  # No cap, no TTY, no flag: nothing can accept the drift, so required refuses.
+  if ( vetting_gate_repos "required" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ); then
+    fail "required should refuse un-accepted drift with no TTY/flag"
+  fi
+  pass "required refuses drift without acceptance"
+
+  # --i-accept-vetting-drift accepts it non-interactively.
+  ( vetting_gate_repos "required" "false" "true" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "--i-accept-vetting-drift accepts drift" || fail "drift flag should proceed"
+
+  # The broad override covers drift too.
+  ( vetting_gate_repos "required" "true" "false" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "--i-accept-unvetted-repo accepts drift" || fail "override should proceed on drift"
+
+  # advisory proceeds and never blocks on drift.
+  ( vetting_gate_repos "advisory" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "advisory proceeds on drift" || fail "advisory should proceed on drift"
+
+  # A cap that tolerates the drift auto-proceeds, no flag or TTY needed.
+  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_max_commits_behind: 5\n' \
+    "${TRUST_ROOT}" > "${USER_SANDBOX_CONFIG}"
+  ( vetting_gate_repos "required" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "within-cap drift auto-proceeds" || fail "within-cap drift should proceed"
+
+  # An exceeded cap refuses — and the drift flag does NOT bypass the cap.
+  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_max_commits_behind: 1\n' \
+    "${TRUST_ROOT}" > "${USER_SANDBOX_CONFIG}"
+  if ( vetting_gate_repos "required" "false" "true" "${repo}" </dev/null >/dev/null 2>&1 ); then
+    fail "over-cap drift should refuse even with --i-accept-vetting-drift"
+  fi
+  pass "over-cap drift refuses despite the drift flag"
+
+  # Only the full override clears over-cap drift.
+  ( vetting_gate_repos "required" "true" "false" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "override clears over-cap drift" || fail "override should clear over-cap drift"
+
+  # cap 0 restores strict "must be at HEAD": even one commit behind refuses.
+  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_max_commits_behind: 0\n' \
+    "${TRUST_ROOT}" > "${USER_SANDBOX_CONFIG}"
+  if ( vetting_gate_repos "required" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ); then
+    fail "cap 0 should refuse any drift"
+  fi
+  pass "cap 0 refuses any drift (strict at-HEAD)"
+
+  write_trust_config
+}
+
+###############################################################################
+# vetting_gate_repos — the recency window (vetting_max_age_days). A stale
+# attestation is treated like uncapped drift, never auto-passed (needs signing).
+###############################################################################
+test_gate_age() {
+  info "Testing required-posture attestation recency window..."
+  write_trust_config
+  unset SANDBOX_OVERLAY
+
+  local now; now="$(date +%s)"
+  local repo="${TEST_DIR}/gate-age"
+  make_repo "${repo}"
+  # Attest at HEAD, but date the sign-off 40 days ago (behind 0, but stale).
+  attest_repo_dated "${repo}" "${TEST_DIR}/id" "$(( now - 40 * 86400 ))" \
+    || { warn "signing failed; skipping"; return 0; }
+  eq "aged attestation still at HEAD (behind 0)" "0" "$(vetting_status_repo "${repo}" | cut -f5)"
+  eq "status reports the tagger epoch" "1" \
+    "$( [[ "$(vetting_status_repo "${repo}" | cut -f6)" =~ ^[0-9]+$ ]] && echo 1 || echo 0 )"
+
+  # No window set: age is irrelevant, a behind-0 attestation passes cleanly.
+  ( vetting_gate_repos "required" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "no window -> aged attestation passes" || fail "no window should not expire an attestation"
+
+  # Window of 30 days: the 40-day attestation is now stale.
+  write_config_with "vetting_max_age_days: 30"
+  # No TTY, no flag: nothing can accept the staleness, so required refuses.
+  if ( vetting_gate_repos "required" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ); then
+    fail "stale attestation should refuse with no TTY/flag"
+  fi
+  pass "stale attestation refuses without acceptance"
+
+  # --i-accept-vetting-drift accepts staleness non-interactively (the reused flag).
+  ( vetting_gate_repos "required" "false" "true" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "--i-accept-vetting-drift accepts staleness" || fail "drift flag should accept staleness"
+
+  # The broad override clears it too.
+  ( vetting_gate_repos "required" "true" "false" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "--i-accept-unvetted-repo accepts staleness" || fail "override should accept staleness"
+
+  # advisory never blocks on staleness.
+  ( vetting_gate_repos "advisory" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "advisory proceeds on staleness" || fail "advisory should proceed on staleness"
+
+  # A window that still covers the attestation auto-proceeds, no flag/TTY needed.
+  write_config_with "vetting_max_age_days: 90"
+  ( vetting_gate_repos "required" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "within-window attestation auto-proceeds" || fail "within-window should proceed"
+
+  # A fresh (today) attestation passes a tight window with no acceptance.
+  local repo2="${TEST_DIR}/gate-age-fresh"
+  make_repo "${repo2}"
+  attest_repo_dated "${repo2}" "${TEST_DIR}/id" "${now}"
+  write_config_with "vetting_max_age_days: 1"
+  ( vetting_gate_repos "required" "false" "false" "${repo2}" </dev/null >/dev/null 2>&1 ) \
+    && pass "fresh attestation passes a 1-day window" || fail "fresh attestation should pass"
+
+  write_trust_config
+}
+
+###############################################################################
+# vetting_exceptions_require_head — user + overlay layering, tightening-only
+# (strict wins if set anywhere; default is the permissive "false").
+###############################################################################
+test_exceptions_require_head_config() {
+  info "Testing vetting_exceptions_require_head layering..."
+  : > "${USER_SANDBOX_CONFIG}"
+  unset SANDBOX_OVERLAY
+  eq "unset -> permissive (false)" "false" "$(vetting_exceptions_require_head)"
+
+  printf 'vetting_exceptions_require_head: false\n' > "${USER_SANDBOX_CONFIG}"
+  eq "explicit false stays false" "false" "$(vetting_exceptions_require_head)"
+
+  printf 'vetting_exceptions_require_head: true\n' > "${USER_SANDBOX_CONFIG}"
+  eq "user opts into strict" "true" "$(vetting_exceptions_require_head)"
+
+  local overlay="${TEST_DIR}/reqhead-overlay"
+  mkdir -p "${overlay}"
+  export SANDBOX_OVERLAY="${overlay}"
+
+  # Tightening-only: strict wins if set anywhere, never relaxed by the other.
+  printf 'vetting_exceptions_require_head: false\n' > "${overlay}/config.yaml"
+  printf 'vetting_exceptions_require_head: true\n'  > "${USER_SANDBOX_CONFIG}"
+  eq "overlay false cannot relax user true" "true" "$(vetting_exceptions_require_head)"
+
+  printf 'vetting_exceptions_require_head: true\n'  > "${overlay}/config.yaml"
+  printf 'vetting_exceptions_require_head: false\n' > "${USER_SANDBOX_CONFIG}"
+  eq "overlay ratchets false->true" "true" "$(vetting_exceptions_require_head)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+  printf 'vetting_exceptions_require_head: true\n' > "${overlay}/config.yaml"
+  eq "overlay-only strict applies" "true" "$(vetting_exceptions_require_head)"
+
+  # Anything but a literal `true` is not strict — leave the permissive default.
+  printf 'vetting_exceptions_require_head: yes\n' > "${USER_SANDBOX_CONFIG}"
+  rm -f "${overlay}/config.yaml"
+  unset SANDBOX_OVERLAY
+  eq "non-true value -> permissive" "false" "$(vetting_exceptions_require_head)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+}
+
+###############################################################################
+# vetted_accepted_fingerprints under drift — the default honors HEAD's list, the
+# strict knob honors it only at HEAD (needs SSH signing).
+###############################################################################
+test_exceptions_require_head_gate() {
+  info "Testing exception honoring under drift (gate reads the attested commit)..."
+  write_trust_config
+  unset SANDBOX_OVERLAY
+
+  local repo="${TEST_DIR}/exc-drift"
+  local ignore="${repo}/${SANDBOX_REPO_IGNORE_NAME}"
+  make_repo "${repo}"
+  # A reviewed false-positive fingerprint, in the tree the signer will attest.
+  printf 'deploy/values.yaml:generic-api-key:155\n' > "${ignore}"
+  git -C "${repo}" add -A; git -C "${repo}" commit -q -m "base with one exception"
+  attest_repo "${repo}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; return 0; }
+
+  # At HEAD (behind 0) the signature covers the list, so it is honored under BOTH
+  # the default and the strict knob.
+  case "$(vetted_accepted_fingerprints "${repo}")" in
+    *deploy/values.yaml:generic-api-key:155*) pass "at HEAD, default honors the signed exception" ;;
+    *) fail "at HEAD, default should honor the signed exception" ;;
+  esac
+  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_exceptions_require_head: true\n' \
+    "${TRUST_ROOT}" > "${USER_SANDBOX_CONFIG}"
+  case "$(vetted_accepted_fingerprints "${repo}")" in
+    *deploy/values.yaml:generic-api-key:155*) pass "at HEAD, strict honors it (behind 0)" ;;
+    *) fail "at HEAD, strict should honor the signed exception (behind 0)" ;;
+  esac
+
+  # Drift: a later, unsigned commit rewrites .betterleaksignore to smuggle in a
+  # brand-new exception no signer acknowledged (and drop the reviewed one). In
+  # this tool's own workflow that commit can be the agent's own workspace edit.
+  printf 'deploy/secret.yaml:generic-api-key:9\n' > "${ignore}"
+  git -C "${repo}" add -A; git -C "${repo}" commit -q -m "drift rewrites the exception list"
+  eq "drift repo reports behind 1" "1" "$(vetting_status_repo "${repo}" | cut -f5)"
+
+  # Strict (config still set): behind != 0 -> honor NOTHING. Re-attest to restore.
+  eq "strict + drift honors nothing" "" "$(vetted_accepted_fingerprints "${repo}")"
+
+  # Default: the gate reads the ATTESTED commit, so the drift-added entry is NOT
+  # honored, and the originally-signed one still IS — drift introduces nothing.
+  write_trust_config
+  local out; out="$(vetted_accepted_fingerprints "${repo}")"
+  case "${out}" in
+    *deploy/secret.yaml*) fail "SECURITY: drift-added exception was honored — gate read HEAD, not the attested commit" ;;
+    *) pass "default + drift does NOT honor the smuggled exception" ;;
+  esac
+  case "${out}" in
+    *deploy/values.yaml:generic-api-key:155*) pass "default + drift still honors the attested commit's exception" ;;
+    *) fail "default + drift should still honor the attested commit's original exception" ;;
+  esac
+
+  write_trust_config
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -842,6 +1194,9 @@ main() {
                                || warn "SSH signing unavailable — signature cases will skip"
 
   test_posture_layering
+  test_max_commits_behind_config
+  test_max_age_days_config
+  test_exceptions_require_head_config
   test_status_classification
   test_gate_posture
   test_missing_trust_root_fails_closed
@@ -858,6 +1213,9 @@ main() {
   if [[ "${SSH_SIGNING}" -eq 1 ]]; then
     test_status_vetted
     test_gate_required_passes_when_vetted
+    test_gate_drift
+    test_gate_age
+    test_exceptions_require_head_gate
     test_verify_hermetic_against_program_hijack
     test_trust_roots_overlay_and_union
     test_gate_inline_attest

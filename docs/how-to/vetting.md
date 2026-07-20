@@ -4,10 +4,13 @@
 
 Some teams want a gate on *which* repositories an agent may touch: not "does
 this repo leak a secret?" (that's the [secret gate](../explanation/security-model.md))
-but "has a trusted human reviewed this exact tree and cleared it for agent use?" The
-vetting gate answers that question at launch. A reviewer signs a git tag at a
-repo's `HEAD`; `sandbox run` verifies that signature against an operator-held
-trust root before it will start a Tier 2/3 session.
+but "has a trusted human reviewed this tree and cleared it for agent use?" The
+vetting gate answers that at launch — exactly so when the attestation sits at
+`HEAD`, and, under the [drift tolerance](#when-the-attestation-is-behind-head)
+below, by *assuming* commits layered on a reviewed ancestor were themselves
+reviewed (an assumption the gate does not itself verify). A reviewer signs a git
+tag at a repo's `HEAD`; `sandbox run` verifies that signature against an
+operator-held trust root before it will start a Tier 2/3 session.
 
 This is a compliance / prompt-injection control, and it is **orthogonal to
 isolation** — a vetted repo is not thereby safe to run outside a sandbox. Every
@@ -21,9 +24,21 @@ The repo carries only the *artifact* — a signed tag named `agent-vetted/<sha>`
 The *requirement* (is vetting enforced?) and the *trust roots* (whose signatures
 count?) live operator-side, so nothing a workspace author can commit weakens the
 decision. Verification runs on the host, before the pod starts, against signer
-lists you control — never the ambient keyring. Freshness is strict: the tag must
-point at the current `HEAD`, and a dirty working tree is refused, because an
-attestation describes a specific commit rather than whatever is checked out.
+lists you control — never the ambient keyring. The tag need not point at the
+current `HEAD`: a verified tag that is an **ancestor** of `HEAD` counts, and the
+gate reports how many commits behind `HEAD` it is. What the gate actually checks
+about the commits in between is only that they are *ancestors* of the local
+`HEAD` — it does **not** verify that they were reviewed. The drift tolerance
+*assumes* they were, on the reasoning that a team's protected branch takes
+nothing without code review; that assumption is yours to make, not something the
+gate enforces. It reads the local workspace `HEAD`, and it cannot tell a
+pulled-and-reviewed commit from one authored locally — including a commit an
+agent wrote in the workspace during an earlier session. So the guarantee is
+strongest exactly at `HEAD` ("a signer reviewed *this* tree") and, under drift,
+weakens to "a signer reviewed an *ancestor* of this tree." A tag on a divergent
+line (not an ancestor of `HEAD`) does not count, and a dirty working tree is
+always refused, because uncommitted edits are unreviewed and would ride along
+unattested.
 
 ## Set up a trust root
 
@@ -77,8 +92,8 @@ vetting_trust_format: ssh  # optional; ssh (default) or gpg
 | Posture | Behavior at launch |
 | --- | --- |
 | `off` | No gate, no output. |
-| `advisory` | Prints each `--repo`'s vetting status and proceeds. The default. |
-| `required` | Refuses the launch unless every `--repo` carries a current, verified attestation at `HEAD`. |
+| `advisory` | Prints each `--repo`'s vetting status — including how many commits behind `HEAD` the attestation is — and proceeds. The default. |
+| `required` | Refuses the launch unless every `--repo` carries a verified attestation reachable from `HEAD`. Drift behind `HEAD` is accepted per the [drift rules](#when-the-attestation-is-behind-head) below. |
 
 A team [overlay](profiles-and-overlays.md) can ship its own `config.yaml` with a
 `vetting:` key. An overlay may only **ratchet the posture up** (`advisory →
@@ -86,6 +101,110 @@ required`), never relax it — the same "additive on the safety side" rule the
 overlay's block list follows. So an organization can make vetting mandatory for
 everyone who uses its overlay, and an individual operator can opt themselves into
 `required` even when the overlay does not.
+
+### When the attestation is behind `HEAD`
+
+A single attestation clears a repo, and it keeps clearing it as work lands on
+top: rather than force a re-attestation on every commit, the gate accepts commits
+layered on a vetted ancestor. This is the whole point of the compromise: a
+developer who is **not** an approved signer can still launch on a repo their team
+vetted earlier, without waiting for someone to re-sign `HEAD`.
+
+It rests on an assumption the gate does not check — that those intervening
+commits reached the branch through code review (see
+[the trust model](#the-trust-model-in-one-paragraph)). On a team with a protected
+branch that assumption holds. The caveat is that the gate reads your *local*
+`HEAD`: a commit that never went through that review — a work-in-progress commit,
+or one an agent authored in the workspace — counts as accepted drift just the
+same, and the launch banner and `--status` will report the tree as vetted. The
+gate cannot tell the difference; re-attesting `HEAD` (`sandbox vet`) is what
+turns "assumed reviewed" back into "signed".
+
+Under `required`, when the freshest verified attestation is *N* commits behind
+`HEAD`:
+
+- **With a drift cap set** (`vetting_max_commits_behind:`, below) and *N* within
+  it — the launch **proceeds automatically**, and the "*N* commits behind" shows
+  up in the launch output and the audit log. The organization has already
+  decided that much drift is acceptable, so there is no per-session prompt.
+- **With no cap set** — the launch **prompts** you to accept the *N* commits of
+  unattested drift. In a non-interactive context (CI, no terminal), pass
+  `--i-accept-vetting-drift` to accept it, or the launch refuses.
+- **Over the cap** — the launch refuses. Re-attest `HEAD` (`sandbox vet`), raise
+  the cap, or use `--i-accept-unvetted-repo` to override for this launch (audited).
+
+### Cap how far behind an attestation may be
+
+An overlay (or your own config) can bound the drift with an integer:
+
+```yaml
+# <overlay>/config.yaml — or ~/.sandbox/config.yaml
+vetting_max_commits_behind: 20   # attestations may be at most 20 commits behind HEAD
+```
+
+Both configs are read and the **most restrictive** (smallest) value wins, so an
+overlay can only tighten the bound and a user can only tighten it further —
+neither can loosen the other's, the same safety-additive rule the posture
+follows. A cap of `0` means the attestation must sit exactly at `HEAD` — the
+strict, re-attest-every-commit behavior. With no cap set, drift is unbounded but
+each session requires the interactive acceptance (or `--i-accept-vetting-drift`)
+described above.
+
+Be precise about what the cap bounds: it is a **staleness budget** — how far an
+attestation may fall behind before a human must re-attest — not a bound on what
+the drift can *contain*. A single commit can change the tree however it likes,
+and a single commit is under any nonzero cap, so the number does not constrain
+what an unreviewed commit (including one an agent authored) could introduce; it
+only decides when the accumulated distance forces a fresh signature. Set it to
+keep attestations current, not to fence in a change. One mechanical wrinkle: the
+distance is a raw commit count, and a merge inflates it by one — merging an
+8-commit branch reports `behind: 9`, not 8 — so leave a little headroom when you
+pick the number.
+
+> This cap lives in your config, outside the sandbox, so the agent cannot raise
+> it. One current gap, tracked for follow-up: an overlay can force `required` but
+> only bounds the drift if it *also* sets `vetting_max_commits_behind:` — an
+> overlay that sets the posture alone leaves the cap to each operator's own
+> config. A team relying on the overlay as the sole authority should set both
+> keys.
+
+### Expire an attestation after a while
+
+The commit cap bounds staleness by *distance*. You can also bound it by *time* —
+force a fresh review every so often no matter how little the code has moved:
+
+```yaml
+# <overlay>/config.yaml — or ~/.sandbox/config.yaml
+vetting_max_age_days: 30   # an attestation older than 30 days must be renewed
+```
+
+The age is measured against the attestation tag's tagger date. That date is part
+of the signed tag object, so — like the commit-graph distance — a workspace author
+cannot backdate it to dodge the window; the same signature that proves *who*
+vetted the tree also proves *when*. Both configs are read and the **smallest**
+value wins, so an overlay can only shorten the window and a user can only shorten
+it further. `0` means "must have been vetted today"; omit the key for no expiry.
+
+Under `required`, once an attestation is past its window it is treated like
+uncapped commit drift, *not* like an over-cap block: the launch **prompts** you to
+accept the stale sign-off (`--i-accept-vetting-drift` in CI / no terminal), and a
+re-vet (`sandbox vet`) clears it. No cap ever auto-passes a stale attestation —
+the intended fix is a fresh review, not a wider bound — so a repo can be fully at
+`HEAD` (`behind: 0`) and still stop for renewal once the clock runs out. The two
+bounds compose: a launch proceeds automatically only when the attestation is both
+within the commit cap *and* inside the recency window.
+
+`sandbox vet --status` reports the age alongside the drift, and flags it `STALE`
+once it is past the window:
+
+```
+vetted:   /home/you/repos/app
+  HEAD:   1a2b3c...
+  tag:    agent-vetted/1a2b3c...
+  signer: reviewer@example.com
+  behind: 0 (attestation is at HEAD)
+  age:    41 day(s) — STALE, past the 30-day recency window (re-vet)
+```
 
 ## Attest a repo
 
@@ -127,11 +246,14 @@ sandbox vet --status --repo ~/repos/app
 #   HEAD:   1ff36c4...
 #   tag:    agent-vetted/1ff36c4...
 #   signer: reviewer@example.com
+#   behind: 0 (attestation is at HEAD)
 ```
 
-Any new commit moves `HEAD` past the tag, so the attestation goes stale and the
-repo must be re-vetted — which is the point: a review covers the code that was
-reviewed, not whatever lands on top of it.
+New commits move `HEAD` past the tag, and `--status` reports the growing
+distance (`behind: 3 commit(s) — the attestation is an ancestor of HEAD`). The
+repo stays vetted through that drift; whether a launch accepts it depends on the
+[drift rules](#when-the-attestation-is-behind-head) and any cap. Re-vetting
+`HEAD` resets the distance to zero and is always available to a signer.
 
 ## Acknowledging secret exceptions
 
@@ -157,12 +279,46 @@ recorded as an "exception". Pass `--yes` to acknowledge non-interactively (e.g.
 in CI); without it, and with no terminal to prompt on, `vet` refuses rather than
 sign off unattended. A repo with no exceptions signs with no extra prompt.
 
+### Exceptions and drift
+
+The acknowledgment above binds an exception to the *signed* commit — and the gate
+honors it from exactly that commit. An attestation clears a repo while it is
+[behind `HEAD`](#when-the-attestation-is-behind-head), and drift is reviewed code
+layered on a vetted base — but an exception is not code, it is a standing
+permission for the agent to read a plaintext value, so the gate does **not** take
+it from `HEAD`. It reads the honored `.betterleaksignore` list from the **attested
+commit**. The consequence is the property you want, for free: an exception added
+on a later, unsigned commit — by a contributor, or by the agent writing the
+workspace — is **never honored** until a signer re-attests the new `HEAD` (which
+re-runs the acknowledgment above). No drift distance changes this, and there is
+no knob to get wrong.
+
+One optional setting, for teams that want to go further:
+
+| `vetting_exceptions_require_head:` | Behavior |
+| --- | --- |
+| *omitted* / `false` (**default**) | Exceptions are honored whenever the repo is vetted, read from the attested commit. Every honored exception is signer-acknowledged regardless of drift — the safe, frictionless default. |
+| `true` | A stricter posture: honor exceptions **only** when the attestation sits exactly at `HEAD` (`behind: 0`), so every honored exception rides a *current* attestation rather than an older but still-valid acknowledgment. Under any drift the list is ignored and those findings block the launch again; re-attest `HEAD` to restore them. |
+
+```yaml
+# <overlay>/config.yaml — or ~/.sandbox/config.yaml
+vetting_exceptions_require_head: true
+```
+
+Read from both the overlay and your own config, this is **tightening-only**:
+`true` wins if either sets it, so an overlay can ratchet exception-handling up
+and a user can opt in further, but neither can relax the other's — the same
+safety-additive rule the [posture](#choose-a-posture) and the
+[drift cap](#cap-how-far-behind-an-attestation-may-be) follow. The knob is
+independent of posture: it decides only *which* exceptions count, not whether
+vetting is enforced.
+
 ## Attest at launch (authorized signers)
 
-Repos don't hold still: every new commit — including one the agent itself made
-last session — stales the attestation. So when `required` would refuse an
-interactive launch and your signing identity is available, the gate offers the
-attestation inline instead of sending you away to run `sandbox vet` and retry:
+Sometimes you'd rather sign than accept drift — or the repo is unvetted, or the
+drift is over the cap. So when `required` would refuse an interactive launch and
+your signing identity is available, the gate offers the attestation inline
+instead of sending you away to run `sandbox vet` and retry:
 
 ```
   /home/you/repos/app is not vetted at HEAD 1ff36c4...
@@ -178,30 +334,38 @@ and the signature is re-verified against the trust roots before the launch
 proceeds — if your key isn't enrolled, the tag is removed again and the launch
 is refused with enrollment guidance. Declining refuses the launch exactly as
 before. The offer only appears on an interactive terminal (CI keeps the hard
-refusal), only for a cleanly unvetted repo (a dirty tree must be committed
-first), and never touches an existing tag someone else created. Unlike
-`--i-accept-unvetted-repo`, saying `y` leaves a portable, signed attestation —
-accountability travels with the repo instead of a line in a local log.
+refusal), for a cleanly unvetted repo or one blocked on drift — in both cases
+attesting `HEAD` is the fix — but never for a dirty tree (commit first) and never
+touching an existing tag someone else created. Unlike `--i-accept-unvetted-repo`,
+saying `y` leaves a portable, signed attestation — accountability travels with
+the repo instead of a line in a local log.
 
 ## When a launch is refused
 
-Under `vetting: required`, an unvetted `--repo` stops the launch (after the
-inline offer, if one was available, was declined or unavailable):
+Under `vetting: required`, a `--repo` with no accepted, verified attestation
+stops the launch (after the inline offer, if one was available, was declined or
+unavailable) — whether it is wholly unvetted or vetted but too far behind `HEAD`:
 
 ```
-ERROR: vetting is required, but the following workspace(s) have no current,
-       verified agent-vetting attestation, so the launch is refused:
+ERROR: vetting is required, but the following workspace(s) have no accepted,
+       verified agent-vetting attestation at HEAD, so the launch is refused:
 
-    /home/you/repos/app: no verified attestation (HEAD 1ff36c4...; no agent-vetted/* tag at HEAD)
+    /home/you/repos/app: no verified attestation (HEAD 1ff36c4...; no reachable agent-vetted/* tag)
+    /home/you/repos/api: vetted but 34 commit(s) behind HEAD (over the cap, or drift not accepted) (HEAD 9ac21be...)
 
   A trusted reviewer must attest the current HEAD:
         sandbox vet --repo <PATH>
+  Or, for a repo that is vetted but behind HEAD or past its recency
+  window, re-vet, accept it (--i-accept-vetting-drift), or raise
+        vetting_max_commits_behind: / vetting_max_age_days: in your config/overlay.
   Override (audited), accepting the risk for this launch:
         re-run with --i-accept-unvetted-repo
 ```
 
-`--i-accept-unvetted-repo` proceeds anyway and records the acceptance (which
-repos, and that the override was used) in the session's audit log. A **missing
+`--i-accept-vetting-drift` accepts a verified-but-behind or stale attestation
+non-interactively (within any cap); `--i-accept-unvetted-repo` proceeds
+regardless and records the acceptance (which repos, and that the override was
+used) in the session's audit log. A **missing
 trust root** under `required` is treated as an operator misconfiguration and
 fails closed regardless of the override — fix the trust root rather than
 overriding past it.

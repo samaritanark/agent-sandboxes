@@ -9,8 +9,8 @@
 # only ratchet this UP relative to the operator's ~/.sandbox/config.yaml
 # (advisory → required), never down. Shipping `required` here makes signed-tag
 # vetting mandatory for everyone who uses this overlay: `sandbox run` refuses a
-# Tier 2/3 launch unless every --repo carries a current, verified
-# agent-vetted/<sha> tag at HEAD. See docs/how-to/vetting.md.
+# Tier 2/3 launch unless every --repo carries a verified agent-vetted/<sha> tag
+# reachable from HEAD. See docs/how-to/vetting.md.
 #
 # Left at `advisory` here, which matches the org default (a no-op that documents
 # intent). Change to `required` to enforce, or delete this file to say nothing.
@@ -26,6 +26,61 @@ vetting: advisory
 # 2.12.0 compare equal), and short forms pad with zeros (2.12 == 2.12.0).
 #
 # min_sandbox_version: 2.12.0
+
+# vetting_max_commits_behind: cap how far behind HEAD a verified attestation may
+# be and still clear a repo under `required`. The attestation need not sit at
+# HEAD; the intervening commits are ACCEPTED on the assumption they reached the
+# branch through code review -- the gate does NOT verify that, it only checks they
+# are ancestors of the local HEAD (see docs/how-to/vetting.md) -- so a developer
+# who is not an approved signer can launch on a repo their team vetted earlier.
+# Within this cap, drift is accepted with no per-session prompt (and logged); over
+# it, the launch refuses. Read together with the operator's own value, the
+# SMALLEST wins (an overlay can only tighten it). 0 means "must be exactly at
+# HEAD" (re-attest every commit); omit for no cap, where each session accepts the
+# drift interactively (or with --i-accept-vetting-drift).
+#
+# This is a STALENESS BUDGET, not a bound on what the drift can contain: one
+# commit can change the tree arbitrarily and one commit is under any nonzero cap,
+# so the number governs how fresh you keep attestations, not what an unreviewed
+# commit (including one an agent authored) could introduce. A merge inflates the
+# count by one (an 8-commit branch merges as behind 9), so leave headroom. If you
+# want this cap enforced for everyone on the overlay, set it here: forcing
+# `vetting: required` alone leaves the cap to each operator's own config. See
+# docs/how-to/vetting.md.
+#
+# vetting_max_commits_behind: 20
+
+# vetting_max_age_days: expire an attestation after this many days, forcing a
+# periodic re-vet no matter how little (or how much) the code has moved. Where
+# vetting_max_commits_behind: bounds staleness by DISTANCE, this bounds it by
+# TIME: a repo whose tree has not changed in months still gets re-reviewed on a
+# schedule you set. The age is the attestation tag's tagger date -- part of the
+# signed tag object, so it cannot be backdated by a workspace author. Under
+# `required`, an attestation past this window is treated like uncapped drift: the
+# launch prompts to accept the stale sign-off (or --i-accept-vetting-drift in CI),
+# and a re-vet clears it -- no cap ever auto-passes a stale attestation, because
+# the fix is a fresh review, not a wider bound. Read together with the operator's
+# own value, the SMALLEST wins (an overlay can only shorten the window). 0 means
+# "must have been vetted today"; omit for no expiry (attestations never age out).
+#
+# vetting_max_age_days: 30
+
+# vetting_exceptions_require_head: an OPTIONAL extra-strict posture for a repo's
+# committed secret exceptions (the root .betterleaksignore). You usually do NOT
+# need this: the gate already reads the honored exception list from the ATTESTED
+# commit, not HEAD, so every honored exception is one a signer acknowledged at
+# attest time, no matter how far HEAD has drifted — an entry added on a later,
+# unsigned commit (by a contributor, or by the agent writing the workspace) is
+# simply not honored until a signer re-attests. Setting this true tightens that
+# further: honor exceptions ONLY while the verified attestation sits exactly at
+# HEAD (behind: 0), for teams that want every honored exception to ride a
+# *current* attestation rather than an older but still-valid acknowledgment.
+# Under any drift the list is then ignored and those findings block the launch
+# until you re-attest HEAD. Tightening-only: `true` wins if EITHER this overlay
+# or the operator sets it, so it can ratchet up and never down, the same
+# safety-additive rule the posture and the cap follow. See docs/how-to/vetting.md.
+#
+# vetting_exceptions_require_head: true
 
 # vetting_trust_root: the team's reviewer list — WHOSE signatures count — shipped
 # WITH the overlay. A relative path resolves against the overlay root, so the

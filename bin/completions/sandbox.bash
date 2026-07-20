@@ -11,7 +11,7 @@ _sandbox_complete() {
   _init_completion || return
 
   local commands="run resume allow list logs flows stop cleanup check status install uninstall upgrade setup onboard secret mask vet profile link configure-network rebuild version"
-  local run_opts="--agent --tier --profile --repo --allow-domain --base-url --infra-token --infra-kubeconfig --infra-kube-context --allow-exec-plugin --infra-endpoint --dry-run --name --keep-alive --i-accept-unmasked-secrets --i-accept-unvetted-repo --help"
+  local run_opts="--agent --tier --profile --repo --allow-domain --base-url --infra-token --infra-kubeconfig --infra-kube-context --allow-exec-plugin --infra-endpoint --dry-run --name --keep-alive --i-accept-unmasked-secrets --i-accept-unvetted-repo --i-accept-vetting-drift --help"
   local mask_subs="add list"
   local rebuild_opts="--agent --tier3 --no-cache --codex-version --opencode-version --copilot-version --grok-version --help"
   local setup_opts="--pod-cidr --service-cidr --apiserver-port --dns"
