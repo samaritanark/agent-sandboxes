@@ -4,10 +4,13 @@
 
 Some teams want a gate on *which* repositories an agent may touch: not "does
 this repo leak a secret?" (that's the [secret gate](../explanation/security-model.md))
-but "has a trusted human reviewed this exact tree and cleared it for agent use?" The
-vetting gate answers that question at launch. A reviewer signs a git tag at a
-repo's `HEAD`; `sandbox run` verifies that signature against an operator-held
-trust root before it will start a Tier 2/3 session.
+but "has a trusted human reviewed this tree and cleared it for agent use?" The
+vetting gate answers that at launch — exactly so when the attestation sits at
+`HEAD`, and, under the [drift tolerance](#when-the-attestation-is-behind-head)
+below, by *assuming* commits layered on a reviewed ancestor were themselves
+reviewed (an assumption the gate does not itself verify). A reviewer signs a git
+tag at a repo's `HEAD`; `sandbox run` verifies that signature against an
+operator-held trust root before it will start a Tier 2/3 session.
 
 This is a compliance / prompt-injection control, and it is **orthogonal to
 isolation** — a vetted repo is not thereby safe to run outside a sandbox. Every
@@ -23,11 +26,19 @@ count?) live operator-side, so nothing a workspace author can commit weakens the
 decision. Verification runs on the host, before the pod starts, against signer
 lists you control — never the ambient keyring. The tag need not point at the
 current `HEAD`: a verified tag that is an **ancestor** of `HEAD` counts, and the
-gate reports how many commits behind `HEAD` it is. The commits in between are
-trusted because nothing reaches the branch without code review — so the drift is
-reviewed changes layered on a vetted base. A tag on a divergent line (not an
-ancestor of `HEAD`) does not count, and a dirty working tree is always refused,
-because uncommitted edits are unreviewed and would ride along unattested.
+gate reports how many commits behind `HEAD` it is. What the gate actually checks
+about the commits in between is only that they are *ancestors* of the local
+`HEAD` — it does **not** verify that they were reviewed. The drift tolerance
+*assumes* they were, on the reasoning that a team's protected branch takes
+nothing without code review; that assumption is yours to make, not something the
+gate enforces. It reads the local workspace `HEAD`, and it cannot tell a
+pulled-and-reviewed commit from one authored locally — including a commit an
+agent wrote in the workspace during an earlier session. So the guarantee is
+strongest exactly at `HEAD` ("a signer reviewed *this* tree") and, under drift,
+weakens to "a signer reviewed an *ancestor* of this tree." A tag on a divergent
+line (not an ancestor of `HEAD`) does not count, and a dirty working tree is
+always refused, because uncommitted edits are unreviewed and would ride along
+unattested.
 
 ## Set up a trust root
 
@@ -94,11 +105,20 @@ everyone who uses its overlay, and an individual operator can opt themselves int
 ### When the attestation is behind `HEAD`
 
 A single attestation clears a repo, and it keeps clearing it as work lands on
-top — because the intervening commits went through code review, the gate treats
-them as reviewed changes on a vetted base rather than forcing a re-attestation
-every commit. This is the whole point of the compromise: a developer who is
-**not** an approved signer can still launch on a repo their team vetted earlier,
-without waiting for someone to re-sign `HEAD`.
+top: rather than force a re-attestation on every commit, the gate accepts commits
+layered on a vetted ancestor. This is the whole point of the compromise: a
+developer who is **not** an approved signer can still launch on a repo their team
+vetted earlier, without waiting for someone to re-sign `HEAD`.
+
+It rests on an assumption the gate does not check — that those intervening
+commits reached the branch through code review (see
+[the trust model](#the-trust-model-in-one-paragraph)). On a team with a protected
+branch that assumption holds. The caveat is that the gate reads your *local*
+`HEAD`: a commit that never went through that review — a work-in-progress commit,
+or one an agent authored in the workspace — counts as accepted drift just the
+same, and the launch banner and `--status` will report the tree as vetted. The
+gate cannot tell the difference; re-attesting `HEAD` (`sandbox vet`) is what
+turns "assumed reviewed" back into "signed".
 
 Under `required`, when the freshest verified attestation is *N* commits behind
 `HEAD`:
@@ -129,6 +149,24 @@ follows. A cap of `0` means the attestation must sit exactly at `HEAD` — the
 strict, re-attest-every-commit behavior. With no cap set, drift is unbounded but
 each session requires the interactive acceptance (or `--i-accept-vetting-drift`)
 described above.
+
+Be precise about what the cap bounds: it is a **staleness budget** — how far an
+attestation may fall behind before a human must re-attest — not a bound on what
+the drift can *contain*. A single commit can change the tree however it likes,
+and a single commit is under any nonzero cap, so the number does not constrain
+what an unreviewed commit (including one an agent authored) could introduce; it
+only decides when the accumulated distance forces a fresh signature. Set it to
+keep attestations current, not to fence in a change. One mechanical wrinkle: the
+distance is a raw commit count, and a merge inflates it by one — merging an
+8-commit branch reports `behind: 9`, not 8 — so leave a little headroom when you
+pick the number.
+
+> This cap lives in your config, outside the sandbox, so the agent cannot raise
+> it. One current gap, tracked for follow-up: an overlay can force `required` but
+> only bounds the drift if it *also* sets `vetting_max_commits_behind:` — an
+> overlay that sets the posture alone leaves the cap to each operator's own
+> config. A team relying on the overlay as the sole authority should set both
+> keys.
 
 ## Attest a repo
 

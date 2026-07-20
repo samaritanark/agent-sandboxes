@@ -29,14 +29,24 @@ vetting: advisory
 
 # vetting_max_commits_behind: cap how far behind HEAD a verified attestation may
 # be and still clear a repo under `required`. The attestation need not sit at
-# HEAD — the intervening commits are trusted because they reached the branch
-# through code review — so a developer who is not an approved signer can launch on
-# a repo their team vetted earlier. Within this cap, drift is accepted with no
-# per-session prompt (and logged); over it, the launch refuses. Read together
-# with the operator's own value, the SMALLEST wins (an overlay can only tighten
-# it). 0 means "must be exactly at HEAD" (re-attest every commit); omit for no
-# cap, where each session accepts the drift interactively (or with
-# --i-accept-vetting-drift). See docs/how-to/vetting.md.
+# HEAD; the intervening commits are ACCEPTED on the assumption they reached the
+# branch through code review -- the gate does NOT verify that, it only checks they
+# are ancestors of the local HEAD (see docs/how-to/vetting.md) -- so a developer
+# who is not an approved signer can launch on a repo their team vetted earlier.
+# Within this cap, drift is accepted with no per-session prompt (and logged); over
+# it, the launch refuses. Read together with the operator's own value, the
+# SMALLEST wins (an overlay can only tighten it). 0 means "must be exactly at
+# HEAD" (re-attest every commit); omit for no cap, where each session accepts the
+# drift interactively (or with --i-accept-vetting-drift).
+#
+# This is a STALENESS BUDGET, not a bound on what the drift can contain: one
+# commit can change the tree arbitrarily and one commit is under any nonzero cap,
+# so the number governs how fresh you keep attestations, not what an unreviewed
+# commit (including one an agent authored) could introduce. A merge inflates the
+# count by one (an 8-commit branch merges as behind 9), so leave headroom. If you
+# want this cap enforced for everyone on the overlay, set it here: forcing
+# `vetting: required` alone leaves the cap to each operator's own config. See
+# docs/how-to/vetting.md.
 #
 # vetting_max_commits_behind: 20
 
