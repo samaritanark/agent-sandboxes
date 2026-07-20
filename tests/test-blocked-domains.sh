@@ -124,22 +124,30 @@ test_cli_rejects_blocked_infra_endpoint() {
 test_rejects_overbroad_wildcards() {
   info "Testing check_egress_target_not_blocked refuses over-broad wildcards..."
   local d
-  # Rejected: matches everything / a public suffix / malformed wildcard.
-  for d in "*" "*." "*.com" "*.io" "*.co.uk.*" "*.*.com" "*evil.com" "foo*.com" "*.*"; do
+  # Rejected: single-label TLD, multi-label public suffix (ccTLD + PSL-private),
+  # or a malformed / multi-'*' wildcard.
+  for d in "*" "*." "*.com" "*.io" "*.co.uk" "*.com.au" "*.co.jp" "*.github.io" \
+           "*.s3.amazonaws.com" "*.pages.dev" "*.co.uk.*" "*.*.com" "*evil.com" \
+           "foo*.com" "*.*"; do
     if ( check_egress_target_not_blocked "${d}" ) 2>/dev/null; then
       fail "over-broad wildcard '${d}' should be rejected but passed"
     else
       pass "over-broad wildcard '${d}' is refused"
     fi
   done
-  # Uppercase / trailing dot must not sneak a bare '*' past normalization.
-  if ( check_egress_target_not_blocked "*.COM." ) 2>/dev/null; then
-    fail "'*.COM.' should normalize and be rejected"
-  else
-    pass "'*.COM.' is refused after normalization"
-  fi
-  # Allowed: a bounded wildcard under a registrable domain, and plain hosts.
-  for d in "*.internal.example.com" "*.githubcopilot.com" "*.example.co.uk" "api.example.com"; do
+  # Uppercase / trailing dot must not sneak a public-suffix wildcard past
+  # normalization (the denylist is matched on the normalized name).
+  for d in "*.COM." "*.CO.UK" "*.GitHub.io."; do
+    if ( check_egress_target_not_blocked "${d}" ) 2>/dev/null; then
+      fail "'${d}' should normalize and be rejected"
+    else
+      pass "'${d}' is refused after normalization"
+    fi
+  done
+  # Allowed: a bounded wildcard under a registrable domain (including one that
+  # sits UNDER a public suffix, e.g. example.co.uk), and plain hosts.
+  for d in "*.internal.example.com" "*.githubcopilot.com" "*.example.co.uk" \
+           "*.myapp.github.io" "*.myapp.pages.dev" "api.example.com"; do
     if ( check_egress_target_not_blocked "${d}" ) 2>/dev/null; then
       pass "bounded / plain egress target '${d}' still passes"
     else
