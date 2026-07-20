@@ -580,6 +580,23 @@ vetted_repo_allowed_domains() {
   vetting_committed_allowed_domains "${repo}"
 }
 
+# repo_granted_allowed_domains <honor_flag> <repo> — the per-repo egress domains
+# cmd_run may ADD to the session allowlist for one repo, one per line. This is the
+# single ENFORCEMENT point for "a repo cannot widen its own egress": a domain is
+# emitted only when BOTH gates pass — the overlay opted in (honor_flag == "true",
+# strict) AND the domain is in the repo's vetted committed list
+# (vetted_repo_allowed_domains). A non-"true" flag or an unvetted repo emits
+# nothing. The two gates live here, not inline in cmd_run, so the security
+# property is directly testable (a test asserts honor=false withholds, unvetted
+# withholds, honor+vetted grants) and cmd_run stays a thin consumer that just
+# appends this output to opt_allow_domains — there is no inline guard left to
+# accidentally move or invert. See tests/test-vetting.sh.
+repo_granted_allowed_domains() {
+  local honor_flag="$1" repo="$2"
+  [[ "${honor_flag}" == "true" ]] || return 0
+  vetted_repo_allowed_domains "${repo}"
+}
+
 _vetting_acknowledge_exceptions() {
   local real_repo="$1" repo="$2" assume_yes="$3"
 

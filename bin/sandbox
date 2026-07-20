@@ -677,16 +677,17 @@ cmd_run() {
   for _repo in "${opt_repos[@]+"${opt_repos[@]}"}"; do
     _repo_config="${_repo}/.sandbox/config.yaml"
     [[ -f "${_repo_config}" ]] || continue
-    # Honored set: the vetted committed list, only when the overlay opted in.
+    # Honored set: whatever the enforcement choke point grants for this repo.
+    # repo_granted_allowed_domains (lib/vetting.sh) applies BOTH gates — overlay
+    # opt-in AND vetted committed list — so this loop just appends its output;
+    # there is no honor-flag guard to invert here.
     _honored_domains=()
-    if [[ "${_honor_repo_domains}" == "true" ]]; then
-      while IFS= read -r _extra_domain; do
-        [[ -z "${_extra_domain}" ]] && continue
-        _honored_domains+=("${_extra_domain}")
-        opt_allow_domains+=("${_extra_domain}")
-        _repo_honored+=("$(basename "${_repo}"): ${_extra_domain}")
-      done < <(vetted_repo_allowed_domains "${_repo}")
-    fi
+    while IFS= read -r _extra_domain; do
+      [[ -z "${_extra_domain}" ]] && continue
+      _honored_domains+=("${_extra_domain}")
+      opt_allow_domains+=("${_extra_domain}")
+      _repo_honored+=("$(basename "${_repo}"): ${_extra_domain}")
+    done < <(repo_granted_allowed_domains "${_honor_repo_domains}" "${_repo}")
     # Working-tree request: anything the repo config asks for that is NOT in the
     # honored (vetted) set is surfaced as "requested but not granted".
     while IFS= read -r _extra_domain; do

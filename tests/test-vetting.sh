@@ -224,6 +224,48 @@ test_vetted_repo_allowed_domains() {
     || fail "re-vetted list should include the newly committed domain"
 }
 
+# repo_granted_allowed_domains — the ENFORCEMENT choke point cmd_run consumes.
+# This asserts the security property itself (does a domain reach the allowlist?),
+# not just a data helper's output: with the overlay opt-in OFF, or on a non-"true"
+# value, or on an unvetted repo, NOTHING is granted; only overlay-opted-in AND
+# vetted grants. Guards against a future edit that inverts/loosens the gate.
+test_repo_granted_domains_enforcement() {
+  info "Testing repo_granted_allowed_domains enforcement (honor gate x vetting)..."
+  write_trust_config
+
+  local repo="${TEST_DIR}/repo-grant" out
+  make_repo "${repo}"
+  write_repo_domains "${repo}" one.example.com two.example.com
+  git -C "${repo}" add -A
+  git -C "${repo}" commit -q -m "add repo egress domains"
+
+  # Not yet attested: even with the overlay opted in, an unvetted repo grants nothing.
+  eq "honor=true + unvetted -> nothing granted" "0" \
+     "$(count_lines "$(repo_granted_allowed_domains true "${repo}")")"
+
+  attest_repo "${repo}" "${TEST_DIR}/id" || { warn "git SSH tag signing failed; skipping"; return 0; }
+
+  # THE property the reviewer flagged: opt-in OFF withholds the domains entirely,
+  # even from a vetted repo whose committed list is non-empty.
+  out="$(repo_granted_allowed_domains false "${repo}")"
+  eq "honor=false + vetted -> nothing granted" "0" "$(count_lines "${out}")"
+  printf '%s\n' "${out}" | grep -q "one.example.com" \
+    && fail "SECURITY: honor=false still granted a repo domain" \
+    || pass "honor=false withholds vetted repo domains from the allowlist"
+
+  # A non-"true" flag value must not be treated as opt-in (strict equality).
+  eq "honor='yes' (non-true) + vetted -> nothing granted" "0" \
+     "$(count_lines "$(repo_granted_allowed_domains yes "${repo}")")"
+  eq "honor='' + vetted -> nothing granted" "0" \
+     "$(count_lines "$(repo_granted_allowed_domains "" "${repo}")")"
+
+  # Both gates pass: opted in AND vetted -> the committed list is granted.
+  out="$(repo_granted_allowed_domains true "${repo}")"
+  eq "honor=true + vetted -> committed list granted" "2" "$(count_lines "${out}")"
+  eq "honor=true + vetted -> first domain granted" "one.example.com" \
+     "$(printf '%s\n' "${out}" | sed -n 1p)"
+}
+
 ###############################################################################
 # vetting_gate_repos — posture behavior.
 ###############################################################################
@@ -911,6 +953,7 @@ main() {
   if [[ "${SSH_SIGNING}" -eq 1 ]]; then
     test_status_vetted
     test_vetted_repo_allowed_domains
+    test_repo_granted_domains_enforcement
     test_gate_required_passes_when_vetted
     test_verify_hermetic_against_program_hijack
     test_trust_roots_overlay_and_union
