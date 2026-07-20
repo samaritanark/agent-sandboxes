@@ -644,7 +644,7 @@ _leakscan_finding_accepted() {
 vetted_accepted_fingerprints() {
   local repo="$1" line status tag behind
   line="$(vetting_status_repo "${repo}" 2>/dev/null)"
-  IFS=$'\t' read -r status _ tag _ behind <<<"${line}"
+  IFS=$'\t' read -r status _ tag _ behind _ <<<"${line}"
   [[ "${status}" == "vetted" && -n "${tag}" ]] || return 0
   if [[ "$(vetting_exceptions_require_head)" == "true" && "${behind:-1}" -ne 0 ]]; then
     return 0

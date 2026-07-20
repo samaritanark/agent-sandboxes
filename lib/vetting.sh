@@ -36,6 +36,13 @@
 #     strict pre-drift behavior). A tag on a divergent line — not an ancestor of
 #     HEAD — does not count. A dirty working tree is always refused: uncommitted
 #     edits are unreviewed and would ride along unattested.
+#   - Recency (optional): vetting_max_age_days: expires an attestation once it is
+#     older than N days, forcing a periodic re-vet no matter how little the code
+#     has moved. The age is the attestation tag's tagger date — part of the signed
+#     tag object, so it is signature-covered and cannot be backdated by a workspace
+#     author, exactly like the commit graph position. Unset means attestations
+#     never expire. A stale attestation is accepted like uncapped commit drift
+#     (interactively, or with --i-accept-vetting-drift), never auto-passed.
 #
 # POSTURE. Operator-controlled, three values:
 #   off       — no gate, no banner.
@@ -51,10 +58,10 @@
 # Posture is resolved from the user's ~/.sandbox/config.yaml (`vetting:` key),
 # falling back to the `advisory` org default; a team overlay's `config.yaml` can
 # only ratchet the posture UP (additive on the safety side — an overlay can make
-# vetting required, never relax it). The drift cap (vetting_max_commits_behind:)
-# is read from both and the most restrictive value wins, so an overlay can only
-# tighten it. Trust root / format are read user-first, then overlay, then the
-# built-in default.
+# vetting required, never relax it). The drift caps (vetting_max_commits_behind:
+# and vetting_max_age_days:) are read from both and the most restrictive value
+# wins, so an overlay can only tighten them. Trust root / format are read
+# user-first, then overlay, then the built-in default.
 set -euo pipefail
 
 # Operator-overridable knobs (config keys shadow these; env is an escape hatch).
@@ -135,6 +142,43 @@ vetting_max_commits_behind() {
     if [[ -z "${eff}" || "${v}" -lt "${eff}" ]]; then eff="${v}"; fi
   done
   echo "${eff}"
+}
+
+# vetting_max_age_days — effective cap on how OLD an attestation may be, in whole
+# days, or empty for "never expires". Read from BOTH the user config and the
+# overlay config; the MOST RESTRICTIVE (smallest) value wins, the same additive-
+# on-the-safety-side rule the commit cap follows — an overlay can shorten the
+# re-vetting window and a user can shorten it further, but neither can lengthen
+# the other's. The age is measured against the attestation tag's tagger date,
+# which the tag signature covers, so it cannot be backdated to dodge the window.
+# A cap of 0 means "must have been vetted today" (any older attestation is
+# stale). A non-integer value is ignored (treated as unset) so a typo fails
+# toward "no expiry" rather than a nonsense bound.
+vetting_max_age_days() {
+  local user_v="" overlay_v="" overlay eff="" v
+  [[ -f "${USER_SANDBOX_CONFIG}" ]] && \
+    user_v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_max_age_days)"
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] && \
+    overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_max_age_days)"
+  for v in "${user_v}" "${overlay_v}"; do
+    [[ "${v}" =~ ^[0-9]+$ ]] || continue
+    if [[ -z "${eff}" || "${v}" -lt "${eff}" ]]; then eff="${v}"; fi
+  done
+  echo "${eff}"
+}
+
+# _vetting_age_days <epoch> — whole days between a unix timestamp (an attestation
+# tag's tagger date) and now, via the system clock. Empty when <epoch> is not a
+# positive integer (age unknown — callers then skip staleness enforcement); 0
+# when the timestamp is in the future (clock skew), since age is never negative.
+_vetting_age_days() {
+  local epoch="$1" now
+  [[ "${epoch}" =~ ^[0-9]+$ ]] || { echo ""; return 0; }
+  now="$(date +%s 2>/dev/null || true)"
+  [[ "${now}" =~ ^[0-9]+$ ]] || { echo ""; return 0; }
+  [[ "${epoch}" -gt "${now}" ]] && { echo 0; return 0; }
+  echo "$(( (now - epoch) / 86400 ))"
 }
 
 # vetting_exceptions_require_head — "true" when a repo's committed secret
@@ -353,12 +397,15 @@ _vetting_verify_tag() (
 
 # vetting_status_repo <repo> — classify a workspace's vetting state and print a
 # single TSV line the gate consumes:
-#   vetted<TAB>sha<TAB>tag<TAB>signer<TAB>behind
+#   vetted<TAB>sha<TAB>tag<TAB>signer<TAB>behind<TAB>tagdate
 #   unvetted<TAB>sha<TAB>reason
 #   dirty<TAB>sha
 #   not-git<TAB>reason
 #   error<TAB>reason
-# `behind` is the number of commits HEAD is ahead of the attestation tag (0 when
+# `tagdate` is the attestation tag's tagger date as a unix timestamp (empty if it
+# cannot be read), from which the gate derives the attestation's age for
+# vetting_max_age_days. `behind` is the number of commits HEAD is ahead of the
+# attestation tag (0 when
 # the tag sits at HEAD). The reported attestation is the freshest — smallest
 # behind — verified tag that is an ANCESTOR of HEAD. Never exits; the caller
 # (vetting_gate_repos) decides what a status and its drift mean for the launch.
@@ -430,7 +477,14 @@ vetting_status_repo() {
     for root in "${trust_roots[@]}"; do
       [[ -z "${root}" ]] && continue
       if signer="$(_vetting_verify_tag "${real_repo}" "${tag}" "${root}" "${trust_format}")"; then
-        printf 'vetted\t%s\t%s\t%s\t%s\n' "${head_sha}" "${tag}" "${signer:-unknown}" "${behind}"
+        # Tagger date of the (annotated, signed) attestation tag, as a unix
+        # timestamp — the signature covers it, so the age it yields is trusted.
+        local tagdate
+        tagdate="$(_vetting_git "${real_repo}" for-each-ref \
+                     --format='%(creatordate:unix)' "refs/tags/${tag}" 2>/dev/null || true)"
+        [[ "${tagdate}" =~ ^[0-9]+$ ]] || tagdate=""
+        printf 'vetted\t%s\t%s\t%s\t%s\t%s\n' \
+          "${head_sha}" "${tag}" "${signer:-unknown}" "${behind}" "${tagdate}"
         return 0
       fi
     done
@@ -457,27 +511,36 @@ _vetting_print_findings() {
   done
 }
 
-# _vetting_drift_decision <repo> <tag> <signer> <behind> <cap> <accept_unvetted>
-#                         <accept_drift>
+# _vetting_drift_decision <repo> <tag> <signer> <behind> <cap> <age_days>
+#                         <age_cap> <accept_unvetted> <accept_drift>
 # Decide, under REQUIRED, whether a repo whose freshest verified attestation is
-# <behind> commits behind HEAD may launch. The trust that the drift is safe rests
-# on the review process: the tag is a verified ANCESTOR of HEAD, so <behind> is
-# reviewed commits layered on a vetted base. Prints its reasoning and returns 0
-# to proceed, 1 to block (the caller then refuses / offers an inline attest).
-# advisory and off never reach here. Decision table:
-#   cap set & behind <= cap : auto-proceed — the overlay pre-approved the bound
-#   cap set & behind >  cap : block, unless --i-accept-unvetted-repo overrides
-#   no cap, flag given      : proceed (--i-accept-vetting-drift / -unvetted-repo)
-#   no cap, interactive     : prompt to accept the drift
-#   no cap, no TTY, no flag  : block (nothing to accept the drift with)
+# <behind> commits behind HEAD and <age_days> days old may launch. Two drift
+# dimensions, evaluated together — the launch proceeds only when BOTH are
+# satisfied:
+#   * Commit drift is safe by the review argument: the tag is a verified ANCESTOR
+#     of HEAD, so <behind> is reviewed commits on a vetted base. A cap
+#     (vetting_max_commits_behind) pre-approves a bound; over it is a hard block.
+#   * Age is safe until the recency window (vetting_max_age_days) lapses. A stale
+#     attestation is not auto-passed by any cap — it is offered like uncapped
+#     commit drift (interactive prompt / --i-accept-vetting-drift), because the
+#     fix is a re-vet, not a wider bound.
+# Prints its reasoning and returns 0 to proceed, 1 to block (the caller then
+# refuses / offers an inline attest). advisory and off never reach here. Sketch:
+#   commit drift over cap        : block, unless --i-accept-unvetted-repo
+#   commit drift within cap, fresh: auto-proceed — the overlay pre-approved it
+#   stale (over age window)      : flag/interactive accept, else block (re-vet)
+#   commit drift, no cap         : flag/interactive accept, else block
 _vetting_drift_decision() {
-  local repo="$1" tag="$2" signer="$3" behind="$4" cap="$5" accept_unvetted="$6" accept_drift="$7"
+  local repo="$1" tag="$2" signer="$3" behind="$4" cap="$5"
+  local age_days="$6" age_cap="$7" accept_unvetted="$8" accept_drift="$9"
 
-  if [[ -n "${cap}" ]]; then
-    if [[ "${behind}" -le "${cap}" ]]; then
-      echo "  ✓ ${repo}: vetted ${behind} commit(s) behind HEAD, within cap ${cap} (tag ${tag}, signer ${signer:-unknown})"
-      return 0
-    fi
+  local over_commit="false" over_age="false"
+  [[ -n "${cap}" && "${behind}" -gt "${cap}" ]] && over_commit="true"
+  [[ -n "${age_cap}" && -n "${age_days}" && "${age_days}" -gt "${age_cap}" ]] && over_age="true"
+
+  # Commit drift beyond an explicit cap is the strict bound: only the big-hammer
+  # override clears it, and it takes precedence over the (softer) staleness path.
+  if [[ "${over_commit}" == "true" ]]; then
     if [[ "${accept_unvetted}" == "true" ]]; then
       echo "  ${repo}: vetted but ${behind} commit(s) behind HEAD — over cap ${cap}, proceeding via --i-accept-unvetted-repo." >&2
       return 0
@@ -486,7 +549,42 @@ _vetting_drift_decision() {
     return 1
   fi
 
-  # No cap: an explicit acceptance flag, else an interactive y/N.
+  # Commit drift is within its cap (or uncapped). A stale attestation blocks the
+  # auto-proceed even at behind==0: the sign-off itself has expired.
+  if [[ -n "${cap}" && "${over_age}" == "false" ]]; then
+    echo "  ✓ ${repo}: vetted ${behind} commit(s) behind HEAD, within cap ${cap} (tag ${tag}, signer ${signer:-unknown})"
+    return 0
+  fi
+
+  # Stale: past the re-vetting window. Accept via flag / an interactive y/N, else
+  # block and point at a re-vet. A cap never auto-clears staleness.
+  if [[ "${over_age}" == "true" ]]; then
+    if [[ "${accept_unvetted}" == "true" || "${accept_drift}" == "true" ]]; then
+      echo "  ${repo}: attestation is ${age_days} day(s) old, over vetting_max_age_days ${age_cap} — accepted non-interactively (tag ${tag}, signer ${signer:-unknown})." >&2
+      return 0
+    fi
+    if [[ -t 0 && -t 1 ]]; then
+      local reply=""
+      echo "" >&2
+      echo "  ${repo}: the verified attestation (${tag}, signer ${signer:-unknown}) is" >&2
+      echo "  ${age_days} day(s) old, past the ${age_cap}-day re-vetting window. The code is" >&2
+      echo "  still vetted (${behind} commit(s) behind HEAD), but the sign-off has gone stale." >&2
+      printf '  Accept the stale attestation and launch? [y/N] ' >&2
+      read -r reply || true
+      if [[ "${reply}" =~ ^[Yy] ]]; then
+        echo "  Accepted." >&2
+        return 0
+      fi
+      echo "  Declined." >&2
+      return 1
+    fi
+    echo "  ${repo}: attestation is ${age_days} day(s) old, past vetting_max_age_days ${age_cap} and" >&2
+    echo "  there is no terminal to accept the staleness on. Re-vet (sandbox vet)," >&2
+    echo "  re-run with --i-accept-vetting-drift, or raise vetting_max_age_days." >&2
+    return 1
+  fi
+
+  # Fresh, but commit drift with no cap: an explicit acceptance flag, else a y/N.
   if [[ "${accept_unvetted}" == "true" || "${accept_drift}" == "true" ]]; then
     echo "  ${repo}: vetted ${behind} commit(s) behind HEAD — accepted non-interactively (tag ${tag}, signer ${signer:-unknown})." >&2
     return 0
@@ -555,39 +653,56 @@ vetting_gate_repos() {
 
   local cap; cap="$(vetting_max_commits_behind)"
   [[ -n "${cap}" ]] && echo "  Drift cap: attestations may be at most ${cap} commit(s) behind HEAD."
+  local age_cap; age_cap="$(vetting_max_age_days)"
+  [[ -n "${age_cap}" ]] && echo "  Recency: attestations must be at most ${age_cap} day(s) old (else re-vet)."
 
   local -a unvetted=()
   local drift_accepted=0 drift_detail=""
-  local repo line status f2 f3 f4 f5
+  local repo line status f2 f3 f4 f5 f6 age_days over_age
   for repo in "${repos[@]}"; do
     line="$(vetting_status_repo "${repo}")"
-    IFS=$'\t' read -r status f2 f3 f4 f5 <<<"${line}"
-
-    if [[ "${status}" == "vetted" && "${f5:-0}" -eq 0 ]]; then
-      echo "  ✓ ${repo}: vetted at ${f2:0:12} (tag ${f3}, signer ${f4:-unknown})"
-      continue
-    fi
+    IFS=$'\t' read -r status f2 f3 f4 f5 f6 <<<"${line}"
 
     if [[ "${status}" == "vetted" ]]; then
-      # Verified attestation, but ${f5} commit(s) behind HEAD.
-      drift_detail="${drift_detail:+${drift_detail}, }${repo}(${f5} behind)"
+      # Attestation age (empty if the tag date could not be read); stale only when
+      # an age cap is set and the age exceeds it.
+      age_days="$(_vetting_age_days "${f6}")"
+      over_age="false"
+      [[ -n "${age_cap}" && -n "${age_days}" && "${age_days}" -gt "${age_cap}" ]] && over_age="true"
+
+      # Fresh at HEAD (no commit drift) and within the recency window: the clean
+      # pass. Any staleness routes through the drift decision even at behind==0.
+      if [[ "${f5:-0}" -eq 0 && "${over_age}" == "false" ]]; then
+        echo "  ✓ ${repo}: vetted at ${f2:0:12} (tag ${f3}, signer ${f4:-unknown})"
+        continue
+      fi
+
+      # Verified attestation, but ${f5} commit(s) behind HEAD and/or stale.
+      local drift_note="${f5} behind"
+      [[ "${over_age}" == "true" ]] && drift_note="${drift_note}, ${age_days}d old"
+      drift_detail="${drift_detail:+${drift_detail}, }${repo}(${drift_note})"
       if [[ "${posture}" == "advisory" ]]; then
-        # advisory never blocks; just report the drift (and any cap overrun).
+        # advisory never blocks; just report the drift (and any cap/window overrun).
         if [[ -n "${cap}" && "${f5}" -gt "${cap}" ]]; then
           echo "  ${repo}: vetted at ${f2:0:12}, ${f5} commit(s) behind HEAD — over cap ${cap} (advisory, proceeding)." >&2
+        elif [[ "${over_age}" == "true" ]]; then
+          echo "  ${repo}: vetted at ${f2:0:12}, attestation ${age_days} day(s) old — over the ${age_cap}-day window (advisory, proceeding)." >&2
         else
           echo "  ${repo}: vetted at ${f2:0:12}, ${f5} commit(s) behind HEAD (tag ${f3}, signer ${f4:-unknown})."
         fi
         continue
       fi
-      # required: accept the drift, or fall through to the refuse/attest path.
-      if _vetting_drift_decision "${repo}" "${f3}" "${f4}" "${f5}" "${cap}" "${accept}" "${accept_drift}"; then
+      # required: accept the drift/staleness, or fall through to the refuse/attest path.
+      if _vetting_drift_decision "${repo}" "${f3}" "${f4}" "${f5}" "${cap}" \
+                                 "${age_days}" "${age_cap}" "${accept}" "${accept_drift}"; then
         drift_accepted=$((drift_accepted + 1))
         continue
       fi
       # Blocked drift → carry it as its own status so the refuse path can still
       # offer an inline attest and print a drift-specific reason.
-      unvetted+=("${repo}"$'\t'"drift"$'\t'"${f2}"$'\t'"vetted but ${f5} commit(s) behind HEAD (over the cap, or drift not accepted)")
+      local blk_reason="vetted but ${f5} commit(s) behind HEAD (over the cap, or drift not accepted)"
+      [[ "${over_age}" == "true" ]] && blk_reason="vetted but the attestation is ${age_days} day(s) old, past the ${age_cap}-day window (not accepted)"
+      unvetted+=("${repo}"$'\t'"drift"$'\t'"${f2}"$'\t'"${blk_reason}")
       continue
     fi
 
@@ -688,9 +803,9 @@ vetting_gate_repos() {
   echo "  A trusted reviewer must attest the current HEAD:" >&2
   echo "        sandbox vet --repo <PATH>" >&2
   if [[ "${any_drift}" == "true" ]]; then
-    echo "  Or, for a repo that is vetted but behind HEAD, accept the reviewed drift:" >&2
-    echo "        re-run with --i-accept-vetting-drift, or raise" >&2
-    echo "        vetting_max_commits_behind: in your config/overlay." >&2
+    echo "  Or, for a repo that is vetted but behind HEAD or past its recency" >&2
+    echo "  window, re-vet, accept it (--i-accept-vetting-drift), or raise" >&2
+    echo "        vetting_max_commits_behind: / vetting_max_age_days: in your config/overlay." >&2
   fi
   echo "  Override (audited), accepting the risk for this launch:" >&2
   echo "        re-run with --i-accept-unvetted-repo" >&2
@@ -980,7 +1095,7 @@ _vetting_inline_attest() {
 
   local line status f2 f3 f4
   line="$(vetting_status_repo "${repo}")"
-  IFS=$'\t' read -r status f2 f3 f4 <<<"${line}"
+  IFS=$'\t' read -r status f2 f3 f4 _ <<<"${line}"
   if [[ "${status}" == "vetted" ]]; then
     echo "  ✓ ${repo}: attested and verified (signer ${f4:-unknown})" >&2
     return 0

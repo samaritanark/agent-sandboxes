@@ -249,10 +249,12 @@ OPTIONS:
                                     repo(s) are printed and the acceptance is
                                     recorded in the audit log.
   --i-accept-vetting-drift          Non-interactively accept an attestation that
-                                    is behind HEAD (within any cap) when there is
-                                    no terminal to prompt on, e.g. in CI. Does not
-                                    accept a wholly unvetted repo or over-cap
-                                    drift — use --i-accept-unvetted-repo for those.
+                                    is behind HEAD (within any cap) or past its
+                                    recency window (vetting_max_age_days:) when
+                                    there is no terminal to prompt on, e.g. in CI.
+                                    Does not accept a wholly unvetted repo or
+                                    over-cap commit drift — use
+                                    --i-accept-unvetted-repo for those.
   --help                            Show this help
 
 TIERS:
@@ -289,7 +291,9 @@ VETTING GATE (tier 2/3):
               attestation. Drift behind HEAD is auto-accepted within
               vetting_max_commits_behind: (an overlay/config cap; 0 = must be at
               HEAD), else accepted interactively or with --i-accept-vetting-drift.
-              Override anything with --i-accept-unvetted-repo.
+              vetting_max_age_days: expires an attestation after N days (re-vet or
+              accept it the same way). Override anything with
+              --i-accept-unvetted-repo.
   Attest a repo with 'sandbox vet --repo <PATH>'. See 'sandbox vet --help'.
 
 OVERLAYS:
@@ -3267,7 +3271,9 @@ A trusted reviewer signs a git tag at the repo's current HEAD to record that
 they reviewed that exact tree and cleared it for agent use. 'sandbox run'
 consults this attestation before a Tier 2/3 launch: with 'vetting: required'
 (in ~/.sandbox/config.yaml or a team overlay) a repo without a current,
-verified attestation is refused.
+verified attestation is refused. An attestation may sit behind HEAD (within
+vetting_max_commits_behind:) and, if vetting_max_age_days: is set, must be
+newer than that many days or it is treated as stale and must be renewed.
 
 The signature is verified host-side against operator-side trust roots — SSH
 allowed_signers files by default (vetting_trust_root:), or a GnuPG home when
@@ -3337,9 +3343,9 @@ cmd_vet() {
   validate_repo_path "${repo}"
 
   if [[ "${action}" == "status" ]]; then
-    local line status f2 f3 f4 f5
+    local line status f2 f3 f4 f5 f6
     line="$(vetting_status_repo "${repo}")"
-    IFS=$'\t' read -r status f2 f3 f4 f5 <<<"${line}"
+    IFS=$'\t' read -r status f2 f3 f4 f5 f6 <<<"${line}"
     case "${status}" in
       vetted)
         echo "vetted:   ${repo}"
@@ -3350,6 +3356,20 @@ cmd_vet() {
           echo "  behind: 0 (attestation is at HEAD)"
         else
           echo "  behind: ${f5} commit(s) — the attestation is an ancestor of HEAD"
+        fi
+        local age_days age_cap
+        age_days="$(_vetting_age_days "${f6}")"
+        age_cap="$(vetting_max_age_days)"
+        if [[ -n "${age_days}" ]]; then
+          if [[ -n "${age_cap}" ]]; then
+            if [[ "${age_days}" -gt "${age_cap}" ]]; then
+              echo "  age:    ${age_days} day(s) — STALE, past the ${age_cap}-day recency window (re-vet)"
+            else
+              echo "  age:    ${age_days} day(s) — within the ${age_cap}-day recency window"
+            fi
+          else
+            echo "  age:    ${age_days} day(s) (no recency window set)"
+          fi
         fi
         ;;
       unvetted)

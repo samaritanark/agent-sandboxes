@@ -69,6 +69,15 @@ vetting_trust_format: ssh
 EOF
 }
 
+# write_config_with <extra-line>... — trust config plus one or more extra config
+# lines (e.g. a cap or window), so a gate test can set a knob without dropping the
+# trust root.
+write_config_with() {
+  write_trust_config
+  local line
+  for line in "$@"; do printf '%s\n' "${line}" >> "${USER_SANDBOX_CONFIG}"; done
+}
+
 make_repo() {
   local repo="$1"
   mkdir -p "${repo}"
@@ -85,6 +94,17 @@ attest_repo() {
   local repo="$1" keyfile="$2" sha
   sha="$(git -C "${repo}" rev-parse HEAD)"
   git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${keyfile}" \
+    tag -s "agent-vetted/${sha}" -m "vetted for agent use" 2>/dev/null
+}
+
+# attest_repo_dated <repo> <keyfile> <epoch> — like attest_repo, but stamp the
+# tag's tagger date at <epoch> (a unix timestamp) so the recency window can be
+# exercised. The tagger date is what vetting_max_age_days measures against.
+attest_repo_dated() {
+  local repo="$1" keyfile="$2" epoch="$3" sha
+  sha="$(git -C "${repo}" rev-parse HEAD)"
+  GIT_COMMITTER_DATE="@${epoch} +0000" GIT_AUTHOR_DATE="@${epoch} +0000" \
+    git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${keyfile}" \
     tag -s "agent-vetted/${sha}" -m "vetted for agent use" 2>/dev/null
 }
 
@@ -896,6 +916,51 @@ test_max_commits_behind_config() {
 }
 
 ###############################################################################
+# vetting_max_age_days — user + overlay layering, most-restrictive (smallest)
+# wins; _vetting_age_days converts a tagger epoch to whole days.
+###############################################################################
+test_max_age_days_config() {
+  info "Testing vetting_max_age_days layering and age computation..."
+  : > "${USER_SANDBOX_CONFIG}"
+  unset SANDBOX_OVERLAY
+  eq "unset -> no expiry (empty)" "" "$(vetting_max_age_days)"
+
+  printf 'vetting_max_age_days: 30\n' > "${USER_SANDBOX_CONFIG}"
+  eq "user sets a window" "30" "$(vetting_max_age_days)"
+
+  local overlay="${TEST_DIR}/age-overlay"
+  mkdir -p "${overlay}"
+  export SANDBOX_OVERLAY="${overlay}"
+  # Most restrictive (smallest) wins in both directions.
+  printf 'vetting_max_age_days: 90\n' > "${overlay}/config.yaml"
+  printf 'vetting_max_age_days: 30\n' > "${USER_SANDBOX_CONFIG}"
+  eq "user tighter than overlay wins" "30" "$(vetting_max_age_days)"
+
+  printf 'vetting_max_age_days: 14\n' > "${overlay}/config.yaml"
+  printf 'vetting_max_age_days: 60\n' > "${USER_SANDBOX_CONFIG}"
+  eq "overlay tighter than user wins" "14" "$(vetting_max_age_days)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+  printf 'vetting_max_age_days: 45\n' > "${overlay}/config.yaml"
+  eq "overlay-only window applies" "45" "$(vetting_max_age_days)"
+
+  # A non-integer value is ignored (fails toward no expiry).
+  printf 'vetting_max_age_days: soon\n' > "${USER_SANDBOX_CONFIG}"
+  rm -f "${overlay}/config.yaml"
+  unset SANDBOX_OVERLAY
+  eq "non-integer -> no expiry" "" "$(vetting_max_age_days)"
+
+  # _vetting_age_days: garbage/empty -> empty; a future stamp -> 0; ~40d -> 40.
+  eq "empty epoch -> unknown" "" "$(_vetting_age_days "")"
+  eq "non-numeric epoch -> unknown" "" "$(_vetting_age_days "notanumber")"
+  local now; now="$(date +%s)"
+  eq "future epoch -> 0 (no negative age)" "0" "$(_vetting_age_days "$(( now + 86400 ))")"
+  eq "40 days ago -> 40" "40" "$(_vetting_age_days "$(( now - 40 * 86400 ))")"
+
+  : > "${USER_SANDBOX_CONFIG}"
+}
+
+###############################################################################
 # vetting_gate_repos — drift acceptance and the overlay cap (needs SSH signing).
 ###############################################################################
 test_gate_drift() {
@@ -957,6 +1022,65 @@ test_gate_drift() {
     fail "cap 0 should refuse any drift"
   fi
   pass "cap 0 refuses any drift (strict at-HEAD)"
+
+  write_trust_config
+}
+
+###############################################################################
+# vetting_gate_repos — the recency window (vetting_max_age_days). A stale
+# attestation is treated like uncapped drift, never auto-passed (needs signing).
+###############################################################################
+test_gate_age() {
+  info "Testing required-posture attestation recency window..."
+  write_trust_config
+  unset SANDBOX_OVERLAY
+
+  local now; now="$(date +%s)"
+  local repo="${TEST_DIR}/gate-age"
+  make_repo "${repo}"
+  # Attest at HEAD, but date the sign-off 40 days ago (behind 0, but stale).
+  attest_repo_dated "${repo}" "${TEST_DIR}/id" "$(( now - 40 * 86400 ))" \
+    || { warn "signing failed; skipping"; return 0; }
+  eq "aged attestation still at HEAD (behind 0)" "0" "$(vetting_status_repo "${repo}" | cut -f5)"
+  eq "status reports the tagger epoch" "1" \
+    "$( [[ "$(vetting_status_repo "${repo}" | cut -f6)" =~ ^[0-9]+$ ]] && echo 1 || echo 0 )"
+
+  # No window set: age is irrelevant, a behind-0 attestation passes cleanly.
+  ( vetting_gate_repos "required" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "no window -> aged attestation passes" || fail "no window should not expire an attestation"
+
+  # Window of 30 days: the 40-day attestation is now stale.
+  write_config_with "vetting_max_age_days: 30"
+  # No TTY, no flag: nothing can accept the staleness, so required refuses.
+  if ( vetting_gate_repos "required" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ); then
+    fail "stale attestation should refuse with no TTY/flag"
+  fi
+  pass "stale attestation refuses without acceptance"
+
+  # --i-accept-vetting-drift accepts staleness non-interactively (the reused flag).
+  ( vetting_gate_repos "required" "false" "true" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "--i-accept-vetting-drift accepts staleness" || fail "drift flag should accept staleness"
+
+  # The broad override clears it too.
+  ( vetting_gate_repos "required" "true" "false" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "--i-accept-unvetted-repo accepts staleness" || fail "override should accept staleness"
+
+  # advisory never blocks on staleness.
+  ( vetting_gate_repos "advisory" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "advisory proceeds on staleness" || fail "advisory should proceed on staleness"
+
+  # A window that still covers the attestation auto-proceeds, no flag/TTY needed.
+  write_config_with "vetting_max_age_days: 90"
+  ( vetting_gate_repos "required" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ) \
+    && pass "within-window attestation auto-proceeds" || fail "within-window should proceed"
+
+  # A fresh (today) attestation passes a tight window with no acceptance.
+  local repo2="${TEST_DIR}/gate-age-fresh"
+  make_repo "${repo2}"
+  attest_repo_dated "${repo2}" "${TEST_DIR}/id" "${now}"
+  write_config_with "vetting_max_age_days: 1"
+  ( vetting_gate_repos "required" "false" "false" "${repo2}" </dev/null >/dev/null 2>&1 ) \
+    && pass "fresh attestation passes a 1-day window" || fail "fresh attestation should pass"
 
   write_trust_config
 }
@@ -1071,6 +1195,7 @@ main() {
 
   test_posture_layering
   test_max_commits_behind_config
+  test_max_age_days_config
   test_exceptions_require_head_config
   test_status_classification
   test_gate_posture
@@ -1089,6 +1214,7 @@ main() {
     test_status_vetted
     test_gate_required_passes_when_vetted
     test_gate_drift
+    test_gate_age
     test_exceptions_require_head_gate
     test_verify_hermetic_against_program_hijack
     test_trust_roots_overlay_and_union

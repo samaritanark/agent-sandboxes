@@ -50,6 +50,21 @@ vetting: advisory
 #
 # vetting_max_commits_behind: 20
 
+# vetting_max_age_days: expire an attestation after this many days, forcing a
+# periodic re-vet no matter how little (or how much) the code has moved. Where
+# vetting_max_commits_behind: bounds staleness by DISTANCE, this bounds it by
+# TIME: a repo whose tree has not changed in months still gets re-reviewed on a
+# schedule you set. The age is the attestation tag's tagger date -- part of the
+# signed tag object, so it cannot be backdated by a workspace author. Under
+# `required`, an attestation past this window is treated like uncapped drift: the
+# launch prompts to accept the stale sign-off (or --i-accept-vetting-drift in CI),
+# and a re-vet clears it -- no cap ever auto-passes a stale attestation, because
+# the fix is a fresh review, not a wider bound. Read together with the operator's
+# own value, the SMALLEST wins (an overlay can only shorten the window). 0 means
+# "must have been vetted today"; omit for no expiry (attestations never age out).
+#
+# vetting_max_age_days: 30
+
 # vetting_exceptions_require_head: an OPTIONAL extra-strict posture for a repo's
 # committed secret exceptions (the root .betterleaksignore). You usually do NOT
 # need this: the gate already reads the honored exception list from the ATTESTED

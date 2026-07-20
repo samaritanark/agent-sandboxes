@@ -168,6 +168,44 @@ pick the number.
 > config. A team relying on the overlay as the sole authority should set both
 > keys.
 
+### Expire an attestation after a while
+
+The commit cap bounds staleness by *distance*. You can also bound it by *time* —
+force a fresh review every so often no matter how little the code has moved:
+
+```yaml
+# <overlay>/config.yaml — or ~/.sandbox/config.yaml
+vetting_max_age_days: 30   # an attestation older than 30 days must be renewed
+```
+
+The age is measured against the attestation tag's tagger date. That date is part
+of the signed tag object, so — like the commit-graph distance — a workspace author
+cannot backdate it to dodge the window; the same signature that proves *who*
+vetted the tree also proves *when*. Both configs are read and the **smallest**
+value wins, so an overlay can only shorten the window and a user can only shorten
+it further. `0` means "must have been vetted today"; omit the key for no expiry.
+
+Under `required`, once an attestation is past its window it is treated like
+uncapped commit drift, *not* like an over-cap block: the launch **prompts** you to
+accept the stale sign-off (`--i-accept-vetting-drift` in CI / no terminal), and a
+re-vet (`sandbox vet`) clears it. No cap ever auto-passes a stale attestation —
+the intended fix is a fresh review, not a wider bound — so a repo can be fully at
+`HEAD` (`behind: 0`) and still stop for renewal once the clock runs out. The two
+bounds compose: a launch proceeds automatically only when the attestation is both
+within the commit cap *and* inside the recency window.
+
+`sandbox vet --status` reports the age alongside the drift, and flags it `STALE`
+once it is past the window:
+
+```
+vetted:   /home/you/repos/app
+  HEAD:   1a2b3c...
+  tag:    agent-vetted/1a2b3c...
+  signer: reviewer@example.com
+  behind: 0 (attestation is at HEAD)
+  age:    41 day(s) — STALE, past the 30-day recency window (re-vet)
+```
+
 ## Attest a repo
 
 A reviewer, after reading the tree, signs the current `HEAD`:
@@ -317,14 +355,14 @@ ERROR: vetting is required, but the following workspace(s) have no accepted,
 
   A trusted reviewer must attest the current HEAD:
         sandbox vet --repo <PATH>
-  Or, for a repo that is vetted but behind HEAD, accept the reviewed drift:
-        re-run with --i-accept-vetting-drift, or raise
-        vetting_max_commits_behind: in your config/overlay.
+  Or, for a repo that is vetted but behind HEAD or past its recency
+  window, re-vet, accept it (--i-accept-vetting-drift), or raise
+        vetting_max_commits_behind: / vetting_max_age_days: in your config/overlay.
   Override (audited), accepting the risk for this launch:
         re-run with --i-accept-unvetted-repo
 ```
 
-`--i-accept-vetting-drift` accepts a verified-but-behind attestation
+`--i-accept-vetting-drift` accepts a verified-but-behind or stale attestation
 non-interactively (within any cap); `--i-accept-unvetted-repo` proceeds
 regardless and records the acceptance (which repos, and that the override was
 used) in the session's audit log. A **missing
