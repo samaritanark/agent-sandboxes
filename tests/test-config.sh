@@ -24,6 +24,8 @@ trap cleanup EXIT
 # at function-call time via the global default, so we override it per case.
 USER_SANDBOX_CONFIG="${TEST_DIR}/never-existed.yaml"
 source "${SANDBOX_ROOT}/lib/config.sh"
+# honor_repo_allowed_domains resolves the overlay via resolve_overlay_path.
+source "${SANDBOX_ROOT}/lib/profile.sh"
 
 # eq <label> <expected> <actual>
 eq() {
@@ -163,6 +165,41 @@ YAML
   eq "env-only single line" "only-env.example.com" "$(cat "${TEST_DIR}/out2")"
 }
 
+# honor_repo_allowed_domains — the overlay-only opt-in that decides whether a
+# per-repo extra_allowed_domains: list is honored. Off unless the OVERLAY sets it
+# true; a user config setting it is ignored (loosening = overlay authority).
+test_honor_repo_domains() {
+  local ov="${TEST_DIR}/ov" got
+  mkdir -p "${ov}"
+  # NB: set the env as shell statements (not a command prefix), so the $()
+  # subshell that runs honor_repo_allowed_domains inherits them — a prefix on the
+  # eq line would apply to eq, not to the substitution in its arguments.
+
+  SANDBOX_OVERLAY=""; USER_SANDBOX_CONFIG="${TEST_DIR}/none.yaml"
+  got="$(honor_repo_allowed_domains)"; eq "no overlay -> false" "false" "${got}"
+
+  SANDBOX_OVERLAY="${ov}"
+  printf 'vetting: advisory\n' > "${ov}/config.yaml"
+  got="$(honor_repo_allowed_domains)"; eq "overlay without key -> false" "false" "${got}"
+
+  printf 'honor_repo_allowed_domains: true\n' > "${ov}/config.yaml"
+  got="$(honor_repo_allowed_domains)"; eq "overlay true -> true" "true" "${got}"
+
+  printf 'honor_repo_allowed_domains: false\n' > "${ov}/config.yaml"
+  got="$(honor_repo_allowed_domains)"; eq "overlay false -> false" "false" "${got}"
+
+  printf 'honor_repo_allowed_domains: yes\n' > "${ov}/config.yaml"
+  got="$(honor_repo_allowed_domains)"; eq "overlay non-true (yes) -> false" "false" "${got}"
+
+  # Set in USER config, with an overlay present that does NOT set it: the user
+  # value must be ignored (overlay-only authority).
+  local uc="${TEST_DIR}/user-honor.yaml"
+  printf 'vetting: advisory\n' > "${ov}/config.yaml"
+  printf 'overlay: %s\nhonor_repo_allowed_domains: true\n' "${ov}" > "${uc}"
+  SANDBOX_OVERLAY=""; USER_SANDBOX_CONFIG="${uc}"
+  got="$(honor_repo_allowed_domains)"; eq "user config setting it is ignored -> false" "false" "${got}"
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -173,6 +210,7 @@ main() {
   test_list_extraction
   test_per_file_loader
   test_user_loader_combined
+  test_honor_repo_domains
 
   echo ""
   echo "All config tests passed."

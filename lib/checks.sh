@@ -261,11 +261,89 @@ check_ip_not_in_blocked_cidrs() {
   done < <(get_blocked_cidrs)
 }
 
+# _is_multilabel_public_suffix <name> — true if <name> is a common MULTI-label
+# public suffix (e.g. 'co.uk', 'github.io', 's3.amazonaws.com') under which every
+# subdomain is a separately-registered/owned site. A '*.<name>' wildcard over one
+# of these is as broad as '*.com' — it spans an entire public namespace, not a
+# single owner. A plain label count cannot tell 'co.uk' (public suffix) from
+# 'example.com' (registrable domain), so the caller consults this list once the
+# count check passes.
+#
+# This is a deliberately CURATED, best-effort set — NOT the full Public Suffix
+# List (https://publicsuffix.org, ~10k rolling MPL-2.0 rules). Vendoring + parsing
+# the PSL is disproportionate for a guardrail whose inputs are already operator-
+# or vetting-gated; this covers the realistic footguns and is trivial to extend.
+# If this check ever becomes load-bearing, escalate to a PSL-backed tool rather
+# than growing this by hand. Single-label TLDs ('com', 'io') are handled by the
+# label count in _egress_wildcard_too_broad and are intentionally absent here.
+# Match is exact, on the already-normalized (lowercased, dot-stripped) name.
+# bash 3.2-safe.
+_is_multilabel_public_suffix() {
+  case "$1" in
+    # ICANN ccTLD registration suffixes (representative, extend as needed)
+    co.uk|org.uk|me.uk|gov.uk|ac.uk|net.uk|ltd.uk|plc.uk|sch.uk|nhs.uk) return 0 ;;
+    com.au|net.au|org.au|edu.au|gov.au|id.au) return 0 ;;
+    co.nz|net.nz|org.nz|govt.nz) return 0 ;;
+    co.jp|or.jp|ne.jp|ac.jp|go.jp) return 0 ;;
+    com.cn|net.cn|org.cn|gov.cn|ac.cn) return 0 ;;
+    co.in|net.in|org.in|gov.in|com.br|net.br|org.br|gov.br) return 0 ;;
+    co.za|org.za|com.mx|com.sg|com.hk|com.tr|co.kr|or.kr) return 0 ;;
+    com.ua|co.il|com.ar|com.tw|co.th|com.my) return 0 ;;
+    # PSL PRIVATE-section namespaces: per-subdomain different owners
+    github.io|githubusercontent.com|gitlab.io|pages.dev|workers.dev) return 0 ;;
+    web.app|firebaseapp.com|netlify.app|vercel.app|herokuapp.com) return 0 ;;
+    blogspot.com|wordpress.com|amplifyapp.com|appspot.com|r2.dev) return 0 ;;
+    s3.amazonaws.com|cloudfront.net|blob.core.windows.net|azurewebsites.net) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# _egress_wildcard_too_broad <normalized-domain> — return 0 (true) if an egress
+# ALLOW entry is a wildcard so broad the block list cannot constrain it. Such an
+# entry renders (indent_fqdn_entry / indent_dns_entry, lib/policy.sh) to a Cilium
+# toFQDNs + L7-DNS matchPattern. The block check compares the LITERAL entry
+# against each blocked_domains pattern, and a bare '*' (or '*.<tld>') matches no
+# specific blocked domain, so it sails straight through — and the only remaining
+# backstop, the egressDeny blocked-CIDR rule, matches on resolved IP, which does
+# not fire for exfil to an attacker-controlled public domain that resolves to an
+# ordinary public IP outside any blocked CIDR. Net: such an entry is a full
+# egress-containment bypass over both 443 and DNS, so it must be refused at input.
+#
+# The ONLY wildcard shape permitted is a single leading '*.' under a registrable
+# domain — '*.<label>.<label>[.<label>…]', e.g. '*.internal.example.com' — which
+# is exactly how the shipped agent allowlists are written (*.githubcopilot.com,
+# *.claude.ai, …). Everything else with a '*' is rejected: bare '*', '*.', a
+# public-suffix wildcard like '*.com' or '*.co.uk' (see _is_multilabel_public_suffix),
+# a '*' anywhere but the leading label, or more than one '*'. A non-wildcard host
+# is never too broad here (it becomes an exact matchName). bash 3.2-safe (case
+# globs only, no regex/mapfile).
+_egress_wildcard_too_broad() {
+  local d="$1"
+  case "${d}" in *'*'*) : ;; *) return 1 ;; esac    # no '*' at all → not our concern
+  case "${d}" in \*.*) : ;; *) return 0 ;; esac      # a '*' not in a leading '*.' → too broad
+  local rest="${d#\*.}"                               # remainder after the leading '*.'
+  case "${rest}" in *'*'*) return 0 ;; esac           # a second '*' in the remainder → too broad
+  case "${rest}" in .*|*.|*..*) return 0 ;; esac      # empty label (leading/interior/trailing) → too broad
+  case "${rest}" in *.*) : ;; *) return 0 ;; esac     # single label like '*.com' → too broad
+  _is_multilabel_public_suffix "${rest}" && return 0  # '*.co.uk', '*.github.io', … → too broad
+  return 1                                             # bounded '*.<registrable-domain>' → OK
+}
+
 # check_egress_target_not_blocked <host-or-ip> — the single entry point callers
-# should use to validate any egress destination. Runs the domain block check
-# and, when the target is an IPv4 literal, the blocked-CIDR membership check.
+# should use to validate any egress destination. Refuses an over-broad wildcard
+# (which the block list cannot constrain — see _egress_wildcard_too_broad), then
+# runs the domain block check and, when the target is an IPv4 literal, the
+# blocked-CIDR membership check.
 check_egress_target_not_blocked() {
   local target="$1"
+  if _egress_wildcard_too_broad "$(_normalize_domain "${target}")"; then
+    echo "ERROR: egress allow entry '${target}' is too broad to be allowed." >&2
+    echo "       It would render to a Cilium DNS/toFQDNs matchPattern the block list" >&2
+    echo "       cannot constrain, opening egress (and DNS) to arbitrary hosts — a" >&2
+    echo "       containment bypass. Allow specific hosts, or a bounded wildcard of the" >&2
+    echo "       form '*.<domain>.<tld>' (e.g. '*.internal.example.com')." >&2
+    exit 1
+  fi
   check_domain_not_blocked "${target}"
   if _is_ipv4_literal "${target}"; then
     check_ip_not_in_blocked_cidrs "${target}"
