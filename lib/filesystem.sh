@@ -399,8 +399,8 @@ _leakscan_write_config() {
   return 0
 }
 
-# _betterleaks_run <target> <report> [config] [ignore_path] — run one
-# trustworthy betterleaks scan of <target> into <report>, optionally under
+# _betterleaks_run <target> <report> [config] [ignore_path] [honor_inline] — run
+# one trustworthy betterleaks scan of <target> into <report>, optionally under
 # <config> (-c) and <ignore_path> (-i, extra fingerprint allowlist). Returns 0 if
 # the run can be trusted (a clean run, or leaks-found with a valid JSON-array
 # report); returns 1 if it failed and the caller must fail closed. The exit code
@@ -428,6 +428,13 @@ _leakscan_write_config() {
 # ignores the comments (the same bypass class owning -c closes for a repo-local
 # .gitleaks.toml). See _leakscan_inline_allow_enabled for the trust note.
 #
+# honor_inline (5th arg): pass "no" to pin --ignore-gitleaks-allow for THIS run
+# regardless of the overlay policy — used for the .git/config scan, which has
+# no parity rationale (the team's betterleaks runs never scan .git/config, which
+# betterleaks excludes from directory walks) and is the highest-risk, unmaskable
+# finding class, so a workspace must not be able to self-annotate a credential
+# there away. Empty/omitted = policy-driven (the default source-file behavior).
+#
 # -i/--gitleaks-ignore-path points at an EXTRA .betterleaksignore/.gitleaksignore
 # of accepted fingerprints (an operator baseline; see _leakscan_ignore_path).
 # Its default is "." (the process CWD), which we never let stand. NOTE: -i is
@@ -441,14 +448,17 @@ _leakscan_write_config() {
 # macOS) so it is used only when present; its idle class (-c3) needs no
 # privilege. nice -n 19 is portable across GNU and BSD.
 _betterleaks_run() {
-  local target="$1" report="$2" config="${3:-}" ignore_path="${4:-}"
+  local target="$1" report="$2" config="${3:-}" ignore_path="${4:-}" honor_inline="${5:-}"
   LEAKSCAN_RC=0
   local -a cmd=(nice -n 19)
   command -v ionice >/dev/null 2>&1 && cmd+=(ionice -c3)
   cmd+=(betterleaks dir "${target}" --no-banner -f json -r "${report}" --validation=false --redact)
-  # Honor inline allow comments by default; restore --ignore-gitleaks-allow only
-  # when the overlay has disabled honoring (leakscan_inline_allow: off).
-  _leakscan_inline_allow_enabled || cmd+=(--ignore-gitleaks-allow)
+  # Honor inline allow comments by default; restore --ignore-gitleaks-allow when
+  # the caller pins honor_inline=no (the .git/config scan) or the overlay has
+  # disabled honoring (leakscan_inline_allow: off).
+  if [[ "${honor_inline}" == "no" ]] || ! _leakscan_inline_allow_enabled; then
+    cmd+=(--ignore-gitleaks-allow)
+  fi
   [[ -n "${config}" ]] && cmd+=(-c "${config}")
   [[ -n "${ignore_path}" ]] && cmd+=(-i "${ignore_path}")
   "${cmd[@]}" >/dev/null 2>&1 || LEAKSCAN_RC=$?
@@ -731,7 +741,10 @@ vetted_accepted_fingerprints() {
 # `betterleaks:allow` comments are the ONE workspace-authored input the scan
 # honors by default (parity with the team's other betterleaks runs); an org
 # that wants them ignored sets `leakscan_inline_allow: off` in the overlay
-# (see _leakscan_inline_allow_enabled / _betterleaks_run).
+# (see _leakscan_inline_allow_enabled / _betterleaks_run). That honoring applies
+# ONLY to the workspace scan (1); the .git/config scan (2) never honors inline
+# comments — the parity argument does not reach a file the team's runs never
+# scan, and it is the unmaskable class.
 #
 # ROOT IGNORE FILE: a repo-root .betterleaksignore/.gitleaksignore is now the
 # SANCTIONED exception store (see `sandbox exceptions`) — the same file the
@@ -750,8 +763,9 @@ vetted_accepted_fingerprints() {
 #     one.
 # Nested (non-root) ignore files are not auto-read, and a repo-local
 # .gitleaks.toml is neutralized (-c ownership). Inline allow comments are
-# honored by default and ignored only under `leakscan_inline_allow: off`
-# (_leakscan_inline_allow_enabled).
+# honored by default in the workspace scan and ignored only under
+# `leakscan_inline_allow: off` (_leakscan_inline_allow_enabled); the .git/config
+# scan ignores them unconditionally.
 scan_repo_secrets() {
   local repo="$1" accept_file="${2:-}"
   local real_repo
@@ -818,10 +832,17 @@ scan_repo_secrets() {
              "${report}" 2>/dev/null)
 
   # (2) .git/config — readable in the pod, unmaskable, common credential home.
+  # honor_inline=no: unlike the workspace scan, this run never honors inline
+  # `gitleaks:allow` comments, whatever leakscan_inline_allow says. The honoring
+  # default exists for parity with the team's other betterleaks runs, and those
+  # never scan .git/config (betterleaks excludes .git from directory walks). A
+  # .git/config is not reviewed, committed, or vetting-signed source either, so
+  # an inline allow there is only ever an untrusted self-suppression of the
+  # highest-risk (unmaskable) finding class. See _betterleaks_run.
   local gitcfg="${real_repo}/.git/config"
   if [[ -f "${gitcfg}" ]]; then
     : > "${report}"
-    if ! _betterleaks_run "${gitcfg}" "${report}" "${config}" "${ignore_path}"; then
+    if ! _betterleaks_run "${gitcfg}" "${report}" "${config}" "${ignore_path}" no; then
       printf 'error\tbetterleaks scan of .git/config failed (exit %s)\n' "${LEAKSCAN_RC}"
       rm -f "${report}" "${config}"
       [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true

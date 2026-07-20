@@ -815,6 +815,52 @@ test_gitconfig_secret() {
 }
 
 ###############################################################################
+# .git/config never honors inline allow comments. Honoring is the workspace-scan
+# default (parity with the team's other betterleaks runs), but those runs never
+# scan .git/config and it is the unmaskable, credential-dense finding class — so
+# a trailing `# gitleaks:allow` on a credential line in .git/config must NOT
+# suppress the finding, whatever leakscan_inline_allow says.
+###############################################################################
+test_gitconfig_inline_allow_not_honored() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing that .git/config ignores inline allow comments..."
+
+  local repo="${TEST_DIR}/gitcfg-allow"
+  mkdir -p "${repo}"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  local tok='ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z'
+  # Write the remote URL straight into .git/config with a trailing allow comment
+  # (git treats a ` #` after the value as a comment, so the URL stays valid).
+  printf '[remote "origin"]\n\turl = https://u:%s@github.com/x/y.git # gitleaks:allow\n' \
+    "${tok}" >> "${repo}/.git/config"
+
+  # Default (honoring on for the workspace scan): the annotation must NOT help.
+  scan_repo_secrets "${repo}" > "${TEST_DIR}/gitcfg-allow.out"
+  grep -q "$(printf '^gitconfig\t.git/config\t')" "${TEST_DIR}/gitcfg-allow.out" \
+    && pass "inline gitleaks:allow does not suppress a .git/config secret (default)" \
+    || fail ".git/config allow comment bypassed the gate, got: $(cat "${TEST_DIR}/gitcfg-allow.out")"
+
+  # Even with honoring explicitly ON via the overlay, .git/config is unaffected.
+  local overlay="${TEST_DIR}/gitcfg-allow-overlay"
+  mkdir -p "${overlay}"
+  printf 'leakscan_inline_allow: on\n' > "${overlay}/config.yaml"
+  ( export SANDBOX_OVERLAY="${overlay}"; scan_repo_secrets "${repo}" ) \
+    > "${TEST_DIR}/gitcfg-allow-on.out"
+  grep -q "$(printf '^gitconfig\t.git/config\t')" "${TEST_DIR}/gitcfg-allow-on.out" \
+    && pass "overlay leakscan_inline_allow: on still flags .git/config" \
+    || fail "overlay on should not reach .git/config, got: $(cat "${TEST_DIR}/gitcfg-allow-on.out")"
+
+  # And the gate refuses on it.
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "gate should refuse on an annotated .git/config secret"
+  fi
+  pass "gate refuses on annotated .git/config secret"
+}
+
+###############################################################################
 # Fail closed on scanner failure — a betterleaks runtime error must NOT look
 # like "no secrets found". Uses a stub betterleaks that exits non-zero without
 # writing a report (the nastiest case: exit 1 is also the leaks-found code).
@@ -1582,6 +1628,7 @@ main() {
   test_operator_ignore_baseline
   test_gate
   test_gitconfig_secret
+  test_gitconfig_inline_allow_not_honored
   test_scan_failure_fails_closed
   test_encrypted_scan_and_gate
   test_encrypted_leaks_still_block

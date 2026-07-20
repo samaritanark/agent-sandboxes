@@ -165,4 +165,8 @@ vetting: advisory
 # only ever tightens (turns honoring off), and that is an operator/org policy
 # decision. There is deliberately no local way to change it. Absent ⇒ honored.
 #
+# It governs only the workspace scan. The explicit `.git/config` scan NEVER
+# honors inline comments whatever this is set to — that file is unmaskable,
+# credential-dense, and not something the team's other betterleaks runs scan.
+#
 # leakscan_inline_allow: off

@@ -189,7 +189,14 @@ channels are covered:
   a repo or user config cannot change it). A stricter middle ground — honoring
   inline comments only when the repo is *vetted*, exactly as the repo-root
   `.betterleaksignore` accept-list is gated (below) — was considered and
-  deferred; the overlay switch is the current lever.
+  deferred; the overlay switch is the current lever. **One place never honors
+  inline comments, regardless of the knob: the explicit `.git/config` scan.**
+  Honoring exists for parity with the team's own betterleaks runs, and those
+  never scan `.git/config` (betterleaks excludes `.git` from directory walks);
+  a `.git/config` is also not reviewed, committed, or vetting-signed content,
+  and it is the one *unmaskable* finding class. So an inline `# gitleaks:allow`
+  next to a credential in `.git/config` is only ever an untrusted
+  self-suppression and is always ignored.
 - **Fingerprint ignore file.** betterleaks' `-i` ignore path is pointed at an
   operator-owned baseline — a `.betterleaksignore` (or `.gitleaksignore`) shipped
   at the root of the **team overlay** — rather than the process working
