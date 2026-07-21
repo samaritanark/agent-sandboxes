@@ -135,9 +135,33 @@ test_dep_policy_no_egress() {
     "$(echo "${pol}" | yq e '[.spec.egress[] | select(.toFQDNs)] | length' -)"
 }
 
+# Regression: extras that repeat a built-in agent/tier domain, or each other,
+# must render exactly ONE matchName/matchPattern in the emitted policy — no
+# duplicate entries in the applied CiliumNetworkPolicy.
+test_session_policy_dedups_extras() {
+  info "Testing session policy dedups repeated / built-in-colliding extras..."
+  local pol
+  # 'claude.ai' is a built-in claude domain; pass it again as an extra, plus a
+  # self-repeated extra and a wildcard restated twice.
+  pol="$(build_cilium_policy "${SID}" claude 2 "" "" \
+    claude.ai dup.example.com dup.example.com '*.repeat.example.com' '*.repeat.example.com')"
+  echo "${pol}" | yq e '.' >/dev/null || fail "session policy is not valid YAML"
+
+  # Count occurrences across BOTH the toFQDNs and L7 DNS blocks. Each name
+  # should appear exactly twice total (once per block), never more.
+  local n
+  n="$(echo "${pol}" | grep -c 'matchName: "claude.ai"')"
+  eq "built-in restated as extra → single matchName per block" "2" "${n}"
+  n="$(echo "${pol}" | grep -c 'matchName: "dup.example.com"')"
+  eq "self-repeated extra → single matchName per block" "2" "${n}"
+  n="$(echo "${pol}" | grep -c 'matchPattern: "\*.repeat.example.com"')"
+  eq "repeated wildcard → single matchPattern per block" "2" "${n}"
+}
+
 main() {
   test_session_policy_with_dep
   test_session_policy_without_dep_unchanged
+  test_session_policy_dedups_extras
   test_dep_policy_with_egress
   test_dep_policy_no_egress
   echo "All policy-deps tests passed."

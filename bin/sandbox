@@ -1024,6 +1024,15 @@ cmd_run() {
   local -a tier_domains=()
   read_into_array tier_domains < <(get_tier_domains "${opt_tier}")
   local -a all_domains=("${agent_domains[@]+"${agent_domains[@]}"}" "${tier_domains[@]+"${tier_domains[@]}"}" "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}")
+  # Dedup, first occurrence wins: operator extras (user config, an overlay
+  # profile, or a per-repo list) may repeat a built-in agent/tier domain, or
+  # each other. Without this the recorded allowlist — and the count printed at
+  # startup — is inflated, AND the first 'sandbox allow' runs the merged set
+  # through '| unique' (below), retroactively collapsing the duplicates and
+  # reporting a zero-or-negative "new domain(s)" delta. Dedup here keeps
+  # session.json honest from the start so the hot-reload math stays truthful.
+  read_into_array all_domains < <(
+    printf '%s\n' "${all_domains[@]+"${all_domains[@]}"}" | awk 'NF && !seen[$0]++')
   local domain_count="${#all_domains[@]}"
 
   # Pin the agent's conversation ID (when the agent supports it) so teardown
@@ -2864,9 +2873,13 @@ cmd_allow() {
   new_arr_json="$(printf '%s\n' "${opt_add_domains[@]}" | jq -R . | jq -s -c .)"
 
   # Merged full set (for session.json) and extras-only (for the policy).
-  local merged_full_json merged_extras_json
+  # '| unique' also collapses any duplicates an older session.json may carry
+  # (session creation only started deduping later), so relaunching a stale
+  # session cleans its allowlist as a side effect.
+  local cur_json merged_full_json merged_extras_json
+  cur_json="$(jq -c '.allowed_domains' "${session_json}")"
   merged_full_json="$(jq -c -n \
-    --argjson cur "$(jq '.allowed_domains' "${session_json}")" \
+    --argjson cur "${cur_json}" \
     --argjson new "${new_arr_json}" \
     '($cur + $new) | unique')"
   merged_extras_json="$(jq -c -n \
@@ -2875,14 +2888,19 @@ cmd_allow() {
     --argjson tier "${tier_dom_json}" \
     '($full - $agent - $tier)')"
 
-  # Detect the no-op case (every --add-domain was already allowed) so
-  # the operator gets a clear "nothing to do" rather than a silent
-  # kubectl apply that changes nothing.
-  local new_count
+  # Count only GENUINELY-new domains: those requested that were not already
+  # allowed. Reporting 'merged_total - existing_total' was wrong — when the
+  # existing session.json carried duplicates, the '| unique' above collapsed
+  # them and the delta went zero or NEGATIVE ("-1 new domain(s)") even though a
+  # domain was added. Comparing the two deduped sets never goes negative and
+  # gives the operator the real count.
+  local added_count new_count
+  added_count="$(jq -n \
+    --argjson cur "${cur_json}" \
+    --argjson new "${new_arr_json}" \
+    '(($new | unique) - ($cur | unique)) | length')"
   new_count="$(jq -r '. | length' <<<"${merged_full_json}")"
-  local existing_count
-  existing_count="$(jq -r '.allowed_domains | length' "${session_json}")"
-  if [[ "${new_count}" -eq "${existing_count}" ]]; then
+  if [[ "${added_count}" -eq 0 ]]; then
     echo "All requested domains are already in the allowlist; nothing to do."
     return 0
   fi
@@ -2912,7 +2930,7 @@ cmd_allow() {
     "${extras_arr[@]+"${extras_arr[@]}"}")"
   SESSION_DEP_ENDPOINTS=()
   echo "${policy_yaml}" | kubectl apply -f - >/dev/null
-  echo "  Applied: $(( new_count - existing_count )) new domain(s)."
+  echo "  Applied: ${added_count} new domain(s)."
 
   # Update session.json's allowed_domains and append an audit event.
   local tmp_json

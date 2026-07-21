@@ -33,6 +33,14 @@ build_cilium_policy() {
   read_into_array tier_domains < <(get_tier_domains "${tier}")
   fqdn_domains+=("${tier_domains[@]+"${tier_domains[@]}"}")
   fqdn_domains+=("${extra_allow_domains[@]+"${extra_allow_domains[@]}"}")
+  # Dedup, first occurrence wins. Extras (from user/overlay/repo config or
+  # repeated --allow-domain flags) may restate a built-in agent/tier domain or
+  # each other; this is the single choke point every caller renders through, so
+  # deduping here guarantees the emitted policy carries each matchName/
+  # matchPattern exactly once — no confusing repeated entries in the applied
+  # CiliumNetworkPolicy, whatever the caller passed.
+  read_into_array fqdn_domains < <(
+    printf '%s\n' "${fqdn_domains[@]+"${fqdn_domains[@]}"}" | awk 'NF && !seen[$0]++')
 
   # Render the toFQDNs match entries.
   local fqdn_block=""
