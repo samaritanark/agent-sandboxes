@@ -488,7 +488,7 @@ vetting_status_repo() {
 
   local head_sha
   head_sha="$(_vetting_git "${real_repo}" rev-parse HEAD 2>/dev/null)" || {
-    printf 'error\t%s has no HEAD commit (empty repository?)\n' "${repo}"; return 0; }
+    printf 'error\t%s has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo %s\n' "${repo}" "${repo}"; return 0; }
 
   if [[ -n "$(_vetting_git "${real_repo}" status --porcelain --untracked-files="$(_vetting_untracked_mode)" 2>/dev/null)" ]]; then
     printf 'dirty\t%s\n' "${head_sha}"; return 0
@@ -525,8 +525,26 @@ vetting_status_repo() {
   done
 
   if [[ "${#ranked[@]}" -eq 0 ]]; then
-    printf 'unvetted\t%s\tno reachable %s* attestation tag\n' \
-      "${head_sha}" "${SANDBOX_VETTING_TAG_PREFIX}"
+    # No ANCESTOR attestation tag. Distinguish two very different situations so
+    # the refusal can point at the actual fix: (a) no attestation tag exists
+    # locally at all — commonly a tag-less or shallow checkout (CI's default
+    # fetches no tags), so a real upstream attestation was simply never pulled
+    # down; (b) attestation tag(s) do exist but sit on commits HEAD does not
+    # descend from — an older checkout or a divergent branch — where the fix is
+    # to move to the vetted commit or attest this HEAD, not to fetch anything.
+    local ntags=0 tt
+    for tt in "${all_tags[@]}"; do [[ -n "${tt}" ]] && ntags=$((ntags + 1)); done
+    local reason
+    if [[ "${ntags}" -eq 0 ]]; then
+      if [[ "$(_vetting_git "${real_repo}" rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
+        reason="no ${SANDBOX_VETTING_TAG_PREFIX}* tag present, and this is a shallow clone — if the repo is vetted upstream, 'git fetch --unshallow --tags' may reveal the attestation"
+      else
+        reason="no ${SANDBOX_VETTING_TAG_PREFIX}* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation"
+      fi
+    else
+      reason="${ntags} ${SANDBOX_VETTING_TAG_PREFIX}* tag(s) present but none is an ancestor of HEAD (an older checkout or a divergent branch?) — check out the vetted commit, or attest this HEAD"
+    fi
+    printf 'unvetted\t%s\t%s\n' "${head_sha}" "${reason}"
     return 0
   fi
 
@@ -576,7 +594,7 @@ _vetting_print_findings() {
           echo "    ${repo}: uncommitted changes to tracked files — commit or stash, then attest (HEAD ${f2:0:12})" >&2
         fi
         ;;
-      not-git)  echo "    ${repo}: not a git repository — cannot carry an attestation" >&2 ;;
+      not-git)  echo "    ${repo}: not a git repository — run 'git init' and make a commit, then attest with 'sandbox vet --repo ${repo}'" >&2 ;;
       error)    echo "    ${repo}: ${f2}" >&2 ;;
       *)        echo "    ${repo}: ${status} ${f2}" >&2 ;;
     esac

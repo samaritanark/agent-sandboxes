@@ -169,6 +169,51 @@ test_status_classification() {
 }
 
 ###############################################################################
+# vetting_status_repo — refusal reasons are resolution-oriented: empty repo and
+# non-git say what to do first; a tag-less checkout hints at fetching tags; an
+# older/divergent checkout says the tags exist but do not cover HEAD.
+###############################################################################
+test_status_reasons() {
+  info "Testing resolution-oriented vetting_status_repo reasons..."
+  write_trust_config
+  unset SANDBOX_OVERLAY
+
+  # Empty repo (git init, no commits) -> error with a make-a-commit resolution.
+  local empty="${TEST_DIR}/reason-empty"
+  mkdir -p "${empty}"; git -C "${empty}" init -q
+  local line; line="$(vetting_status_repo "${empty}")"
+  eq "empty repo -> error" "error" "$(printf '%s' "${line}" | cut -f1)"
+  case "${line}" in
+    *"empty repository"*"initial commit"*) pass "empty repo reason names the fix" ;;
+    *) fail "empty repo reason should say to make an initial commit" ;;
+  esac
+
+  # Tag-less committed repo -> unvetted, hint to fetch tags.
+  local repo="${TEST_DIR}/reason-tagless"
+  make_repo "${repo}"
+  line="$(vetting_status_repo "${repo}")"
+  case "${line}" in
+    *"git fetch --tags"*) pass "tag-less repo hints at git fetch --tags" ;;
+    *) fail "tag-less repo should hint at fetching tags" ;;
+  esac
+
+  # Attestation tag exists but is NOT an ancestor of HEAD (older checkout /
+  # divergent). A lightweight agent-vetted/* tag on a descendant commit suffices
+  # to exercise the branch without signing.
+  local repo2="${TEST_DIR}/reason-divergent"
+  make_repo "${repo2}"                                   # commit A = HEAD
+  git -C "${repo2}" commit -q --allow-empty -m "B"       # commit B
+  git -C "${repo2}" tag "agent-vetted/$(git -C "${repo2}" rev-parse HEAD)"  # tag at B
+  git -C "${repo2}" checkout -q HEAD~1                   # detach at A (B is a descendant)
+  line="$(vetting_status_repo "${repo2}")"
+  eq "divergent checkout -> unvetted" "unvetted" "$(printf '%s' "${line}" | cut -f1)"
+  case "${line}" in
+    *"none is an ancestor of HEAD"*) pass "divergent checkout reason names the mismatch" ;;
+    *) fail "divergent checkout reason should say the tag is not an ancestor of HEAD" ;;
+  esac
+}
+
+###############################################################################
 # vetting_block_untracked — untracked files are ignored by the dirty check by
 # default, and count only when the knob is set (tightening-only, either source).
 ###############################################################################
@@ -1417,6 +1462,7 @@ main() {
   test_exceptions_require_head_config
   test_exceptions_from_commit_config
   test_status_classification
+  test_status_reasons
   test_untracked_dirty
   test_gate_posture
   test_missing_trust_root_fails_closed

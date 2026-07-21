@@ -396,7 +396,7 @@ unavailable) — whether it is wholly unvetted or vetted but too far behind `HEA
 ERROR: vetting is required, but the following workspace(s) have no accepted,
        verified agent-vetting attestation at HEAD, so the launch is refused:
 
-    /home/you/repos/app: no verified attestation (HEAD 1ff36c4...; no reachable agent-vetted/* tag)
+    /home/you/repos/app: no verified attestation (HEAD 1ff36c4...; no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation)
     /home/you/repos/api: vetted but 34 commit(s) behind HEAD (over the cap, or drift not accepted) (HEAD 9ac21be...)
 
   A trusted reviewer must attest the current HEAD:
@@ -407,6 +407,23 @@ ERROR: vetting is required, but the following workspace(s) have no accepted,
   Override (audited), accepting the risk for this launch:
         re-run with --i-accept-unvetted-repo
 ```
+
+The per-repo line names the *situation* so you fix the right thing rather than
+reflexively re-vetting:
+
+- **`no agent-vetted/* tag present … 'git fetch --tags'`** — the repo may be
+  vetted upstream, but the attestation tag was never fetched. This is common in
+  CI, where the default checkout pulls no tags (and often a shallow clone);
+  fetching the tags — `git fetch --tags`, or `git fetch --unshallow --tags` for a
+  shallow clone — can reveal the existing attestation without anyone re-signing.
+- **`… tag(s) present but none is an ancestor of HEAD`** — you are on an older
+  checkout or a divergent branch, so a real attestation exists but does not cover
+  this `HEAD`. Check out the vetted commit, or attest this `HEAD`.
+- **`empty repository` / `not a git repository`** — there is nothing to attest
+  *yet*: `git init` (if needed) and make an initial commit, then
+  `sandbox vet --repo <PATH>`. This is the greenfield case — the agent hasn't
+  written anything, so the launch just needs the first commit in place (or the
+  override below for a one-off).
 
 `--i-accept-vetting-drift` accepts a verified-but-behind or stale attestation
 non-interactively (within any cap); `--i-accept-unvetted-repo` proceeds
