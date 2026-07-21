@@ -298,6 +298,38 @@ _leakscan_exclusions_enabled() {
   esac
 }
 
+# _leakscan_inline_allow_enabled — 0 (HONOR inline `gitleaks:allow` /
+# `betterleaks:allow` comments) unless the team OVERLAY has turned honoring OFF
+# (`leakscan_inline_allow: off`, also false/no/0). Default is ON: the team's
+# own CI and pre-commit betterleaks runs honor these comments natively, and
+# work outside this app relies on them, so the launch gate now matches — a line
+# the team has reviewed and annotated is not re-flagged here.
+#
+# Read ONLY from the operator overlay — never a repo's or a user's own config.
+# This knob only ever TIGHTENS (disables honoring); honoring is the default, so
+# there is deliberately no local way to change it. Turning honoring off is an
+# operator/org policy ("this org does not trust inline suppression"), which is
+# exactly the overlay's trust level.
+#
+# TRUST NOTE: honoring inline comments lets a workspace suppress its own
+# findings by annotating the secret line — the self-annotation bypass the old
+# unconditional --ignore-gitleaks-allow pin closed. Honoring is now the default
+# by product decision (parity with the team's other betterleaks runs); an org
+# that wants the bypass closed sets `leakscan_inline_allow: off`. A stricter
+# middle ground — honor only when the repo is vetted, mirroring how a repo-root
+# `.betterleaksignore` accept-list is gated (scan_repo_secrets) — was weighed
+# and deferred; revisit here if the default proves too permissive.
+_leakscan_inline_allow_enabled() {
+  local overlay v=""
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] || return 0
+  v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" leakscan_inline_allow 2>/dev/null || true)"
+  case "${v}" in
+    off|false|no|0|OFF|False|FALSE|No|NO) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 # _leakscan_regex_escape <string> — escape re2 metacharacters so a literal path
 # can be embedded in an allowlist regex.
 _leakscan_regex_escape() {
@@ -367,8 +399,8 @@ _leakscan_write_config() {
   return 0
 }
 
-# _betterleaks_run <target> <report> [config] [ignore_path] — run one
-# trustworthy betterleaks scan of <target> into <report>, optionally under
+# _betterleaks_run <target> <report> [config] [ignore_path] [honor_inline] — run
+# one trustworthy betterleaks scan of <target> into <report>, optionally under
 # <config> (-c) and <ignore_path> (-i, extra fingerprint allowlist). Returns 0 if
 # the run can be trusted (a clean run, or leaks-found with a valid JSON-array
 # report); returns 1 if it failed and the caller must fail closed. The exit code
@@ -387,12 +419,21 @@ _leakscan_write_config() {
 # a secret found in an untrusted workspace (it is the betterleaks default, but
 # we pin it so a future default flip or repo-local config cannot enable it).
 #
-# --ignore-gitleaks-allow: do NOT honor inline `gitleaks:allow`/`betterleaks:allow`
-# comments. Those are workspace-authored suppression — an untrusted repo could
-# annotate its own secret lines and pass the gate — the same bypass class that
-# owning -c closes for a repo-local .gitleaks.toml. Pinned on unconditionally:
-# there is no operator-owned inline comment, so nothing legitimately relies on
-# them being honored.
+# --ignore-gitleaks-allow (inline `gitleaks:allow`/`betterleaks:allow`
+# comments): whether these workspace-authored suppression comments are honored
+# is now policy, not a hard pin. By DEFAULT they are HONORED (the flag is
+# omitted) — the team's other betterleaks runs honor them and work outside this
+# app relies on them. An operator/org that does not trust inline suppression
+# sets `leakscan_inline_allow: off` in the overlay, which restores the flag and
+# ignores the comments (the same bypass class owning -c closes for a repo-local
+# .gitleaks.toml). See _leakscan_inline_allow_enabled for the trust note.
+#
+# honor_inline (5th arg): pass "no" to pin --ignore-gitleaks-allow for THIS run
+# regardless of the overlay policy — used for the .git/config scan, which has
+# no parity rationale (the team's betterleaks runs never scan .git/config, which
+# betterleaks excludes from directory walks) and is the highest-risk, unmaskable
+# finding class, so a workspace must not be able to self-annotate a credential
+# there away. Empty/omitted = policy-driven (the default source-file behavior).
 #
 # -i/--gitleaks-ignore-path points at an EXTRA .betterleaksignore/.gitleaksignore
 # of accepted fingerprints (an operator baseline; see _leakscan_ignore_path).
@@ -407,11 +448,17 @@ _leakscan_write_config() {
 # macOS) so it is used only when present; its idle class (-c3) needs no
 # privilege. nice -n 19 is portable across GNU and BSD.
 _betterleaks_run() {
-  local target="$1" report="$2" config="${3:-}" ignore_path="${4:-}"
+  local target="$1" report="$2" config="${3:-}" ignore_path="${4:-}" honor_inline="${5:-}"
   LEAKSCAN_RC=0
   local -a cmd=(nice -n 19)
   command -v ionice >/dev/null 2>&1 && cmd+=(ionice -c3)
-  cmd+=(betterleaks dir "${target}" --no-banner -f json -r "${report}" --validation=false --redact --ignore-gitleaks-allow)
+  cmd+=(betterleaks dir "${target}" --no-banner -f json -r "${report}" --validation=false --redact)
+  # Honor inline allow comments by default; restore --ignore-gitleaks-allow when
+  # the caller pins honor_inline=no (the .git/config scan) or the overlay has
+  # disabled honoring (leakscan_inline_allow: off).
+  if [[ "${honor_inline}" == "no" ]] || ! _leakscan_inline_allow_enabled; then
+    cmd+=(--ignore-gitleaks-allow)
+  fi
   [[ -n "${config}" ]] && cmd+=(-c "${config}")
   [[ -n "${ignore_path}" ]] && cmd+=(-i "${ignore_path}")
   "${cmd[@]}" >/dev/null 2>&1 || LEAKSCAN_RC=$?
@@ -687,11 +734,17 @@ vetted_accepted_fingerprints() {
 # (secret_gate_repos) aborts on it. A bare return/exit here would be swallowed
 # by the process substitution the caller reads us through.
 #
-# The scan owns its allowlist inputs so an untrusted workspace cannot suppress
-# its own findings: -c (our generated config) overrides a repo-local
-# .gitleaks.toml, and --ignore-gitleaks-allow ignores inline allow comments
-# (both in _betterleaks_run). -i points at an operator-owned fingerprint
-# baseline when the overlay ships one, else a neutral empty dir.
+# The scan owns most of its allowlist inputs so an untrusted workspace cannot
+# suppress its own findings: -c (our generated config) overrides a repo-local
+# .gitleaks.toml, and -i points at an operator-owned fingerprint baseline when
+# the overlay ships one, else a neutral empty dir. Inline `gitleaks:allow` /
+# `betterleaks:allow` comments are the ONE workspace-authored input the scan
+# honors by default (parity with the team's other betterleaks runs); an org
+# that wants them ignored sets `leakscan_inline_allow: off` in the overlay
+# (see _leakscan_inline_allow_enabled / _betterleaks_run). That honoring applies
+# ONLY to the workspace scan (1); the .git/config scan (2) never honors inline
+# comments — the parity argument does not reach a file the team's runs never
+# scan, and it is the unmaskable class.
 #
 # ROOT IGNORE FILE: a repo-root .betterleaksignore/.gitleaksignore is now the
 # SANCTIONED exception store (see `sandbox exceptions`) — the same file the
@@ -708,9 +761,11 @@ vetted_accepted_fingerprints() {
 #     closed (an `error` sentinel) until the entry is removed. Legitimate
 #     entries are always repo-relative; there is no honest use for an absolute
 #     one.
-# Nested (non-root) ignore files are not auto-read, and inline allow comments
-# and a repo-local .gitleaks.toml are already neutralized (-c ownership,
-# --ignore-gitleaks-allow).
+# Nested (non-root) ignore files are not auto-read, and a repo-local
+# .gitleaks.toml is neutralized (-c ownership). Inline allow comments are
+# honored by default in the workspace scan and ignored only under
+# `leakscan_inline_allow: off` (_leakscan_inline_allow_enabled); the .git/config
+# scan ignores them unconditionally.
 scan_repo_secrets() {
   local repo="$1" accept_file="${2:-}"
   local real_repo
@@ -777,10 +832,17 @@ scan_repo_secrets() {
              "${report}" 2>/dev/null)
 
   # (2) .git/config — readable in the pod, unmaskable, common credential home.
+  # honor_inline=no: unlike the workspace scan, this run never honors inline
+  # `gitleaks:allow` comments, whatever leakscan_inline_allow says. The honoring
+  # default exists for parity with the team's other betterleaks runs, and those
+  # never scan .git/config (betterleaks excludes .git from directory walks). A
+  # .git/config is not reviewed, committed, or vetting-signed source either, so
+  # an inline allow there is only ever an untrusted self-suppression of the
+  # highest-risk (unmaskable) finding class. See _betterleaks_run.
   local gitcfg="${real_repo}/.git/config"
   if [[ -f "${gitcfg}" ]]; then
     : > "${report}"
-    if ! _betterleaks_run "${gitcfg}" "${report}" "${config}" "${ignore_path}"; then
+    if ! _betterleaks_run "${gitcfg}" "${report}" "${config}" "${ignore_path}" no; then
       printf 'error\tbetterleaks scan of .git/config failed (exit %s)\n' "${LEAKSCAN_RC}"
       rm -f "${report}" "${config}"
       [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true

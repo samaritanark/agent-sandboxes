@@ -602,15 +602,17 @@ test_dep_dir_config() {
 }
 
 ###############################################################################
-# Inline allow comments do not bypass the gate. An untrusted workspace could
-# annotate its own secret line with `# gitleaks:allow` / `# betterleaks:allow`
-# to have the scanner skip it; --ignore-gitleaks-allow (in _betterleaks_run)
-# neutralizes that, the same bypass class owning -c closes for .gitleaks.toml.
+# Inline allow comments. By DEFAULT the gate HONORS `# gitleaks:allow` /
+# `# betterleaks:allow` on a secret line (parity with the team's other
+# betterleaks runs) — a would-be finding is suppressed. An operator/org that
+# does not trust inline suppression sets `leakscan_inline_allow: off` in the
+# overlay, which restores --ignore-gitleaks-allow and re-flags the line. The
+# knob is overlay-only (a repo/user config cannot change it).
 ###############################################################################
-test_inline_allow_ignored() {
+test_inline_allow_default_honored() {
   command -v betterleaks &>/dev/null || skip "betterleaks not installed"
   command -v jq &>/dev/null || skip "jq not installed"
-  info "Testing that inline allow comments do not bypass the gate..."
+  info "Testing that inline allow comments are honored by default..."
 
   local repo="${TEST_DIR}/inlineallow"
   mkdir -p "${repo}"
@@ -622,13 +624,50 @@ test_inline_allow_ignored() {
   printf 'token = "%s" # betterleaks:allow\n' "${tok}" > "${repo}/allow2.txt"
   git -C "${repo}" add -A 2>/dev/null
 
+  # No overlay → honoring is the default → both lines suppressed, clean scan.
   scan_repo_secrets "${repo}" > "${TEST_DIR}/inlineallow.out"
-  grep -q "$(printf '^no\tallow.txt\t')" "${TEST_DIR}/inlineallow.out" \
-    && pass "inline gitleaks:allow does not hide the secret" \
-    || fail "gitleaks:allow must not bypass the gate, got: $(cat "${TEST_DIR}/inlineallow.out")"
-  grep -q "$(printf '^no\tallow2.txt\t')" "${TEST_DIR}/inlineallow.out" \
-    && pass "inline betterleaks:allow does not hide the secret" \
-    || fail "betterleaks:allow must not bypass the gate, got: $(cat "${TEST_DIR}/inlineallow.out")"
+  grep -q "$(printf '\tallow.txt\t')" "${TEST_DIR}/inlineallow.out" \
+    && fail "gitleaks:allow should be honored by default, got: $(cat "${TEST_DIR}/inlineallow.out")" \
+    || pass "inline gitleaks:allow is honored by default (line suppressed)"
+  grep -q "$(printf '\tallow2.txt\t')" "${TEST_DIR}/inlineallow.out" \
+    && fail "betterleaks:allow should be honored by default, got: $(cat "${TEST_DIR}/inlineallow.out")" \
+    || pass "inline betterleaks:allow is honored by default (line suppressed)"
+}
+
+test_inline_allow_overlay_disallow() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing that overlay leakscan_inline_allow: off re-flags the lines..."
+
+  local repo="${TEST_DIR}/inlineallow2"
+  mkdir -p "${repo}"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  local tok='ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z'
+  printf 'token = "%s" # gitleaks:allow\n' "${tok}" > "${repo}/allow.txt"
+  printf 'token = "%s" # betterleaks:allow\n' "${tok}" > "${repo}/allow2.txt"
+  git -C "${repo}" add -A 2>/dev/null
+
+  # Overlay turns honoring off → --ignore-gitleaks-allow restored → flagged.
+  local overlay="${TEST_DIR}/inlineallow-overlay"
+  mkdir -p "${overlay}"
+  printf 'leakscan_inline_allow: off\n' > "${overlay}/config.yaml"
+  ( export SANDBOX_OVERLAY="${overlay}"; scan_repo_secrets "${repo}" ) > "${TEST_DIR}/inlineallow2.out"
+  grep -q "$(printf '^no\tallow.txt\t')" "${TEST_DIR}/inlineallow2.out" \
+    && pass "overlay off: inline gitleaks:allow does not bypass the gate" \
+    || fail "overlay off should re-flag gitleaks:allow, got: $(cat "${TEST_DIR}/inlineallow2.out")"
+  grep -q "$(printf '^no\tallow2.txt\t')" "${TEST_DIR}/inlineallow2.out" \
+    && pass "overlay off: inline betterleaks:allow does not bypass the gate" \
+    || fail "overlay off should re-flag betterleaks:allow, got: $(cat "${TEST_DIR}/inlineallow2.out")"
+
+  # A repo-local config must NOT be able to disable honoring (overlay-only).
+  mkdir -p "${repo}/.sandbox"
+  printf 'leakscan_inline_allow: off\n' > "${repo}/.sandbox/config.yaml"
+  scan_repo_secrets "${repo}" > "${TEST_DIR}/inlineallow2-repo.out"
+  grep -q "$(printf '\tallow.txt\t')" "${TEST_DIR}/inlineallow2-repo.out" \
+    && fail "repo config must not disable honoring, got: $(cat "${TEST_DIR}/inlineallow2-repo.out")" \
+    || pass "repo-local leakscan_inline_allow is ignored (overlay-only)"
 }
 
 ###############################################################################
@@ -773,6 +812,52 @@ test_gitconfig_secret() {
     fail "masking .git/config must not bypass the gate"
   fi
   pass "masking .git/config does not bypass the gate"
+}
+
+###############################################################################
+# .git/config never honors inline allow comments. Honoring is the workspace-scan
+# default (parity with the team's other betterleaks runs), but those runs never
+# scan .git/config and it is the unmaskable, credential-dense finding class — so
+# a trailing `# gitleaks:allow` on a credential line in .git/config must NOT
+# suppress the finding, whatever leakscan_inline_allow says.
+###############################################################################
+test_gitconfig_inline_allow_not_honored() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing that .git/config ignores inline allow comments..."
+
+  local repo="${TEST_DIR}/gitcfg-allow"
+  mkdir -p "${repo}"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@sandbox"
+  git -C "${repo}" config user.name "Test"
+  local tok='ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z'
+  # Write the remote URL straight into .git/config with a trailing allow comment
+  # (git treats a ` #` after the value as a comment, so the URL stays valid).
+  printf '[remote "origin"]\n\turl = https://u:%s@github.com/x/y.git # gitleaks:allow\n' \
+    "${tok}" >> "${repo}/.git/config"
+
+  # Default (honoring on for the workspace scan): the annotation must NOT help.
+  scan_repo_secrets "${repo}" > "${TEST_DIR}/gitcfg-allow.out"
+  grep -q "$(printf '^gitconfig\t.git/config\t')" "${TEST_DIR}/gitcfg-allow.out" \
+    && pass "inline gitleaks:allow does not suppress a .git/config secret (default)" \
+    || fail ".git/config allow comment bypassed the gate, got: $(cat "${TEST_DIR}/gitcfg-allow.out")"
+
+  # Even with honoring explicitly ON via the overlay, .git/config is unaffected.
+  local overlay="${TEST_DIR}/gitcfg-allow-overlay"
+  mkdir -p "${overlay}"
+  printf 'leakscan_inline_allow: on\n' > "${overlay}/config.yaml"
+  ( export SANDBOX_OVERLAY="${overlay}"; scan_repo_secrets "${repo}" ) \
+    > "${TEST_DIR}/gitcfg-allow-on.out"
+  grep -q "$(printf '^gitconfig\t.git/config\t')" "${TEST_DIR}/gitcfg-allow-on.out" \
+    && pass "overlay leakscan_inline_allow: on still flags .git/config" \
+    || fail "overlay on should not reach .git/config, got: $(cat "${TEST_DIR}/gitcfg-allow-on.out")"
+
+  # And the gate refuses on it.
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "gate should refuse on an annotated .git/config secret"
+  fi
+  pass "gate refuses on annotated .git/config secret"
 }
 
 ###############################################################################
@@ -1538,10 +1623,12 @@ main() {
   test_dep_dir_exclusion
   test_known_safe_paths
   test_dep_dir_config
-  test_inline_allow_ignored
+  test_inline_allow_default_honored
+  test_inline_allow_overlay_disallow
   test_operator_ignore_baseline
   test_gate
   test_gitconfig_secret
+  test_gitconfig_inline_allow_not_honored
   test_scan_failure_fails_closed
   test_encrypted_scan_and_gate
   test_encrypted_leaks_still_block

@@ -168,16 +168,35 @@ names, never broad patterns — and lives in `LEAKSCAN_SKIP_PATHS` in
 
 The gate also owns the inputs betterleaks would otherwise take from the
 workspace, so an untrusted repo cannot quietly allowlist its own secrets away —
-with one documented exception, noted at the end of this section. Three channels
-are covered:
+with two documented exceptions: inline allow comments (honored by default,
+below) and the root ignore file (noted at the end of this section). Three
+channels are covered:
 
 - **Config.** betterleaks runs under the gate's own generated config, which
   takes precedence over any `.gitleaks.toml` / `.betterleaks.toml` a workspace
   ships. The full default ruleset always applies; a repo config can only *add*
   rules, never remove them.
 - **Inline comments.** `# gitleaks:allow` / `# betterleaks:allow` annotations
-  are ignored (`--ignore-gitleaks-allow`), so a repo cannot exempt a line just
-  by commenting next to the secret.
+  are **honored by default** — a line the team has reviewed and annotated is
+  suppressed, matching how the team's own CI and pre-commit betterleaks runs
+  treat the same comment. This is the one workspace-authored input the gate
+  trusts by default, a deliberate product choice for parity with the team's
+  other tooling. The cost is a self-annotation bypass: a repo can exempt a line
+  just by commenting next to the secret. An org that does not accept that sets
+  `leakscan_inline_allow: off` in the overlay, which restores
+  `--ignore-gitleaks-allow` and makes the gate ignore the comments. Like the
+  other loosening knobs the setting is overlay-only (it only ever tightens, so
+  a repo or user config cannot change it). A stricter middle ground — honoring
+  inline comments only when the repo is *vetted*, exactly as the repo-root
+  `.betterleaksignore` accept-list is gated (below) — was considered and
+  deferred; the overlay switch is the current lever. **One place never honors
+  inline comments, regardless of the knob: the explicit `.git/config` scan.**
+  Honoring exists for parity with the team's own betterleaks runs, and those
+  never scan `.git/config` (betterleaks excludes `.git` from directory walks);
+  a `.git/config` is also not reviewed, committed, or vetting-signed content,
+  and it is the one *unmaskable* finding class. So an inline `# gitleaks:allow`
+  next to a credential in `.git/config` is only ever an untrusted
+  self-suppression and is always ignored.
 - **Fingerprint ignore file.** betterleaks' `-i` ignore path is pointed at an
   operator-owned baseline — a `.betterleaksignore` (or `.gitleaksignore`) shipped
   at the root of the **team overlay** — rather than the process working

@@ -150,3 +150,23 @@ vetting: advisory
 # leakscan_extra_dep_dirs follows. See docs/how-to/persistent-domains.md.
 #
 # honor_repo_allowed_domains: true
+
+# leakscan_inline_allow: whether the launch secret gate honors inline
+# `# gitleaks:allow` / `# betterleaks:allow` comments on a flagged line.
+#
+# DEFAULT is ON (honored): a line the team has reviewed and annotated is
+# suppressed, matching how the team's own CI and pre-commit betterleaks runs
+# treat the same comment. Set this to `off` to make the gate IGNORE inline
+# comments and re-flag those lines — an org that does not trust workspace-
+# authored suppression (a repo could annotate its own secret line to slip past
+# the gate) chooses this stricter posture.
+#
+# This knob is read ONLY from the overlay, never a repo-local or user config: it
+# only ever tightens (turns honoring off), and that is an operator/org policy
+# decision. There is deliberately no local way to change it. Absent ⇒ honored.
+#
+# It governs only the workspace scan. The explicit `.git/config` scan NEVER
+# honors inline comments whatever this is set to — that file is unmaskable,
+# credential-dense, and not something the team's other betterleaks runs scan.
+#
+# leakscan_inline_allow: off
