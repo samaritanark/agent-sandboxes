@@ -36,9 +36,11 @@ pulled-and-reviewed commit from one authored locally — including a commit an
 agent wrote in the workspace during an earlier session. So the guarantee is
 strongest exactly at `HEAD` ("a signer reviewed *this* tree") and, under drift,
 weakens to "a signer reviewed an *ancestor* of this tree." A tag on a divergent
-line (not an ancestor of `HEAD`) does not count, and a dirty working tree is
-always refused, because uncommitted edits are unreviewed and would ride along
-unattested.
+line (not an ancestor of `HEAD`) does not count, and a working tree with
+uncommitted edits to *tracked* files is always refused, because those edits are
+unreviewed and would ride along unattested. Untracked files (new files git is
+not yet tracking) do **not** refuse the launch by default — see
+[Untracked files and the dirty tree](#untracked-files-and-the-dirty-tree).
 
 ## Set up a trust root
 
@@ -205,6 +207,37 @@ vetted:   /home/you/repos/app
   behind: 0 (attestation is at HEAD)
   age:    41 day(s) — STALE, past the 30-day recency window (re-vet)
 ```
+
+### Untracked files and the dirty tree
+
+A working tree with uncommitted edits to **tracked** files is always refused —
+those edits are unreviewed and would ride along under a signature that never
+covered them. **Untracked** files (new files git is not yet tracking, like a
+`dumbtest` scratch file or a build artifact) are treated differently: by default
+they do **not** mark the tree dirty and do **not** refuse the launch. They are
+not part of `HEAD`, and an attestation covers a commit, not your working
+directory, so requiring a pristine tree just to launch would be constant
+friction — and `git stash` doesn't even remove untracked files, so the old
+"commit or stash" advice was a dead end for them.
+
+For teams that want the agent's workspace to hold nothing beyond the attested
+commit — remembering that an untracked file *is* copied into a tier-2/3
+workspace, unreviewed — one optional setting restores the strict behavior:
+
+| `vetting_block_untracked:` | Behavior |
+| --- | --- |
+| *omitted* / `false` (**default**) | Untracked files are ignored by the dirty check. Only uncommitted edits to tracked files refuse a launch or attestation. |
+| `true` | Untracked files count as a dirty tree, refusing the launch/attestation until you commit, `git stash -u`, or remove them. |
+
+```yaml
+# <overlay>/config.yaml — or ~/.sandbox/config.yaml
+vetting_block_untracked: true
+```
+
+Read from both the overlay and your own config, this is **tightening-only**:
+`true` wins if either sets it, the same safety-additive rule the
+[posture](#choose-a-posture) and [drift cap](#cap-how-far-behind-an-attestation-may-be)
+follow.
 
 ## Attest a repo
 

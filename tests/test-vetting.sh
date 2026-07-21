@@ -4,7 +4,9 @@
 # tests/test-vetting.sh — Repo vetting gate tests
 # Verifies: resolve_vetting_posture layering (user baseline + advisory default,
 # overlay ratchets up only); vetting_status_repo classification (not-git, dirty,
-# unvetted, vetted); vetting_gate_repos posture behavior (off skips, advisory
+# unvetted, vetted); vetting_block_untracked dirty policy (untracked ignored by
+# default, counts when the knob is set via user or overlay); vetting_gate_repos
+# posture behavior (off skips, advisory
 # proceeds with a notice, required refuses, --i-accept-unvetted-repo overrides,
 # a missing trust root fails closed under required regardless of override). The
 # signature-dependent cases skip gracefully when SSH commit signing is
@@ -164,6 +166,46 @@ test_status_classification() {
   # dirty: uncommitted change.
   echo "change" >> "${repo}/README.md"
   eq "uncommitted change -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+}
+
+###############################################################################
+# vetting_block_untracked — untracked files are ignored by the dirty check by
+# default, and count only when the knob is set (tightening-only, either source).
+###############################################################################
+test_untracked_dirty() {
+  info "Testing vetting_block_untracked (untracked-file dirty policy)..."
+  unset SANDBOX_OVERLAY
+  write_trust_config
+
+  local repo="${TEST_DIR}/repo-untracked"
+  make_repo "${repo}"
+  touch "${repo}/dumbtest"
+
+  # Default: an untracked file does NOT mark the tree dirty (clean repo, no tag
+  # -> unvetted, not dirty).
+  eq "untracked file, default -> not dirty" "unvetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+  eq "untracked flag mode default" "no" "$(_vetting_untracked_mode)"
+
+  # A tracked edit is still always dirty regardless of the knob.
+  echo "change" >> "${repo}/README.md"
+  eq "tracked edit -> dirty (default)" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+  git -C "${repo}" checkout -q -- README.md
+
+  # User config opts in: untracked file now counts as dirty.
+  write_config_with "vetting_block_untracked: true"
+  eq "block_untracked=true (user) -> true" "true" "$(vetting_block_untracked)"
+  eq "untracked flag mode when blocking" "normal" "$(_vetting_untracked_mode)"
+  eq "untracked file, blocking -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+
+  # Tightening-only: an overlay can ratchet it up while the user is silent.
+  write_trust_config   # reset user config (no knob)
+  local overlay="${TEST_DIR}/overlay-untracked"
+  mkdir -p "${overlay}"
+  printf 'vetting_block_untracked: true\n' > "${overlay}/config.yaml"
+  export SANDBOX_OVERLAY="${overlay}"
+  eq "block_untracked via overlay -> true" "true" "$(vetting_block_untracked)"
+  eq "untracked file, overlay blocking -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+  unset SANDBOX_OVERLAY
 }
 
 ###############################################################################
@@ -1293,6 +1335,7 @@ main() {
   test_max_age_days_config
   test_exceptions_require_head_config
   test_status_classification
+  test_untracked_dirty
   test_gate_posture
   test_missing_trust_root_fails_closed
   test_ssh_signingkey_mismatch

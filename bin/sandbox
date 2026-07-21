@@ -3434,7 +3434,11 @@ cmd_vet() {
         ;;
       dirty)
         echo "DIRTY:    ${repo} (HEAD ${f2})"
-        echo "  Commit or stash the working tree, then attest."
+        if [[ "$(vetting_block_untracked)" == "true" ]]; then
+          echo "  Commit, stash (git stash -u), or remove uncommitted/untracked files, then attest."
+        else
+          echo "  Commit or stash the tracked-file changes, then attest."
+        fi
         ;;
       error)
         echo "ERROR:    ${f2}" >&2

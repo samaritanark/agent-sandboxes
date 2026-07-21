@@ -82,6 +82,21 @@ vetting: advisory
 #
 # vetting_exceptions_require_head: true
 
+# vetting_block_untracked: an OPTIONAL extra-strict posture for the dirty-tree
+# check. By DEFAULT, UNTRACKED files (new files git is not yet tracking — a
+# scratch file, a build artifact) do NOT mark the working tree dirty and do NOT
+# refuse a launch or an attestation: they are not part of HEAD, and an
+# attestation covers a commit, not the working directory. Only uncommitted edits
+# to TRACKED files refuse. Set this true for teams that want the agent's
+# workspace to hold nothing beyond the attested commit (an untracked file is
+# still copied into a tier-2/3 workspace, unreviewed); untracked files then count
+# as dirty and must be committed, `git stash -u`'d, or removed. Tightening-only:
+# `true` wins if EITHER this overlay or the operator sets it, so it can ratchet
+# up and never down, the same safety-additive rule the posture and cap follow.
+# See docs/how-to/vetting.md.
+#
+# vetting_block_untracked: true
+
 # vetting_trust_root: the team's reviewer list — WHOSE signatures count — shipped
 # WITH the overlay. A relative path resolves against the overlay root, so the
 # value below names a plain `allowed_signers` file at the top of this overlay;

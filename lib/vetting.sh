@@ -34,8 +34,12 @@
 #     operator accepts that drift, or an overlay bounds it with
 #     vetting_max_commits_behind: (0 meaning "must sit exactly at HEAD" — the
 #     strict pre-drift behavior). A tag on a divergent line — not an ancestor of
-#     HEAD — does not count. A dirty working tree is always refused: uncommitted
-#     edits are unreviewed and would ride along unattested.
+#     HEAD — does not count. A working tree with uncommitted edits to TRACKED
+#     files is always refused: those edits are unreviewed and would ride along
+#     unattested. UNTRACKED files (new files git is not yet tracking) do NOT mark
+#     the tree dirty by default — they are not part of HEAD and an attestation
+#     covers a commit, not the working directory — but an overlay/user can opt in
+#     to blocking them too with vetting_block_untracked: true (see below).
 #   - Recency (optional): vetting_max_age_days: expires an attestation once it is
 #     older than N days, forcing a periodic re-vet no matter how little the code
 #     has moved. The age is the attestation tag's tagger date — part of the signed
@@ -209,6 +213,40 @@ vetting_exceptions_require_head() {
   else
     echo "false"
   fi
+}
+
+# vetting_block_untracked — "true" when UNTRACKED files (new files git is not yet
+# tracking) make the working tree count as dirty and so block a launch or an
+# attestation; "false" (the default) ignores untracked files, since they are not
+# part of HEAD and an attestation covers a commit, not the working directory — so
+# only uncommitted edits to TRACKED files mark the tree dirty. This is an OPTIONAL
+# extra-strict posture for teams that want the agent's workspace to hold nothing
+# beyond the attested commit (an untracked file is still copied into a tier-2/3
+# workspace, unreviewed). Read from BOTH the user config and the overlay config,
+# TIGHTENING-ONLY: strict ("true") wins if EITHER sets it, so an overlay can
+# ratchet this up and never down — the same "additive on the safety side" rule
+# the posture and drift caps follow. Anything but a literal `true` (unset, false,
+# a typo) leaves the permissive default.
+vetting_block_untracked() {
+  local user_v="" overlay_v="" overlay
+  [[ -f "${USER_SANDBOX_CONFIG}" ]] && \
+    user_v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_block_untracked)"
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] && \
+    overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_block_untracked)"
+  if [[ "${user_v}" == "true" || "${overlay_v}" == "true" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
+# _vetting_untracked_mode — the `git status --untracked-files` mode the dirty
+# check uses: "normal" (untracked files count toward a dirty tree) when
+# vetting_block_untracked is set, else "no" (untracked files are ignored — the
+# default).
+_vetting_untracked_mode() {
+  if [[ "$(vetting_block_untracked)" == "true" ]]; then echo "normal"; else echo "no"; fi
 }
 
 # vetting_trust_root — path to the operator's OWN signer trust root (user
@@ -424,7 +462,7 @@ vetting_status_repo() {
   head_sha="$(_vetting_git "${real_repo}" rev-parse HEAD 2>/dev/null)" || {
     printf 'error\t%s has no HEAD commit (empty repository?)\n' "${repo}"; return 0; }
 
-  if [[ -n "$(_vetting_git "${real_repo}" status --porcelain 2>/dev/null)" ]]; then
+  if [[ -n "$(_vetting_git "${real_repo}" status --porcelain --untracked-files="$(_vetting_untracked_mode)" 2>/dev/null)" ]]; then
     printf 'dirty\t%s\n' "${head_sha}"; return 0
   fi
 
@@ -503,7 +541,13 @@ _vetting_print_findings() {
     case "${status}" in
       unvetted) echo "    ${repo}: no verified attestation (HEAD ${f2:0:12}; ${f3})" >&2 ;;
       drift)    echo "    ${repo}: ${f3} (HEAD ${f2:0:12})" >&2 ;;
-      dirty)    echo "    ${repo}: uncommitted changes — commit or stash, then attest (HEAD ${f2:0:12})" >&2 ;;
+      dirty)
+        if [[ "$(vetting_block_untracked)" == "true" ]]; then
+          echo "    ${repo}: uncommitted changes or untracked files — commit, stash (git stash -u), or remove them, then attest (HEAD ${f2:0:12})" >&2
+        else
+          echo "    ${repo}: uncommitted changes to tracked files — commit or stash, then attest (HEAD ${f2:0:12})" >&2
+        fi
+        ;;
       not-git)  echo "    ${repo}: not a git repository — cannot carry an attestation" >&2 ;;
       error)    echo "    ${repo}: ${f2}" >&2 ;;
       *)        echo "    ${repo}: ${status} ${f2}" >&2 ;;
@@ -1002,9 +1046,11 @@ vetting_attest_repo() {
   if ! _vetting_git "${real_repo}" rev-parse --git-dir >/dev/null 2>&1; then
     echo "ERROR: ${repo} is not a git repository — nothing to attest." >&2; return 1
   fi
-  if [[ -n "$(_vetting_git "${real_repo}" status --porcelain 2>/dev/null)" ]]; then
+  if [[ -n "$(_vetting_git "${real_repo}" status --porcelain --untracked-files="$(_vetting_untracked_mode)" 2>/dev/null)" ]]; then
     echo "ERROR: ${repo} has uncommitted changes. Commit or stash first — an" >&2
     echo "       attestation covers a specific commit, not a dirty tree." >&2
+    [[ "$(vetting_block_untracked)" == "true" ]] && \
+      echo "       (vetting_block_untracked is set, so untracked files count too — 'git stash -u' or remove them.)" >&2
     return 1
   fi
 
