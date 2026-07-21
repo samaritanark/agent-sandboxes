@@ -123,6 +123,33 @@ _check_domain_against_blocked_file() {
   done < <(extract_yaml_list_from_file "${file}" "blocked_domains")
 }
 
+# domain_is_blocked <domain> — return 0 (true) if <domain> matches any
+# blocked_domains rule across the org, overlay, and per-user configs. Unlike
+# check_domain_not_blocked (which is a hard input gate that dies with a message),
+# this is a quiet predicate for code paths that must DECIDE rather than refuse —
+# specifically build_cilium_policy's wildcard-apex expansion, which synthesizes
+# an apex that never went through the input gate and so must re-check it before
+# emitting it. Same three deny sources, same normalization; overlay/user are
+# additive (never weaken). bash 3.2-safe.
+domain_is_blocked() {
+  local domain pattern file
+  domain="$(_normalize_domain "$1")"
+  local -a files=()
+  [[ -f "${BLOCKED_DESTINATIONS_CONFIG}" ]] && files+=("${BLOCKED_DESTINATIONS_CONFIG}")
+  local overlay_file
+  overlay_file="$(overlay_blocked_destinations_file 2>/dev/null || true)"
+  [[ -n "${overlay_file}" ]] && files+=("${overlay_file}")
+  [[ -f "${USER_SANDBOX_CONFIG}" ]] && files+=("${USER_SANDBOX_CONFIG}")
+
+  for file in "${files[@]+"${files[@]}"}"; do
+    while IFS= read -r pattern; do
+      [[ -z "${pattern}" ]] && continue
+      _domain_matches_block_pattern "${domain}" "${pattern}" && return 0
+    done < <(extract_yaml_list_from_file "${file}" "blocked_domains")
+  done
+  return 1
+}
+
 # get_blocked_cidrs — print the union of blocked CIDRs from the org
 # blocked-destinations file and any overlay addition, one per line, de-duped.
 # Overlays are additive on the safety side (PRINCIPLES.md "Default-deny
@@ -295,6 +322,30 @@ _is_multilabel_public_suffix() {
     blogspot.com|wordpress.com|amplifyapp.com|appspot.com|r2.dev) return 0 ;;
     s3.amazonaws.com|cloudfront.net|blob.core.windows.net|azurewebsites.net) return 0 ;;
     *) return 1 ;;
+  esac
+}
+
+# _apex_is_registrable_domain <name> — return 0 (true) if <name> is EXACTLY a
+# registrable domain (eTLD+1): one label directly above a public suffix, e.g.
+# 'gitea.com' or 'example.co.uk'. False for a bare public suffix ('com'), for a
+# subdomain BELOW the registrable domain ('aws.amazon.com', whose registrable
+# domain is 'amazon.com'), and for a single-label name.
+#
+# This is the boundary that decides whether a '*.X' egress allow entry also
+# grants its apex X (see lib/policy.sh): a wildcard over a registrable domain
+# ('*.gitea.com') is the natural "this whole site" intent, so the apex tags
+# along; a wildcard deliberately scoped to a subdomain ('*.aws.amazon.com') does
+# NOT silently widen to that subdomain's apex. Same eTLD+1 trust boundary the
+# '_is_multilabel_public_suffix' guard is built around. Expects an already-
+# normalized name; bash 3.2-safe.
+_apex_is_registrable_domain() {
+  local name="$1" rest
+  case "${name}" in *.*) : ;; *) return 1 ;; esac    # single label → not eTLD+1
+  _is_multilabel_public_suffix "${name}" && return 1  # name IS a public suffix ('co.uk', 'github.io')
+  rest="${name#*.}"                                   # drop the leading label
+  case "${rest}" in
+    *.*) _is_multilabel_public_suffix "${rest}" && return 0 || return 1 ;;
+    *)   return 0 ;;                                  # rest is a single-label TLD → name is eTLD+1
   esac
 }
 

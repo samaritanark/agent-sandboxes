@@ -33,12 +33,43 @@ build_cilium_policy() {
   read_into_array tier_domains < <(get_tier_domains "${tier}")
   fqdn_domains+=("${tier_domains[@]+"${tier_domains[@]}"}")
   fqdn_domains+=("${extra_allow_domains[@]+"${extra_allow_domains[@]}"}")
+
+  # Wildcard apex coverage. A Cilium matchPattern matches a single label and
+  # does NOT cross the leading dot, so '*.gitea.com' reaches 'raw.gitea.com' but
+  # NOT the apex 'gitea.com' — an easy-to-miss gap that leaves the bare host
+  # unreachable (and mirrors nothing an operator writing '*.gitea.com' intends).
+  # So for every '*.X' entry we also emit the apex matchName X — but ONLY when X
+  # is a registrable domain (eTLD+1). '*.gitea.com' → also 'gitea.com'; a
+  # deliberately subdomain-scoped '*.aws.amazon.com' does NOT widen to
+  # 'aws.amazon.com'. This is the same eTLD+1 boundary the too-broad guard uses,
+  # and it's symmetric with the block list, which already treats '*.evil.com' as
+  # covering the apex. The apex is always a real host here — an over-broad
+  # wildcard whose apex is a public suffix ('*.com', '*.co.uk') is rejected at
+  # input by _egress_wildcard_too_broad, so this can never emit 'matchName: com'.
+  local _d _apex
+  for _d in "${fqdn_domains[@]+"${fqdn_domains[@]}"}"; do
+    case "${_d}" in
+      \*.*)
+        _apex="$(_normalize_domain "${_d#\*.}")"
+        # Only for a registrable-domain apex, and never for one the deny list
+        # blocks. The apex is synthesized here and so never passed the input
+        # block gate (check_egress_target_not_blocked); re-check it, or a policy
+        # that blocks apex 'X' exactly while allowing '*.X' would be silently
+        # widened back to 'X'. Blocked → skip (the wildcard itself still renders).
+        if _apex_is_registrable_domain "${_apex}" && ! domain_is_blocked "${_apex}"; then
+          fqdn_domains+=("${_apex}")
+        fi
+        ;;
+    esac
+  done
+
   # Dedup, first occurrence wins. Extras (from user/overlay/repo config or
   # repeated --allow-domain flags) may restate a built-in agent/tier domain or
-  # each other; this is the single choke point every caller renders through, so
-  # deduping here guarantees the emitted policy carries each matchName/
-  # matchPattern exactly once — no confusing repeated entries in the applied
-  # CiliumNetworkPolicy, whatever the caller passed.
+  # each other, and the apex expansion above may re-add an apex an operator also
+  # listed explicitly; this is the single choke point every caller renders
+  # through, so deduping here guarantees the emitted policy carries each
+  # matchName/matchPattern exactly once — no confusing repeated entries in the
+  # applied CiliumNetworkPolicy, whatever the caller passed.
   read_into_array fqdn_domains < <(
     printf '%s\n' "${fqdn_domains[@]+"${fqdn_domains[@]}"}" | awk 'NF && !seen[$0]++')
 

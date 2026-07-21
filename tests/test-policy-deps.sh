@@ -158,10 +158,62 @@ test_session_policy_dedups_extras() {
   eq "repeated wildcard → single matchPattern per block" "2" "${n}"
 }
 
+# Regression: a '*.X' extra where X is a registrable domain (eTLD+1) also emits
+# the apex matchName; a '*.X' scoped to a subdomain does NOT widen to that apex.
+test_session_policy_wildcard_apex() {
+  info "Testing wildcard-apex coverage in the rendered policy..."
+  local pol
+  pol="$(build_cilium_policy "${SID}" claude 2 "" "" \
+    '*.gitea.com' '*.aws.amazon.com')"
+  echo "${pol}" | yq e '.' >/dev/null || fail "session policy is not valid YAML"
+
+  # Registrable wildcard → apex present in BOTH the toFQDNs and DNS blocks.
+  local n
+  n="$(echo "${pol}" | grep -c 'matchName: "gitea.com"' || true)"
+  eq "'*.gitea.com' also grants apex gitea.com (both blocks)" "2" "${n}"
+  n="$(echo "${pol}" | grep -c 'matchPattern: "\*.gitea.com"' || true)"
+  eq "'*.gitea.com' pattern still present (both blocks)" "2" "${n}"
+
+  # Subdomain-scoped wildcard → apex must NOT be granted.
+  n="$(echo "${pol}" | grep -c 'matchName: "aws.amazon.com"' || true)"
+  eq "'*.aws.amazon.com' does not grant apex aws.amazon.com" "0" "${n}"
+  # ...but the subdomain wildcard itself is still rendered.
+  n="$(echo "${pol}" | grep -c 'matchPattern: "\*.aws.amazon.com"' || true)"
+  eq "'*.aws.amazon.com' pattern still present (both blocks)" "2" "${n}"
+}
+
+# Security: the synthesized apex must NEVER slip past the deny list. A policy
+# that blocks the apex 'X' exactly while an extra allows '*.X' must render the
+# '*.X' pattern but NOT the apex matchName — the apex is re-checked against the
+# block list because it never went through the input gate.
+test_session_policy_apex_respects_block() {
+  info "Testing wildcard-apex expansion re-checks the deny list..."
+  local saved="${BLOCKED_DESTINATIONS_CONFIG}"
+  BLOCKED_DESTINATIONS_CONFIG="${TEST_DIR}/blocked-apex.yaml"
+  cat > "${BLOCKED_DESTINATIONS_CONFIG}" <<'YAML'
+blocked_domains:
+  - "evil.com"
+blocked_cidrs: []
+YAML
+
+  local pol
+  pol="$(build_cilium_policy "${SID}" claude 2 "" "" '*.evil.com')"
+  BLOCKED_DESTINATIONS_CONFIG="${saved}"
+
+  echo "${pol}" | yq e '.' >/dev/null || fail "session policy is not valid YAML"
+  local n
+  n="$(echo "${pol}" | grep -c 'matchName: "evil.com"' || true)"
+  eq "blocked apex NOT synthesized from '*.evil.com'" "0" "${n}"
+  n="$(echo "${pol}" | grep -c 'matchPattern: "\*.evil.com"' || true)"
+  eq "the '*.evil.com' pattern itself still renders (both blocks)" "2" "${n}"
+}
+
 main() {
   test_session_policy_with_dep
   test_session_policy_without_dep_unchanged
   test_session_policy_dedups_extras
+  test_session_policy_wildcard_apex
+  test_session_policy_apex_respects_block
   test_dep_policy_with_egress
   test_dep_policy_no_egress
   echo "All policy-deps tests passed."

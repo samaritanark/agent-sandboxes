@@ -156,6 +156,36 @@ test_rejects_overbroad_wildcards() {
   done
 }
 
+# _apex_is_registrable_domain decides whether a '*.X' allow entry also grants
+# its apex X (lib/policy.sh). It must say yes for a registrable domain (eTLD+1)
+# and no for a bare public suffix, a sub-registrable subdomain, or a single
+# label. This is the boundary that keeps '*.gitea.com' → 'gitea.com' but
+# '*.aws.amazon.com' ↛ 'aws.amazon.com'.
+test_apex_registrable_domain() {
+  info "Testing _apex_is_registrable_domain (wildcard-apex boundary)..."
+  local d
+  # Registrable domains (eTLD+1) — apex SHOULD be granted.
+  for d in gitea.com percona.com amazon.com example.co.uk myapp.github.io \
+           myapp.pages.dev bucket.s3.amazonaws.com; do
+    if _apex_is_registrable_domain "${d}"; then
+      pass "registrable '${d}' → apex granted"
+    else
+      fail "registrable '${d}' should be treated as eTLD+1"
+    fi
+  done
+  # NOT registrable — apex must NOT be auto-granted: a subdomain below the
+  # registrable domain, a bare single-label / public suffix, or a multi-label
+  # public suffix itself.
+  for d in aws.amazon.com sub.example.co.uk api.internal.example.com \
+           com co.uk github.io s3.amazonaws.com localhost; do
+    if _apex_is_registrable_domain "${d}"; then
+      fail "'${d}' must NOT be treated as a registrable apex"
+    else
+      pass "'${d}' correctly not an auto-grantable apex"
+    fi
+  done
+}
+
 # End-to-end: the run path must refuse '--allow-domain *'. Tier 1 reaches input
 # validation without a cluster or --repo (same as the infra-endpoint case), so
 # this exercises the real cmd_run allow-list loop, not just the helper.
@@ -231,6 +261,9 @@ main() {
 
   # Over-broad wildcard allow entries are a containment bypass; refuse them.
   test_rejects_overbroad_wildcards
+
+  # The eTLD+1 boundary that governs wildcard-apex coverage.
+  test_apex_registrable_domain
 
   # Test CLI integration
   test_cli_rejects_blocked_domain
