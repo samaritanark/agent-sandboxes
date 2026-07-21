@@ -2376,7 +2376,20 @@ _upgrade_app_phase() {
   echo "  Target:  ${target}"
 
   if [[ "${head_c}" == "${tgt_c}" ]]; then
-    echo "Already at ${target}. Nothing to do."
+    # HEAD is already at the release commit. But the runtime reads its identity
+    # from .version, not git (see the version block in bin/sandbox), and that
+    # stamp can be stale if HEAD advanced by some path other than this command:
+    # a manual 'git pull', an interrupted earlier upgrade, or an older install's
+    # stamp. A stale stamp deadlocks the min-CLI gate — 'sandbox link sync'
+    # keeps reporting the old version and demanding an upgrade that no-ops here —
+    # so reconcile the stamp before declaring victory.
+    if [[ "${SANDBOX_VERSION}" != "${target}" ]]; then
+      echo "HEAD is at ${target}, but .version reads ${SANDBOX_VERSION}; re-stamping."
+      stamp_version_if_git
+      echo "Stamped ${target}. Run the command that prompted this upgrade again."
+    else
+      echo "Already at ${target}. Nothing to do."
+    fi
     return 0
   fi
 
