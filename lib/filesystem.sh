@@ -1104,7 +1104,13 @@ secret_gate_repos() {
 
   # Base outcome for the audit log (SESSION_SECRET_SUMMARY is read by the audit
   # hook once session.json exists — this gate runs before that, like vetting).
-  local _counts="masked=${total_masked}, encrypted=${total_encrypted}, accepted=${total_accepted}"
+  # source= records WHERE any accepted exceptions were read from — the signature-
+  # covered committed blob or the agent-writable working copy — the distinction
+  # that made the working-copy default a concern; a reviewer needs it beside the
+  # count, so it rides the same value the gate already resolved above.
+  local _src="working-copy"
+  [[ "$(vetting_exceptions_from_commit)" == "true" ]] && _src="commit"
+  local _counts="masked=${total_masked}, encrypted=${total_encrypted}, accepted=${total_accepted}, source=${_src}"
   SESSION_SECRET_SUMMARY="no unmasked secrets (${_counts})"
 
   if [[ "${#unmasked[@]}" -eq 0 && "${#gitconfig[@]}" -eq 0 ]]; then
