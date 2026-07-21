@@ -1102,18 +1102,36 @@ secret_gate_repos() {
     echo "  ${total_accepted} secret finding(s) accepted via the repo's exceptions list (reviewed false positives; the agent WILL read these)."
   fi
 
+  # Base outcome for the audit log (SESSION_SECRET_SUMMARY is read by the audit
+  # hook once session.json exists — this gate runs before that, like vetting).
+  local _counts="masked=${total_masked}, encrypted=${total_encrypted}, accepted=${total_accepted}"
+  SESSION_SECRET_SUMMARY="no unmasked secrets (${_counts})"
+
   if [[ "${#unmasked[@]}" -eq 0 && "${#gitconfig[@]}" -eq 0 ]]; then
     echo "  betterleaks: no unmasked secrets."
     return 0
   fi
 
+  # Workspaces carrying the unmasked finding(s), for the override record.
+  local _unmasked_n=$(( ${#unmasked[@]} + ${#gitconfig[@]} ))
+  local _e
+  local -a _affected=()
+  read_into_array _affected < <(
+    for _e in "${unmasked[@]+"${unmasked[@]}"}" "${gitconfig[@]+"${gitconfig[@]}"}"; do
+      printf '%s\n' "${_e%%$'\t'*}"
+    done | awk 'NF && !seen[$0]++')
+
   if [[ "${accept}" == "true" ]]; then
     echo "" >&2
-    echo "  NOTICE: $(( ${#unmasked[@]} + ${#gitconfig[@]} )) unmasked secret(s) found. Proceeding anyway" >&2
+    echo "  NOTICE: ${_unmasked_n} unmasked secret(s) found. Proceeding anyway" >&2
     echo "  because --i-accept-unmasked-secrets was given — the agent WILL read these:" >&2
     [[ "${#unmasked[@]}" -gt 0 ]] && _print_unmasked_findings "${unmasked[@]}"
     [[ "${#gitconfig[@]}" -gt 0 ]] && _print_unmasked_findings "${gitconfig[@]}"
     echo "" >&2
+    SESSION_SECRET_SUMMARY="OVERRIDE accepted ${_unmasked_n} unmasked secret(s) via --i-accept-unmasked-secrets (${_counts})"
+    record_override "flag:--i-accept-unmasked-secrets" \
+      "${_unmasked_n} unmasked secret(s) the agent will read" \
+      "${_affected[@]+"${_affected[@]}"}"
     return 0
   fi
 
@@ -1139,6 +1157,10 @@ secret_gate_repos() {
     if [[ "${reply}" =~ ^[Yy] ]]; then
       echo "  Proceeding — the agent will read the secret(s) above." >&2
       echo "" >&2
+      SESSION_SECRET_SUMMARY="accepted ${_unmasked_n} unmasked secret(s) via interactive prompt (trusted endpoint) (${_counts})"
+      record_override "interactive-prompt" \
+        "${_unmasked_n} unmasked secret(s) the agent will read (trusted inference endpoint)" \
+        "${_affected[@]+"${_affected[@]}"}"
       return 0
     fi
     echo "  Aborted; the sandbox was not started." >&2

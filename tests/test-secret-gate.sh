@@ -35,6 +35,8 @@ source "${SANDBOX_ROOT}/lib/vetting.sh"
 # (checks.sh) back the trusted-endpoint gate downgrade.
 source "${SANDBOX_ROOT}/lib/agents.sh"
 source "${SANDBOX_ROOT}/lib/checks.sh"
+# The gate records accepted overrides via record_override (lib/audit.sh).
+source "${SANDBOX_ROOT}/lib/audit.sh"
 
 # Hermetic user config so a real ~/.sandbox/config.yaml never leaks into a test.
 USER_SANDBOX_CONFIG="${TEST_DIR}/user-config.yaml"
@@ -756,6 +758,40 @@ test_gate() {
   else
     fail "gate should pass after masking the file"
   fi
+}
+
+###############################################################################
+# The --i-accept-unmasked-secrets acceptance must land in the audit override
+# ledger. Run the gate in the CURRENT shell (not a subshell) so record_override's
+# append to SESSION_OVERRIDES is observable.
+###############################################################################
+test_gate_records_override() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing the accept flag records an audit override..."
+
+  local repo="${TEST_DIR}/gate-ovrd"
+  make_repo "${repo}"
+
+  SESSION_OVERRIDES=()
+  secret_gate_repos "true" "false" "false" "${repo}" >/dev/null 2>&1 \
+    || fail "override path should proceed (exit 0)"
+
+  [[ "${#SESSION_OVERRIDES[@]}" -eq 1 ]] \
+    && pass "one override recorded" \
+    || fail "expected 1 override, got ${#SESSION_OVERRIDES[@]}"
+
+  local mech
+  mech="$(jq -r '.mechanism' <<<"${SESSION_OVERRIDES[0]}")"
+  [[ "${mech}" == "flag:--i-accept-unmasked-secrets" ]] \
+    && pass "override names the accept flag" \
+    || fail "wrong mechanism: ${mech}"
+
+  local rp
+  rp="$(jq -r '.repos[0]' <<<"${SESSION_OVERRIDES[0]}")"
+  [[ "${rp}" == "gate-ovrd" ]] \
+    && pass "override names the affected workspace" \
+    || fail "wrong repo in override: ${rp}"
 }
 
 ###############################################################################
@@ -1640,6 +1676,7 @@ source "\${SANDBOX_ROOT}/lib/config.sh"
 source "\${SANDBOX_ROOT}/lib/profile.sh"
 source "\${SANDBOX_ROOT}/lib/vetting.sh"
 source "\${SANDBOX_ROOT}/lib/filesystem.sh"
+source "\${SANDBOX_ROOT}/lib/audit.sh"
 secret_gate_repos "false" "true" "false" "${repo}"
 EOF
 
@@ -1679,6 +1716,7 @@ main() {
   test_inline_allow_overlay_disallow
   test_operator_ignore_baseline
   test_gate
+  test_gate_records_override
   test_gitconfig_secret
   test_gitconfig_inline_allow_not_honored
   test_scan_failure_fails_closed

@@ -650,6 +650,63 @@ YAML
   [[ "$(jq -r '.dependencies[0].down_time' "${sj}")" == "2026-06-18T01:00:00Z" ]] && pass "dep down_time stamped" || fail "dep down_time wrong"
 }
 
+###############################################################################
+# Test: the override ledger — record_override accumulates before session.json
+# exists, audit_flush_overrides emits one 'override' event per acceptance with
+# mechanism / what / repos fields.
+###############################################################################
+test_override_ledger() {
+  info "Testing launch-override ledger (record_override + flush)..."
+
+  local session_id="ses-20260401-130000-ovrd"
+  local log_dir="${TEST_LOG_DIR}/${session_id}"
+  mkdir -p "${log_dir}"
+
+  # Reset the ledger and record acceptances BEFORE session.json exists — the
+  # real gates run pre-session.json, so this is the ordering that matters.
+  SESSION_OVERRIDES=()
+  record_override "flag:--i-accept-unmasked-secrets" "2 unmasked secret(s)" "/home/u/gitea"
+  record_override "interactive-prompt" "3 commit(s) of unattested drift accepted" "/home/u/gitea"
+
+  # Flushing before the file exists must be a safe no-op (not an error).
+  audit_flush_overrides "${log_dir}"
+  [[ ! -f "${log_dir}/session.json" ]] && pass "flush before session.json is a no-op" \
+    || fail "flush should not have created session.json"
+
+  audit_write_session_json \
+    "${log_dir}" "${session_id}" "claude" "2" "testuser" \
+    "/home/u/gitea" "ovrd-session" "sandbox-claude-ovrd" \
+    "2026-04-01T13:00:00Z" "claude.ai"
+
+  audit_flush_overrides "${log_dir}"
+  local json="${log_dir}/session.json"
+
+  eq() { [[ "$2" == "$3" ]] && pass "$1" || fail "$1: expected '$2', got '$3'"; }
+
+  eq "two override events emitted" "2" \
+    "$(jq '[.events[] | select(.type=="override")] | length' "${json}")"
+  eq "flag mechanism recorded" "flag:--i-accept-unmasked-secrets" \
+    "$(jq -r '.events[] | select(.what|startswith("2 unmasked")) | .mechanism' "${json}")"
+  eq "interactive mechanism recorded" "interactive-prompt" \
+    "$(jq -r '.events[] | select(.what|contains("drift")) | .mechanism' "${json}")"
+  eq "repo stored as basename" "gitea" \
+    "$(jq -r '.events[] | select(.what|startswith("2 unmasked")) | .repos[0]' "${json}")"
+  eq "override events carry a timestamp" "true" \
+    "$(jq -r '[.events[] | select(.type=="override") | .time | type=="string" and (.|length>0)] | all' "${json}")"
+
+  # A clean run records nothing → flush emits no events.
+  local clean_id="ses-20260401-140000-clean"
+  local clean_dir="${TEST_LOG_DIR}/${clean_id}"
+  mkdir -p "${clean_dir}"
+  SESSION_OVERRIDES=()
+  audit_write_session_json \
+    "${clean_dir}" "${clean_id}" "claude" "1" "testuser" \
+    "" "clean-session" "sandbox-claude-clean" "2026-04-01T14:00:00Z" "claude.ai"
+  audit_flush_overrides "${clean_dir}"
+  eq "no overrides → no override events" "0" \
+    "$(jq '[.events[]? | select(.type=="override")] | length' "${clean_dir}/session.json")"
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -671,6 +728,7 @@ main() {
   test_record_agent_session_id
   test_capture_transcript_claude_pinned
   test_dependency_records
+  test_override_ledger
 
   echo ""
   echo "All audit tests passed."

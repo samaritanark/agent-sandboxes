@@ -646,7 +646,7 @@ _vetting_drift_decision() {
   local repo="$1" tag="$2" signer="$3" behind="$4" cap="$5"
   local age_days="$6" age_cap="$7" accept_unvetted="$8" accept_drift="$9"
 
-  local over_commit="false" over_age="false"
+  local over_commit="false" over_age="false" _m=""
   [[ -n "${cap}" && "${behind}" -gt "${cap}" ]] && over_commit="true"
   [[ -n "${age_cap}" && -n "${age_days}" && "${age_days}" -gt "${age_cap}" ]] && over_age="true"
 
@@ -655,6 +655,8 @@ _vetting_drift_decision() {
   if [[ "${over_commit}" == "true" ]]; then
     if [[ "${accept_unvetted}" == "true" ]]; then
       echo "  ${repo}: vetted but ${behind} commit(s) behind HEAD — over cap ${cap}, proceeding via --i-accept-unvetted-repo." >&2
+      record_override "flag:--i-accept-unvetted-repo" \
+        "vetted but ${behind} commit(s) behind HEAD, over the ${cap}-commit cap" "${repo}"
       return 0
     fi
     echo "  ${repo}: vetted at ${tag} but ${behind} commit(s) behind HEAD, exceeding the cap of ${cap}." >&2
@@ -673,6 +675,9 @@ _vetting_drift_decision() {
   if [[ "${over_age}" == "true" ]]; then
     if [[ "${accept_unvetted}" == "true" || "${accept_drift}" == "true" ]]; then
       echo "  ${repo}: attestation is ${age_days} day(s) old, over vetting_max_age_days ${age_cap} — accepted non-interactively (tag ${tag}, signer ${signer:-unknown})." >&2
+      _m="flag:--i-accept-vetting-drift"; [[ "${accept_drift}" == "true" ]] || _m="flag:--i-accept-unvetted-repo"
+      record_override "${_m}" \
+        "stale attestation ${age_days}d old (over the ${age_cap}-day window), code ${behind} commit(s) behind HEAD" "${repo}"
       return 0
     fi
     if [[ -t 0 && -t 1 ]]; then
@@ -685,6 +690,8 @@ _vetting_drift_decision() {
       read -r reply || true
       if [[ "${reply}" =~ ^[Yy] ]]; then
         echo "  Accepted." >&2
+        record_override "interactive-prompt" \
+          "stale attestation ${age_days}d old (over the ${age_cap}-day window) accepted" "${repo}"
         return 0
       fi
       echo "  Declined." >&2
@@ -699,6 +706,8 @@ _vetting_drift_decision() {
   # Fresh, but commit drift with no cap: an explicit acceptance flag, else a y/N.
   if [[ "${accept_unvetted}" == "true" || "${accept_drift}" == "true" ]]; then
     echo "  ${repo}: vetted ${behind} commit(s) behind HEAD — accepted non-interactively (tag ${tag}, signer ${signer:-unknown})." >&2
+    _m="flag:--i-accept-vetting-drift"; [[ "${accept_drift}" == "true" ]] || _m="flag:--i-accept-unvetted-repo"
+    record_override "${_m}" "${behind} commit(s) of unattested drift (no cap set)" "${repo}"
     return 0
   fi
   if [[ -t 0 && -t 1 ]]; then
@@ -711,6 +720,7 @@ _vetting_drift_decision() {
     read -r reply || true
     if [[ "${reply}" =~ ^[Yy] ]]; then
       echo "  Accepted." >&2
+      record_override "interactive-prompt" "${behind} commit(s) of unattested drift accepted" "${repo}"
       return 0
     fi
     echo "  Declined." >&2
@@ -909,6 +919,15 @@ vetting_gate_repos() {
     _vetting_print_findings "${unvetted[@]}"
     echo "" >&2
     SESSION_VETTING_SUMMARY="posture=required; OVERRIDE accepted ${#unvetted[@]} unvetted: ${detail}"
+    # Audit ledger: one override naming the flag and the affected workspaces.
+    local -a _unv_repos=()
+    for (( i=0; i<${#unvetted[@]}; i++ )); do
+      IFS=$'\t' read -r dr _ _ _ <<<"${unvetted[$i]}"
+      _unv_repos+=("${dr}")
+    done
+    record_override "flag:--i-accept-unvetted-repo" \
+      "${#unvetted[@]} unvetted workspace(s) launched without a verified attestation" \
+      "${_unv_repos[@]+"${_unv_repos[@]}"}"
     return 0
   fi
 

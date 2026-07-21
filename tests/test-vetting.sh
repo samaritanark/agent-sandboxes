@@ -33,6 +33,8 @@ source "${SANDBOX_ROOT}/lib/profile.sh"
 # scans via the secret gate, so filesystem.sh is in scope here too.
 source "${SANDBOX_ROOT}/lib/filesystem.sh"
 source "${SANDBOX_ROOT}/lib/vetting.sh"
+# The gates record accepted overrides via record_override (lib/audit.sh).
+source "${SANDBOX_ROOT}/lib/audit.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -935,6 +937,7 @@ source "${SANDBOX_ROOT}/lib/config.sh"
 source "${SANDBOX_ROOT}/lib/profile.sh"
 source "${SANDBOX_ROOT}/lib/filesystem.sh"
 source "${SANDBOX_ROOT}/lib/vetting.sh"
+source "${SANDBOX_ROOT}/lib/audit.sh"
 vetting_gate_repos "required" "false" "false" "\$1"
 EOF
 
@@ -1522,6 +1525,39 @@ test_exceptions_accept_unvetted() {
   esac
 }
 
+# Accepting an unvetted repo via the flag must land in the audit override
+# ledger (record_override). Run in the CURRENT shell so the append to
+# SESSION_OVERRIDES is observable; a dummy trust root satisfies the "must have a
+# trust root" check (an unvetted repo carries no tag, so no signature is read).
+test_vetting_override_ledger() {
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing accepted vetting overrides land in the audit ledger..."
+
+  # A private dummy trust root (never touch the shared TRUST_ROOT other tests
+  # rely on). An unvetted repo carries no tag, so the key is never used —
+  # a non-empty trust root just satisfies the "required needs a trust root" check.
+  local trust="${TEST_DIR}/ovrd-trust"
+  printf '%s\n' "dummy@sandbox.test ssh-ed25519 AAAAdummy" > "${trust}"
+  cat > "${USER_SANDBOX_CONFIG}" <<EOF
+vetting_trust_root: ${trust}
+vetting_trust_format: ssh
+EOF
+  local repo="${TEST_DIR}/ovrd-unvetted"
+  make_repo "${repo}"
+
+  SESSION_OVERRIDES=()
+  vetting_gate_repos "required" "true" "false" "${repo}" </dev/null >/dev/null 2>&1 \
+    || fail "accepting an unvetted repo via --i-accept-unvetted-repo should proceed"
+
+  eq "one vetting override recorded" "1" "${#SESSION_OVERRIDES[@]}"
+  eq "override names the accept flag" "flag:--i-accept-unvetted-repo" \
+    "$(jq -r '.mechanism' <<<"${SESSION_OVERRIDES[0]}")"
+  eq "override names the affected workspace" "ovrd-unvetted" \
+    "$(jq -r '.repos[0]' <<<"${SESSION_OVERRIDES[0]}")"
+
+  write_trust_config
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -1543,6 +1579,7 @@ main() {
   test_status_reasons
   test_require_clean_worktree
   test_gate_posture
+  test_vetting_override_ledger
   test_missing_trust_root_fails_closed
   test_ssh_signingkey_mismatch
   test_vetting_signing_key_knob

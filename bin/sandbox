@@ -1079,6 +1079,14 @@ cmd_run() {
   if [[ -n "${SESSION_VETTING_SUMMARY:-}" ]]; then
     audit_log_event "${log_dir}" "vetting" "${SESSION_VETTING_SUMMARY}"
   fi
+  # Record the secret-gate outcome (stashed in SESSION_SECRET_SUMMARY, same
+  # before-session.json timing as vetting), then flush every launch-time gate
+  # override (--i-accept-* flags and accepted interactive prompts) that Step 2's
+  # gates recorded — so the session log names each safety waiver it received.
+  if [[ -n "${SESSION_SECRET_SUMMARY:-}" ]]; then
+    audit_log_event "${log_dir}" "secret-scan" "${SESSION_SECRET_SUMMARY}"
+  fi
+  audit_flush_overrides "${log_dir}"
 
   ###########################################################################
   # Step 5: Capture workspace baseline (Tier 2/3)
