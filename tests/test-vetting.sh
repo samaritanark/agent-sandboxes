@@ -427,6 +427,20 @@ test_gate_posture() {
   # required + override: proceeds.
   ( vetting_gate_repos "required" "true" "false" "${repo}" >/dev/null 2>&1 ) \
     && pass "override proceeds despite unvetted" || fail "override should proceed"
+
+  # required + override, but the overlay/user forbids the override: refuses
+  # anyway, and the refusal names the knob rather than suggesting the flag.
+  write_config_with "vetting_forbid_unvetted_override: true"
+  local out; out="$( ( vetting_gate_repos "required" "true" "false" "${repo}" </dev/null 2>&1 ) || true )"
+  case "${out}" in
+    *vetting_forbid_unvetted_override*) pass "forbidden override refuses and names the knob" ;;
+    *) fail "forbidden override should refuse and name the knob" ;;
+  esac
+  if ( vetting_gate_repos "required" "true" "false" "${repo}" </dev/null >/dev/null 2>&1 ); then
+    fail "forbidden override should not proceed"
+  fi
+  pass "forbidden override does not proceed"
+  write_trust_config
 }
 
 ###############################################################################
@@ -1446,6 +1460,60 @@ test_exceptions_from_commit_config() {
   : > "${USER_SANDBOX_CONFIG}"
 }
 
+###############################################################################
+# vetting_forbid_unvetted_override config resolution — tightening-only, either
+# source; non-"true" leaves the override available.
+###############################################################################
+test_forbid_override_config() {
+  info "Testing vetting_forbid_unvetted_override config layering..."
+  local overlay="${TEST_DIR}/forbid-overlay"
+  mkdir -p "${overlay}"
+  export SANDBOX_OVERLAY="${overlay}"
+
+  printf 'vetting_forbid_unvetted_override: false\n' > "${overlay}/config.yaml"
+  printf 'vetting_forbid_unvetted_override: true\n'  > "${USER_SANDBOX_CONFIG}"
+  eq "overlay false cannot relax user true" "true" "$(vetting_forbid_unvetted_override)"
+
+  printf 'vetting_forbid_unvetted_override: true\n'  > "${overlay}/config.yaml"
+  printf 'vetting_forbid_unvetted_override: false\n' > "${USER_SANDBOX_CONFIG}"
+  eq "overlay ratchets false->true" "true" "$(vetting_forbid_unvetted_override)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+  printf 'vetting_forbid_unvetted_override: true\n' > "${overlay}/config.yaml"
+  eq "overlay-only forbid applies" "true" "$(vetting_forbid_unvetted_override)"
+
+  printf 'vetting_forbid_unvetted_override: yes\n' > "${USER_SANDBOX_CONFIG}"
+  rm -f "${overlay}/config.yaml"
+  unset SANDBOX_OVERLAY
+  eq "non-true value -> override available" "false" "$(vetting_forbid_unvetted_override)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+}
+
+###############################################################################
+# vetted_accepted_fingerprints accept_unvetted — accepting an unvetted repo
+# honors its working-copy exception list (matching a drift-accepted vetted repo);
+# without the acceptance an unvetted repo honors nothing.
+###############################################################################
+test_exceptions_accept_unvetted() {
+  info "Testing accept_unvetted honors the working-copy exception list..."
+  write_trust_config
+  unset SANDBOX_OVERLAY
+
+  local repo="${TEST_DIR}/exc-accept-unvetted"
+  local ignore="${repo}/${SANDBOX_REPO_IGNORE_NAME}"
+  make_repo "${repo}"                 # committed repo, never attested -> unvetted
+  printf 'deploy/values.yaml:generic-api-key:155\n' > "${ignore}"  # working-copy (untracked)
+
+  eq "unvetted baseline" "unvetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+  eq "no accept arg -> nothing honored" "" "$(vetted_accepted_fingerprints "${repo}")"
+  eq "accept=false -> nothing honored" "" "$(vetted_accepted_fingerprints "${repo}" false)"
+  case "$(vetted_accepted_fingerprints "${repo}" true)" in
+    *deploy/values.yaml:generic-api-key:155*) pass "accept_unvetted honors the working-copy list" ;;
+    *) fail "accept_unvetted should honor the working-copy list" ;;
+  esac
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -1461,6 +1529,8 @@ main() {
   test_max_age_days_config
   test_exceptions_require_head_config
   test_exceptions_from_commit_config
+  test_forbid_override_config
+  test_exceptions_accept_unvetted
   test_status_classification
   test_status_reasons
   test_untracked_dirty

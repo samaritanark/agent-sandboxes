@@ -109,6 +109,22 @@ vetting: advisory
 #
 # vetting_block_untracked: true
 
+# vetting_forbid_unvetted_override: disable the --i-accept-unvetted-repo launch
+# override entirely. By DEFAULT (unset / false) an operator can force a launch
+# under 'vetting: required' with --i-accept-unvetted-repo — audited, per-launch
+# consent — and doing so accepts EVERYTHING about the repo, including honoring its
+# working-copy .betterleaksignore exceptions (the same way a drift-accepted vetted
+# repo's are honored). Set this true so "required" truly means required: an
+# unvetted (or dirty/empty/non-git) workspace can no longer be forced through, and
+# — since accepting the repo is what lets its exceptions count — its exception
+# list is not honored either. Does NOT affect --i-accept-vetting-drift (accepting
+# drift on an already-vetted repo) or --i-accept-unmasked-secrets (the separate
+# secret-gate consent). Tightening-only: `true` (override disabled) wins if EITHER
+# this overlay or the operator sets it, so it can ratchet up and never down. See
+# docs/how-to/vetting.md.
+#
+# vetting_forbid_unvetted_override: true
+
 # vetting_trust_root: the team's reviewer list — WHOSE signatures count — shipped
 # WITH the overlay. A relative path resolves against the overlay root, so the
 # value below names a plain `allowed_signers` file at the top of this overlay;

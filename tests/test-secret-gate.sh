@@ -737,13 +737,13 @@ test_gate() {
 
   # Without masking and without override → refuse (exit non-zero). Run in a
   # subshell so the gate's `exit 1` doesn't take down the test.
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "gate should refuse on an unmasked secret"
   fi
   pass "gate refuses on unmasked secret"
 
   # Override → proceeds (exit 0) despite the unmasked secret.
-  if ( secret_gate_repos "true" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "true" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "override proceeds despite unmasked secret"
   else
     fail "override should proceed"
@@ -751,7 +751,7 @@ test_gate() {
 
   # Mask the offending file → gate passes.
   config_add_masked_path "${repo}/.sandbox/config.yaml" "nested/config.txt"
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "gate passes once the secret is masked"
   else
     fail "gate should pass after masking the file"
@@ -793,13 +793,13 @@ test_gitconfig_secret() {
   pass ".git/config secret value redacted"
 
   # The gate refuses on it...
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "gate should refuse on a .git/config secret"
   fi
   pass "gate refuses on .git/config secret"
 
   # ...the override proceeds...
-  if ( secret_gate_repos "true" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "true" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "override proceeds despite .git/config secret"
   else
     fail "override should proceed"
@@ -808,7 +808,7 @@ test_gitconfig_secret() {
   # ...and masking does NOT help (an empty .git/config overlay would break git,
   # so the gitconfig scan ignores masked_paths and the gate still refuses).
   config_add_masked_path "${repo}/.sandbox/config.yaml" ".git/config"
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "masking .git/config must not bypass the gate"
   fi
   pass "masking .git/config does not bypass the gate"
@@ -854,7 +854,7 @@ test_gitconfig_inline_allow_not_honored() {
     || fail "overlay on should not reach .git/config, got: $(cat "${TEST_DIR}/gitcfg-allow-on.out")"
 
   # And the gate refuses on it.
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "gate should refuse on an annotated .git/config secret"
   fi
   pass "gate refuses on annotated .git/config secret"
@@ -891,14 +891,14 @@ EOF
   fi
 
   # The gate refuses the launch (exit non-zero) on that sentinel...
-  if ( PATH="${stub}:${PATH}" secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( PATH="${stub}:${PATH}" secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "gate should refuse when the scanner fails"
   fi
   pass "gate refuses on scanner failure"
 
   # ...and the override does NOT bypass a failed scan (it accepts known
   # secrets, not an uninspected workspace).
-  if ( PATH="${stub}:${PATH}" secret_gate_repos "true" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( PATH="${stub}:${PATH}" secret_gate_repos "true" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "override should not bypass a failed scan"
   fi
   pass "override does not bypass a failed scan"
@@ -1032,7 +1032,7 @@ test_encrypted_scan_and_gate() {
   grep -q "$(printf '^no\t')" "${out}" \
     && fail "clean SealedSecret should produce no unmasked finding" \
     || pass "no unmasked finding for clean SealedSecret"
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "gate passes on a clean SealedSecret"
   else
     fail "gate should pass on a clean SealedSecret"
@@ -1048,7 +1048,7 @@ test_encrypted_scan_and_gate() {
   grep -q "$(printf '^no\t')" "${TEST_DIR}/extrascan.out" \
     && fail "embedded SealedSecret should produce no unmasked finding" \
     || pass "no unmasked finding for embedded SealedSecret"
-  if ( secret_gate_repos "false" "false" "${erepo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${erepo}" >/dev/null 2>&1 ); then
     pass "gate passes on an embedded SealedSecret"
   else
     fail "gate should pass on an embedded SealedSecret"
@@ -1061,7 +1061,7 @@ test_encrypted_scan_and_gate() {
   grep -q "$(printf '^sealed\tmanifests/sops.yaml\t')" "${TEST_DIR}/sopsscan.out" \
     && pass "SOPS finding classified sealed" \
     || fail "expected a sealed SOPS finding, got: $(cat "${TEST_DIR}/sopsscan.out")"
-  if ( secret_gate_repos "false" "false" "${srepo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${srepo}" >/dev/null 2>&1 ); then
     pass "gate passes on a clean SOPS file"
   else
     fail "gate should pass on a clean SOPS file"
@@ -1084,7 +1084,7 @@ test_encrypted_leaks_still_block() {
   grep -q "$(printf '^no\tmanifests/mixed.yaml\t')" "${out}" \
     && pass "multi-doc: plaintext sibling classified unmasked" \
     || fail "expected an unmasked finding in multi-doc, got: $(cat "${out}")"
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "gate must refuse when a plaintext secret sits beside a SealedSecret"
   fi
   pass "gate refuses on plaintext sibling of a SealedSecret"
@@ -1100,7 +1100,7 @@ test_encrypted_leaks_still_block() {
   grep -q "$(printf '^no\tbase/values.yaml\t')" "${TEST_DIR}/extrablock.out" \
     && pass "mixed extraObjects: plaintext element classified unmasked" \
     || fail "expected an unmasked finding in mixed extraObjects, got: $(cat "${TEST_DIR}/extrablock.out")"
-  if ( secret_gate_repos "false" "false" "${erepo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${erepo}" >/dev/null 2>&1 ); then
     fail "gate must refuse on a plaintext element beside a SealedSecret element"
   fi
   pass "gate refuses on plaintext sibling list element"
@@ -1112,7 +1112,7 @@ test_encrypted_leaks_still_block() {
   grep -q "$(printf '^no\tmanifests/leak.yaml\t')" "${TEST_DIR}/sopsblock.out" \
     && pass "SOPS: unencrypted key classified unmasked" \
     || fail "expected an unmasked SOPS finding, got: $(cat "${TEST_DIR}/sopsblock.out")"
-  if ( secret_gate_repos "false" "false" "${srepo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${srepo}" >/dev/null 2>&1 ); then
     fail "gate must refuse on an unencrypted key in a SOPS file"
   fi
   pass "gate refuses on unencrypted key in a SOPS file"
@@ -1128,7 +1128,7 @@ test_encrypted_leaks_still_block() {
   grep -q "$(printf '^no\tmanifests/sneaky.yaml\t')" "${TEST_DIR}/sopscomment.out" \
     && pass "same-line ENC comment: plaintext classified unmasked" \
     || fail "expected an unmasked finding, got: $(cat "${TEST_DIR}/sopscomment.out")"
-  if ( secret_gate_repos "false" "false" "${crepo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${crepo}" >/dev/null 2>&1 ); then
     fail "gate must refuse plaintext sharing a line with an ENC[...] comment"
   fi
   pass "gate refuses plaintext sharing a line with an ENC[...] comment"
@@ -1241,7 +1241,7 @@ test_root_ignore_file_guard() {
   grep -q "$(printf '^error\t')" "${out}" \
     && pass "absolute root-ignore fingerprint fails the scan closed" \
     || fail "expected an error sentinel for an absolute fingerprint, got: $(cat "${out}")"
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "gate must refuse while the root ignore file carries an absolute entry"
   fi
   pass "gate refuses on an absolute root-ignore fingerprint"
@@ -1304,7 +1304,7 @@ EOF
   git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m "record exceptions"
 
   # UNVETTED (no tag yet): the committed list carries no weight → gate refuses.
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "unvetted repo must not honor the exceptions list"
   fi
   pass "unvetted repo: exception ignored, gate refuses"
@@ -1313,7 +1313,7 @@ EOF
   local sha; sha="$(git -C "${repo}" rev-parse HEAD)"
   git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${TEST_DIR}/vet-id" \
     tag -s "agent-vetted/${sha}" -m "vetted" 2>/dev/null || { USER_SANDBOX_CONFIG="${_saved_user}"; skip "tag signing failed"; }
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "vetted repo: exception honored, gate passes"
   else
     fail "vetted repo should honor the exception and pass"
@@ -1372,7 +1372,7 @@ vetting_trust_format: ssh"
   local vstat _vf
   IFS=$'\t' read -r vstat _vf < <(vetting_status_repo "${repo}")
   eq "repo is vetted (baseline)" "vetted" "${vstat}"
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "vetted repo with a tracked secret and no exception should block"
   fi
   pass "vetted repo blocks the secret with no exception at all"
@@ -1388,7 +1388,7 @@ vetting_trust_format: ssh"
 
   # DEFAULT (working-copy source): the working-copy list is honored on the vetted
   # repo, exactly as CI would — the file you edit is the file that counts.
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "default honors the working-copy accept-list (gate passes)"
   else
     fail "default should honor the working-copy accept-list on a vetted repo"
@@ -1397,7 +1397,7 @@ vetting_trust_format: ssh"
   # STRICT (vetting_exceptions_from_commit: true): the list is not in the signed
   # commit, so it is NOT honored — the working-tree bypass is closed.
   printf '%s\nvetting_exceptions_from_commit: true\n' "${base_cfg}" > "${USER_SANDBOX_CONFIG}"
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     fail "SECURITY: from_commit must NOT honor an uncommitted/gitignored accept-list"
   fi
   pass "from_commit ignores the uncommitted/gitignored list; gate blocks"
@@ -1409,13 +1409,57 @@ vetting_trust_format: ssh"
   git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m "record exceptions"
   git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${TEST_DIR}/vc-id" \
     tag -s "agent-vetted/$(git -C "${repo}" rev-parse HEAD)" -m vetted 2>/dev/null
-  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
     pass "committing the list and re-vetting honors it under from_commit too"
   else
     fail "a committed, vetted exceptions list should be honored under from_commit"
   fi
 
   USER_SANDBOX_CONFIG="${_saved_user}"
+}
+
+###############################################################################
+# secret_gate_repos accept_unvetted — accepting an unvetted repo
+# (--i-accept-unvetted-repo) honors its working-copy exception list, mirroring a
+# drift-accepted vetted repo. Without the acceptance an unvetted repo's list is
+# ignored and the finding blocks.
+###############################################################################
+test_exceptions_gate_accept_unvetted() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing accept-unvetted honors an unvetted repo's exception list..."
+
+  local repo="${TEST_DIR}/acceptunvetted"
+  mkdir -p "${repo}/deploy"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email dev@sandbox.test; git -C "${repo}" config user.name Dev
+  printf 'api_key: %s\n' "${PLAIN_TOK}" > "${repo}/deploy/values.yaml"
+  git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m init  # secret file TRACKED
+
+  # Working-copy (untracked) exception list covering every unmasked finding.
+  local frel frule fln fp
+  while IFS=$'\t' read -r _ frel frule fln _; do
+    [[ -z "${frel}" ]] && continue
+    while IFS= read -r fp; do [[ -n "${fp}" ]] && printf '%s\n' "${fp}" >> "${repo}/.betterleaksignore"; done \
+      < <(leakscan_fingerprints_for "${repo}" "${frel}" "${frule}" "${fln}")
+  done < <(scan_repo_secrets "${repo}" | grep "^no	" || true)
+  [[ -s "${repo}/.betterleaksignore" ]] || fail "expected findings to fingerprint"
+
+  local vstat _vf; IFS=$'\t' read -r vstat _vf < <(vetting_status_repo "${repo}")
+  [[ "${vstat}" == "vetted" ]] && fail "test repo should be unvetted"
+
+  # Unvetted, no acceptance: exceptions ignored -> gate blocks.
+  if ( secret_gate_repos "false" "false" "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "unvetted repo should block without --i-accept-unvetted-repo"
+  fi
+  pass "unvetted repo blocks without acceptance (exceptions not honored)"
+
+  # accept_unvetted=true: the working-copy exceptions are honored -> gate passes.
+  if ( secret_gate_repos "false" "false" "true" "${repo}" >/dev/null 2>&1 ); then
+    pass "accept-unvetted honors the working-copy exceptions (gate passes)"
+  else
+    fail "accept-unvetted should honor the working-copy exceptions"
+  fi
 }
 
 ###############################################################################
@@ -1549,21 +1593,21 @@ test_gate_trusted_endpoint() {
 
   # (a) Untrusted endpoint → today's hard block (regression). stdin closed so
   # the trusted-interactive branch could never fire even by accident.
-  if ( secret_gate_repos "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "false" "false" "${repo}" </dev/null >/dev/null 2>&1 ); then
     fail "untrusted endpoint should hard-block an unmasked secret"
   else
     pass "untrusted endpoint hard-blocks (regression)"
   fi
 
   # (b) Trusted endpoint but NO terminal → fail closed (no human to prompt).
-  if ( secret_gate_repos "false" "true" "${repo}" </dev/null >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "false" "true" "false" "${repo}" </dev/null >/dev/null 2>&1 ); then
     fail "trusted endpoint with no TTY should refuse"
   else
     pass "trusted endpoint + no TTY fails closed"
   fi
 
   # (c) The explicit consent flag proceeds regardless of endpoint/TTY.
-  if ( secret_gate_repos "true" "true" "${repo}" </dev/null >/dev/null 2>&1 ); then
+  if ( secret_gate_repos "true" "true" "false" "${repo}" </dev/null >/dev/null 2>&1 ); then
     pass "trusted endpoint + --i-accept-unmasked-secrets proceeds"
   else
     fail "accept flag should proceed even with no TTY"
@@ -1596,7 +1640,7 @@ source "\${SANDBOX_ROOT}/lib/config.sh"
 source "\${SANDBOX_ROOT}/lib/profile.sh"
 source "\${SANDBOX_ROOT}/lib/vetting.sh"
 source "\${SANDBOX_ROOT}/lib/filesystem.sh"
-secret_gate_repos "false" "true" "${repo}"
+secret_gate_repos "false" "true" "false" "${repo}"
 EOF
 
   if printf 'y\n' | script -qec "bash ${helper}" /dev/null >/dev/null 2>&1; then
@@ -1644,6 +1688,7 @@ main() {
   test_root_ignore_file_guard
   test_exceptions_gate_vetted
   test_exceptions_gate_source
+  test_exceptions_gate_accept_unvetted
   test_exceptions_migrate
 
   echo ""

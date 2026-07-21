@@ -277,6 +277,34 @@ vetting_exceptions_from_commit() {
   fi
 }
 
+# vetting_forbid_unvetted_override — "true" when the --i-accept-unvetted-repo
+# launch override is DISABLED, so under `vetting: required` a workspace with no
+# accepted, verified attestation cannot be forced through at all (and, because
+# accepting an unvetted repo is what lets its exception list be honored, this is
+# also the org's control over that). "false" (the default) keeps the override
+# available — audited, per-launch operator consent. This is the org's answer to
+# "required must mean required": a team that never wants an unvetted repo to
+# launch sets it in the overlay. It does NOT touch --i-accept-vetting-drift (a
+# drift/staleness acceptance on an already-vetted repo) or --i-accept-unmasked-
+# secrets (the separate secret-gate consent). Read from BOTH the user config and
+# the overlay config, TIGHTENING-ONLY: strict ("true", override disabled) wins if
+# EITHER sets it, so an overlay can ratchet it up and never down — the same
+# "additive on the safety side" rule the posture and drift caps follow. Anything
+# but a literal `true` (unset, false, a typo) leaves the override available.
+vetting_forbid_unvetted_override() {
+  local user_v="" overlay_v="" overlay
+  [[ -f "${USER_SANDBOX_CONFIG}" ]] && \
+    user_v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_forbid_unvetted_override)"
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] && \
+    overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_forbid_unvetted_override)"
+  if [[ "${user_v}" == "true" || "${overlay_v}" == "true" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
 # vetting_trust_root — path to the operator's OWN signer trust root (user
 # config else the built-in default; tilde-expanded). This is where enrollment
 # guidance points; verification consults vetting_trust_roots (plural), which
@@ -718,6 +746,21 @@ vetting_gate_repos() {
   SESSION_VETTING_SUMMARY="posture=${posture}"
   [[ "${posture}" == "off" ]] && return 0
 
+  # An overlay can disable the --i-accept-unvetted-repo override entirely. If it
+  # does, neutralize the flag here (so an unvetted repo cannot be forced through,
+  # and the secret gate — which keys on the same acceptance — will not honor its
+  # exceptions either) and remember it so the refusal points at re-vetting rather
+  # than a forbidden flag. --i-accept-vetting-drift is untouched.
+  local override_forbidden="false"
+  if [[ "$(vetting_forbid_unvetted_override)" == "true" ]]; then
+    override_forbidden="true"
+    if [[ "${accept}" == "true" ]]; then
+      echo "  NOTICE: --i-accept-unvetted-repo is disabled by an overlay policy" >&2
+      echo "  (vetting_forbid_unvetted_override); it will not be honored." >&2
+      accept="false"
+    fi
+  fi
+
   local -a trust_roots=()
   read_into_array trust_roots < <(vetting_trust_roots)
   if [[ "${#trust_roots[@]}" -eq 0 ]]; then
@@ -897,8 +940,14 @@ vetting_gate_repos() {
     echo "  window, re-vet, accept it (--i-accept-vetting-drift), or raise" >&2
     echo "        vetting_max_commits_behind: / vetting_max_age_days: in your config/overlay." >&2
   fi
-  echo "  Override (audited), accepting the risk for this launch:" >&2
-  echo "        re-run with --i-accept-unvetted-repo" >&2
+  if [[ "${override_forbidden}" == "true" ]]; then
+    echo "  The --i-accept-unvetted-repo override is disabled by an overlay policy" >&2
+    echo "  (vetting_forbid_unvetted_override), so it cannot be forced through — a" >&2
+    echo "  trusted reviewer must attest HEAD." >&2
+  else
+    echo "  Override (audited), accepting the risk for this launch:" >&2
+    echo "        re-run with --i-accept-unvetted-repo" >&2
+  fi
   echo "" >&2
   exit 1
 }

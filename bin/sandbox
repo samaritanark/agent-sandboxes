@@ -245,9 +245,14 @@ OPTIONS:
                                     such a finding aborts the launch.
   --i-accept-unvetted-repo          Launch even when 'vetting: required' and a
                                     --repo has no verified attestation reachable
-                                    from HEAD (or its drift exceeds the cap). The
-                                    repo(s) are printed and the acceptance is
-                                    recorded in the audit log.
+                                    from HEAD (or its drift exceeds the cap).
+                                    Accepts everything about the repo, so its
+                                    working-copy .betterleaksignore exceptions are
+                                    honored too (like accepting drift on a vetted
+                                    repo). The repo(s) are printed and the
+                                    acceptance is recorded in the audit log. An
+                                    overlay can disable this override entirely
+                                    (vetting_forbid_unvetted_override).
   --i-accept-vetting-drift          Non-interactively accept an attestation that
                                     is behind HEAD (within any cap) or past its
                                     recency window (vetting_max_age_days:) when
@@ -913,10 +918,13 @@ cmd_run() {
     # HEAD (offering an authorized signer an inline attest on an interactive
     # terminal). --i-accept-unvetted-repo downgrades a required refusal to a
     # warning. Runs BEFORE the secret gate deliberately: the secret gate honors
-    # a repo's committed exception list (the root .betterleaksignore) only when
-    # the repo is vetted, so vetting-first lets an inline attest (which
-    # acknowledges those exceptions) take effect in the same launch instead of
-    # forcing a second run.
+    # a repo's exception list (the root .betterleaksignore) only when the repo is
+    # vetted, so vetting-first lets an inline attest (which acknowledges those
+    # exceptions) take effect in the same launch instead of forcing a second run.
+    # --i-accept-unvetted-repo gets past THIS gate; accepting an unvetted repo
+    # accepts everything about it, so the secret gate below also honors that
+    # repo's exception list (like a drift-accepted vetted repo). An overlay can
+    # disable the whole override with vetting_forbid_unvetted_override.
     vetting_gate_repos "$(resolve_vetting_posture)" "${opt_accept_unvetted_repo}" "${opt_accept_vetting_drift}" "${opt_repos[@]}"
     # Gate the launch on secrets the mask would not hide. Fails closed if
     # betterleaks is absent; --i-accept-unmasked-secrets downgrades the
@@ -930,7 +938,14 @@ cmd_run() {
     if [[ -n "${_endpoint}" ]] && inference_endpoint_is_trusted "${_endpoint}"; then
       _endpoint_trusted="true"
     fi
-    secret_gate_repos "${opt_accept_unmasked_secrets}" "${_endpoint_trusted}" "${opt_repos[@]}"
+    # Accepting an unvetted repo (--i-accept-unvetted-repo) accepts everything
+    # about it, so the secret gate honors that repo's exception list — the same
+    # way a drift-accepted vetted repo's is honored. Honor the overlay forbid
+    # knob here too, so a forbidden override grants nothing even under advisory
+    # posture (where the vetting gate above does not refuse the launch).
+    local _accept_unvetted_eff="${opt_accept_unvetted_repo}"
+    [[ "${_accept_unvetted_eff}" == "true" && "$(vetting_forbid_unvetted_override)" == "true" ]] && _accept_unvetted_eff="false"
+    secret_gate_repos "${opt_accept_unmasked_secrets}" "${_endpoint_trusted}" "${_accept_unvetted_eff}" "${opt_repos[@]}"
   fi
 
   ###########################################################################

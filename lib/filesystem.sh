@@ -659,14 +659,25 @@ _leakscan_finding_accepted() {
     ls-files --error-unmatch -- "${relpath}" >/dev/null 2>&1
 }
 
-# vetted_accepted_fingerprints <repo> — the repo-root ignore-file fingerprints
-# (`relpath:rule:line`) to honor for a repo at launch, or NOTHING unless the
-# repo is currently vetted (a signed attestation verifies over a clean tree —
-# vetting_status_repo). The committed list carries weight only because the
-# vetting signature covers it; an unvetted (or unsignable) repo's list is
+# vetted_accepted_fingerprints <repo> [accept_unvetted] — the repo-root
+# ignore-file fingerprints (`relpath:rule:line`) to honor for a repo at launch,
+# or NOTHING unless the repo is currently vetted (a signed attestation verifies
+# over a clean tree — vetting_status_repo). The list carries weight only because
+# the vetting signature backs it; an unvetted (or unsignable) repo's list is
 # ignored, independent of the vetting *posture* (off/advisory/required).
 # Consumed by the secret gate and the `sandbox check` preview to decide what
 # scan_repo_secrets may downgrade to `accepted`.
+#
+# ACCEPTED-UNVETTED. When accept_unvetted == "true" — the operator passed
+# --i-accept-unvetted-repo (and no overlay forbade it; see
+# vetting_forbid_unvetted_override in lib/vetting.sh) — an UNVETTED repo's
+# working-copy list IS honored, because accepting an unvetted repo accepts
+# everything about it, exactly as a drift-accepted (still-vetted) repo has its
+# exceptions honored. The override is per-launch and audited; the org's control
+# over it is the forbid knob, so control of the exception is precisely control of
+# the override. The downstream tracked-file guard on the secret's own file still
+# applies. Default "false" preserves the ignore-nothing behavior (e.g. the
+# `sandbox check` preview, which has no accept flag).
 #
 # SOURCE OF THE LIST. By default the list is read from the WORKING-COPY ignore
 # file (load_repo_ignore_fingerprints, tracked or not) — the same file the team's
@@ -690,10 +701,17 @@ _leakscan_finding_accepted() {
 # "attestation must be exactly at HEAD" posture on top of either source; failing
 # closed (honor nothing) when strict and behind is unknown.
 vetted_accepted_fingerprints() {
-  local repo="$1" line status tag behind
+  local repo="$1" accept_unvetted="${2:-false}" line status tag behind
   line="$(vetting_status_repo "${repo}" 2>/dev/null)"
   IFS=$'\t' read -r status _ tag _ behind _ <<<"${line}"
-  [[ "${status}" == "vetted" && -n "${tag}" ]] || return 0
+  if [[ "${status}" != "vetted" || -z "${tag}" ]]; then
+    # Not vetted. Honor nothing, unless the operator accepted this unvetted repo
+    # outright (--i-accept-unvetted-repo). There is no attestation to anchor to,
+    # so read the working-copy list — the same default source a vetted repo uses.
+    # See the ACCEPTED-UNVETTED note above.
+    [[ "${accept_unvetted}" == "true" ]] && load_repo_ignore_fingerprints "${repo}"
+    return 0
+  fi
   if [[ "$(vetting_exceptions_require_head)" == "true" && "${behind:-1}" -ne 0 ]]; then
     return 0
   fi
@@ -986,9 +1004,13 @@ _print_exceptions_add_commands() {
   done
 }
 
-# secret_gate_repos <accept_flag> <endpoint_trusted> <repo>... — scan every
-# workspace with betterleaks and refuse the launch if any secret lives in a file
-# the mask would not hide. Fail closed: a missing betterleaks aborts.
+# secret_gate_repos <accept_flag> <endpoint_trusted> <accept_unvetted> <repo>...
+# — scan every workspace with betterleaks and refuse the launch if any secret
+# lives in a file the mask would not hide. Fail closed: a missing betterleaks
+# aborts. accept_unvetted ("true" when --i-accept-unvetted-repo was accepted, and
+# not forbidden by the overlay) is threaded to vetted_accepted_fingerprints so an
+# accepted-unvetted repo's exception list is honored, mirroring a drift-accepted
+# vetted repo — see that function's ACCEPTED-UNVETTED note.
 #
 # There are four outcomes for a would-be-blocking finding (an unmasked secret or
 # one in .git/config); masked / encrypted-at-rest / vetted-accepted findings
@@ -1010,6 +1032,7 @@ _print_exceptions_add_commands() {
 secret_gate_repos() {
   local accept="$1"; shift
   local endpoint_trusted="$1"; shift
+  local accept_unvetted="$1"; shift
   local -a repos=("$@")
   [[ "${#repos[@]}" -gt 0 ]] || return 0
 
@@ -1041,7 +1064,7 @@ secret_gate_repos() {
     # The exceptions list is honored only for a currently-vetted repo; otherwise
     # this file is empty and nothing is downgraded to `accepted`.
     accept_file="$(mktemp "${TMPDIR:-/tmp}/sandbox-accept-XXXXXX")"
-    vetted_accepted_fingerprints "${repo}" > "${accept_file}" 2>/dev/null || true
+    vetted_accepted_fingerprints "${repo}" "${accept_unvetted}" > "${accept_file}" 2>/dev/null || true
     while IFS=$'\t' read -r m relpath ruleid ln match; do
       [[ -z "${relpath}" ]] && continue
       # An `error` sentinel means betterleaks could not be trusted to have
@@ -1076,7 +1099,7 @@ secret_gate_repos() {
     echo "  ${total_encrypted} secret finding(s) are encrypted at rest (SealedSecret/SOPS); the agent reads only ciphertext."
   fi
   if [[ "${total_accepted}" -gt 0 ]]; then
-    echo "  ${total_accepted} secret finding(s) accepted via the vetted exceptions list (reviewed false positives; the agent WILL read these)."
+    echo "  ${total_accepted} secret finding(s) accepted via the repo's exceptions list (reviewed false positives; the agent WILL read these)."
   fi
 
   if [[ "${#unmasked[@]}" -eq 0 && "${#gitconfig[@]}" -eq 0 ]]; then

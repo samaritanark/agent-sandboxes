@@ -428,7 +428,33 @@ reflexively re-vetting:
 `--i-accept-vetting-drift` accepts a verified-but-behind or stale attestation
 non-interactively (within any cap); `--i-accept-unvetted-repo` proceeds
 regardless and records the acceptance (which repos, and that the override was
-used) in the session's audit log. A **missing
-trust root** under `required` is treated as an operator misconfiguration and
-fails closed regardless of the override — fix the trust root rather than
-overriding past it.
+used) in the session's audit log.
+
+**Accepting an unvetted repo accepts everything about it.** Like accepting drift
+on a vetted repo, `--i-accept-unvetted-repo` also causes the [secret
+gate](../explanation/security-model.md) to honor that repo's working-copy
+`.betterleaksignore` exceptions for the launch — the override is one deliberate,
+audited "I accept this repo" decision, not a chain of per-gate flags. (A genuine
+unmasked secret that is *not* in the exception list still blocks, exactly as it
+would on a vetted repo; that is `--i-accept-unmasked-secrets`, a separate
+consent.)
+
+### Disabling the override (make `required` truly required)
+
+Because the override is un-vetoable by default, an org that never wants an
+unvetted workspace forced through sets one overlay knob:
+
+| `vetting_forbid_unvetted_override:` | Behavior |
+| --- | --- |
+| *omitted* / `false` (**default**) | `--i-accept-unvetted-repo` is available (audited, per-launch). |
+| `true` | The override is disabled: an unvetted (or dirty/empty/non-git) workspace cannot be forced through under `required`, and — since accepting the repo is what lets its exceptions count — its `.betterleaksignore` is not honored either. `--i-accept-vetting-drift` and `--i-accept-unmasked-secrets` are unaffected. |
+
+```yaml
+# <overlay>/config.yaml — or ~/.sandbox/config.yaml
+vetting_forbid_unvetted_override: true
+```
+
+Read from both the overlay and your own config, this is **tightening-only**:
+`true` (override disabled) wins if either sets it. A **missing trust root** under
+`required` is likewise treated as an operator misconfiguration and fails closed
+regardless of any override — fix the trust root rather than overriding past it.

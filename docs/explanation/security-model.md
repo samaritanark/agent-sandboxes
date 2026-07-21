@@ -114,7 +114,12 @@ bypass — the thing the gate otherwise refuses to allow:
   (parity with the team's CI/pre-commit runs); an operator who wants every honored
   entry to be one the signature literally covers — so drift can introduce nothing —
   sets `vetting_exceptions_from_commit: true`, and the gate then reads only the
-  attested commit's blob. Either way an *unvetted* repo's list is ignored outright.
+  attested commit's blob. Either way an *unvetted* repo's list is ignored outright
+  — unless an operator launches it with `--i-accept-unvetted-repo`, which accepts
+  everything about the repo (its working-copy exceptions included), exactly as
+  accepting drift does on a vetted repo. That override is audited and per-launch,
+  and an org can disable it entirely with `vetting_forbid_unvetted_override: true`,
+  which also removes this way of honoring an unvetted repo's list.
 - **The value binding rides on the signature, and only tracked content counts.**
   A native fingerprint names a location, not a value; the binding comes from
   vetting — change the value on that line and the tree is dirty (or a new HEAD),
