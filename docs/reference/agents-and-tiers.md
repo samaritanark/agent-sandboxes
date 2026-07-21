@@ -20,6 +20,16 @@ not cross a dot), so Copilot's two-label per-plan hosts
 `*.<plan>.githubcopilot.com` entry — the bare `*.githubcopilot.com` does not
 reach them. See `lib/agents.sh` for the authoritative list.
 
+A wildcard whose apex is a **registrable domain** (eTLD+1) also grants that
+apex automatically: `*.gitea.com` reaches both `raw.gitea.com` *and* the bare
+`gitea.com`, so you don't have to list the apex separately. This mirrors the
+block list, which already treats `*.evil.com` as covering `evil.com`. It does
+**not** apply to a wildcard scoped below the registrable domain — `*.aws.amazon.com`
+still does **not** reach `aws.amazon.com`, since that host was deliberately
+scoped and its registrable domain is `amazon.com`. (Over-broad wildcards whose
+apex is a public suffix — `*.com`, `*.co.uk` — are refused at input, so this can
+never grant a bare TLD.)
+
 > **opencode users:** `OPENCODE_API_KEY` must be set in the host environment,
 > and you must supply an OpenAI-compatible endpoint URL — either via
 > `OPENCODE_BASE_URL` in the env, or per-invocation with `--base-url <URL>`

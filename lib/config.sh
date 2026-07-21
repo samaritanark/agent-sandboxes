@@ -236,10 +236,12 @@ strip_ignore_file_comments() {
 
 # load_repo_ignore_fingerprints <repo> — print the working-tree fingerprints
 # recorded in the repo-root ignore file, one `relpath:rule:line` per line.
-# This is the WORKING-TREE view (for `sandbox exceptions list` and the vet-time
-# preview); the launch gate reads the committed blob at HEAD instead
-# (vetting_committed_ignore_fingerprints) so only signature-covered entries are
-# ever honored. Empty if the repo has no ignore file.
+# This is the WORKING-TREE view, used by `sandbox exceptions list`, the vet-time
+# preview, and — for a vetted repo — the launch gate itself by default
+# (vetted_accepted_fingerprints). An overlay/user can set
+# vetting_exceptions_from_commit: true to make the gate read the attested commit's
+# committed blob instead (vetting_committed_ignore_fingerprints), honoring only
+# signature-covered entries. Empty if the repo has no ignore file.
 load_repo_ignore_fingerprints() {
   local f
   f="$(repo_ignore_file "$1")"

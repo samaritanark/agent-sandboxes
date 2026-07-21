@@ -245,9 +245,14 @@ OPTIONS:
                                     such a finding aborts the launch.
   --i-accept-unvetted-repo          Launch even when 'vetting: required' and a
                                     --repo has no verified attestation reachable
-                                    from HEAD (or its drift exceeds the cap). The
-                                    repo(s) are printed and the acceptance is
-                                    recorded in the audit log.
+                                    from HEAD (or its drift exceeds the cap).
+                                    Accepts everything about the repo, so its
+                                    working-copy .betterleaksignore exceptions are
+                                    honored too (like accepting drift on a vetted
+                                    repo). The repo(s) are printed and the
+                                    acceptance is recorded in the audit log. An
+                                    overlay can disable this override entirely
+                                    (vetting_forbid_unvetted_override).
   --i-accept-vetting-drift          Non-interactively accept an attestation that
                                     is behind HEAD (within any cap) or past its
                                     recency window (vetting_max_age_days:) when
@@ -913,10 +918,13 @@ cmd_run() {
     # HEAD (offering an authorized signer an inline attest on an interactive
     # terminal). --i-accept-unvetted-repo downgrades a required refusal to a
     # warning. Runs BEFORE the secret gate deliberately: the secret gate honors
-    # a repo's committed exception list (the root .betterleaksignore) only when
-    # the repo is vetted, so vetting-first lets an inline attest (which
-    # acknowledges those exceptions) take effect in the same launch instead of
-    # forcing a second run.
+    # a repo's exception list (the root .betterleaksignore) only when the repo is
+    # vetted, so vetting-first lets an inline attest (which acknowledges those
+    # exceptions) take effect in the same launch instead of forcing a second run.
+    # --i-accept-unvetted-repo gets past THIS gate; accepting an unvetted repo
+    # accepts everything about it, so the secret gate below also honors that
+    # repo's exception list (like a drift-accepted vetted repo). An overlay can
+    # disable the whole override with vetting_forbid_unvetted_override.
     vetting_gate_repos "$(resolve_vetting_posture)" "${opt_accept_unvetted_repo}" "${opt_accept_vetting_drift}" "${opt_repos[@]}"
     # Gate the launch on secrets the mask would not hide. Fails closed if
     # betterleaks is absent; --i-accept-unmasked-secrets downgrades the
@@ -930,7 +938,14 @@ cmd_run() {
     if [[ -n "${_endpoint}" ]] && inference_endpoint_is_trusted "${_endpoint}"; then
       _endpoint_trusted="true"
     fi
-    secret_gate_repos "${opt_accept_unmasked_secrets}" "${_endpoint_trusted}" "${opt_repos[@]}"
+    # Accepting an unvetted repo (--i-accept-unvetted-repo) accepts everything
+    # about it, so the secret gate honors that repo's exception list — the same
+    # way a drift-accepted vetted repo's is honored. Honor the overlay forbid
+    # knob here too, so a forbidden override grants nothing even under advisory
+    # posture (where the vetting gate above does not refuse the launch).
+    local _accept_unvetted_eff="${opt_accept_unvetted_repo}"
+    [[ "${_accept_unvetted_eff}" == "true" && "$(vetting_forbid_unvetted_override)" == "true" ]] && _accept_unvetted_eff="false"
+    secret_gate_repos "${opt_accept_unmasked_secrets}" "${_endpoint_trusted}" "${_accept_unvetted_eff}" "${opt_repos[@]}"
   fi
 
   ###########################################################################
@@ -1009,6 +1024,15 @@ cmd_run() {
   local -a tier_domains=()
   read_into_array tier_domains < <(get_tier_domains "${opt_tier}")
   local -a all_domains=("${agent_domains[@]+"${agent_domains[@]}"}" "${tier_domains[@]+"${tier_domains[@]}"}" "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}")
+  # Dedup, first occurrence wins: operator extras (user config, an overlay
+  # profile, or a per-repo list) may repeat a built-in agent/tier domain, or
+  # each other. Without this the recorded allowlist — and the count printed at
+  # startup — is inflated, AND the first 'sandbox allow' runs the merged set
+  # through '| unique' (below), retroactively collapsing the duplicates and
+  # reporting a zero-or-negative "new domain(s)" delta. Dedup here keeps
+  # session.json honest from the start so the hot-reload math stays truthful.
+  read_into_array all_domains < <(
+    printf '%s\n' "${all_domains[@]+"${all_domains[@]}"}" | awk 'NF && !seen[$0]++')
   local domain_count="${#all_domains[@]}"
 
   # Pin the agent's conversation ID (when the agent supports it) so teardown
@@ -1055,6 +1079,14 @@ cmd_run() {
   if [[ -n "${SESSION_VETTING_SUMMARY:-}" ]]; then
     audit_log_event "${log_dir}" "vetting" "${SESSION_VETTING_SUMMARY}"
   fi
+  # Record the secret-gate outcome (stashed in SESSION_SECRET_SUMMARY, same
+  # before-session.json timing as vetting), then flush every launch-time gate
+  # override (--i-accept-* flags and accepted interactive prompts) that Step 2's
+  # gates recorded — so the session log names each safety waiver it received.
+  if [[ -n "${SESSION_SECRET_SUMMARY:-}" ]]; then
+    audit_log_event "${log_dir}" "secret-scan" "${SESSION_SECRET_SUMMARY}"
+  fi
+  audit_flush_overrides "${log_dir}"
 
   ###########################################################################
   # Step 5: Capture workspace baseline (Tier 2/3)
@@ -2849,9 +2881,13 @@ cmd_allow() {
   new_arr_json="$(printf '%s\n' "${opt_add_domains[@]}" | jq -R . | jq -s -c .)"
 
   # Merged full set (for session.json) and extras-only (for the policy).
-  local merged_full_json merged_extras_json
+  # '| unique' also collapses any duplicates an older session.json may carry
+  # (session creation only started deduping later), so relaunching a stale
+  # session cleans its allowlist as a side effect.
+  local cur_json merged_full_json merged_extras_json
+  cur_json="$(jq -c '.allowed_domains' "${session_json}")"
   merged_full_json="$(jq -c -n \
-    --argjson cur "$(jq '.allowed_domains' "${session_json}")" \
+    --argjson cur "${cur_json}" \
     --argjson new "${new_arr_json}" \
     '($cur + $new) | unique')"
   merged_extras_json="$(jq -c -n \
@@ -2860,14 +2896,19 @@ cmd_allow() {
     --argjson tier "${tier_dom_json}" \
     '($full - $agent - $tier)')"
 
-  # Detect the no-op case (every --add-domain was already allowed) so
-  # the operator gets a clear "nothing to do" rather than a silent
-  # kubectl apply that changes nothing.
-  local new_count
+  # Count only GENUINELY-new domains: those requested that were not already
+  # allowed. Reporting 'merged_total - existing_total' was wrong — when the
+  # existing session.json carried duplicates, the '| unique' above collapsed
+  # them and the delta went zero or NEGATIVE ("-1 new domain(s)") even though a
+  # domain was added. Comparing the two deduped sets never goes negative and
+  # gives the operator the real count.
+  local added_count new_count
+  added_count="$(jq -n \
+    --argjson cur "${cur_json}" \
+    --argjson new "${new_arr_json}" \
+    '(($new | unique) - ($cur | unique)) | length')"
   new_count="$(jq -r '. | length' <<<"${merged_full_json}")"
-  local existing_count
-  existing_count="$(jq -r '.allowed_domains | length' "${session_json}")"
-  if [[ "${new_count}" -eq "${existing_count}" ]]; then
+  if [[ "${added_count}" -eq 0 ]]; then
     echo "All requested domains are already in the allowlist; nothing to do."
     return 0
   fi
@@ -2897,7 +2938,7 @@ cmd_allow() {
     "${extras_arr[@]+"${extras_arr[@]}"}")"
   SESSION_DEP_ENDPOINTS=()
   echo "${policy_yaml}" | kubectl apply -f - >/dev/null
-  echo "  Applied: $(( new_count - existing_count )) new domain(s)."
+  echo "  Applied: ${added_count} new domain(s)."
 
   # Update session.json's allowed_domains and append an audit event.
   local tmp_json
@@ -3434,7 +3475,8 @@ cmd_vet() {
         ;;
       dirty)
         echo "DIRTY:    ${repo} (HEAD ${f2})"
-        echo "  Commit or stash the working tree, then attest."
+        echo "  Working tree is not clean and vetting_require_clean_worktree is set."
+        echo "  Commit, stash (git stash -u), or remove the changes, then attest."
         ;;
       error)
         echo "ERROR:    ${f2}" >&2

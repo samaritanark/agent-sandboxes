@@ -41,16 +41,19 @@ too, and `sandbox exceptions` appends to it rather than starting a second file.)
 
 Two properties keep this safe rather than a backdoor:
 
-- **The sandbox honors it only on a vetted repo, and only when committed.** A
-  committed ignore file means nothing to the *sandbox* on its own — anyone who
-  can push to the repo (including a prompt-injected agent) could add a line, and
-  a plain `betterleaks` run in CI honors it unconditionally, which is fine for a
-  linting tool but not for a security boundary. What gives it authority *at
-  launch* is the [vetting](vetting.md) signature: a reviewer signs the whole
-  tree, *including* this file, so accepting a finding carries a human's
-  cryptographic sign-off. The gate reads the list from the **signed commit**
-  (`HEAD`), not your working copy, so an entry that is uncommitted — or hidden by
-  `.gitignore` — is never honored; you must commit it and (re-)vet. On an
+- **The sandbox honors it only on a vetted repo.** An ignore file means nothing
+  to the *sandbox* on its own — anyone who can push to the repo (including a
+  prompt-injected agent) could add a line, and a plain `betterleaks` run in CI
+  honors it unconditionally, which is fine for a linting tool but not for a
+  security boundary. What gives it authority *at launch* is a [vetting](vetting.md)
+  attestation on the repo: accepting a finding rests on a human's cryptographic
+  sign-off, and `sandbox vet` surfaces the exceptions for the signer to
+  acknowledge first. By default the gate reads the list from your **working copy**
+  (tracked or not), the same file your CI and pre-commit runs read — so the file
+  you edit is the file that counts. An operator who wants every honored entry to
+  be one the signature literally covers sets `vetting_exceptions_from_commit: true`,
+  and the gate then reads only the **attested commit's** blob (an uncommitted or
+  drift-added entry is not honored until a signer re-vets). Either way, on an
   unvetted repo the sandbox ignores the list and the gate blocks exactly as
   before. (More on this in
   [Integration with vetting](#integration-with-vetting-and-team-overlays).)

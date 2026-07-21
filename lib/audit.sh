@@ -4,6 +4,55 @@
 # lib/audit.sh — Audit log management
 set -euo pipefail
 
+# SESSION_OVERRIDES — launch-time gate acceptances, accumulated as compact JSON
+# objects. Every point where an operator waives a safety gate — an --i-accept-*
+# flag or an interactive y/N prompt (unvetted repo, commit/staleness drift,
+# unmasked secrets) — records here via record_override. The gates run BEFORE
+# session.json exists, so recording is deferred: audit_flush_overrides emits one
+# 'override' event per entry once the file is written. A declined prompt aborts
+# the launch before session.json, so only acceptances can reach the log — which
+# is the point: the session log names every waiver the running session got.
+SESSION_OVERRIDES=()
+
+# record_override <mechanism> <what> [repo...] — remember one accepted override.
+#   mechanism: 'flag:--i-accept-<name>' for a CLI flag, 'interactive-prompt' for
+#              a y/N a human answered. This distinction is the audit's whole
+#              value: a flag is a pre-authorized (often CI) waiver; a prompt is a
+#              human deciding in the moment.
+#   what:      short human description of what was waived.
+#   repo...:   affected workspace path(s); stored as basenames.
+record_override() {
+  local mechanism="$1" what="$2"; shift 2
+  local repos_json="[]"
+  if [[ "$#" -gt 0 ]]; then
+    local r
+    repos_json="$(for r in "$@"; do [[ -n "${r}" ]] && basename "${r}"; done \
+      | jq -R . | jq -s -c .)"
+  fi
+  SESSION_OVERRIDES+=("$(jq -c -n \
+    --arg m "${mechanism}" --arg w "${what}" --argjson r "${repos_json}" \
+    '{mechanism: $m, what: $w, repos: $r}')")
+}
+
+# audit_flush_overrides <log_dir> — emit each recorded override as an 'override'
+# event in session.json. No-op if nothing was recorded or the file is absent.
+audit_flush_overrides() {
+  local log_dir="$1"
+  local session_json="${log_dir}/session.json"
+  [[ -f "${session_json}" ]] || return 0
+  [[ "${#SESSION_OVERRIDES[@]}" -gt 0 ]] || return 0
+
+  local ts entry tmp
+  ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  for entry in "${SESSION_OVERRIDES[@]}"; do
+    tmp="$(mktemp)"
+    jq --arg ts "${ts}" --argjson o "${entry}" \
+      '.events += [ $o + {time: $ts, type: "override"} ]' \
+      "${session_json}" > "${tmp}"
+    mv "${tmp}" "${session_json}"
+  done
+}
+
 # audit_write_session_json — write initial session.json metadata
 audit_write_session_json() {
   local log_dir="$1"

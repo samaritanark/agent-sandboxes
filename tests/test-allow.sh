@@ -81,9 +81,43 @@ make_session_json() {
   echo "${log_dir}/session.json"
 }
 
+# Build a session.json WITHOUT deduping allowed_domains, to simulate either an
+# operator whose extras repeat a built-in domain or a session written before
+# creation started deduping (bin/sandbox). Used to reproduce the "-1 new
+# domain(s)" regression.
+make_session_json_raw() {
+  local sid="$1" agent="$2" tier="$3"
+  shift 3
+  local -a raw_domains=("$@")
+
+  local log_dir="${SANDBOX_LOGS_DIR}/${sid}"
+  mkdir -p "${log_dir}"
+
+  local allowed
+  allowed="$(printf '%s\n' "${raw_domains[@]+"${raw_domains[@]}"}" \
+    | jq -R . | jq -s -c 'map(select(. != ""))')"
+
+  jq -n \
+    --arg id "${sid}" \
+    --arg agent "${agent}" \
+    --argjson tier "${tier}" \
+    --argjson allowed "${allowed}" \
+    '{
+      id: $id,
+      agent: $agent,
+      tier: $tier,
+      kube_api_cidr: "",
+      kube_api_port: "",
+      allowed_domains: $allowed
+    }' > "${log_dir}/session.json"
+
+  echo "${log_dir}/session.json"
+}
+
 # Mirror of the merge pipeline inside cmd_allow (we don't have a single
 # extracted function for it — the merge is inline in bin/sandbox).
-# Returns JSON: { merged_full, merged_extras }
+# Returns JSON: { full, extras, added } where `added` is the count of
+# GENUINELY-new domains (matches cmd_allow's "Applied: N new domain(s)").
 allow_merge() {
   local session_json="$1"
   shift
@@ -99,7 +133,7 @@ allow_merge() {
   new_arr="$(printf '%s\n' "${new[@]+"${new[@]}"}" | jq -R . | jq -s -c 'map(select(. != ""))')"
   cur_arr="$(jq '.allowed_domains' "${session_json}")"
 
-  local merged_full merged_extras
+  local merged_full merged_extras added
   merged_full="$(jq -c -n \
     --argjson cur "${cur_arr}" \
     --argjson new "${new_arr}" \
@@ -109,11 +143,16 @@ allow_merge() {
     --argjson agent "${agent_arr}" \
     --argjson tier "${tier_arr}" \
     '($full - $agent - $tier)')"
+  added="$(jq -n \
+    --argjson cur "${cur_arr}" \
+    --argjson new "${new_arr}" \
+    '(($new | unique) - ($cur | unique)) | length')"
 
   jq -c -n \
     --argjson full "${merged_full}" \
     --argjson extras "${merged_extras}" \
-    '{full: $full, extras: $extras}'
+    --argjson added "${added}" \
+    '{full: $full, extras: $extras, added: $added}'
 }
 
 ###############################################################################
@@ -184,6 +223,87 @@ test_merge_multiple_new() {
   out="$(allow_merge "${sj}" a.example.com b.example.com c.example.com)"
   new_count="$(jq -r '.full | length' <<<"${out}")"
   eq "three new domains → +3" "$(( existing_count + 3 ))" "${new_count}"
+}
+
+###############################################################################
+# Regression: "-1 new domain(s)" — a session.json carrying duplicates (an
+# operator extra repeating a built-in, or a pre-dedup session) must NOT report
+# a negative/zero delta when a genuinely-new domain is added, and the reported
+# count is the count of GENUINELY-new domains — never merged_total - old_total.
+###############################################################################
+test_added_count_never_negative_with_dupes() {
+  info "Testing added-count stays correct when session.json has duplicates..."
+
+  # A raw session.json with a duplicate '*.gitea.com' pair AND 'gitea.com'
+  # already present — exactly the shape that produced "-1 new domain(s)".
+  local sj
+  sj="$(make_session_json_raw ses-dup claude 2 \
+    "*.gitea.com" "*.gitea.com" "gitea.com" "internal.example.com")"
+
+  # Re-adding an already-allowed domain: 0 genuinely new (not -1).
+  local out added
+  out="$(allow_merge "${sj}" gitea.com)"
+  added="$(jq -r '.added' <<<"${out}")"
+  eq "re-adding an allowed domain → added 0 (not negative)" "0" "${added}"
+
+  # And the merged set is deduped (the stray '*.gitea.com' collapses).
+  local full_count distinct_count
+  full_count="$(jq -r '.full | length' <<<"${out}")"
+  distinct_count="$(jq -r '.full | unique | length' <<<"${out}")"
+  eq "merged_full is deduplicated" "${distinct_count}" "${full_count}"
+
+  # Adding a genuinely-new domain reports exactly 1, despite the dupes.
+  out="$(allow_merge "${sj}" brand.new.example.com)"
+  added="$(jq -r '.added' <<<"${out}")"
+  eq "one genuinely-new domain → added 1" "1" "${added}"
+}
+
+###############################################################################
+# Fix A: session creation dedups the agent + tier + extras union. This mirrors
+# the exact pipeline in bin/sandbox (cmd_run) — repeated extras and extras that
+# collide with a built-in must collapse to one entry each, preserving first
+# occurrence.
+###############################################################################
+test_creation_dedups_domains() {
+  info "Testing session-creation dedup (mirror of bin/sandbox all_domains)..."
+
+  # shellcheck disable=SC1091
+  source "${SANDBOX_ROOT}/lib/platform.sh"
+
+  # An extra that repeats a built-in claude domain, plus a self-repeat.
+  local -a agent_domains=() tier_domains=()
+  read_into_array agent_domains < <(get_agent_domains claude)
+  read_into_array tier_domains < <(get_tier_domains 2)
+  local -a opt_allow_domains=("claude.ai" "extra.example.com" "extra.example.com")
+
+  local -a all_domains=(
+    "${agent_domains[@]+"${agent_domains[@]}"}"
+    "${tier_domains[@]+"${tier_domains[@]}"}"
+    "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}")
+  local raw_count="${#all_domains[@]}"
+
+  # The dedup pipeline copied verbatim from bin/sandbox.
+  read_into_array all_domains < <(
+    printf '%s\n' "${all_domains[@]+"${all_domains[@]}"}" | awk 'NF && !seen[$0]++')
+  local deduped_count="${#all_domains[@]}"
+
+  if [[ "${deduped_count}" -lt "${raw_count}" ]]; then
+    pass "duplicate extras collapsed (${raw_count} → ${deduped_count})"
+  else
+    fail "expected dedup to shrink the list (${raw_count} → ${deduped_count})"
+  fi
+
+  # No value appears twice. Use byte-exact dedup (awk keyed on the whole line):
+  # `sort -u` under a UTF-8 locale collates '*.claude.ai' and 'claude.ai' as
+  # equal and would undercount, masking whether the real dedup worked.
+  local uniq_count
+  uniq_count="$(printf '%s\n' "${all_domains[@]}" | awk '!seen[$0]++' | wc -l | tr -d ' ')"
+  eq "no duplicates remain after creation dedup" "${uniq_count}" "${deduped_count}"
+
+  # 'extra.example.com' survives exactly once.
+  local occ
+  occ="$(printf '%s\n' "${all_domains[@]}" | grep -cx 'extra.example.com')"
+  eq "repeated extra kept exactly once" "1" "${occ}"
 }
 
 ###############################################################################
@@ -273,6 +393,8 @@ main() {
   test_merge_adds_new_domain
   test_merge_dedups_duplicate_add
   test_merge_multiple_new
+  test_added_count_never_negative_with_dupes
+  test_creation_dedups_domains
   test_cli_no_args
   test_cli_missing_add_domain
   test_cli_missing_session

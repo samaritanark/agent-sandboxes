@@ -36,9 +36,12 @@ pulled-and-reviewed commit from one authored locally — including a commit an
 agent wrote in the workspace during an earlier session. So the guarantee is
 strongest exactly at `HEAD` ("a signer reviewed *this* tree") and, under drift,
 weakens to "a signer reviewed an *ancestor* of this tree." A tag on a divergent
-line (not an ancestor of `HEAD`) does not count, and a dirty working tree is
-always refused, because uncommitted edits are unreviewed and would ride along
-unattested.
+line (not an ancestor of `HEAD`) does not count. Vetting is anchored to the
+commit graph, not the working directory, so working-tree state — uncommitted
+edits, staged changes, untracked files — does **not** un-vet a repo by default;
+teams that want a pristine, exactly-attested tree opt in with
+`vetting_require_clean_worktree` — see
+[The working tree and vetting](#the-working-tree-and-vetting).
 
 ## Set up a trust root
 
@@ -206,6 +209,36 @@ vetted:   /home/you/repos/app
   age:    41 day(s) — STALE, past the 30-day recency window (re-vet)
 ```
 
+### The working tree and vetting
+
+Vetting is anchored to the **commit graph**, not your working directory. A repo
+whose `HEAD` carries a verified ancestor attestation stays vetted no matter what
+the working tree looks like — uncommitted edits to tracked files, staged changes,
+and untracked scratch files (a `dumbtest`, a build artifact) do **not** un-vet
+it. An attestation covers a commit, so this is the honest reading, and it keeps
+everyday work — editing code, leaving scratch files around — from constantly
+tripping the gate. (In tier 2/3 the workspace is a copy of your working tree, so
+the agent does see those uncommitted changes; the launch just isn't blocked on
+them.)
+
+For teams that want the agent to run only on a **pristine, exactly-attested**
+tree, one optional setting restores strict behavior:
+
+| `vetting_require_clean_worktree:` | Behavior |
+| --- | --- |
+| *omitted* / `false` (**default**) | Working-tree state is ignored; only the commit graph (`HEAD` + attestation ancestry) decides whether a repo is vetted. |
+| `true` | The working tree must be clean. Any uncommitted edit, staged change, or untracked file marks the repo dirty and refuses the launch (and attestation) until you commit, `git stash -u`, or remove it. |
+
+```yaml
+# <overlay>/config.yaml — or ~/.sandbox/config.yaml
+vetting_require_clean_worktree: true
+```
+
+Read from both the overlay and your own config, this is **tightening-only**:
+`true` wins if either sets it, the same safety-additive rule the
+[posture](#choose-a-posture) and [drift cap](#cap-how-far-behind-an-attestation-may-be)
+follow.
+
 ## Attest a repo
 
 A reviewer, after reading the tree, signs the current `HEAD`:
@@ -279,39 +312,52 @@ recorded as an "exception". Pass `--yes` to acknowledge non-interactively (e.g.
 in CI); without it, and with no terminal to prompt on, `vet` refuses rather than
 sign off unattended. A repo with no exceptions signs with no extra prompt.
 
-### Exceptions and drift
+### Where exceptions are read from
 
-The acknowledgment above binds an exception to the *signed* commit — and the gate
-honors it from exactly that commit. An attestation clears a repo while it is
-[behind `HEAD`](#when-the-attestation-is-behind-head), and drift is reviewed code
-layered on a vetted base — but an exception is not code, it is a standing
-permission for the agent to read a plaintext value, so the gate does **not** take
-it from `HEAD`. It reads the honored `.betterleaksignore` list from the **attested
-commit**. The consequence is the property you want, for free: an exception added
-on a later, unsigned commit — by a contributor, or by the agent writing the
-workspace — is **never honored** until a signer re-attests the new `HEAD` (which
-re-runs the acknowledgment above). No drift distance changes this, and there is
-no knob to get wrong.
+An exception is a standing permission for the agent to read a plaintext value, so
+it counts **only once the repo is vetted** — an unvetted repo's `.betterleaksignore`
+is ignored no matter what it lists. Given a vetted repo, two knobs decide *which*
+entries are honored:
 
-One optional setting, for teams that want to go further:
+| `vetting_exceptions_from_commit:` | Source of the honored list |
+| --- | --- |
+| *omitted* / `false` (**default**) | The **working-copy** `.betterleaksignore` (tracked or not) — the same file your CI and pre-commit betterleaks runs read, so the file you edit is the file that counts. |
+| `true` | The **attested commit's** committed blob only. Every honored entry is one the signature covers and a signer acknowledged at attest time; a later, unsigned commit's changes are never read until a signer re-attests. |
+
+```yaml
+# <overlay>/config.yaml — or ~/.sandbox/config.yaml
+vetting_exceptions_from_commit: true
+```
+
+The default trades a little strictness for the least surprise: the list you see in
+your working tree is the list the gate honors. Two guardrails always hold, whichever
+source is set — the repo must be vetted at all, and the separate tracked-file check
+on the *secret's own file* still stands, so a finding in a gitignored or untracked
+file is never accepted even if its fingerprint is listed. Set
+`vetting_exceptions_from_commit: true` when you want drift to introduce nothing:
+under it, an exception added on a later, unsigned commit is not honored until a
+signer re-attests `HEAD` (which re-runs the [acknowledgment](#acknowledging-secret-exceptions)).
+
+A second, independent knob bounds *drift* rather than source:
 
 | `vetting_exceptions_require_head:` | Behavior |
 | --- | --- |
-| *omitted* / `false` (**default**) | Exceptions are honored whenever the repo is vetted, read from the attested commit. Every honored exception is signer-acknowledged regardless of drift — the safe, frictionless default. |
-| `true` | A stricter posture: honor exceptions **only** when the attestation sits exactly at `HEAD` (`behind: 0`), so every honored exception rides a *current* attestation rather than an older but still-valid acknowledgment. Under any drift the list is ignored and those findings block the launch again; re-attest `HEAD` to restore them. |
+| *omitted* / `false` (**default**) | Exceptions are honored whenever the repo is vetted, drift included. |
+| `true` | Honor exceptions **only** when the attestation sits exactly at `HEAD` (`behind: 0`), so every honored exception rides a *current* attestation. Under any drift the list is ignored and those findings block the launch again; re-attest `HEAD` to restore them. |
 
 ```yaml
 # <overlay>/config.yaml — or ~/.sandbox/config.yaml
 vetting_exceptions_require_head: true
 ```
 
-Read from both the overlay and your own config, this is **tightening-only**:
-`true` wins if either sets it, so an overlay can ratchet exception-handling up
-and a user can opt in further, but neither can relax the other's — the same
-safety-additive rule the [posture](#choose-a-posture) and the
-[drift cap](#cap-how-far-behind-an-attestation-may-be) follow. The knob is
-independent of posture: it decides only *which* exceptions count, not whether
-vetting is enforced.
+Read from both the overlay and your own config, both knobs are **tightening-only**:
+the stricter value (`from_commit: true`, `require_head: true`) wins if either side
+sets it, so an overlay can ratchet exception-handling up and a user can opt in
+further, but neither can relax the other's — the same safety-additive rule the
+[posture](#choose-a-posture) and the
+[drift cap](#cap-how-far-behind-an-attestation-may-be) follow. Both are independent
+of posture: they decide only *which* exceptions count, not whether vetting is
+enforced.
 
 ## Attest at launch (authorized signers)
 
@@ -350,7 +396,7 @@ unavailable) — whether it is wholly unvetted or vetted but too far behind `HEA
 ERROR: vetting is required, but the following workspace(s) have no accepted,
        verified agent-vetting attestation at HEAD, so the launch is refused:
 
-    /home/you/repos/app: no verified attestation (HEAD 1ff36c4...; no reachable agent-vetted/* tag)
+    /home/you/repos/app: no verified attestation (HEAD 1ff36c4...; no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation)
     /home/you/repos/api: vetted but 34 commit(s) behind HEAD (over the cap, or drift not accepted) (HEAD 9ac21be...)
 
   A trusted reviewer must attest the current HEAD:
@@ -362,10 +408,53 @@ ERROR: vetting is required, but the following workspace(s) have no accepted,
         re-run with --i-accept-unvetted-repo
 ```
 
+The per-repo line names the *situation* so you fix the right thing rather than
+reflexively re-vetting:
+
+- **`no agent-vetted/* tag present … 'git fetch --tags'`** — the repo may be
+  vetted upstream, but the attestation tag was never fetched. This is common in
+  CI, where the default checkout pulls no tags (and often a shallow clone);
+  fetching the tags — `git fetch --tags`, or `git fetch --unshallow --tags` for a
+  shallow clone — can reveal the existing attestation without anyone re-signing.
+- **`… tag(s) present but none is an ancestor of HEAD`** — you are on an older
+  checkout or a divergent branch, so a real attestation exists but does not cover
+  this `HEAD`. Check out the vetted commit, or attest this `HEAD`.
+- **`empty repository` / `not a git repository`** — there is nothing to attest
+  *yet*: `git init` (if needed) and make an initial commit, then
+  `sandbox vet --repo <PATH>`. This is the greenfield case — the agent hasn't
+  written anything, so the launch just needs the first commit in place (or the
+  override below for a one-off).
+
 `--i-accept-vetting-drift` accepts a verified-but-behind or stale attestation
 non-interactively (within any cap); `--i-accept-unvetted-repo` proceeds
 regardless and records the acceptance (which repos, and that the override was
-used) in the session's audit log. A **missing
-trust root** under `required` is treated as an operator misconfiguration and
-fails closed regardless of the override — fix the trust root rather than
-overriding past it.
+used) in the session's audit log.
+
+**Accepting an unvetted repo accepts everything about it.** Like accepting drift
+on a vetted repo, `--i-accept-unvetted-repo` also causes the [secret
+gate](../explanation/security-model.md) to honor that repo's working-copy
+`.betterleaksignore` exceptions for the launch — the override is one deliberate,
+audited "I accept this repo" decision, not a chain of per-gate flags. (A genuine
+unmasked secret that is *not* in the exception list still blocks, exactly as it
+would on a vetted repo; that is `--i-accept-unmasked-secrets`, a separate
+consent.)
+
+### Disabling the override (make `required` truly required)
+
+Because the override is un-vetoable by default, an org that never wants an
+unvetted workspace forced through sets one overlay knob:
+
+| `vetting_forbid_unvetted_override:` | Behavior |
+| --- | --- |
+| *omitted* / `false` (**default**) | `--i-accept-unvetted-repo` is available (audited, per-launch). |
+| `true` | The override is disabled: an unvetted (or dirty/empty/non-git) workspace cannot be forced through under `required`, and — since accepting the repo is what lets its exceptions count — its `.betterleaksignore` is not honored either. `--i-accept-vetting-drift` and `--i-accept-unmasked-secrets` are unaffected. |
+
+```yaml
+# <overlay>/config.yaml — or ~/.sandbox/config.yaml
+vetting_forbid_unvetted_override: true
+```
+
+Read from both the overlay and your own config, this is **tightening-only**:
+`true` (override disabled) wins if either sets it. A **missing trust root** under
+`required` is likewise treated as an operator misconfiguration and fails closed
+regardless of any override — fix the trust root rather than overriding past it.

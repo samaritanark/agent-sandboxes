@@ -659,46 +659,69 @@ _leakscan_finding_accepted() {
     ls-files --error-unmatch -- "${relpath}" >/dev/null 2>&1
 }
 
-# vetted_accepted_fingerprints <repo> — the repo-root ignore-file fingerprints
-# (`relpath:rule:line`) to honor for a repo at launch, or NOTHING unless the
-# repo is currently vetted (a signed attestation verifies over a clean tree —
-# vetting_status_repo). The committed list carries weight only because the
-# vetting signature covers it; an unvetted (or unsignable) repo's list is
+# vetted_accepted_fingerprints <repo> [accept_unvetted] — the repo-root
+# ignore-file fingerprints (`relpath:rule:line`) to honor for a repo at launch,
+# or NOTHING unless the repo is currently vetted (a signed attestation verifies
+# over a clean tree — vetting_status_repo). The list carries weight only because
+# the vetting signature backs it; an unvetted (or unsignable) repo's list is
 # ignored, independent of the vetting *posture* (off/advisory/required).
 # Consumed by the secret gate and the `sandbox check` preview to decide what
 # scan_repo_secrets may downgrade to `accepted`.
 #
-# The list is read from a COMMITTED blob (vetting_committed_ignore_fingerprints),
-# never the working tree: "vetted" only guarantees the tracked tree is clean, and
-# `git status --porcelain` does not flag gitignored files, so a working-tree read
-# would honor a gitignored/uncommitted ignore file the signature never covered.
+# ACCEPTED-UNVETTED. When accept_unvetted == "true" — the operator passed
+# --i-accept-unvetted-repo (and no overlay forbade it; see
+# vetting_forbid_unvetted_override in lib/vetting.sh) — an UNVETTED repo's
+# working-copy list IS honored, because accepting an unvetted repo accepts
+# everything about it, exactly as a drift-accepted (still-vetted) repo has its
+# exceptions honored. The override is per-launch and audited; the org's control
+# over it is the forbid knob, so control of the exception is precisely control of
+# the override. The downstream tracked-file guard on the secret's own file still
+# applies. Default "false" preserves the ignore-nothing behavior (e.g. the
+# `sandbox check` preview, which has no accept flag).
 #
-# DRIFT AND THE SIGNATURE. The vetting gate accepts an attestation that is an
-# ANCESTOR of HEAD (see lib/vetting.sh), so a `vetted` repo may be N commits
-# behind: HEAD is then NOT the signed commit, and HEAD's .betterleaksignore was
-# never acknowledged by a signer. Honoring an exception exposes a plaintext value
-# to the agent, and that exposure is blessed by a signer at attest time
-# (_vetting_acknowledge_exceptions), not by the code review behind ordinary
-# drift — and in this tool's own workflow the drifting commits can be the agent's
-# own unreviewed work on the workspace. So we read the list from the ATTESTED
-# tag's commit, never HEAD: every honored fingerprint is one a signer actually
-# acknowledged, and drift can introduce nothing — an entry added on a later,
-# unsigned commit is simply not read until a signer re-attests the new HEAD.
-# This holds at any drift distance, so no cap or prompt gates it. The optional
-# vetting_exceptions_require_head knob (default off; see lib/vetting.sh) layers a
-# stricter "attestation must be exactly at HEAD" posture on top for teams that
-# want it; failing closed (honor nothing) when strict and behind is unknown.
+# SOURCE OF THE LIST. By default the list is read from the WORKING-COPY ignore
+# file (load_repo_ignore_fingerprints, tracked or not) — the same file the team's
+# CI/pre-commit betterleaks runs read, so the file you edit is the file that
+# counts. The optional vetting_exceptions_from_commit knob (default off; see
+# lib/vetting.sh) instead reads only the ATTESTED tag's COMMITTED blob
+# (vetting_committed_ignore_fingerprints), the stricter source: every honored
+# entry is then one the signature covers and a signer acknowledged at attest time
+# (_vetting_acknowledge_exceptions), and drift can introduce nothing.
+#
+# DRIFT. The vetting gate accepts an attestation that is an ANCESTOR of HEAD (see
+# lib/vetting.sh), so a `vetted` repo may be N commits behind. Under the default
+# working-copy source that means a later, unsigned commit CAN change the honored
+# list — an accepted relaxation, bounded by two things that always hold: the repo
+# must be vetted at all (some signer reviewed an ancestor), and the downstream
+# tracked-file gate on the SECRET's own file still applies (see scan_repo_secrets
+# / _leakscan_finding_accepted), so a finding in a gitignored/untracked file is
+# never accepted regardless of the list. Teams that want drift to introduce
+# nothing set vetting_exceptions_from_commit: true. The optional
+# vetting_exceptions_require_head knob (default off) layers a stricter
+# "attestation must be exactly at HEAD" posture on top of either source; failing
+# closed (honor nothing) when strict and behind is unknown.
 vetted_accepted_fingerprints() {
-  local repo="$1" line status tag behind
+  local repo="$1" accept_unvetted="${2:-false}" line status tag behind
   line="$(vetting_status_repo "${repo}" 2>/dev/null)"
   IFS=$'\t' read -r status _ tag _ behind _ <<<"${line}"
-  [[ "${status}" == "vetted" && -n "${tag}" ]] || return 0
+  if [[ "${status}" != "vetted" || -z "${tag}" ]]; then
+    # Not vetted. Honor nothing, unless the operator accepted this unvetted repo
+    # outright (--i-accept-unvetted-repo). There is no attestation to anchor to,
+    # so read the working-copy list — the same default source a vetted repo uses.
+    # See the ACCEPTED-UNVETTED note above.
+    [[ "${accept_unvetted}" == "true" ]] && load_repo_ignore_fingerprints "${repo}"
+    return 0
+  fi
   if [[ "$(vetting_exceptions_require_head)" == "true" && "${behind:-1}" -ne 0 ]]; then
     return 0
   fi
-  # Read from the attested tag's commit, not HEAD, so drift cannot introduce an
-  # exception no signer acknowledged. See the DRIFT note above.
-  vetting_committed_ignore_fingerprints "${repo}" "${tag}"
+  if [[ "$(vetting_exceptions_from_commit)" == "true" ]]; then
+    # Strict source: only signature-covered entries from the attested commit.
+    vetting_committed_ignore_fingerprints "${repo}" "${tag}"
+  else
+    # Default: the working-copy ignore file (tracked or not), matching CI.
+    load_repo_ignore_fingerprints "${repo}"
+  fi
 }
 
 # scan_repo_secrets <repo> [accept_file] — scan a workspace with betterleaks and
@@ -981,9 +1004,13 @@ _print_exceptions_add_commands() {
   done
 }
 
-# secret_gate_repos <accept_flag> <endpoint_trusted> <repo>... — scan every
-# workspace with betterleaks and refuse the launch if any secret lives in a file
-# the mask would not hide. Fail closed: a missing betterleaks aborts.
+# secret_gate_repos <accept_flag> <endpoint_trusted> <accept_unvetted> <repo>...
+# — scan every workspace with betterleaks and refuse the launch if any secret
+# lives in a file the mask would not hide. Fail closed: a missing betterleaks
+# aborts. accept_unvetted ("true" when --i-accept-unvetted-repo was accepted, and
+# not forbidden by the overlay) is threaded to vetted_accepted_fingerprints so an
+# accepted-unvetted repo's exception list is honored, mirroring a drift-accepted
+# vetted repo — see that function's ACCEPTED-UNVETTED note.
 #
 # There are four outcomes for a would-be-blocking finding (an unmasked secret or
 # one in .git/config); masked / encrypted-at-rest / vetted-accepted findings
@@ -1005,6 +1032,7 @@ _print_exceptions_add_commands() {
 secret_gate_repos() {
   local accept="$1"; shift
   local endpoint_trusted="$1"; shift
+  local accept_unvetted="$1"; shift
   local -a repos=("$@")
   [[ "${#repos[@]}" -gt 0 ]] || return 0
 
@@ -1036,7 +1064,7 @@ secret_gate_repos() {
     # The exceptions list is honored only for a currently-vetted repo; otherwise
     # this file is empty and nothing is downgraded to `accepted`.
     accept_file="$(mktemp "${TMPDIR:-/tmp}/sandbox-accept-XXXXXX")"
-    vetted_accepted_fingerprints "${repo}" > "${accept_file}" 2>/dev/null || true
+    vetted_accepted_fingerprints "${repo}" "${accept_unvetted}" > "${accept_file}" 2>/dev/null || true
     while IFS=$'\t' read -r m relpath ruleid ln match; do
       [[ -z "${relpath}" ]] && continue
       # An `error` sentinel means betterleaks could not be trusted to have
@@ -1071,21 +1099,45 @@ secret_gate_repos() {
     echo "  ${total_encrypted} secret finding(s) are encrypted at rest (SealedSecret/SOPS); the agent reads only ciphertext."
   fi
   if [[ "${total_accepted}" -gt 0 ]]; then
-    echo "  ${total_accepted} secret finding(s) accepted via the vetted exceptions list (reviewed false positives; the agent WILL read these)."
+    echo "  ${total_accepted} secret finding(s) accepted via the repo's exceptions list (reviewed false positives; the agent WILL read these)."
   fi
+
+  # Base outcome for the audit log (SESSION_SECRET_SUMMARY is read by the audit
+  # hook once session.json exists — this gate runs before that, like vetting).
+  # source= records WHERE any accepted exceptions were read from — the signature-
+  # covered committed blob or the agent-writable working copy — the distinction
+  # that made the working-copy default a concern; a reviewer needs it beside the
+  # count, so it rides the same value the gate already resolved above.
+  local _src="working-copy"
+  [[ "$(vetting_exceptions_from_commit)" == "true" ]] && _src="commit"
+  local _counts="masked=${total_masked}, encrypted=${total_encrypted}, accepted=${total_accepted}, source=${_src}"
+  SESSION_SECRET_SUMMARY="no unmasked secrets (${_counts})"
 
   if [[ "${#unmasked[@]}" -eq 0 && "${#gitconfig[@]}" -eq 0 ]]; then
     echo "  betterleaks: no unmasked secrets."
     return 0
   fi
 
+  # Workspaces carrying the unmasked finding(s), for the override record.
+  local _unmasked_n=$(( ${#unmasked[@]} + ${#gitconfig[@]} ))
+  local _e
+  local -a _affected=()
+  read_into_array _affected < <(
+    for _e in "${unmasked[@]+"${unmasked[@]}"}" "${gitconfig[@]+"${gitconfig[@]}"}"; do
+      printf '%s\n' "${_e%%$'\t'*}"
+    done | awk 'NF && !seen[$0]++')
+
   if [[ "${accept}" == "true" ]]; then
     echo "" >&2
-    echo "  NOTICE: $(( ${#unmasked[@]} + ${#gitconfig[@]} )) unmasked secret(s) found. Proceeding anyway" >&2
+    echo "  NOTICE: ${_unmasked_n} unmasked secret(s) found. Proceeding anyway" >&2
     echo "  because --i-accept-unmasked-secrets was given — the agent WILL read these:" >&2
     [[ "${#unmasked[@]}" -gt 0 ]] && _print_unmasked_findings "${unmasked[@]}"
     [[ "${#gitconfig[@]}" -gt 0 ]] && _print_unmasked_findings "${gitconfig[@]}"
     echo "" >&2
+    SESSION_SECRET_SUMMARY="OVERRIDE accepted ${_unmasked_n} unmasked secret(s) via --i-accept-unmasked-secrets (${_counts})"
+    record_override "flag:--i-accept-unmasked-secrets" \
+      "${_unmasked_n} unmasked secret(s) the agent will read" \
+      "${_affected[@]+"${_affected[@]}"}"
     return 0
   fi
 
@@ -1111,6 +1163,10 @@ secret_gate_repos() {
     if [[ "${reply}" =~ ^[Yy] ]]; then
       echo "  Proceeding — the agent will read the secret(s) above." >&2
       echo "" >&2
+      SESSION_SECRET_SUMMARY="accepted ${_unmasked_n} unmasked secret(s) via interactive prompt (trusted endpoint) (${_counts})"
+      record_override "interactive-prompt" \
+        "${_unmasked_n} unmasked secret(s) the agent will read (trusted inference endpoint)" \
+        "${_affected[@]+"${_affected[@]}"}"
       return 0
     fi
     echo "  Aborted; the sandbox was not started." >&2

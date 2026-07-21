@@ -34,8 +34,13 @@
 #     operator accepts that drift, or an overlay bounds it with
 #     vetting_max_commits_behind: (0 meaning "must sit exactly at HEAD" — the
 #     strict pre-drift behavior). A tag on a divergent line — not an ancestor of
-#     HEAD — does not count. A dirty working tree is always refused: uncommitted
-#     edits are unreviewed and would ride along unattested.
+#     HEAD — does not count. Vetting is anchored to the COMMIT GRAPH, not the
+#     working directory: an attestation covers a commit, so working-tree state
+#     (uncommitted edits to tracked files, staged changes, untracked files) does
+#     NOT un-vet a repo by default — HEAD carrying a verified ancestor tag is what
+#     matters. An overlay/user that wants the workspace to match the attested
+#     commit exactly sets vetting_require_clean_worktree: true (see below), which
+#     restores the strict "any dirty tree is refused" behavior.
 #   - Recency (optional): vetting_max_age_days: expires an attestation once it is
 #     older than N days, forcing a periodic re-vet no matter how little the code
 #     has moved. The age is the attestation tag's tagger date — part of the signed
@@ -181,18 +186,15 @@ _vetting_age_days() {
   echo "$(( (now - epoch) / 86400 ))"
 }
 
-# vetting_exceptions_require_head — "true" when a repo's committed secret
-# exceptions (the root .betterleaksignore) may be honored ONLY while the verified
-# attestation sits exactly at HEAD; "false" (the default) honors them whenever
-# the repo is vetted, drift included. This is an OPTIONAL extra-strict mode, not
-# the primary safety control: the gate reads the honored list from the ATTESTED
-# tag's commit (vetted_accepted_fingerprints), so every honored exception is one
-# a signer acknowledged at attest time (_vetting_acknowledge_exceptions) no
-# matter how far HEAD has drifted — an entry added on a later, unsigned commit is
-# never read until a signer re-attests. The default is therefore already safe.
-# Setting this "true" adds a stricter posture for teams that want every honored
-# exception to ride a *current* attestation (behind==0) rather than an older but
-# still-valid acknowledgment. Read from BOTH the user config and the overlay
+# vetting_exceptions_require_head — "true" when a repo's secret exceptions (the
+# root .betterleaksignore) may be honored ONLY while the verified attestation
+# sits exactly at HEAD; "false" (the default) honors them whenever the repo is
+# vetted, drift included. This is an OPTIONAL extra-strict mode. It composes with
+# vetting_exceptions_from_commit (which selects the SOURCE of the honored list —
+# the working copy by default, or the attested commit's blob): require_head
+# bounds the DRIFT under which either source is trusted, so an operator can
+# require that honored exceptions ride a *current* attestation (behind==0) rather
+# than an older-but-still-valid one. Read from BOTH the user config and the overlay
 # config, TIGHTENING-ONLY: strict ("true") wins if EITHER sets it, so an overlay
 # can ratchet exception-handling up and never down — the same "additive on the
 # safety side" rule the posture and the drift cap follow. Anything but a literal
@@ -204,6 +206,93 @@ vetting_exceptions_require_head() {
   overlay="$(resolve_overlay_path 2>/dev/null || true)"
   [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] && \
     overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_exceptions_require_head)"
+  if [[ "${user_v}" == "true" || "${overlay_v}" == "true" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
+# vetting_require_clean_worktree — "true" when the working tree must be CLEAN for
+# a repo to count as vetted (or to be attested), so any uncommitted edit to a
+# tracked file, staged change, OR untracked file un-vets it — the strict "the
+# workspace must match the attested commit exactly" posture. "false" (the default)
+# anchors vetting to the COMMIT GRAPH only: working-tree state is ignored, because
+# an attestation covers a commit, not the working directory, and a repo whose HEAD
+# carries a verified ancestor tag stays vetted no matter what the working tree
+# looks like. Teams that want the agent to run only on a pristine, exactly-attested
+# tree set this true (an uncommitted edit — or an untracked file the agent or a
+# contributor dropped — then refuses the launch until committed or cleaned). Read
+# from BOTH the user config and the overlay config, TIGHTENING-ONLY: strict
+# ("true") wins if EITHER sets it, so an overlay can ratchet this up and never
+# down — the same "additive on the safety side" rule the posture and drift caps
+# follow. Anything but a literal `true` (unset, false, a typo) leaves the default.
+vetting_require_clean_worktree() {
+  local user_v="" overlay_v="" overlay
+  [[ -f "${USER_SANDBOX_CONFIG}" ]] && \
+    user_v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_require_clean_worktree)"
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] && \
+    overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_require_clean_worktree)"
+  if [[ "${user_v}" == "true" || "${overlay_v}" == "true" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
+# vetting_exceptions_from_commit — selects WHERE the secret gate reads a vetted
+# repo's honored exception list from. "false" (the default) reads the WORKING-COPY
+# .betterleaksignore (tracked or not), matching how the team's CI/pre-commit
+# betterleaks runs read it — the file you actually edit is the file that counts.
+# "true" restores the stricter behavior: read the list only from the ATTESTED
+# tag's COMMITTED blob (vetting_committed_ignore_fingerprints), so every honored
+# entry is one the signature covers and a signer acknowledged at attest time
+# (_vetting_acknowledge_exceptions) — drift can then introduce nothing, since a
+# later, unsigned commit's list is never read until a signer re-attests. Either
+# way the repo must be vetted for ANY exception to count (vetted_accepted_-
+# fingerprints), and the downstream tracked-file gate on the SECRET's own file
+# still applies (a finding in a gitignored/untracked file is never accepted).
+# Read from BOTH the user config and the overlay config, TIGHTENING-ONLY: strict
+# ("true", the committed-blob source) wins if EITHER sets it, so an overlay can
+# ratchet exception-handling up and never down — the same "additive on the safety
+# side" rule the posture and the drift cap follow. Anything but a literal `true`
+# (unset, false, a typo) leaves the working-copy default.
+vetting_exceptions_from_commit() {
+  local user_v="" overlay_v="" overlay
+  [[ -f "${USER_SANDBOX_CONFIG}" ]] && \
+    user_v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_exceptions_from_commit)"
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] && \
+    overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_exceptions_from_commit)"
+  if [[ "${user_v}" == "true" || "${overlay_v}" == "true" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
+# vetting_forbid_unvetted_override — "true" when the --i-accept-unvetted-repo
+# launch override is DISABLED, so under `vetting: required` a workspace with no
+# accepted, verified attestation cannot be forced through at all (and, because
+# accepting an unvetted repo is what lets its exception list be honored, this is
+# also the org's control over that). "false" (the default) keeps the override
+# available — audited, per-launch operator consent. This is the org's answer to
+# "required must mean required": a team that never wants an unvetted repo to
+# launch sets it in the overlay. It does NOT touch --i-accept-vetting-drift (a
+# drift/staleness acceptance on an already-vetted repo) or --i-accept-unmasked-
+# secrets (the separate secret-gate consent). Read from BOTH the user config and
+# the overlay config, TIGHTENING-ONLY: strict ("true", override disabled) wins if
+# EITHER sets it, so an overlay can ratchet it up and never down — the same
+# "additive on the safety side" rule the posture and drift caps follow. Anything
+# but a literal `true` (unset, false, a typo) leaves the override available.
+vetting_forbid_unvetted_override() {
+  local user_v="" overlay_v="" overlay
+  [[ -f "${USER_SANDBOX_CONFIG}" ]] && \
+    user_v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_forbid_unvetted_override)"
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] && \
+    overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_forbid_unvetted_override)"
   if [[ "${user_v}" == "true" || "${overlay_v}" == "true" ]]; then
     echo "true"
   else
@@ -422,9 +511,14 @@ vetting_status_repo() {
 
   local head_sha
   head_sha="$(_vetting_git "${real_repo}" rev-parse HEAD 2>/dev/null)" || {
-    printf 'error\t%s has no HEAD commit (empty repository?)\n' "${repo}"; return 0; }
+    printf 'error\t%s has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo %s\n' "${repo}" "${repo}"; return 0; }
 
-  if [[ -n "$(_vetting_git "${real_repo}" status --porcelain 2>/dev/null)" ]]; then
+  # Working-tree state does not un-vet by default (vetting is anchored to the
+  # commit graph, not the working directory). Only when an overlay/user demands a
+  # pristine tree does a dirty working tree — any tracked edit, staged change, or
+  # untracked file — mark the repo dirty. See vetting_require_clean_worktree.
+  if [[ "$(vetting_require_clean_worktree)" == "true" \
+        && -n "$(_vetting_git "${real_repo}" status --porcelain 2>/dev/null)" ]]; then
     printf 'dirty\t%s\n' "${head_sha}"; return 0
   fi
 
@@ -459,8 +553,26 @@ vetting_status_repo() {
   done
 
   if [[ "${#ranked[@]}" -eq 0 ]]; then
-    printf 'unvetted\t%s\tno reachable %s* attestation tag\n' \
-      "${head_sha}" "${SANDBOX_VETTING_TAG_PREFIX}"
+    # No ANCESTOR attestation tag. Distinguish two very different situations so
+    # the refusal can point at the actual fix: (a) no attestation tag exists
+    # locally at all — commonly a tag-less or shallow checkout (CI's default
+    # fetches no tags), so a real upstream attestation was simply never pulled
+    # down; (b) attestation tag(s) do exist but sit on commits HEAD does not
+    # descend from — an older checkout or a divergent branch — where the fix is
+    # to move to the vetted commit or attest this HEAD, not to fetch anything.
+    local ntags=0 tt
+    for tt in "${all_tags[@]}"; do [[ -n "${tt}" ]] && ntags=$((ntags + 1)); done
+    local reason
+    if [[ "${ntags}" -eq 0 ]]; then
+      if [[ "$(_vetting_git "${real_repo}" rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
+        reason="no ${SANDBOX_VETTING_TAG_PREFIX}* tag present, and this is a shallow clone — if the repo is vetted upstream, 'git fetch --unshallow --tags' may reveal the attestation"
+      else
+        reason="no ${SANDBOX_VETTING_TAG_PREFIX}* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation"
+      fi
+    else
+      reason="${ntags} ${SANDBOX_VETTING_TAG_PREFIX}* tag(s) present but none is an ancestor of HEAD (an older checkout or a divergent branch?) — check out the vetted commit, or attest this HEAD"
+    fi
+    printf 'unvetted\t%s\t%s\n' "${head_sha}" "${reason}"
     return 0
   fi
 
@@ -503,8 +615,8 @@ _vetting_print_findings() {
     case "${status}" in
       unvetted) echo "    ${repo}: no verified attestation (HEAD ${f2:0:12}; ${f3})" >&2 ;;
       drift)    echo "    ${repo}: ${f3} (HEAD ${f2:0:12})" >&2 ;;
-      dirty)    echo "    ${repo}: uncommitted changes — commit or stash, then attest (HEAD ${f2:0:12})" >&2 ;;
-      not-git)  echo "    ${repo}: not a git repository — cannot carry an attestation" >&2 ;;
+      dirty)    echo "    ${repo}: working tree is not clean (vetting_require_clean_worktree is set) — commit, stash (git stash -u), or remove the changes, then attest (HEAD ${f2:0:12})" >&2 ;;
+      not-git)  echo "    ${repo}: not a git repository — run 'git init' and make a commit, then attest with 'sandbox vet --repo ${repo}'" >&2 ;;
       error)    echo "    ${repo}: ${f2}" >&2 ;;
       *)        echo "    ${repo}: ${status} ${f2}" >&2 ;;
     esac
@@ -534,7 +646,7 @@ _vetting_drift_decision() {
   local repo="$1" tag="$2" signer="$3" behind="$4" cap="$5"
   local age_days="$6" age_cap="$7" accept_unvetted="$8" accept_drift="$9"
 
-  local over_commit="false" over_age="false"
+  local over_commit="false" over_age="false" _m=""
   [[ -n "${cap}" && "${behind}" -gt "${cap}" ]] && over_commit="true"
   [[ -n "${age_cap}" && -n "${age_days}" && "${age_days}" -gt "${age_cap}" ]] && over_age="true"
 
@@ -543,6 +655,8 @@ _vetting_drift_decision() {
   if [[ "${over_commit}" == "true" ]]; then
     if [[ "${accept_unvetted}" == "true" ]]; then
       echo "  ${repo}: vetted but ${behind} commit(s) behind HEAD — over cap ${cap}, proceeding via --i-accept-unvetted-repo." >&2
+      record_override "flag:--i-accept-unvetted-repo" \
+        "vetted but ${behind} commit(s) behind HEAD, over the ${cap}-commit cap" "${repo}"
       return 0
     fi
     echo "  ${repo}: vetted at ${tag} but ${behind} commit(s) behind HEAD, exceeding the cap of ${cap}." >&2
@@ -561,6 +675,9 @@ _vetting_drift_decision() {
   if [[ "${over_age}" == "true" ]]; then
     if [[ "${accept_unvetted}" == "true" || "${accept_drift}" == "true" ]]; then
       echo "  ${repo}: attestation is ${age_days} day(s) old, over vetting_max_age_days ${age_cap} — accepted non-interactively (tag ${tag}, signer ${signer:-unknown})." >&2
+      _m="flag:--i-accept-vetting-drift"; [[ "${accept_drift}" == "true" ]] || _m="flag:--i-accept-unvetted-repo"
+      record_override "${_m}" \
+        "stale attestation ${age_days}d old (over the ${age_cap}-day window), code ${behind} commit(s) behind HEAD" "${repo}"
       return 0
     fi
     if [[ -t 0 && -t 1 ]]; then
@@ -573,6 +690,8 @@ _vetting_drift_decision() {
       read -r reply || true
       if [[ "${reply}" =~ ^[Yy] ]]; then
         echo "  Accepted." >&2
+        record_override "interactive-prompt" \
+          "stale attestation ${age_days}d old (over the ${age_cap}-day window) accepted" "${repo}"
         return 0
       fi
       echo "  Declined." >&2
@@ -587,6 +706,8 @@ _vetting_drift_decision() {
   # Fresh, but commit drift with no cap: an explicit acceptance flag, else a y/N.
   if [[ "${accept_unvetted}" == "true" || "${accept_drift}" == "true" ]]; then
     echo "  ${repo}: vetted ${behind} commit(s) behind HEAD — accepted non-interactively (tag ${tag}, signer ${signer:-unknown})." >&2
+    _m="flag:--i-accept-vetting-drift"; [[ "${accept_drift}" == "true" ]] || _m="flag:--i-accept-unvetted-repo"
+    record_override "${_m}" "${behind} commit(s) of unattested drift (no cap set)" "${repo}"
     return 0
   fi
   if [[ -t 0 && -t 1 ]]; then
@@ -599,6 +720,7 @@ _vetting_drift_decision() {
     read -r reply || true
     if [[ "${reply}" =~ ^[Yy] ]]; then
       echo "  Accepted." >&2
+      record_override "interactive-prompt" "${behind} commit(s) of unattested drift accepted" "${repo}"
       return 0
     fi
     echo "  Declined." >&2
@@ -627,6 +749,21 @@ vetting_gate_repos() {
   # the gate runs before that, so it records its outcome here for later logging.
   SESSION_VETTING_SUMMARY="posture=${posture}"
   [[ "${posture}" == "off" ]] && return 0
+
+  # An overlay can disable the --i-accept-unvetted-repo override entirely. If it
+  # does, neutralize the flag here (so an unvetted repo cannot be forced through,
+  # and the secret gate — which keys on the same acceptance — will not honor its
+  # exceptions either) and remember it so the refusal points at re-vetting rather
+  # than a forbidden flag. --i-accept-vetting-drift is untouched.
+  local override_forbidden="false"
+  if [[ "$(vetting_forbid_unvetted_override)" == "true" ]]; then
+    override_forbidden="true"
+    if [[ "${accept}" == "true" ]]; then
+      echo "  NOTICE: --i-accept-unvetted-repo is disabled by an overlay policy" >&2
+      echo "  (vetting_forbid_unvetted_override); it will not be honored." >&2
+      accept="false"
+    fi
+  fi
 
   local -a trust_roots=()
   read_into_array trust_roots < <(vetting_trust_roots)
@@ -782,6 +919,15 @@ vetting_gate_repos() {
     _vetting_print_findings "${unvetted[@]}"
     echo "" >&2
     SESSION_VETTING_SUMMARY="posture=required; OVERRIDE accepted ${#unvetted[@]} unvetted: ${detail}"
+    # Audit ledger: one override naming the flag and the affected workspaces.
+    local -a _unv_repos=()
+    for (( i=0; i<${#unvetted[@]}; i++ )); do
+      IFS=$'\t' read -r dr _ _ _ <<<"${unvetted[$i]}"
+      _unv_repos+=("${dr}")
+    done
+    record_override "flag:--i-accept-unvetted-repo" \
+      "${#unvetted[@]} unvetted workspace(s) launched without a verified attestation" \
+      "${_unv_repos[@]+"${_unv_repos[@]}"}"
     return 0
   fi
 
@@ -807,8 +953,14 @@ vetting_gate_repos() {
     echo "  window, re-vet, accept it (--i-accept-vetting-drift), or raise" >&2
     echo "        vetting_max_commits_behind: / vetting_max_age_days: in your config/overlay." >&2
   fi
-  echo "  Override (audited), accepting the risk for this launch:" >&2
-  echo "        re-run with --i-accept-unvetted-repo" >&2
+  if [[ "${override_forbidden}" == "true" ]]; then
+    echo "  The --i-accept-unvetted-repo override is disabled by an overlay policy" >&2
+    echo "  (vetting_forbid_unvetted_override), so it cannot be forced through — a" >&2
+    echo "  trusted reviewer must attest HEAD." >&2
+  else
+    echo "  Override (audited), accepting the risk for this launch:" >&2
+    echo "        re-run with --i-accept-unvetted-repo" >&2
+  fi
   echo "" >&2
   exit 1
 }
@@ -1002,9 +1154,15 @@ vetting_attest_repo() {
   if ! _vetting_git "${real_repo}" rev-parse --git-dir >/dev/null 2>&1; then
     echo "ERROR: ${repo} is not a git repository — nothing to attest." >&2; return 1
   fi
-  if [[ -n "$(_vetting_git "${real_repo}" status --porcelain 2>/dev/null)" ]]; then
-    echo "ERROR: ${repo} has uncommitted changes. Commit or stash first — an" >&2
-    echo "       attestation covers a specific commit, not a dirty tree." >&2
+  # The attestation tags HEAD, so a dirty working tree does not affect what is
+  # signed and is allowed by default (consistent with the launch gate, which
+  # anchors vetting to the commit graph). Only when a clean tree is required does
+  # attesting refuse one, so the signed commit describes exactly the reviewed tree.
+  if [[ "$(vetting_require_clean_worktree)" == "true" \
+        && -n "$(_vetting_git "${real_repo}" status --porcelain 2>/dev/null)" ]]; then
+    echo "ERROR: ${repo} has a dirty working tree and vetting_require_clean_worktree" >&2
+    echo "       is set. Commit, stash (git stash -u), or remove the changes first —" >&2
+    echo "       the attestation must describe exactly the reviewed tree." >&2
     return 1
   fi
 

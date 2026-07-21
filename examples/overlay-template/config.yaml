@@ -65,22 +65,66 @@ vetting: advisory
 #
 # vetting_max_age_days: 30
 
-# vetting_exceptions_require_head: an OPTIONAL extra-strict posture for a repo's
-# committed secret exceptions (the root .betterleaksignore). You usually do NOT
-# need this: the gate already reads the honored exception list from the ATTESTED
-# commit, not HEAD, so every honored exception is one a signer acknowledged at
-# attest time, no matter how far HEAD has drifted — an entry added on a later,
-# unsigned commit (by a contributor, or by the agent writing the workspace) is
-# simply not honored until a signer re-attests. Setting this true tightens that
-# further: honor exceptions ONLY while the verified attestation sits exactly at
-# HEAD (behind: 0), for teams that want every honored exception to ride a
-# *current* attestation rather than an older but still-valid acknowledgment.
-# Under any drift the list is then ignored and those findings block the launch
-# until you re-attest HEAD. Tightening-only: `true` wins if EITHER this overlay
-# or the operator sets it, so it can ratchet up and never down, the same
-# safety-additive rule the posture and the cap follow. See docs/how-to/vetting.md.
+# vetting_exceptions_from_commit: WHERE the secret gate reads a vetted repo's
+# honored exception list (the root .betterleaksignore) from. By DEFAULT (unset /
+# false) it reads the WORKING-COPY file, tracked or not — the same file your CI
+# and pre-commit betterleaks runs read, so the file a developer edits is the file
+# that counts. Set this true for the stricter source: read ONLY the ATTESTED
+# commit's committed blob, so every honored entry is one the signature covers and
+# a signer acknowledged at attest time, and a later/unsigned commit's changes are
+# never honored until a signer re-attests (drift introduces nothing). Either way
+# the repo must be vetted for ANY exception to count, and a finding in a
+# gitignored/untracked SECRET file is never accepted. Tightening-only: `true`
+# (the committed-blob source) wins if EITHER this overlay or the operator sets it.
+# See docs/how-to/vetting.md.
+#
+# vetting_exceptions_from_commit: true
+
+# vetting_exceptions_require_head: an OPTIONAL extra-strict posture that bounds
+# the DRIFT under which a vetted repo's secret exceptions are honored (independent
+# of vetting_exceptions_from_commit, which chooses the source). By default
+# exceptions are honored whenever the repo is vetted, drift included. Setting this
+# true honors them ONLY while the verified attestation sits exactly at HEAD
+# (behind: 0), for teams that want every honored exception to ride a *current*
+# attestation rather than an older but still-valid one. Under any drift the list
+# is then ignored and those findings block the launch until you re-attest HEAD.
+# Tightening-only: `true` wins if EITHER this overlay or the operator sets it, so
+# it can ratchet up and never down, the same safety-additive rule the posture and
+# the cap follow. See docs/how-to/vetting.md.
 #
 # vetting_exceptions_require_head: true
+
+# vetting_require_clean_worktree: an OPTIONAL extra-strict posture. By DEFAULT
+# vetting is anchored to the COMMIT GRAPH, not the working directory: a repo whose
+# HEAD carries a verified ancestor attestation stays vetted no matter what the
+# working tree looks like (uncommitted edits to tracked files, staged changes, and
+# untracked scratch files do NOT un-vet it), since an attestation covers a commit.
+# Set this true for teams that want the agent to run only on a pristine,
+# exactly-attested tree: any dirty working tree — tracked edit, staged change, or
+# untracked file — then refuses the launch (and attestation) until it is committed,
+# `git stash -u`'d, or removed. Note the tier-2/3 workspace is a copy of the
+# working tree, so uncommitted changes are visible to the agent by default; this
+# knob is what keeps them out. Tightening-only: `true` wins if EITHER this overlay
+# or the operator sets it, so it can ratchet up and never down, the same
+# safety-additive rule the posture and cap follow. See docs/how-to/vetting.md.
+#
+# vetting_require_clean_worktree: true
+
+# vetting_forbid_unvetted_override: disable the --i-accept-unvetted-repo launch
+# override entirely. By DEFAULT (unset / false) an operator can force a launch
+# under 'vetting: required' with --i-accept-unvetted-repo — audited, per-launch
+# consent — and doing so accepts EVERYTHING about the repo, including honoring its
+# working-copy .betterleaksignore exceptions (the same way a drift-accepted vetted
+# repo's are honored). Set this true so "required" truly means required: an
+# unvetted (or dirty/empty/non-git) workspace can no longer be forced through, and
+# — since accepting the repo is what lets its exceptions count — its exception
+# list is not honored either. Does NOT affect --i-accept-vetting-drift (accepting
+# drift on an already-vetted repo) or --i-accept-unmasked-secrets (the separate
+# secret-gate consent). Tightening-only: `true` (override disabled) wins if EITHER
+# this overlay or the operator sets it, so it can ratchet up and never down. See
+# docs/how-to/vetting.md.
+#
+# vetting_forbid_unvetted_override: true
 
 # vetting_trust_root: the team's reviewer list — WHOSE signatures count — shipped
 # WITH the overlay. A relative path resolves against the overlay root, so the

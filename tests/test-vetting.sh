@@ -4,7 +4,9 @@
 # tests/test-vetting.sh — Repo vetting gate tests
 # Verifies: resolve_vetting_posture layering (user baseline + advisory default,
 # overlay ratchets up only); vetting_status_repo classification (not-git, dirty,
-# unvetted, vetted); vetting_gate_repos posture behavior (off skips, advisory
+# unvetted, vetted); vetting_require_clean_worktree policy (working-tree state
+# ignored by default, any dirty tree un-vets when the knob is set via user or
+# overlay); vetting_gate_repos posture behavior (off skips, advisory
 # proceeds with a notice, required refuses, --i-accept-unvetted-repo overrides,
 # a missing trust root fails closed under required regardless of override). The
 # signature-dependent cases skip gracefully when SSH commit signing is
@@ -31,6 +33,8 @@ source "${SANDBOX_ROOT}/lib/profile.sh"
 # scans via the secret gate, so filesystem.sh is in scope here too.
 source "${SANDBOX_ROOT}/lib/filesystem.sh"
 source "${SANDBOX_ROOT}/lib/vetting.sh"
+# The gates record accepted overrides via record_override (lib/audit.sh).
+source "${SANDBOX_ROOT}/lib/audit.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -161,9 +165,101 @@ test_status_classification() {
   make_repo "${repo}"
   eq "clean repo, no tag -> unvetted" "unvetted" "$(vetting_status_repo "${repo}" | cut -f1)"
 
-  # dirty: uncommitted change.
+  # dirty: only when a clean worktree is required (default ignores working-tree
+  # state — see test_require_clean_worktree). A tracked edit on this untagged repo
+  # stays 'unvetted' by default, and becomes 'dirty' under the knob.
   echo "change" >> "${repo}/README.md"
-  eq "uncommitted change -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+  eq "uncommitted change, default -> unvetted (worktree ignored)" "unvetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+  write_config_with "vetting_require_clean_worktree: true"
+  eq "uncommitted change + require-clean -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+  write_trust_config
+}
+
+###############################################################################
+# vetting_status_repo — refusal reasons are resolution-oriented: empty repo and
+# non-git say what to do first; a tag-less checkout hints at fetching tags; an
+# older/divergent checkout says the tags exist but do not cover HEAD.
+###############################################################################
+test_status_reasons() {
+  info "Testing resolution-oriented vetting_status_repo reasons..."
+  write_trust_config
+  unset SANDBOX_OVERLAY
+
+  # Empty repo (git init, no commits) -> error with a make-a-commit resolution.
+  local empty="${TEST_DIR}/reason-empty"
+  mkdir -p "${empty}"; git -C "${empty}" init -q
+  local line; line="$(vetting_status_repo "${empty}")"
+  eq "empty repo -> error" "error" "$(printf '%s' "${line}" | cut -f1)"
+  case "${line}" in
+    *"empty repository"*"initial commit"*) pass "empty repo reason names the fix" ;;
+    *) fail "empty repo reason should say to make an initial commit" ;;
+  esac
+
+  # Tag-less committed repo -> unvetted, hint to fetch tags.
+  local repo="${TEST_DIR}/reason-tagless"
+  make_repo "${repo}"
+  line="$(vetting_status_repo "${repo}")"
+  case "${line}" in
+    *"git fetch --tags"*) pass "tag-less repo hints at git fetch --tags" ;;
+    *) fail "tag-less repo should hint at fetching tags" ;;
+  esac
+
+  # Attestation tag exists but is NOT an ancestor of HEAD (older checkout /
+  # divergent). A lightweight agent-vetted/* tag on a descendant commit suffices
+  # to exercise the branch without signing.
+  local repo2="${TEST_DIR}/reason-divergent"
+  make_repo "${repo2}"                                   # commit A = HEAD
+  git -C "${repo2}" commit -q --allow-empty -m "B"       # commit B
+  git -C "${repo2}" tag "agent-vetted/$(git -C "${repo2}" rev-parse HEAD)"  # tag at B
+  git -C "${repo2}" checkout -q HEAD~1                   # detach at A (B is a descendant)
+  line="$(vetting_status_repo "${repo2}")"
+  eq "divergent checkout -> unvetted" "unvetted" "$(printf '%s' "${line}" | cut -f1)"
+  case "${line}" in
+    *"none is an ancestor of HEAD"*) pass "divergent checkout reason names the mismatch" ;;
+    *) fail "divergent checkout reason should say the tag is not an ancestor of HEAD" ;;
+  esac
+}
+
+###############################################################################
+# vetting_require_clean_worktree — working-tree state (tracked edits, staged
+# changes, untracked files) is ignored by default; when the knob is set (via user
+# or overlay, tightening-only) any dirty tree un-vets the repo.
+###############################################################################
+test_require_clean_worktree() {
+  info "Testing vetting_require_clean_worktree (working-tree dirty policy)..."
+  unset SANDBOX_OVERLAY
+  write_trust_config
+
+  local repo="${TEST_DIR}/repo-worktree"
+  make_repo "${repo}"
+
+  # Default: neither an untracked file nor a tracked edit marks the tree dirty
+  # (clean repo, no tag -> unvetted, never dirty).
+  eq "require-clean default -> false" "false" "$(vetting_require_clean_worktree)"
+  touch "${repo}/dumbtest"
+  eq "untracked file, default -> not dirty" "unvetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+  echo "change" >> "${repo}/README.md"
+  eq "tracked edit, default -> not dirty" "unvetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+
+  # User config opts in: any dirty tree (tracked edit and/or untracked file) now
+  # counts as dirty.
+  write_config_with "vetting_require_clean_worktree: true"
+  eq "require-clean=true (user)" "true" "$(vetting_require_clean_worktree)"
+  eq "dirty tree, require-clean -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+
+  # An untracked file alone also un-vets under the knob.
+  git -C "${repo}" checkout -q -- README.md
+  eq "untracked-only, require-clean -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+
+  # Tightening-only: an overlay can ratchet it up while the user is silent.
+  write_trust_config   # reset user config (no knob)
+  local overlay="${TEST_DIR}/overlay-worktree"
+  mkdir -p "${overlay}"
+  printf 'vetting_require_clean_worktree: true\n' > "${overlay}/config.yaml"
+  export SANDBOX_OVERLAY="${overlay}"
+  eq "require-clean via overlay -> true" "true" "$(vetting_require_clean_worktree)"
+  eq "dirty tree, overlay require-clean -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+  unset SANDBOX_OVERLAY
 }
 
 ###############################################################################
@@ -250,12 +346,13 @@ test_vetted_repo_allowed_domains() {
   eq "vetted -> first committed domain"        "one.example.com" "$(printf '%s\n' "${out}" | sed -n 1p)"
 
   # Agent self-widening: edit the working-tree config to add a host, DON'T commit.
-  # The edit dirties the tree, so the repo is no longer vetted and NOTHING is honored
-  # — the working-tree value (evil.example.com) is never granted.
+  # Working-tree edits no longer un-vet the repo (vetting is commit-anchored), but
+  # egress domains are read from the COMMITTED blob (vetting_committed_allowed_domains),
+  # so the uncommitted working-tree value (evil.example.com) is still never granted.
   write_repo_domains "${repo}" one.example.com two.example.com evil.example.com
-  eq "working-tree edit -> repo dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+  eq "working-tree edit -> repo still vetted" "vetted" "$(vetting_status_repo "${repo}" | cut -f1)"
   out="$(vetted_repo_allowed_domains "${repo}")"
-  eq "dirty tree -> nothing honored" "0" "$(count_lines "${out}")"
+  eq "committed list still honored, working-tree edit ignored" "2" "$(count_lines "${out}")"
   printf '%s\n' "${out}" | grep -q "evil.example.com" \
     && fail "SECURITY: uncommitted working-tree domain was honored" \
     || pass "uncommitted working-tree domain is not honored"
@@ -340,6 +437,20 @@ test_gate_posture() {
   # required + override: proceeds.
   ( vetting_gate_repos "required" "true" "false" "${repo}" >/dev/null 2>&1 ) \
     && pass "override proceeds despite unvetted" || fail "override should proceed"
+
+  # required + override, but the overlay/user forbids the override: refuses
+  # anyway, and the refusal names the knob rather than suggesting the flag.
+  write_config_with "vetting_forbid_unvetted_override: true"
+  local out; out="$( ( vetting_gate_repos "required" "true" "false" "${repo}" </dev/null 2>&1 ) || true )"
+  case "${out}" in
+    *vetting_forbid_unvetted_override*) pass "forbidden override refuses and names the knob" ;;
+    *) fail "forbidden override should refuse and name the knob" ;;
+  esac
+  if ( vetting_gate_repos "required" "true" "false" "${repo}" </dev/null >/dev/null 2>&1 ); then
+    fail "forbidden override should not proceed"
+  fi
+  pass "forbidden override does not proceed"
+  write_trust_config
 }
 
 ###############################################################################
@@ -826,6 +937,7 @@ source "${SANDBOX_ROOT}/lib/config.sh"
 source "${SANDBOX_ROOT}/lib/profile.sh"
 source "${SANDBOX_ROOT}/lib/filesystem.sh"
 source "${SANDBOX_ROOT}/lib/vetting.sh"
+source "${SANDBOX_ROOT}/lib/audit.sh"
 vetting_gate_repos "required" "false" "false" "\$1"
 EOF
 
@@ -1223,11 +1335,12 @@ test_exceptions_require_head_config() {
 }
 
 ###############################################################################
-# vetted_accepted_fingerprints under drift — the default honors HEAD's list, the
-# strict knob honors it only at HEAD (needs SSH signing).
+# vetted_accepted_fingerprints source — the default reads the WORKING COPY; the
+# vetting_exceptions_from_commit knob reads the attested commit's blob; the
+# require_head knob bounds drift for both (needs SSH signing).
 ###############################################################################
-test_exceptions_require_head_gate() {
-  info "Testing exception honoring under drift (gate reads the attested commit)..."
+test_exceptions_source_and_drift() {
+  info "Testing exception source (working copy vs attested commit) and drift..."
   write_trust_config
   unset SANDBOX_OVERLAY
 
@@ -1239,41 +1352,208 @@ test_exceptions_require_head_gate() {
   git -C "${repo}" add -A; git -C "${repo}" commit -q -m "base with one exception"
   attest_repo "${repo}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; return 0; }
 
-  # At HEAD (behind 0) the signature covers the list, so it is honored under BOTH
-  # the default and the strict knob.
+  # At HEAD (behind 0), working copy == committed blob, so it is honored under
+  # BOTH the default (working copy) and the from_commit knob.
   case "$(vetted_accepted_fingerprints "${repo}")" in
-    *deploy/values.yaml:generic-api-key:155*) pass "at HEAD, default honors the signed exception" ;;
-    *) fail "at HEAD, default should honor the signed exception" ;;
+    *deploy/values.yaml:generic-api-key:155*) pass "at HEAD, default (working copy) honors the exception" ;;
+    *) fail "at HEAD, default should honor the exception" ;;
   esac
-  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_exceptions_require_head: true\n' \
+  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_exceptions_from_commit: true\n' \
     "${TRUST_ROOT}" > "${USER_SANDBOX_CONFIG}"
   case "$(vetted_accepted_fingerprints "${repo}")" in
-    *deploy/values.yaml:generic-api-key:155*) pass "at HEAD, strict honors it (behind 0)" ;;
-    *) fail "at HEAD, strict should honor the signed exception (behind 0)" ;;
+    *deploy/values.yaml:generic-api-key:155*) pass "at HEAD, from_commit honors the committed exception" ;;
+    *) fail "at HEAD, from_commit should honor the committed exception" ;;
   esac
 
-  # Drift: a later, unsigned commit rewrites .betterleaksignore to smuggle in a
-  # brand-new exception no signer acknowledged (and drop the reviewed one). In
-  # this tool's own workflow that commit can be the agent's own workspace edit.
+  # Drift: a later, unsigned commit rewrites .betterleaksignore, dropping the
+  # reviewed entry and adding a brand-new one no signer acknowledged. In this
+  # tool's own workflow that commit can be the agent's own workspace edit.
   printf 'deploy/secret.yaml:generic-api-key:9\n' > "${ignore}"
   git -C "${repo}" add -A; git -C "${repo}" commit -q -m "drift rewrites the exception list"
   eq "drift repo reports behind 1" "1" "$(vetting_status_repo "${repo}" | cut -f5)"
 
-  # Strict (config still set): behind != 0 -> honor NOTHING. Re-attest to restore.
-  eq "strict + drift honors nothing" "" "$(vetted_accepted_fingerprints "${repo}")"
-
-  # Default: the gate reads the ATTESTED commit, so the drift-added entry is NOT
-  # honored, and the originally-signed one still IS — drift introduces nothing.
-  write_trust_config
+  # from_commit (config still set): reads the ATTESTED commit, so the drift-added
+  # entry is NOT honored and the originally-signed one still IS.
   local out; out="$(vetted_accepted_fingerprints "${repo}")"
   case "${out}" in
-    *deploy/secret.yaml*) fail "SECURITY: drift-added exception was honored — gate read HEAD, not the attested commit" ;;
-    *) pass "default + drift does NOT honor the smuggled exception" ;;
+    *deploy/secret.yaml*) fail "SECURITY: from_commit honored a drift-added entry — must read the attested commit" ;;
+    *) pass "from_commit + drift does NOT honor the smuggled entry" ;;
   esac
   case "${out}" in
-    *deploy/values.yaml:generic-api-key:155*) pass "default + drift still honors the attested commit's exception" ;;
-    *) fail "default + drift should still honor the attested commit's original exception" ;;
+    *deploy/values.yaml:generic-api-key:155*) pass "from_commit + drift still honors the attested commit's entry" ;;
+    *) fail "from_commit + drift should still honor the attested original" ;;
   esac
+
+  # Default (working copy): the working tree now shows only the drift-added entry,
+  # so THAT is honored and the dropped original is not. This is the accepted
+  # relaxation — the file you edit is the file that counts, on a vetted repo.
+  write_trust_config
+  out="$(vetted_accepted_fingerprints "${repo}")"
+  case "${out}" in
+    *deploy/secret.yaml:generic-api-key:9*) pass "default reads the working copy (honors the current entry)" ;;
+    *) fail "default should honor the working-copy entry" ;;
+  esac
+  case "${out}" in
+    *deploy/values.yaml*) fail "default should NOT honor the dropped original (not in the working copy)" ;;
+    *) pass "default drops the entry no longer in the working copy" ;;
+  esac
+
+  # require_head bounds drift regardless of source: behind != 0 -> honor NOTHING.
+  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_exceptions_require_head: true\n' \
+    "${TRUST_ROOT}" > "${USER_SANDBOX_CONFIG}"
+  eq "require_head + drift honors nothing (default source)" "" "$(vetted_accepted_fingerprints "${repo}")"
+
+  write_trust_config
+}
+
+###############################################################################
+# The working-copy default honors an UNTRACKED ignore file on a vetted repo
+# (composes with the default: working-tree state does not un-vet), while
+# vetting_exceptions_from_commit ignores it (not in the attested commit).
+###############################################################################
+test_exceptions_untracked_working_copy() {
+  info "Testing working-copy exceptions from an untracked ignore file..."
+  write_trust_config
+  unset SANDBOX_OVERLAY
+
+  local repo="${TEST_DIR}/exc-untracked"
+  local ignore="${repo}/${SANDBOX_REPO_IGNORE_NAME}"
+  make_repo "${repo}"
+  # Attest a commit that has NO ignore file at all.
+  attest_repo "${repo}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; return 0; }
+
+  # Add the ignore file in the WORKING COPY only (never committed). With the
+  # default (working-tree state does not un-vet), the repo stays vetted.
+  printf 'deploy/values.yaml:generic-api-key:155\n' > "${ignore}"
+  eq "untracked ignore file, repo still vetted" "vetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+
+  # Default: the working-copy (untracked) entry is honored on the vetted repo.
+  case "$(vetted_accepted_fingerprints "${repo}")" in
+    *deploy/values.yaml:generic-api-key:155*) pass "default honors the untracked working-copy entry" ;;
+    *) fail "default should honor the untracked working-copy entry" ;;
+  esac
+
+  # from_commit: the attested commit has no such entry, so nothing is honored.
+  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_exceptions_from_commit: true\n' \
+    "${TRUST_ROOT}" > "${USER_SANDBOX_CONFIG}"
+  eq "from_commit ignores the uncommitted entry" "" "$(vetted_accepted_fingerprints "${repo}")"
+
+  write_trust_config
+}
+
+###############################################################################
+# vetting_exceptions_from_commit config resolution — tightening-only, either
+# source (user or overlay); non-"true" leaves the working-copy default.
+###############################################################################
+test_exceptions_from_commit_config() {
+  info "Testing vetting_exceptions_from_commit config layering..."
+  local overlay="${TEST_DIR}/fromcommit-overlay"
+  mkdir -p "${overlay}"
+  export SANDBOX_OVERLAY="${overlay}"
+
+  printf 'vetting_exceptions_from_commit: false\n' > "${overlay}/config.yaml"
+  printf 'vetting_exceptions_from_commit: true\n'  > "${USER_SANDBOX_CONFIG}"
+  eq "overlay false cannot relax user true" "true" "$(vetting_exceptions_from_commit)"
+
+  printf 'vetting_exceptions_from_commit: true\n'  > "${overlay}/config.yaml"
+  printf 'vetting_exceptions_from_commit: false\n' > "${USER_SANDBOX_CONFIG}"
+  eq "overlay ratchets false->true" "true" "$(vetting_exceptions_from_commit)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+  printf 'vetting_exceptions_from_commit: true\n' > "${overlay}/config.yaml"
+  eq "overlay-only from_commit applies" "true" "$(vetting_exceptions_from_commit)"
+
+  printf 'vetting_exceptions_from_commit: yes\n' > "${USER_SANDBOX_CONFIG}"
+  rm -f "${overlay}/config.yaml"
+  unset SANDBOX_OVERLAY
+  eq "non-true value -> working-copy default" "false" "$(vetting_exceptions_from_commit)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+}
+
+###############################################################################
+# vetting_forbid_unvetted_override config resolution — tightening-only, either
+# source; non-"true" leaves the override available.
+###############################################################################
+test_forbid_override_config() {
+  info "Testing vetting_forbid_unvetted_override config layering..."
+  local overlay="${TEST_DIR}/forbid-overlay"
+  mkdir -p "${overlay}"
+  export SANDBOX_OVERLAY="${overlay}"
+
+  printf 'vetting_forbid_unvetted_override: false\n' > "${overlay}/config.yaml"
+  printf 'vetting_forbid_unvetted_override: true\n'  > "${USER_SANDBOX_CONFIG}"
+  eq "overlay false cannot relax user true" "true" "$(vetting_forbid_unvetted_override)"
+
+  printf 'vetting_forbid_unvetted_override: true\n'  > "${overlay}/config.yaml"
+  printf 'vetting_forbid_unvetted_override: false\n' > "${USER_SANDBOX_CONFIG}"
+  eq "overlay ratchets false->true" "true" "$(vetting_forbid_unvetted_override)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+  printf 'vetting_forbid_unvetted_override: true\n' > "${overlay}/config.yaml"
+  eq "overlay-only forbid applies" "true" "$(vetting_forbid_unvetted_override)"
+
+  printf 'vetting_forbid_unvetted_override: yes\n' > "${USER_SANDBOX_CONFIG}"
+  rm -f "${overlay}/config.yaml"
+  unset SANDBOX_OVERLAY
+  eq "non-true value -> override available" "false" "$(vetting_forbid_unvetted_override)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+}
+
+###############################################################################
+# vetted_accepted_fingerprints accept_unvetted — accepting an unvetted repo
+# honors its working-copy exception list (matching a drift-accepted vetted repo);
+# without the acceptance an unvetted repo honors nothing.
+###############################################################################
+test_exceptions_accept_unvetted() {
+  info "Testing accept_unvetted honors the working-copy exception list..."
+  write_trust_config
+  unset SANDBOX_OVERLAY
+
+  local repo="${TEST_DIR}/exc-accept-unvetted"
+  local ignore="${repo}/${SANDBOX_REPO_IGNORE_NAME}"
+  make_repo "${repo}"                 # committed repo, never attested -> unvetted
+  printf 'deploy/values.yaml:generic-api-key:155\n' > "${ignore}"  # working-copy (untracked)
+
+  eq "unvetted baseline" "unvetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+  eq "no accept arg -> nothing honored" "" "$(vetted_accepted_fingerprints "${repo}")"
+  eq "accept=false -> nothing honored" "" "$(vetted_accepted_fingerprints "${repo}" false)"
+  case "$(vetted_accepted_fingerprints "${repo}" true)" in
+    *deploy/values.yaml:generic-api-key:155*) pass "accept_unvetted honors the working-copy list" ;;
+    *) fail "accept_unvetted should honor the working-copy list" ;;
+  esac
+}
+
+# Accepting an unvetted repo via the flag must land in the audit override
+# ledger (record_override). Run in the CURRENT shell so the append to
+# SESSION_OVERRIDES is observable; a dummy trust root satisfies the "must have a
+# trust root" check (an unvetted repo carries no tag, so no signature is read).
+test_vetting_override_ledger() {
+  command -v jq &>/dev/null || skip "jq not installed"
+  info "Testing accepted vetting overrides land in the audit ledger..."
+
+  # A private dummy trust root (never touch the shared TRUST_ROOT other tests
+  # rely on). An unvetted repo carries no tag, so the key is never used —
+  # a non-empty trust root just satisfies the "required needs a trust root" check.
+  local trust="${TEST_DIR}/ovrd-trust"
+  printf '%s\n' "dummy@sandbox.test ssh-ed25519 AAAAdummy" > "${trust}"
+  cat > "${USER_SANDBOX_CONFIG}" <<EOF
+vetting_trust_root: ${trust}
+vetting_trust_format: ssh
+EOF
+  local repo="${TEST_DIR}/ovrd-unvetted"
+  make_repo "${repo}"
+
+  SESSION_OVERRIDES=()
+  vetting_gate_repos "required" "true" "false" "${repo}" </dev/null >/dev/null 2>&1 \
+    || fail "accepting an unvetted repo via --i-accept-unvetted-repo should proceed"
+
+  eq "one vetting override recorded" "1" "${#SESSION_OVERRIDES[@]}"
+  eq "override names the accept flag" "flag:--i-accept-unvetted-repo" \
+    "$(jq -r '.mechanism' <<<"${SESSION_OVERRIDES[0]}")"
+  eq "override names the affected workspace" "ovrd-unvetted" \
+    "$(jq -r '.repos[0]' <<<"${SESSION_OVERRIDES[0]}")"
 
   write_trust_config
 }
@@ -1292,8 +1572,14 @@ main() {
   test_max_commits_behind_config
   test_max_age_days_config
   test_exceptions_require_head_config
+  test_exceptions_from_commit_config
+  test_forbid_override_config
+  test_exceptions_accept_unvetted
   test_status_classification
+  test_status_reasons
+  test_require_clean_worktree
   test_gate_posture
+  test_vetting_override_ledger
   test_missing_trust_root_fails_closed
   test_ssh_signingkey_mismatch
   test_vetting_signing_key_knob
@@ -1312,7 +1598,8 @@ main() {
     test_gate_required_passes_when_vetted
     test_gate_drift
     test_gate_age
-    test_exceptions_require_head_gate
+    test_exceptions_source_and_drift
+    test_exceptions_untracked_working_copy
     test_verify_hermetic_against_program_hijack
     test_trust_roots_overlay_and_union
     test_gate_inline_attest
