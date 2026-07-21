@@ -397,7 +397,18 @@ link_validate_shape() {
   elif [[ -n "${overlay_reqhead}" && "${overlay_reqhead}" != "false" ]]; then
     warn "overlay config.yaml sets vetting_exceptions_require_head: '${overlay_reqhead}' — only 'true' tightens; any other value leaves the permissive default."
   fi
-  echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )$( [[ -n "${overlay_vetting}" ]] && echo ", vetting: ${overlay_vetting}" )${troot_note}${minver_note}${cap_note}${age_note}${reqhead_note}" >&2
+  # Same for the exception-source knob (vetting_exceptions_from_commit): true
+  # tightens the source from the working copy to the attested commit's blob.
+  local overlay_fromcommit="" fromcommit_note=""
+  if [[ -f "${dir}/config.yaml" ]]; then
+    overlay_fromcommit="$(extract_yaml_scalar_from_file "${dir}/config.yaml" vetting_exceptions_from_commit)"
+  fi
+  if [[ "${overlay_fromcommit}" == "true" ]]; then
+    fromcommit_note=", exceptions read from attested commit"
+  elif [[ -n "${overlay_fromcommit}" && "${overlay_fromcommit}" != "false" ]]; then
+    warn "overlay config.yaml sets vetting_exceptions_from_commit: '${overlay_fromcommit}' — only 'true' tightens; any other value leaves the working-copy default."
+  fi
+  echo "  overlay contents: ${count_profiles} profile(s), ${count_catalogue} catalogue entr$( [[ ${count_catalogue} -eq 1 ]] && echo y || echo ies )$( [[ -f "${dir}/blocked-destinations.yaml" ]] && echo ", blocked-destinations.yaml" )$( [[ -n "${overlay_vetting}" ]] && echo ", vetting: ${overlay_vetting}" )${troot_note}${minver_note}${cap_note}${age_note}${reqhead_note}${fromcommit_note}" >&2
   return 0
 }
 

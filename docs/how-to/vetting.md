@@ -312,39 +312,52 @@ recorded as an "exception". Pass `--yes` to acknowledge non-interactively (e.g.
 in CI); without it, and with no terminal to prompt on, `vet` refuses rather than
 sign off unattended. A repo with no exceptions signs with no extra prompt.
 
-### Exceptions and drift
+### Where exceptions are read from
 
-The acknowledgment above binds an exception to the *signed* commit — and the gate
-honors it from exactly that commit. An attestation clears a repo while it is
-[behind `HEAD`](#when-the-attestation-is-behind-head), and drift is reviewed code
-layered on a vetted base — but an exception is not code, it is a standing
-permission for the agent to read a plaintext value, so the gate does **not** take
-it from `HEAD`. It reads the honored `.betterleaksignore` list from the **attested
-commit**. The consequence is the property you want, for free: an exception added
-on a later, unsigned commit — by a contributor, or by the agent writing the
-workspace — is **never honored** until a signer re-attests the new `HEAD` (which
-re-runs the acknowledgment above). No drift distance changes this, and there is
-no knob to get wrong.
+An exception is a standing permission for the agent to read a plaintext value, so
+it counts **only once the repo is vetted** — an unvetted repo's `.betterleaksignore`
+is ignored no matter what it lists. Given a vetted repo, two knobs decide *which*
+entries are honored:
 
-One optional setting, for teams that want to go further:
+| `vetting_exceptions_from_commit:` | Source of the honored list |
+| --- | --- |
+| *omitted* / `false` (**default**) | The **working-copy** `.betterleaksignore` (tracked or not) — the same file your CI and pre-commit betterleaks runs read, so the file you edit is the file that counts. |
+| `true` | The **attested commit's** committed blob only. Every honored entry is one the signature covers and a signer acknowledged at attest time; a later, unsigned commit's changes are never read until a signer re-attests. |
+
+```yaml
+# <overlay>/config.yaml — or ~/.sandbox/config.yaml
+vetting_exceptions_from_commit: true
+```
+
+The default trades a little strictness for the least surprise: the list you see in
+your working tree is the list the gate honors. Two guardrails always hold, whichever
+source is set — the repo must be vetted at all, and the separate tracked-file check
+on the *secret's own file* still stands, so a finding in a gitignored or untracked
+file is never accepted even if its fingerprint is listed. Set
+`vetting_exceptions_from_commit: true` when you want drift to introduce nothing:
+under it, an exception added on a later, unsigned commit is not honored until a
+signer re-attests `HEAD` (which re-runs the [acknowledgment](#acknowledging-secret-exceptions)).
+
+A second, independent knob bounds *drift* rather than source:
 
 | `vetting_exceptions_require_head:` | Behavior |
 | --- | --- |
-| *omitted* / `false` (**default**) | Exceptions are honored whenever the repo is vetted, read from the attested commit. Every honored exception is signer-acknowledged regardless of drift — the safe, frictionless default. |
-| `true` | A stricter posture: honor exceptions **only** when the attestation sits exactly at `HEAD` (`behind: 0`), so every honored exception rides a *current* attestation rather than an older but still-valid acknowledgment. Under any drift the list is ignored and those findings block the launch again; re-attest `HEAD` to restore them. |
+| *omitted* / `false` (**default**) | Exceptions are honored whenever the repo is vetted, drift included. |
+| `true` | Honor exceptions **only** when the attestation sits exactly at `HEAD` (`behind: 0`), so every honored exception rides a *current* attestation. Under any drift the list is ignored and those findings block the launch again; re-attest `HEAD` to restore them. |
 
 ```yaml
 # <overlay>/config.yaml — or ~/.sandbox/config.yaml
 vetting_exceptions_require_head: true
 ```
 
-Read from both the overlay and your own config, this is **tightening-only**:
-`true` wins if either sets it, so an overlay can ratchet exception-handling up
-and a user can opt in further, but neither can relax the other's — the same
-safety-additive rule the [posture](#choose-a-posture) and the
-[drift cap](#cap-how-far-behind-an-attestation-may-be) follow. The knob is
-independent of posture: it decides only *which* exceptions count, not whether
-vetting is enforced.
+Read from both the overlay and your own config, both knobs are **tightening-only**:
+the stricter value (`from_commit: true`, `require_head: true`) wins if either side
+sets it, so an overlay can ratchet exception-handling up and a user can opt in
+further, but neither can relax the other's — the same safety-additive rule the
+[posture](#choose-a-posture) and the
+[drift cap](#cap-how-far-behind-an-attestation-may-be) follow. Both are independent
+of posture: they decide only *which* exceptions count, not whether vetting is
+enforced.
 
 ## Attest at launch (authorized signers)
 

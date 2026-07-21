@@ -1323,16 +1323,18 @@ EOF
 }
 
 ###############################################################################
-# secret_gate_repos — only a COMMITTED exceptions list is honored. A vetted repo
-# stays clean (porcelain) even with a gitignored, uncommitted accept-list, but
-# that list is not in the signed commit and must not be honored — the gate keeps
-# blocking. Guards against the "unsigned working-tree accept-list" bypass.
+# secret_gate_repos — exception SOURCE. By default the gate reads the WORKING-COPY
+# ignore file (tracked or not), so a vetted repo honors it even when the file is
+# uncommitted/gitignored — parity with the team's CI. The
+# vetting_exceptions_from_commit knob restores the strict "committed-blob only"
+# source, which closes the unsigned working-tree accept-list bypass. Either way,
+# an unvetted repo honors nothing (covered by test_exceptions_gate_vetted).
 ###############################################################################
-test_exceptions_gate_committed_only() {
+test_exceptions_gate_source() {
   command -v betterleaks &>/dev/null || skip "betterleaks not installed"
   command -v jq &>/dev/null || skip "jq not installed"
   command -v ssh-keygen &>/dev/null || skip "ssh-keygen not installed"
-  info "Testing only a committed exceptions list is honored (uncommitted/gitignored is not)..."
+  info "Testing exception source: working-copy default vs. from_commit strict..."
 
   local signer="reviewer@sandbox.test"
   local trust_root="${TEST_DIR}/vc-allowed_signers"
@@ -1342,10 +1344,9 @@ test_exceptions_gate_committed_only() {
 
   local _saved_user="${USER_SANDBOX_CONFIG}"
   USER_SANDBOX_CONFIG="${TEST_DIR}/vc-user.yaml"
-  cat > "${USER_SANDBOX_CONFIG}" <<EOF
-vetting_trust_root: ${trust_root}
-vetting_trust_format: ssh
-EOF
+  local base_cfg="vetting_trust_root: ${trust_root}
+vetting_trust_format: ssh"
+  printf '%s\n' "${base_cfg}" > "${USER_SANDBOX_CONFIG}"
 
   local repo="${TEST_DIR}/vetcommitted"
   mkdir -p "${repo}/deploy"
@@ -1355,7 +1356,7 @@ EOF
   printf 'api_key: %s\n' "${PLAIN_TOK}" > "${repo}/deploy/values.yaml"
   git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m init
 
-  # Resolve the finding fingerprints (what an attacker would put in the list).
+  # Resolve the finding fingerprints (what goes in the accept-list).
   local frel frule fln fp specs=""
   while IFS=$'\t' read -r _ frel frule fln _; do
     [[ -z "${frel}" ]] && continue
@@ -1364,8 +1365,7 @@ EOF
   done < <(scan_repo_secrets "${repo}" | grep "^no	" || true)
   [[ -n "${specs}" ]] || fail "expected findings to fingerprint"
 
-  # Vet HEAD with NO committed exceptions (there are none), then confirm the
-  # secret blocks the gate.
+  # Vet HEAD with NO committed exceptions, then confirm the secret blocks.
   git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${TEST_DIR}/vc-id" \
     tag -s "agent-vetted/$(git -C "${repo}" rev-parse HEAD)" -m vetted 2>/dev/null \
     || { USER_SANDBOX_CONFIG="${_saved_user}"; skip "tag signing failed"; }
@@ -1373,38 +1373,46 @@ EOF
   IFS=$'\t' read -r vstat _vf < <(vetting_status_repo "${repo}")
   eq "repo is vetted (baseline)" "vetted" "${vstat}"
   if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
-    fail "vetted repo with a tracked secret and no committed exception should block"
+    fail "vetted repo with a tracked secret and no exception should block"
   fi
-  pass "vetted repo blocks the secret with no committed exception"
+  pass "vetted repo blocks the secret with no exception at all"
 
-  # THE ATTACK: drop an UNCOMMITTED root ignore file and hide it via the local,
-  # uncommitted .git/info/exclude so HEAD is unchanged and the tree stays clean.
+  # Drop an UNCOMMITTED root ignore file, hidden via the local .git/info/exclude
+  # so HEAD is unchanged and the tree stays clean (repo stays vetted).
   while IFS= read -r fp; do [[ -n "${fp}" ]] && printf '%s\n' "${fp}" >> "${repo}/.betterleaksignore"; done <<<"${specs}"
   printf '.betterleaksignore\n' >> "${repo}/.git/info/exclude"
-
-  # Preconditions that made the bypass possible must actually hold here.
   eq "tree still clean (gitignored list invisible to porcelain)" "" \
      "$(git -C "${repo}" status --porcelain)"
   IFS=$'\t' read -r vstat _vf < <(vetting_status_repo "${repo}")
-  eq "repo still reports vetted with the gitignored list present" "vetted" "${vstat}"
+  eq "repo still reports vetted with the working-copy list present" "vetted" "${vstat}"
 
-  # The fix: the list is not in the signed commit, so it is NOT honored.
+  # DEFAULT (working-copy source): the working-copy list is honored on the vetted
+  # repo, exactly as CI would — the file you edit is the file that counts.
   if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
-    fail "SECURITY: uncommitted/gitignored accept-list must NOT be honored on a vetted repo"
+    pass "default honors the working-copy accept-list (gate passes)"
+  else
+    fail "default should honor the working-copy accept-list on a vetted repo"
   fi
-  pass "uncommitted/gitignored accept-list is ignored; gate still blocks"
+
+  # STRICT (vetting_exceptions_from_commit: true): the list is not in the signed
+  # commit, so it is NOT honored — the working-tree bypass is closed.
+  printf '%s\nvetting_exceptions_from_commit: true\n' "${base_cfg}" > "${USER_SANDBOX_CONFIG}"
+  if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
+    fail "SECURITY: from_commit must NOT honor an uncommitted/gitignored accept-list"
+  fi
+  pass "from_commit ignores the uncommitted/gitignored list; gate blocks"
 
   # Committing the same list (into the signed tree) and re-vetting DOES honor it
-  # — proving the boundary is committed-vs-not, not merely 'ignore .sandbox'.
+  # even under the strict source — proving the boundary is committed-vs-not.
   git -C "${repo}" config --unset-all core.excludesFile 2>/dev/null || true
   : > "${repo}/.git/info/exclude"
   git -C "${repo}" add -A 2>/dev/null; git -C "${repo}" commit -q -m "record exceptions"
   git -C "${repo}" -c gpg.format=ssh -c user.signingkey="${TEST_DIR}/vc-id" \
     tag -s "agent-vetted/$(git -C "${repo}" rev-parse HEAD)" -m vetted 2>/dev/null
   if ( secret_gate_repos "false" "false" "${repo}" >/dev/null 2>&1 ); then
-    pass "committing the list and re-vetting honors it (gate passes)"
+    pass "committing the list and re-vetting honors it under from_commit too"
   else
-    fail "a committed, vetted exceptions list should be honored"
+    fail "a committed, vetted exceptions list should be honored under from_commit"
   fi
 
   USER_SANDBOX_CONFIG="${_saved_user}"
@@ -1635,7 +1643,7 @@ main() {
   test_scan_acceptance
   test_root_ignore_file_guard
   test_exceptions_gate_vetted
-  test_exceptions_gate_committed_only
+  test_exceptions_gate_source
   test_exceptions_migrate
 
   echo ""

@@ -185,18 +185,15 @@ _vetting_age_days() {
   echo "$(( (now - epoch) / 86400 ))"
 }
 
-# vetting_exceptions_require_head — "true" when a repo's committed secret
-# exceptions (the root .betterleaksignore) may be honored ONLY while the verified
-# attestation sits exactly at HEAD; "false" (the default) honors them whenever
-# the repo is vetted, drift included. This is an OPTIONAL extra-strict mode, not
-# the primary safety control: the gate reads the honored list from the ATTESTED
-# tag's commit (vetted_accepted_fingerprints), so every honored exception is one
-# a signer acknowledged at attest time (_vetting_acknowledge_exceptions) no
-# matter how far HEAD has drifted — an entry added on a later, unsigned commit is
-# never read until a signer re-attests. The default is therefore already safe.
-# Setting this "true" adds a stricter posture for teams that want every honored
-# exception to ride a *current* attestation (behind==0) rather than an older but
-# still-valid acknowledgment. Read from BOTH the user config and the overlay
+# vetting_exceptions_require_head — "true" when a repo's secret exceptions (the
+# root .betterleaksignore) may be honored ONLY while the verified attestation
+# sits exactly at HEAD; "false" (the default) honors them whenever the repo is
+# vetted, drift included. This is an OPTIONAL extra-strict mode. It composes with
+# vetting_exceptions_from_commit (which selects the SOURCE of the honored list —
+# the working copy by default, or the attested commit's blob): require_head
+# bounds the DRIFT under which either source is trusted, so an operator can
+# require that honored exceptions ride a *current* attestation (behind==0) rather
+# than an older-but-still-valid one. Read from BOTH the user config and the overlay
 # config, TIGHTENING-ONLY: strict ("true") wins if EITHER sets it, so an overlay
 # can ratchet exception-handling up and never down — the same "additive on the
 # safety side" rule the posture and the drift cap follow. Anything but a literal
@@ -247,6 +244,37 @@ vetting_block_untracked() {
 # default).
 _vetting_untracked_mode() {
   if [[ "$(vetting_block_untracked)" == "true" ]]; then echo "normal"; else echo "no"; fi
+}
+
+# vetting_exceptions_from_commit — selects WHERE the secret gate reads a vetted
+# repo's honored exception list from. "false" (the default) reads the WORKING-COPY
+# .betterleaksignore (tracked or not), matching how the team's CI/pre-commit
+# betterleaks runs read it — the file you actually edit is the file that counts.
+# "true" restores the stricter behavior: read the list only from the ATTESTED
+# tag's COMMITTED blob (vetting_committed_ignore_fingerprints), so every honored
+# entry is one the signature covers and a signer acknowledged at attest time
+# (_vetting_acknowledge_exceptions) — drift can then introduce nothing, since a
+# later, unsigned commit's list is never read until a signer re-attests. Either
+# way the repo must be vetted for ANY exception to count (vetted_accepted_-
+# fingerprints), and the downstream tracked-file gate on the SECRET's own file
+# still applies (a finding in a gitignored/untracked file is never accepted).
+# Read from BOTH the user config and the overlay config, TIGHTENING-ONLY: strict
+# ("true", the committed-blob source) wins if EITHER sets it, so an overlay can
+# ratchet exception-handling up and never down — the same "additive on the safety
+# side" rule the posture and the drift cap follow. Anything but a literal `true`
+# (unset, false, a typo) leaves the working-copy default.
+vetting_exceptions_from_commit() {
+  local user_v="" overlay_v="" overlay
+  [[ -f "${USER_SANDBOX_CONFIG}" ]] && \
+    user_v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_exceptions_from_commit)"
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] && \
+    overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_exceptions_from_commit)"
+  if [[ "${user_v}" == "true" || "${overlay_v}" == "true" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
 }
 
 # vetting_trust_root — path to the operator's OWN signer trust root (user

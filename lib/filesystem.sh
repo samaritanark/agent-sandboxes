@@ -668,26 +668,27 @@ _leakscan_finding_accepted() {
 # Consumed by the secret gate and the `sandbox check` preview to decide what
 # scan_repo_secrets may downgrade to `accepted`.
 #
-# The list is read from a COMMITTED blob (vetting_committed_ignore_fingerprints),
-# never the working tree: "vetted" only guarantees the tracked tree is clean, and
-# `git status --porcelain` does not flag gitignored files, so a working-tree read
-# would honor a gitignored/uncommitted ignore file the signature never covered.
+# SOURCE OF THE LIST. By default the list is read from the WORKING-COPY ignore
+# file (load_repo_ignore_fingerprints, tracked or not) — the same file the team's
+# CI/pre-commit betterleaks runs read, so the file you edit is the file that
+# counts. The optional vetting_exceptions_from_commit knob (default off; see
+# lib/vetting.sh) instead reads only the ATTESTED tag's COMMITTED blob
+# (vetting_committed_ignore_fingerprints), the stricter source: every honored
+# entry is then one the signature covers and a signer acknowledged at attest time
+# (_vetting_acknowledge_exceptions), and drift can introduce nothing.
 #
-# DRIFT AND THE SIGNATURE. The vetting gate accepts an attestation that is an
-# ANCESTOR of HEAD (see lib/vetting.sh), so a `vetted` repo may be N commits
-# behind: HEAD is then NOT the signed commit, and HEAD's .betterleaksignore was
-# never acknowledged by a signer. Honoring an exception exposes a plaintext value
-# to the agent, and that exposure is blessed by a signer at attest time
-# (_vetting_acknowledge_exceptions), not by the code review behind ordinary
-# drift — and in this tool's own workflow the drifting commits can be the agent's
-# own unreviewed work on the workspace. So we read the list from the ATTESTED
-# tag's commit, never HEAD: every honored fingerprint is one a signer actually
-# acknowledged, and drift can introduce nothing — an entry added on a later,
-# unsigned commit is simply not read until a signer re-attests the new HEAD.
-# This holds at any drift distance, so no cap or prompt gates it. The optional
-# vetting_exceptions_require_head knob (default off; see lib/vetting.sh) layers a
-# stricter "attestation must be exactly at HEAD" posture on top for teams that
-# want it; failing closed (honor nothing) when strict and behind is unknown.
+# DRIFT. The vetting gate accepts an attestation that is an ANCESTOR of HEAD (see
+# lib/vetting.sh), so a `vetted` repo may be N commits behind. Under the default
+# working-copy source that means a later, unsigned commit CAN change the honored
+# list — an accepted relaxation, bounded by two things that always hold: the repo
+# must be vetted at all (some signer reviewed an ancestor), and the downstream
+# tracked-file gate on the SECRET's own file still applies (see scan_repo_secrets
+# / _leakscan_finding_accepted), so a finding in a gitignored/untracked file is
+# never accepted regardless of the list. Teams that want drift to introduce
+# nothing set vetting_exceptions_from_commit: true. The optional
+# vetting_exceptions_require_head knob (default off) layers a stricter
+# "attestation must be exactly at HEAD" posture on top of either source; failing
+# closed (honor nothing) when strict and behind is unknown.
 vetted_accepted_fingerprints() {
   local repo="$1" line status tag behind
   line="$(vetting_status_repo "${repo}" 2>/dev/null)"
@@ -696,9 +697,13 @@ vetted_accepted_fingerprints() {
   if [[ "$(vetting_exceptions_require_head)" == "true" && "${behind:-1}" -ne 0 ]]; then
     return 0
   fi
-  # Read from the attested tag's commit, not HEAD, so drift cannot introduce an
-  # exception no signer acknowledged. See the DRIFT note above.
-  vetting_committed_ignore_fingerprints "${repo}" "${tag}"
+  if [[ "$(vetting_exceptions_from_commit)" == "true" ]]; then
+    # Strict source: only signature-covered entries from the attested commit.
+    vetting_committed_ignore_fingerprints "${repo}" "${tag}"
+  else
+    # Default: the working-copy ignore file (tracked or not), matching CI.
+    load_repo_ignore_fingerprints "${repo}"
+  fi
 }
 
 # scan_repo_secrets <repo> [accept_file] — scan a workspace with betterleaks and

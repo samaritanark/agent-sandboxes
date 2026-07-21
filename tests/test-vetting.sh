@@ -1265,11 +1265,12 @@ test_exceptions_require_head_config() {
 }
 
 ###############################################################################
-# vetted_accepted_fingerprints under drift — the default honors HEAD's list, the
-# strict knob honors it only at HEAD (needs SSH signing).
+# vetted_accepted_fingerprints source — the default reads the WORKING COPY; the
+# vetting_exceptions_from_commit knob reads the attested commit's blob; the
+# require_head knob bounds drift for both (needs SSH signing).
 ###############################################################################
-test_exceptions_require_head_gate() {
-  info "Testing exception honoring under drift (gate reads the attested commit)..."
+test_exceptions_source_and_drift() {
+  info "Testing exception source (working copy vs attested commit) and drift..."
   write_trust_config
   unset SANDBOX_OVERLAY
 
@@ -1281,43 +1282,123 @@ test_exceptions_require_head_gate() {
   git -C "${repo}" add -A; git -C "${repo}" commit -q -m "base with one exception"
   attest_repo "${repo}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; return 0; }
 
-  # At HEAD (behind 0) the signature covers the list, so it is honored under BOTH
-  # the default and the strict knob.
+  # At HEAD (behind 0), working copy == committed blob, so it is honored under
+  # BOTH the default (working copy) and the from_commit knob.
   case "$(vetted_accepted_fingerprints "${repo}")" in
-    *deploy/values.yaml:generic-api-key:155*) pass "at HEAD, default honors the signed exception" ;;
-    *) fail "at HEAD, default should honor the signed exception" ;;
+    *deploy/values.yaml:generic-api-key:155*) pass "at HEAD, default (working copy) honors the exception" ;;
+    *) fail "at HEAD, default should honor the exception" ;;
   esac
-  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_exceptions_require_head: true\n' \
+  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_exceptions_from_commit: true\n' \
     "${TRUST_ROOT}" > "${USER_SANDBOX_CONFIG}"
   case "$(vetted_accepted_fingerprints "${repo}")" in
-    *deploy/values.yaml:generic-api-key:155*) pass "at HEAD, strict honors it (behind 0)" ;;
-    *) fail "at HEAD, strict should honor the signed exception (behind 0)" ;;
+    *deploy/values.yaml:generic-api-key:155*) pass "at HEAD, from_commit honors the committed exception" ;;
+    *) fail "at HEAD, from_commit should honor the committed exception" ;;
   esac
 
-  # Drift: a later, unsigned commit rewrites .betterleaksignore to smuggle in a
-  # brand-new exception no signer acknowledged (and drop the reviewed one). In
-  # this tool's own workflow that commit can be the agent's own workspace edit.
+  # Drift: a later, unsigned commit rewrites .betterleaksignore, dropping the
+  # reviewed entry and adding a brand-new one no signer acknowledged. In this
+  # tool's own workflow that commit can be the agent's own workspace edit.
   printf 'deploy/secret.yaml:generic-api-key:9\n' > "${ignore}"
   git -C "${repo}" add -A; git -C "${repo}" commit -q -m "drift rewrites the exception list"
   eq "drift repo reports behind 1" "1" "$(vetting_status_repo "${repo}" | cut -f5)"
 
-  # Strict (config still set): behind != 0 -> honor NOTHING. Re-attest to restore.
-  eq "strict + drift honors nothing" "" "$(vetted_accepted_fingerprints "${repo}")"
-
-  # Default: the gate reads the ATTESTED commit, so the drift-added entry is NOT
-  # honored, and the originally-signed one still IS — drift introduces nothing.
-  write_trust_config
+  # from_commit (config still set): reads the ATTESTED commit, so the drift-added
+  # entry is NOT honored and the originally-signed one still IS.
   local out; out="$(vetted_accepted_fingerprints "${repo}")"
   case "${out}" in
-    *deploy/secret.yaml*) fail "SECURITY: drift-added exception was honored — gate read HEAD, not the attested commit" ;;
-    *) pass "default + drift does NOT honor the smuggled exception" ;;
+    *deploy/secret.yaml*) fail "SECURITY: from_commit honored a drift-added entry — must read the attested commit" ;;
+    *) pass "from_commit + drift does NOT honor the smuggled entry" ;;
   esac
   case "${out}" in
-    *deploy/values.yaml:generic-api-key:155*) pass "default + drift still honors the attested commit's exception" ;;
-    *) fail "default + drift should still honor the attested commit's original exception" ;;
+    *deploy/values.yaml:generic-api-key:155*) pass "from_commit + drift still honors the attested commit's entry" ;;
+    *) fail "from_commit + drift should still honor the attested original" ;;
   esac
 
+  # Default (working copy): the working tree now shows only the drift-added entry,
+  # so THAT is honored and the dropped original is not. This is the accepted
+  # relaxation — the file you edit is the file that counts, on a vetted repo.
   write_trust_config
+  out="$(vetted_accepted_fingerprints "${repo}")"
+  case "${out}" in
+    *deploy/secret.yaml:generic-api-key:9*) pass "default reads the working copy (honors the current entry)" ;;
+    *) fail "default should honor the working-copy entry" ;;
+  esac
+  case "${out}" in
+    *deploy/values.yaml*) fail "default should NOT honor the dropped original (not in the working copy)" ;;
+    *) pass "default drops the entry no longer in the working copy" ;;
+  esac
+
+  # require_head bounds drift regardless of source: behind != 0 -> honor NOTHING.
+  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_exceptions_require_head: true\n' \
+    "${TRUST_ROOT}" > "${USER_SANDBOX_CONFIG}"
+  eq "require_head + drift honors nothing (default source)" "" "$(vetted_accepted_fingerprints "${repo}")"
+
+  write_trust_config
+}
+
+###############################################################################
+# The working-copy default honors an UNTRACKED ignore file on a vetted repo
+# (composes with vetting_block_untracked=off: untracked does not un-vet), while
+# vetting_exceptions_from_commit ignores it (not in the attested commit).
+###############################################################################
+test_exceptions_untracked_working_copy() {
+  info "Testing working-copy exceptions from an untracked ignore file..."
+  write_trust_config
+  unset SANDBOX_OVERLAY
+
+  local repo="${TEST_DIR}/exc-untracked"
+  local ignore="${repo}/${SANDBOX_REPO_IGNORE_NAME}"
+  make_repo "${repo}"
+  # Attest a commit that has NO ignore file at all.
+  attest_repo "${repo}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; return 0; }
+
+  # Add the ignore file in the WORKING COPY only (never committed). With the
+  # untracked-files default (block_untracked off), the repo stays vetted.
+  printf 'deploy/values.yaml:generic-api-key:155\n' > "${ignore}"
+  eq "untracked ignore file, repo still vetted" "vetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+
+  # Default: the working-copy (untracked) entry is honored on the vetted repo.
+  case "$(vetted_accepted_fingerprints "${repo}")" in
+    *deploy/values.yaml:generic-api-key:155*) pass "default honors the untracked working-copy entry" ;;
+    *) fail "default should honor the untracked working-copy entry" ;;
+  esac
+
+  # from_commit: the attested commit has no such entry, so nothing is honored.
+  printf 'vetting_trust_root: %s\nvetting_trust_format: ssh\nvetting_exceptions_from_commit: true\n' \
+    "${TRUST_ROOT}" > "${USER_SANDBOX_CONFIG}"
+  eq "from_commit ignores the uncommitted entry" "" "$(vetted_accepted_fingerprints "${repo}")"
+
+  write_trust_config
+}
+
+###############################################################################
+# vetting_exceptions_from_commit config resolution — tightening-only, either
+# source (user or overlay); non-"true" leaves the working-copy default.
+###############################################################################
+test_exceptions_from_commit_config() {
+  info "Testing vetting_exceptions_from_commit config layering..."
+  local overlay="${TEST_DIR}/fromcommit-overlay"
+  mkdir -p "${overlay}"
+  export SANDBOX_OVERLAY="${overlay}"
+
+  printf 'vetting_exceptions_from_commit: false\n' > "${overlay}/config.yaml"
+  printf 'vetting_exceptions_from_commit: true\n'  > "${USER_SANDBOX_CONFIG}"
+  eq "overlay false cannot relax user true" "true" "$(vetting_exceptions_from_commit)"
+
+  printf 'vetting_exceptions_from_commit: true\n'  > "${overlay}/config.yaml"
+  printf 'vetting_exceptions_from_commit: false\n' > "${USER_SANDBOX_CONFIG}"
+  eq "overlay ratchets false->true" "true" "$(vetting_exceptions_from_commit)"
+
+  : > "${USER_SANDBOX_CONFIG}"
+  printf 'vetting_exceptions_from_commit: true\n' > "${overlay}/config.yaml"
+  eq "overlay-only from_commit applies" "true" "$(vetting_exceptions_from_commit)"
+
+  printf 'vetting_exceptions_from_commit: yes\n' > "${USER_SANDBOX_CONFIG}"
+  rm -f "${overlay}/config.yaml"
+  unset SANDBOX_OVERLAY
+  eq "non-true value -> working-copy default" "false" "$(vetting_exceptions_from_commit)"
+
+  : > "${USER_SANDBOX_CONFIG}"
 }
 
 main() {
@@ -1334,6 +1415,7 @@ main() {
   test_max_commits_behind_config
   test_max_age_days_config
   test_exceptions_require_head_config
+  test_exceptions_from_commit_config
   test_status_classification
   test_untracked_dirty
   test_gate_posture
@@ -1355,7 +1437,8 @@ main() {
     test_gate_required_passes_when_vetted
     test_gate_drift
     test_gate_age
-    test_exceptions_require_head_gate
+    test_exceptions_source_and_drift
+    test_exceptions_untracked_working_copy
     test_verify_hermetic_against_program_hijack
     test_trust_roots_overlay_and_union
     test_gate_inline_attest

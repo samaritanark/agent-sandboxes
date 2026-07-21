@@ -104,13 +104,17 @@ the team's CI and pre-commit betterleaks runs read, so a finding cleared once is
 cleared everywhere. Two properties keep this from being a workspace-authored
 bypass — the thing the gate otherwise refuses to allow:
 
-- **The sandbox counts it only on a vetted repo.** A committed ignore file
-  carries no weight to the gate on its own (a plain `betterleaks` run in CI
-  honors it, which is fine for a linter but not a security boundary); the
-  [vetting](../how-to/vetting.md) signature over the tree — including the file —
-  is its authority at launch, so accepting a finding is a reviewer's
-  cryptographic sign-off, not the say-so of an untrusted workspace. `sandbox vet`
-  surfaces the exceptions and requires the signer to acknowledge them.
+- **The sandbox counts it only on a vetted repo.** An ignore file carries no
+  weight to the gate on its own (a plain `betterleaks` run in CI honors it, which
+  is fine for a linter but not a security boundary); a [vetting](../how-to/vetting.md)
+  attestation on the repo is its authority at launch, so accepting a finding rests
+  on a reviewer's cryptographic sign-off, not the say-so of an untrusted workspace.
+  `sandbox vet` surfaces the exceptions and requires the signer to acknowledge them.
+  By default the gate reads the honored list from the **working-copy** ignore file
+  (parity with the team's CI/pre-commit runs); an operator who wants every honored
+  entry to be one the signature literally covers — so drift can introduce nothing —
+  sets `vetting_exceptions_from_commit: true`, and the gate then reads only the
+  attested commit's blob. Either way an *unvetted* repo's list is ignored outright.
 - **The value binding rides on the signature, and only tracked content counts.**
   A native fingerprint names a location, not a value; the binding comes from
   vetting — change the value on that line and the tree is dirty (or a new HEAD),
@@ -265,9 +269,11 @@ blocked-destinations check.
 The opt-in stops short of trusting the writable working tree. When it is on, the
 sandbox honors only the repo's **vetted committed** list: the `extra_allowed_domains:`
 in its signed `HEAD`, and only while an `agent-vetted/<sha>` attestation verifies —
-read from the committed blob, never the working tree, exactly as the secret-gate
-exceptions are (see "The sandbox counts it only on a vetted repo" above). The
-attestation is the authority for both loosening controls. So an agent that edits
+read from the committed blob, never the working tree. (Egress widening is
+committed-only with no working-copy option, unlike the secret-gate exceptions
+above, whose default source is the working copy — self-granting an exfil host is
+a sharper lever than clearing a reviewed false-positive, so it stays anchored to
+the signature.) The attestation is the authority for both loosening controls. So an agent that edits
 the config self-widens nothing: its edit dirties the tree (the repo goes unvetted)
 or lands in a new commit the tag no longer covers, and nothing is honored until a
 human re-vets — which re-surfaces the change for acknowledgment. The result gives
