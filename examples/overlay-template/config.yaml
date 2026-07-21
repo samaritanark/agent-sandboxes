@@ -94,20 +94,21 @@ vetting: advisory
 #
 # vetting_exceptions_require_head: true
 
-# vetting_block_untracked: an OPTIONAL extra-strict posture for the dirty-tree
-# check. By DEFAULT, UNTRACKED files (new files git is not yet tracking — a
-# scratch file, a build artifact) do NOT mark the working tree dirty and do NOT
-# refuse a launch or an attestation: they are not part of HEAD, and an
-# attestation covers a commit, not the working directory. Only uncommitted edits
-# to TRACKED files refuse. Set this true for teams that want the agent's
-# workspace to hold nothing beyond the attested commit (an untracked file is
-# still copied into a tier-2/3 workspace, unreviewed); untracked files then count
-# as dirty and must be committed, `git stash -u`'d, or removed. Tightening-only:
-# `true` wins if EITHER this overlay or the operator sets it, so it can ratchet
-# up and never down, the same safety-additive rule the posture and cap follow.
-# See docs/how-to/vetting.md.
+# vetting_require_clean_worktree: an OPTIONAL extra-strict posture. By DEFAULT
+# vetting is anchored to the COMMIT GRAPH, not the working directory: a repo whose
+# HEAD carries a verified ancestor attestation stays vetted no matter what the
+# working tree looks like (uncommitted edits to tracked files, staged changes, and
+# untracked scratch files do NOT un-vet it), since an attestation covers a commit.
+# Set this true for teams that want the agent to run only on a pristine,
+# exactly-attested tree: any dirty working tree — tracked edit, staged change, or
+# untracked file — then refuses the launch (and attestation) until it is committed,
+# `git stash -u`'d, or removed. Note the tier-2/3 workspace is a copy of the
+# working tree, so uncommitted changes are visible to the agent by default; this
+# knob is what keeps them out. Tightening-only: `true` wins if EITHER this overlay
+# or the operator sets it, so it can ratchet up and never down, the same
+# safety-additive rule the posture and cap follow. See docs/how-to/vetting.md.
 #
-# vetting_block_untracked: true
+# vetting_require_clean_worktree: true
 
 # vetting_forbid_unvetted_override: disable the --i-accept-unvetted-repo launch
 # override entirely. By DEFAULT (unset / false) an operator can force a launch

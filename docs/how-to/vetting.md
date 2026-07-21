@@ -36,11 +36,12 @@ pulled-and-reviewed commit from one authored locally — including a commit an
 agent wrote in the workspace during an earlier session. So the guarantee is
 strongest exactly at `HEAD` ("a signer reviewed *this* tree") and, under drift,
 weakens to "a signer reviewed an *ancestor* of this tree." A tag on a divergent
-line (not an ancestor of `HEAD`) does not count, and a working tree with
-uncommitted edits to *tracked* files is always refused, because those edits are
-unreviewed and would ride along unattested. Untracked files (new files git is
-not yet tracking) do **not** refuse the launch by default — see
-[Untracked files and the dirty tree](#untracked-files-and-the-dirty-tree).
+line (not an ancestor of `HEAD`) does not count. Vetting is anchored to the
+commit graph, not the working directory, so working-tree state — uncommitted
+edits, staged changes, untracked files — does **not** un-vet a repo by default;
+teams that want a pristine, exactly-attested tree opt in with
+`vetting_require_clean_worktree` — see
+[The working tree and vetting](#the-working-tree-and-vetting).
 
 ## Set up a trust root
 
@@ -208,30 +209,29 @@ vetted:   /home/you/repos/app
   age:    41 day(s) — STALE, past the 30-day recency window (re-vet)
 ```
 
-### Untracked files and the dirty tree
+### The working tree and vetting
 
-A working tree with uncommitted edits to **tracked** files is always refused —
-those edits are unreviewed and would ride along under a signature that never
-covered them. **Untracked** files (new files git is not yet tracking, like a
-`dumbtest` scratch file or a build artifact) are treated differently: by default
-they do **not** mark the tree dirty and do **not** refuse the launch. They are
-not part of `HEAD`, and an attestation covers a commit, not your working
-directory, so requiring a pristine tree just to launch would be constant
-friction — and `git stash` doesn't even remove untracked files, so the old
-"commit or stash" advice was a dead end for them.
+Vetting is anchored to the **commit graph**, not your working directory. A repo
+whose `HEAD` carries a verified ancestor attestation stays vetted no matter what
+the working tree looks like — uncommitted edits to tracked files, staged changes,
+and untracked scratch files (a `dumbtest`, a build artifact) do **not** un-vet
+it. An attestation covers a commit, so this is the honest reading, and it keeps
+everyday work — editing code, leaving scratch files around — from constantly
+tripping the gate. (In tier 2/3 the workspace is a copy of your working tree, so
+the agent does see those uncommitted changes; the launch just isn't blocked on
+them.)
 
-For teams that want the agent's workspace to hold nothing beyond the attested
-commit — remembering that an untracked file *is* copied into a tier-2/3
-workspace, unreviewed — one optional setting restores the strict behavior:
+For teams that want the agent to run only on a **pristine, exactly-attested**
+tree, one optional setting restores strict behavior:
 
-| `vetting_block_untracked:` | Behavior |
+| `vetting_require_clean_worktree:` | Behavior |
 | --- | --- |
-| *omitted* / `false` (**default**) | Untracked files are ignored by the dirty check. Only uncommitted edits to tracked files refuse a launch or attestation. |
-| `true` | Untracked files count as a dirty tree, refusing the launch/attestation until you commit, `git stash -u`, or remove them. |
+| *omitted* / `false` (**default**) | Working-tree state is ignored; only the commit graph (`HEAD` + attestation ancestry) decides whether a repo is vetted. |
+| `true` | The working tree must be clean. Any uncommitted edit, staged change, or untracked file marks the repo dirty and refuses the launch (and attestation) until you commit, `git stash -u`, or remove it. |
 
 ```yaml
 # <overlay>/config.yaml — or ~/.sandbox/config.yaml
-vetting_block_untracked: true
+vetting_require_clean_worktree: true
 ```
 
 Read from both the overlay and your own config, this is **tightening-only**:

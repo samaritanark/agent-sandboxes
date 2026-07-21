@@ -4,9 +4,9 @@
 # tests/test-vetting.sh — Repo vetting gate tests
 # Verifies: resolve_vetting_posture layering (user baseline + advisory default,
 # overlay ratchets up only); vetting_status_repo classification (not-git, dirty,
-# unvetted, vetted); vetting_block_untracked dirty policy (untracked ignored by
-# default, counts when the knob is set via user or overlay); vetting_gate_repos
-# posture behavior (off skips, advisory
+# unvetted, vetted); vetting_require_clean_worktree policy (working-tree state
+# ignored by default, any dirty tree un-vets when the knob is set via user or
+# overlay); vetting_gate_repos posture behavior (off skips, advisory
 # proceeds with a notice, required refuses, --i-accept-unvetted-repo overrides,
 # a missing trust root fails closed under required regardless of override). The
 # signature-dependent cases skip gracefully when SSH commit signing is
@@ -163,9 +163,14 @@ test_status_classification() {
   make_repo "${repo}"
   eq "clean repo, no tag -> unvetted" "unvetted" "$(vetting_status_repo "${repo}" | cut -f1)"
 
-  # dirty: uncommitted change.
+  # dirty: only when a clean worktree is required (default ignores working-tree
+  # state — see test_require_clean_worktree). A tracked edit on this untagged repo
+  # stays 'unvetted' by default, and becomes 'dirty' under the knob.
   echo "change" >> "${repo}/README.md"
-  eq "uncommitted change -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+  eq "uncommitted change, default -> unvetted (worktree ignored)" "unvetted" "$(vetting_status_repo "${repo}" | cut -f1)"
+  write_config_with "vetting_require_clean_worktree: true"
+  eq "uncommitted change + require-clean -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+  write_trust_config
 }
 
 ###############################################################################
@@ -214,42 +219,44 @@ test_status_reasons() {
 }
 
 ###############################################################################
-# vetting_block_untracked — untracked files are ignored by the dirty check by
-# default, and count only when the knob is set (tightening-only, either source).
+# vetting_require_clean_worktree — working-tree state (tracked edits, staged
+# changes, untracked files) is ignored by default; when the knob is set (via user
+# or overlay, tightening-only) any dirty tree un-vets the repo.
 ###############################################################################
-test_untracked_dirty() {
-  info "Testing vetting_block_untracked (untracked-file dirty policy)..."
+test_require_clean_worktree() {
+  info "Testing vetting_require_clean_worktree (working-tree dirty policy)..."
   unset SANDBOX_OVERLAY
   write_trust_config
 
-  local repo="${TEST_DIR}/repo-untracked"
+  local repo="${TEST_DIR}/repo-worktree"
   make_repo "${repo}"
+
+  # Default: neither an untracked file nor a tracked edit marks the tree dirty
+  # (clean repo, no tag -> unvetted, never dirty).
+  eq "require-clean default -> false" "false" "$(vetting_require_clean_worktree)"
   touch "${repo}/dumbtest"
-
-  # Default: an untracked file does NOT mark the tree dirty (clean repo, no tag
-  # -> unvetted, not dirty).
   eq "untracked file, default -> not dirty" "unvetted" "$(vetting_status_repo "${repo}" | cut -f1)"
-  eq "untracked flag mode default" "no" "$(_vetting_untracked_mode)"
-
-  # A tracked edit is still always dirty regardless of the knob.
   echo "change" >> "${repo}/README.md"
-  eq "tracked edit -> dirty (default)" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
-  git -C "${repo}" checkout -q -- README.md
+  eq "tracked edit, default -> not dirty" "unvetted" "$(vetting_status_repo "${repo}" | cut -f1)"
 
-  # User config opts in: untracked file now counts as dirty.
-  write_config_with "vetting_block_untracked: true"
-  eq "block_untracked=true (user) -> true" "true" "$(vetting_block_untracked)"
-  eq "untracked flag mode when blocking" "normal" "$(_vetting_untracked_mode)"
-  eq "untracked file, blocking -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+  # User config opts in: any dirty tree (tracked edit and/or untracked file) now
+  # counts as dirty.
+  write_config_with "vetting_require_clean_worktree: true"
+  eq "require-clean=true (user)" "true" "$(vetting_require_clean_worktree)"
+  eq "dirty tree, require-clean -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+
+  # An untracked file alone also un-vets under the knob.
+  git -C "${repo}" checkout -q -- README.md
+  eq "untracked-only, require-clean -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
 
   # Tightening-only: an overlay can ratchet it up while the user is silent.
   write_trust_config   # reset user config (no knob)
-  local overlay="${TEST_DIR}/overlay-untracked"
+  local overlay="${TEST_DIR}/overlay-worktree"
   mkdir -p "${overlay}"
-  printf 'vetting_block_untracked: true\n' > "${overlay}/config.yaml"
+  printf 'vetting_require_clean_worktree: true\n' > "${overlay}/config.yaml"
   export SANDBOX_OVERLAY="${overlay}"
-  eq "block_untracked via overlay -> true" "true" "$(vetting_block_untracked)"
-  eq "untracked file, overlay blocking -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+  eq "require-clean via overlay -> true" "true" "$(vetting_require_clean_worktree)"
+  eq "dirty tree, overlay require-clean -> dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
   unset SANDBOX_OVERLAY
 }
 
@@ -337,12 +344,13 @@ test_vetted_repo_allowed_domains() {
   eq "vetted -> first committed domain"        "one.example.com" "$(printf '%s\n' "${out}" | sed -n 1p)"
 
   # Agent self-widening: edit the working-tree config to add a host, DON'T commit.
-  # The edit dirties the tree, so the repo is no longer vetted and NOTHING is honored
-  # — the working-tree value (evil.example.com) is never granted.
+  # Working-tree edits no longer un-vet the repo (vetting is commit-anchored), but
+  # egress domains are read from the COMMITTED blob (vetting_committed_allowed_domains),
+  # so the uncommitted working-tree value (evil.example.com) is still never granted.
   write_repo_domains "${repo}" one.example.com two.example.com evil.example.com
-  eq "working-tree edit -> repo dirty" "dirty" "$(vetting_status_repo "${repo}" | cut -f1)"
+  eq "working-tree edit -> repo still vetted" "vetted" "$(vetting_status_repo "${repo}" | cut -f1)"
   out="$(vetted_repo_allowed_domains "${repo}")"
-  eq "dirty tree -> nothing honored" "0" "$(count_lines "${out}")"
+  eq "committed list still honored, working-tree edit ignored" "2" "$(count_lines "${out}")"
   printf '%s\n' "${out}" | grep -q "evil.example.com" \
     && fail "SECURITY: uncommitted working-tree domain was honored" \
     || pass "uncommitted working-tree domain is not honored"
@@ -1397,7 +1405,7 @@ test_exceptions_source_and_drift() {
 
 ###############################################################################
 # The working-copy default honors an UNTRACKED ignore file on a vetted repo
-# (composes with vetting_block_untracked=off: untracked does not un-vet), while
+# (composes with the default: working-tree state does not un-vet), while
 # vetting_exceptions_from_commit ignores it (not in the attested commit).
 ###############################################################################
 test_exceptions_untracked_working_copy() {
@@ -1412,7 +1420,7 @@ test_exceptions_untracked_working_copy() {
   attest_repo "${repo}" "${TEST_DIR}/id" || { warn "signing failed; skipping"; return 0; }
 
   # Add the ignore file in the WORKING COPY only (never committed). With the
-  # untracked-files default (block_untracked off), the repo stays vetted.
+  # default (working-tree state does not un-vet), the repo stays vetted.
   printf 'deploy/values.yaml:generic-api-key:155\n' > "${ignore}"
   eq "untracked ignore file, repo still vetted" "vetted" "$(vetting_status_repo "${repo}" | cut -f1)"
 
@@ -1533,7 +1541,7 @@ main() {
   test_exceptions_accept_unvetted
   test_status_classification
   test_status_reasons
-  test_untracked_dirty
+  test_require_clean_worktree
   test_gate_posture
   test_missing_trust_root_fails_closed
   test_ssh_signingkey_mismatch

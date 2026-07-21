@@ -3449,11 +3449,8 @@ cmd_vet() {
         ;;
       dirty)
         echo "DIRTY:    ${repo} (HEAD ${f2})"
-        if [[ "$(vetting_block_untracked)" == "true" ]]; then
-          echo "  Commit, stash (git stash -u), or remove uncommitted/untracked files, then attest."
-        else
-          echo "  Commit or stash the tracked-file changes, then attest."
-        fi
+        echo "  Working tree is not clean and vetting_require_clean_worktree is set."
+        echo "  Commit, stash (git stash -u), or remove the changes, then attest."
         ;;
       error)
         echo "ERROR:    ${f2}" >&2

@@ -34,12 +34,13 @@
 #     operator accepts that drift, or an overlay bounds it with
 #     vetting_max_commits_behind: (0 meaning "must sit exactly at HEAD" — the
 #     strict pre-drift behavior). A tag on a divergent line — not an ancestor of
-#     HEAD — does not count. A working tree with uncommitted edits to TRACKED
-#     files is always refused: those edits are unreviewed and would ride along
-#     unattested. UNTRACKED files (new files git is not yet tracking) do NOT mark
-#     the tree dirty by default — they are not part of HEAD and an attestation
-#     covers a commit, not the working directory — but an overlay/user can opt in
-#     to blocking them too with vetting_block_untracked: true (see below).
+#     HEAD — does not count. Vetting is anchored to the COMMIT GRAPH, not the
+#     working directory: an attestation covers a commit, so working-tree state
+#     (uncommitted edits to tracked files, staged changes, untracked files) does
+#     NOT un-vet a repo by default — HEAD carrying a verified ancestor tag is what
+#     matters. An overlay/user that wants the workspace to match the attested
+#     commit exactly sets vetting_require_clean_worktree: true (see below), which
+#     restores the strict "any dirty tree is refused" behavior.
 #   - Recency (optional): vetting_max_age_days: expires an attestation once it is
 #     older than N days, forcing a periodic re-vet no matter how little the code
 #     has moved. The age is the attestation tag's tagger date — part of the signed
@@ -212,38 +213,32 @@ vetting_exceptions_require_head() {
   fi
 }
 
-# vetting_block_untracked — "true" when UNTRACKED files (new files git is not yet
-# tracking) make the working tree count as dirty and so block a launch or an
-# attestation; "false" (the default) ignores untracked files, since they are not
-# part of HEAD and an attestation covers a commit, not the working directory — so
-# only uncommitted edits to TRACKED files mark the tree dirty. This is an OPTIONAL
-# extra-strict posture for teams that want the agent's workspace to hold nothing
-# beyond the attested commit (an untracked file is still copied into a tier-2/3
-# workspace, unreviewed). Read from BOTH the user config and the overlay config,
-# TIGHTENING-ONLY: strict ("true") wins if EITHER sets it, so an overlay can
-# ratchet this up and never down — the same "additive on the safety side" rule
-# the posture and drift caps follow. Anything but a literal `true` (unset, false,
-# a typo) leaves the permissive default.
-vetting_block_untracked() {
+# vetting_require_clean_worktree — "true" when the working tree must be CLEAN for
+# a repo to count as vetted (or to be attested), so any uncommitted edit to a
+# tracked file, staged change, OR untracked file un-vets it — the strict "the
+# workspace must match the attested commit exactly" posture. "false" (the default)
+# anchors vetting to the COMMIT GRAPH only: working-tree state is ignored, because
+# an attestation covers a commit, not the working directory, and a repo whose HEAD
+# carries a verified ancestor tag stays vetted no matter what the working tree
+# looks like. Teams that want the agent to run only on a pristine, exactly-attested
+# tree set this true (an uncommitted edit — or an untracked file the agent or a
+# contributor dropped — then refuses the launch until committed or cleaned). Read
+# from BOTH the user config and the overlay config, TIGHTENING-ONLY: strict
+# ("true") wins if EITHER sets it, so an overlay can ratchet this up and never
+# down — the same "additive on the safety side" rule the posture and drift caps
+# follow. Anything but a literal `true` (unset, false, a typo) leaves the default.
+vetting_require_clean_worktree() {
   local user_v="" overlay_v="" overlay
   [[ -f "${USER_SANDBOX_CONFIG}" ]] && \
-    user_v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_block_untracked)"
+    user_v="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" vetting_require_clean_worktree)"
   overlay="$(resolve_overlay_path 2>/dev/null || true)"
   [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] && \
-    overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_block_untracked)"
+    overlay_v="$(extract_yaml_scalar_from_file "${overlay}/config.yaml" vetting_require_clean_worktree)"
   if [[ "${user_v}" == "true" || "${overlay_v}" == "true" ]]; then
     echo "true"
   else
     echo "false"
   fi
-}
-
-# _vetting_untracked_mode — the `git status --untracked-files` mode the dirty
-# check uses: "normal" (untracked files count toward a dirty tree) when
-# vetting_block_untracked is set, else "no" (untracked files are ignored — the
-# default).
-_vetting_untracked_mode() {
-  if [[ "$(vetting_block_untracked)" == "true" ]]; then echo "normal"; else echo "no"; fi
 }
 
 # vetting_exceptions_from_commit — selects WHERE the secret gate reads a vetted
@@ -518,7 +513,12 @@ vetting_status_repo() {
   head_sha="$(_vetting_git "${real_repo}" rev-parse HEAD 2>/dev/null)" || {
     printf 'error\t%s has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo %s\n' "${repo}" "${repo}"; return 0; }
 
-  if [[ -n "$(_vetting_git "${real_repo}" status --porcelain --untracked-files="$(_vetting_untracked_mode)" 2>/dev/null)" ]]; then
+  # Working-tree state does not un-vet by default (vetting is anchored to the
+  # commit graph, not the working directory). Only when an overlay/user demands a
+  # pristine tree does a dirty working tree — any tracked edit, staged change, or
+  # untracked file — mark the repo dirty. See vetting_require_clean_worktree.
+  if [[ "$(vetting_require_clean_worktree)" == "true" \
+        && -n "$(_vetting_git "${real_repo}" status --porcelain 2>/dev/null)" ]]; then
     printf 'dirty\t%s\n' "${head_sha}"; return 0
   fi
 
@@ -615,13 +615,7 @@ _vetting_print_findings() {
     case "${status}" in
       unvetted) echo "    ${repo}: no verified attestation (HEAD ${f2:0:12}; ${f3})" >&2 ;;
       drift)    echo "    ${repo}: ${f3} (HEAD ${f2:0:12})" >&2 ;;
-      dirty)
-        if [[ "$(vetting_block_untracked)" == "true" ]]; then
-          echo "    ${repo}: uncommitted changes or untracked files — commit, stash (git stash -u), or remove them, then attest (HEAD ${f2:0:12})" >&2
-        else
-          echo "    ${repo}: uncommitted changes to tracked files — commit or stash, then attest (HEAD ${f2:0:12})" >&2
-        fi
-        ;;
+      dirty)    echo "    ${repo}: working tree is not clean (vetting_require_clean_worktree is set) — commit, stash (git stash -u), or remove the changes, then attest (HEAD ${f2:0:12})" >&2 ;;
       not-git)  echo "    ${repo}: not a git repository — run 'git init' and make a commit, then attest with 'sandbox vet --repo ${repo}'" >&2 ;;
       error)    echo "    ${repo}: ${f2}" >&2 ;;
       *)        echo "    ${repo}: ${status} ${f2}" >&2 ;;
@@ -1141,11 +1135,15 @@ vetting_attest_repo() {
   if ! _vetting_git "${real_repo}" rev-parse --git-dir >/dev/null 2>&1; then
     echo "ERROR: ${repo} is not a git repository — nothing to attest." >&2; return 1
   fi
-  if [[ -n "$(_vetting_git "${real_repo}" status --porcelain --untracked-files="$(_vetting_untracked_mode)" 2>/dev/null)" ]]; then
-    echo "ERROR: ${repo} has uncommitted changes. Commit or stash first — an" >&2
-    echo "       attestation covers a specific commit, not a dirty tree." >&2
-    [[ "$(vetting_block_untracked)" == "true" ]] && \
-      echo "       (vetting_block_untracked is set, so untracked files count too — 'git stash -u' or remove them.)" >&2
+  # The attestation tags HEAD, so a dirty working tree does not affect what is
+  # signed and is allowed by default (consistent with the launch gate, which
+  # anchors vetting to the commit graph). Only when a clean tree is required does
+  # attesting refuse one, so the signed commit describes exactly the reviewed tree.
+  if [[ "$(vetting_require_clean_worktree)" == "true" \
+        && -n "$(_vetting_git "${real_repo}" status --porcelain 2>/dev/null)" ]]; then
+    echo "ERROR: ${repo} has a dirty working tree and vetting_require_clean_worktree" >&2
+    echo "       is set. Commit, stash (git stash -u), or remove the changes first —" >&2
+    echo "       the attestation must describe exactly the reviewed tree." >&2
     return 1
   fi
 
