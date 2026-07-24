@@ -123,6 +123,31 @@ remove_sandbox_masquerade_service() {
   fi
 }
 
+# remove_firewalld_trusted_cidrs — undo configure_firewalld (setup/linux.sh):
+# drop the pod/service CIDRs from firewalld's trusted zone. Same guards as the
+# installer, so it is a no-op on hosts without an active firewalld (e.g.
+# Ubuntu), and idempotent via --query-source. Linux-only.
+remove_firewalld_trusted_cidrs() {
+  command -v firewall-cmd &>/dev/null || { skip "firewalld not present."; return 0; }
+  systemctl is-active --quiet firewalld 2>/dev/null || { skip "firewalld not active."; return 0; }
+
+  local changed=0 cidr
+  for cidr in "${SANDBOX_POD_CIDR:-100.64.0.0/10}" "${SANDBOX_SERVICE_CIDR:-10.43.0.0/16}"; do
+    if sudo firewall-cmd --permanent --zone=trusted --query-source="${cidr}" &>/dev/null; then
+      info "Removing ${cidr} from firewalld trusted zone..."
+      try sudo firewall-cmd --permanent --zone=trusted --remove-source="${cidr}"
+      changed=1
+    else
+      skip "${cidr} not in firewalld trusted zone."
+    fi
+  done
+
+  if [[ "${changed}" -eq 1 ]]; then
+    try sudo firewall-cmd --reload
+    ok "firewalld trusted CIDRs removed."
+  fi
+}
+
 # sweep_cilium_host_artifacts — belt-and-suspenders pass for anything
 # cilium-dbg cleanup didn't get (or in the case where it didn't run at all).
 # All operations are idempotent. Linux-only.
@@ -433,6 +458,7 @@ fi
 
 if [[ "${PLATFORM}" == "Linux" ]]; then
   remove_sandbox_masquerade_service
+  remove_firewalld_trusted_cidrs
 fi
 
 # ---------------------------------------------------------------------------

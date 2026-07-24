@@ -11,11 +11,54 @@ setup_linux() {
 
   check_linux_prerequisites
   install_k3s_linux
+  # Trust the pod/service CIDRs in firewalld (RHEL/Alma/Fedora family) BEFORE
+  # Cilium installs, so the reload's nftables flush lands before Cilium lays its
+  # datapath. No-op on hosts without an active firewalld (e.g. Ubuntu).
+  configure_firewalld
   # Cilium must be installed (as the CNI) before gVisor configuration triggers
   # a k3s restart — without a CNI, system pods cannot start after that restart.
   install_cilium_helm
   install_masquerade_service
   configure_containerd_gvisor
+}
+
+# configure_firewalld — trust the pod and service CIDRs on hosts running
+# firewalld (RHEL / Alma / Fedora family). firewalld's default zone rejects
+# forwarded traffic and permits only a handful of INPUT services, which drops
+# the entire Cilium datapath: pods cannot reach the API server or CoreDNS
+# ClusterIPs, so CoreDNS never goes Ready, cluster DNS dies, and pod egress
+# times out. Adding the CIDRs as *source-based* trusted-zone entries lets
+# pod-sourced packets bypass the default-zone rejects — source-matched zones
+# take precedence over interface-matched zones in firewalld.
+#
+# This is a deliberate no-op when firewalld is absent or inactive, so the
+# Debian/Ubuntu path (ufw, or no host firewall at all) is left untouched: the
+# `command -v` guard returns before anything else runs when firewall-cmd is not
+# installed, and the `is-active` guard returns when the daemon is stopped.
+#
+# Idempotent: --query-source skips CIDRs already trusted, and firewalld is
+# reloaded only when something actually changed (so re-running setup on a
+# configured host neither errors nor flushes nftables needlessly).
+configure_firewalld() {
+  command -v firewall-cmd &>/dev/null || return 0
+  systemctl is-active --quiet firewalld 2>/dev/null || return 0
+
+  echo "  firewalld is active — trusting pod/service CIDRs for the Cilium datapath..."
+  local changed=0 cidr
+  for cidr in "${SANDBOX_POD_CIDR}" "${SANDBOX_SERVICE_CIDR}"; do
+    if sudo firewall-cmd --permanent --zone=trusted --query-source="${cidr}" &>/dev/null; then
+      echo "    ${cidr} already trusted."
+    else
+      sudo firewall-cmd --permanent --zone=trusted --add-source="${cidr}" >/dev/null
+      echo "    Trusted ${cidr}."
+      changed=1
+    fi
+  done
+
+  if [[ "${changed}" -eq 1 ]]; then
+    echo "  Reloading firewalld to apply trusted CIDRs..."
+    sudo firewall-cmd --reload >/dev/null
+  fi
 }
 
 check_linux_prerequisites() {
