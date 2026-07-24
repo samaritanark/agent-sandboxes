@@ -90,10 +90,13 @@ copy_k3s_kubeconfig() {
 # Use 'k3s kubectl' rather than bare 'kubectl': k3s may have skipped creating
 # the /usr/local/bin/kubectl symlink (if another kubectl exists), so bare
 # 'sudo kubectl' won't find the k3s kubeconfig at /etc/rancher/k3s/k3s.yaml.
+# Invoke k3s by absolute path via k3s_bin: `sudo` may run with a secure_path
+# that omits /usr/local/bin, so a bare `sudo k3s` would fail "command not
+# found" here and stall this loop until it times out even on a healthy k3s.
 wait_for_k3s() {
   local retries="${1:-30}"
   local i=0
-  until sudo k3s kubectl get nodes &>/dev/null 2>&1; do
+  until sudo "$(k3s_bin)" kubectl get nodes &>/dev/null 2>&1; do
     (( i++ )) || true
     if [[ "${i}" -ge "${retries}" ]]; then
       echo "ERROR: k3s did not become ready within ${retries} attempts." >&2
@@ -319,7 +322,7 @@ EOF
   sleep 10
   local retries=20
   local i=0
-  until sudo k3s kubectl get nodes &>/dev/null 2>&1; do
+  until sudo "$(k3s_bin)" kubectl get nodes &>/dev/null 2>&1; do
     (( i++ )) || true
     [[ "${i}" -ge "${retries}" ]] && { echo "ERROR: k3s did not restart." >&2; exit 1; }
     sleep 5

@@ -456,9 +456,9 @@ if [[ "${OPT_KEEP_IMAGES}" == "false" ]]; then
   if [[ "${PLATFORM}" == "Linux" ]] && command -v k3s &>/dev/null; then
     info "Removing images from k3s containerd..."
     for img in "${SANDBOX_IMAGES[@]}"; do
-      if sudo k3s ctr images ls --quiet 2>/dev/null | grep -qF "${img}"; then
-        try sudo k3s ctr images rm "docker.io/library/${img}" 2>/dev/null || \
-          try sudo k3s ctr images rm "${img}"
+      if sudo "$(k3s_bin)" ctr images ls --quiet 2>/dev/null | grep -qF "${img}"; then
+        try sudo "$(k3s_bin)" ctr images rm "docker.io/library/${img}" 2>/dev/null || \
+          try sudo "$(k3s_bin)" ctr images rm "${img}"
         ok "Removed: ${img}"
       else
         skip "Not found: ${img}"

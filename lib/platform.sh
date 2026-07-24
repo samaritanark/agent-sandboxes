@@ -16,6 +16,17 @@ kubectl() {
   command kubectl --kubeconfig "${SANDBOX_KUBECONFIG}" "$@"
 }
 
+# k3s_bin — absolute path to the k3s binary, for invocations under `sudo`.
+# The k3s installer drops the binary in /usr/local/bin, but many hosts run
+# `sudo` with a secure_path that omits /usr/local/bin (RHEL/Alma-family
+# defaults commonly do), so a bare `sudo k3s ...` fails with "command not
+# found" even when k3s is on the invoking user's PATH. Resolve the absolute
+# path here and hand THAT to sudo; fall back to the installer's canonical
+# location if k3s is not yet on PATH.
+k3s_bin() {
+  command -v k3s 2>/dev/null || echo /usr/local/bin/k3s
+}
+
 # detect_platform — returns "linux" or "macos"
 detect_platform() {
   local uname_out
