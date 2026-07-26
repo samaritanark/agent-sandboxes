@@ -232,6 +232,9 @@ OPTIONS:
                                     --infra-token for the real auth path)
   --infra-endpoint <URL>            Extra infra endpoint URL (tier 3, repeatable)
   --dry-run                         Print manifests without applying
+  --homedir <DIR>                   Host directory to back the agent's home
+                                    (auth tokens, session state); default
+                                    ~/.sandbox/agent-home/<agent>. Linux/WSL only
   --name <NAME>                     Human-readable session name
   --keep-alive                      Leave the pod running after disconnect
                                     (default: tear down on exit to free cluster
@@ -453,6 +456,7 @@ cmd_run() {
   local opt_accept_unvetted_repo="false"
   local opt_accept_vetting_drift="false"
   local opt_base_url=""
+  local opt_homedir=""
   local -a opt_allow_domains=()
   local -a opt_infra_endpoints=()
 
@@ -472,6 +476,8 @@ cmd_run() {
       --allow-domain=*)        opt_allow_domains+=("${1#--allow-domain=}") ;;
       --base-url)              opt_base_url="${2:?--base-url requires a value}"; shift ;;
       --base-url=*)            opt_base_url="${1#--base-url=}" ;;
+      --homedir)               opt_homedir="${2:?--homedir requires a value}"; shift ;;
+      --homedir=*)             opt_homedir="${1#--homedir=}" ;;
       --infra-token)           opt_infra_token="${2:?--infra-token requires a value}"; shift ;;
       --infra-token=*)         opt_infra_token="${1#--infra-token=}" ;;
       --infra-kubeconfig)      opt_infra_kubeconfig="${2:?--infra-kubeconfig requires a value}"; shift ;;
@@ -500,6 +506,21 @@ cmd_run() {
   done
   if [[ -n "${opt_infra_kubeconfig}" ]]; then
     opt_infra_kubeconfig="${opt_infra_kubeconfig/#\~/${HOME}}"
+  fi
+
+  # --homedir DIR relocates the agent-home the pod mounts (issue #68): the
+  # persistence dir for auth tokens + session state, mounted at ~/.claude (etc.).
+  # Exporting SANDBOX_AGENT_HOME_OVERRIDE routes host_agent_home there for every
+  # downstream consumer (prepare_agent_home, the manifest builder, teardown
+  # transcript capture). Not supported on macOS, where the pod mounts a VM-local
+  # ext4 path rather than a host dir (see resolve_agent_home / lib/lima.sh).
+  if [[ -n "${opt_homedir}" ]]; then
+    if is_macos; then
+      warn "--homedir is not supported on macOS (the pod mounts a VM-local agent-home); ignoring."
+    else
+      opt_homedir="${opt_homedir/#\~/${HOME}}"
+      export SANDBOX_AGENT_HOME_OVERRIDE="${opt_homedir}"
+    fi
   fi
 
   # If a git-linked team overlay is configured, sync it to its pinned ref's

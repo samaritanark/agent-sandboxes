@@ -61,12 +61,35 @@ test_vm_base_is_overridable() {
     eq "override applies" "/data/agent-home/claude" "$(resolve_agent_home claude)" )
 }
 
+test_home_dir_is_overridable() {
+  info "Testing SANDBOX_AGENT_HOME_BASE / _OVERRIDE relocate host_agent_home (issue #68)..."
+  _set_platform linux
+  ( SANDBOX_AGENT_HOME_BASE="/srv/ah"
+    eq "BASE relocates per-agent subdir" "/srv/ah/claude" "$(host_agent_home claude)" )
+  ( SANDBOX_AGENT_HOME_OVERRIDE="/x/y"
+    eq "OVERRIDE is used verbatim (agent-agnostic)" "/x/y" "$(host_agent_home claude)" )
+  ( SANDBOX_AGENT_HOME_BASE="/srv/ah"; SANDBOX_AGENT_HOME_OVERRIDE="/x/y"
+    eq "OVERRIDE wins over BASE" "/x/y" "$(host_agent_home codex)" )
+}
+
+test_pod_uid_tracks_operator() {
+  info "Testing resolve_pod_uid tracks the operator on Linux, stays 1000 on macOS (issue #71)..."
+  _set_platform linux
+  ( SANDBOX_POD_UID="1003"; eq "linux honors operator uid"        "1003" "$(resolve_pod_uid)" )
+  ( SANDBOX_POD_UID="0";    eq "root clamps to 1000 (nonRoot)"    "1000" "$(resolve_pod_uid)" )
+  ( SANDBOX_POD_UID="nope"; eq "non-numeric clamps to 1000"       "1000" "$(resolve_pod_uid)" )
+  _set_platform macos
+  ( SANDBOX_POD_UID="1003"; eq "macOS ignores operator uid (VM)"  "1000" "$(resolve_pod_uid)" )
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   test_macos_uses_vm_local
   test_linux_uses_host_home
   test_host_agent_home_is_platform_independent
   test_vm_base_is_overridable
+  test_home_dir_is_overridable
+  test_pod_uid_tracks_operator
   echo "All ${TEST_NAME} tests passed."
 }
 

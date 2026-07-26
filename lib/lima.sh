@@ -106,10 +106,14 @@ lima_kubectl() {
 # is never clobbered by older staged state. Teardown sync-back preserves mtimes,
 # so staging and the working copy stay in step across sessions.
 #
-# Linux/WSL: the host dir IS the mount. chown to 1000:1000 where we are
-# privileged enough (root in a WSL distro; a harmless no-op for the uid-1000
-# Linux operator) and fall back to the historical world-writable chmod for the
-# uncommon non-root, non-1000 operator.
+# Linux/WSL: the host dir IS the mount, and the pod runs as resolve_pod_uid —
+# the operator's own uid (issue #71). The dir was just created by this process
+# (the operator), so it is already owned by the pod uid and the chown is a
+# harmless no-op; the one case it does work is a root operator (e.g. WSL), where
+# resolve_pod_uid clamps to 1000 and root can chown to it. Group is left as-is:
+# owning the dir is what grants the agent write, not the group. Fall back to the
+# historical world-writable chmod if the chown can't run (e.g. a --homedir that
+# points at a pre-existing dir owned by someone else).
 prepare_agent_home() {
   local agent="$1"
   local mount_home staging
@@ -134,7 +138,7 @@ prepare_agent_home() {
     ' _ "${mount_home}" "${staging}" \
       || die "Failed to prepare VM-local agent-home for '${agent}' inside ${LIMA_VM_NAME}."
   else
-    chown -R 1000:1000 "${staging}" 2>/dev/null \
+    chown -R "$(resolve_pod_uid)" "${staging}" 2>/dev/null \
       || find "${staging}" -exec chmod u+rwX,go+rwX {} + 2>/dev/null \
       || true
   fi

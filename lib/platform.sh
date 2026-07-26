@@ -198,10 +198,22 @@ is_wsl() {
 
 # host_agent_home <agent> — the operator-home staging/persistence dir for an
 # agent's config (auth tokens, settings). 'sandbox onboard' writes here, and on
-# macOS the in-VM working copy is seeded from here. Always on the operator's
+# macOS the in-VM working copy is seeded from here. Defaults under the operator's
 # home, so it survives even a VM rebuild.
+#
+# Two overrides let the operator relocate this (issue #68 — e.g. running the CLI
+# as a dedicated de-privileged user whose $HOME differs from the invoking one):
+#   SANDBOX_AGENT_HOME_OVERRIDE  used verbatim as the dir for THIS agent (the
+#                                per-run `sandbox run --homedir DIR` knob).
+#   SANDBOX_AGENT_HOME_BASE      replaces the "${HOME}/.sandbox/agent-home" base
+#                                that the per-agent subdir hangs off of, mirroring
+#                                the SANDBOX_KUBECONFIG / SANDBOX_LOGS_DIR pattern.
 host_agent_home() {
-  echo "${HOME}/.sandbox/agent-home/${1}"
+  if [[ -n "${SANDBOX_AGENT_HOME_OVERRIDE:-}" ]]; then
+    echo "${SANDBOX_AGENT_HOME_OVERRIDE}"
+    return
+  fi
+  echo "${SANDBOX_AGENT_HOME_BASE:-${HOME}/.sandbox/agent-home}/${1}"
 }
 
 # VM-local base for the agent-home the pod actually mounts on macOS. The pod's
@@ -250,4 +262,38 @@ resolve_workspace_mount() {
   else
     echo "${repo}"
   fi
+}
+
+# resolve_pod_uid — the uid the agent process runs as inside the pod (issue #71).
+#
+# Linux/WSL: the invoking operator's uid. The workspace (tier 2/3) and agent-home
+# are hostPath-mounted straight off the operator's filesystem, and Kubernetes
+# does NOT chown hostPath volumes to fsGroup — so a static uid 1000 could not
+# write a repo owned by an operator whose uid != 1000 (EACCES on every edit,
+# `git commit`, build artefact). Matching the pod uid to the operator's makes the
+# agent the owner of exactly the files it must write, with no privileged chown of
+# the operator's own directories (which a de-privileged, no-passwordless-sudo
+# operator could not perform anyway). The 'agent' group (gid 1000) stays the pod
+# group — see the securityContext in lib/manifest.sh and the group-writable
+# /home/agent in docker/Dockerfile.base — so the baked $HOME remains writable
+# regardless of the uid.
+#
+# uid 0 is clamped to 1000: runAsNonRoot forbids running the agent as root, and
+# an operator running the CLI as root has no personal files to match anyway (the
+# historical uid-1000 behaviour, e.g. a WSL root shell).
+#
+# macOS keeps 1000: the pod runs in the Lima VM against VM-local ext4 dirs that
+# are chowned to 1000 and kept in sync by the uid-1000 Mutagen user, so the Mac
+# host uid is irrelevant (see SANDBOX_VM_AGENT_HOME_BASE / lib/lima.sh).
+#
+# SANDBOX_POD_UID overrides the derived value (tests pin it; operators seldom
+# need to).
+resolve_pod_uid() {
+  if is_macos; then
+    echo 1000
+    return
+  fi
+  local uid="${SANDBOX_POD_UID:-$(id -u)}"
+  { [[ "${uid}" =~ ^[0-9]+$ ]] && [[ "${uid}" -ne 0 ]]; } || uid=1000
+  echo "${uid}"
 }
