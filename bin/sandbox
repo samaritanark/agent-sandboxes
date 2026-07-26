@@ -1664,6 +1664,8 @@ _resume_guide_command() {
 # Running and ready to attach. Only called after _resume_recreate_blocker clears
 # it, so tier is 1 or 2, there is no profile/infra/opencode secret to restore,
 # and (Linux) the workspace repos are still mounted straight off the host.
+# Re-runs the Tier 2/3 workspace launch gates first (see below), fail closed, so
+# resume can never relaunch a workspace that a fresh 'sandbox run' would refuse.
 recreate_session_pod() {
   local session_id="$1"
   local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
@@ -1686,6 +1688,30 @@ recreate_session_pod() {
 
   local -a extras=()
   read_into_array extras < <(jq -r '.[]?' <<<"$(_resume_extras_json "${sj}" "${agent}" "${tier}")")
+
+  # Re-run the Tier 2/3 workspace launch gates before recreating the pod. The
+  # workspace is not carried in session.json — for a Tier 2 repo it is the live
+  # host directory, which the previous session's agent could have modified — so
+  # resume must NOT relaunch a workspace that a fresh 'sandbox run' would refuse
+  # (masking type check, repo vetting, unmasked-secret scan). These fail closed
+  # and mirror cmd_run's Step 2 exactly, with every override hardcoded false:
+  # resume carries no --i-accept-* waivers, so anything needing one is refused
+  # here and the operator relaunches via 'sandbox run' with the flag they intend.
+  if [[ "${tier}" -ge 2 ]] && [[ "${#repos[@]}" -gt 0 ]]; then
+    echo "==> Re-checking workspace gates before recreate..."
+    local _r
+    for _r in "${repos[@]}"; do
+      workspace_prescan "${_r}"
+    done
+    check_masking_paths "${repos[@]}"
+    vetting_gate_repos "$(resolve_vetting_posture)" "false" "false" "${repos[@]}"
+    local _endpoint _endpoint_trusted="false"
+    _endpoint="$(resolve_inference_endpoint "${agent}")"
+    if [[ -n "${_endpoint}" ]] && inference_endpoint_is_trusted "${_endpoint}"; then
+      _endpoint_trusted="true"
+    fi
+    secret_gate_repos "false" "${_endpoint_trusted}" "false" "${repos[@]}"
+  fi
 
   echo "==> Recreating pod for ${session_id} (${agent}, tier ${tier})..."
   prepare_agent_home "${agent}"

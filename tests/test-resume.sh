@@ -93,11 +93,61 @@ test_guide_command_reconstructs_run() {
   contains "extra allow-domain" "${cmd}" "--allow-domain totally-extra.example.com"
 }
 
+# recreate_session_pod must re-run the Tier 2 workspace launch gates and, on a
+# gate refusal, abort BEFORE touching the cluster — resume must never relaunch a
+# workspace a fresh 'sandbox run' would refuse (security review finding, #70).
+test_recreate_reruns_gates_before_apply() {
+  info "Testing recreate_session_pod re-runs the tier-2 gates and a refusal aborts before apply..."
+  _set_platform linux
+  local gatelog="${TEST_DIR}/gatelog" applied="${TEST_DIR}/applied"
+  : > "${gatelog}"; : > "${applied}"
+
+  SANDBOX_LOGS_DIR="${TEST_DIR}/logs"
+  local sdir="${SANDBOX_LOGS_DIR}/ses-gate-test"
+  mkdir -p "${sdir}" "${TEST_DIR}/repoA"
+  printf '{"agent":"claude","tier":2,"name":"t","user":"u","repos":["%s"],"allowed_domains":[],"kube_api_cidr":"","kube_api_port":""}\n' \
+    "${TEST_DIR}/repoA" > "${sdir}/session.json"
+
+  # Stub cluster + build steps so nothing hits a real cluster; kubectl records
+  # that an apply happened. resolve_* are pinned so the path is deterministic.
+  prepare_agent_home() { :; }
+  build_cilium_policy() { echo policy; }
+  build_pod_manifest() { echo pod; }
+  wait_for_pod() { :; }
+  resolve_pod_name() { echo sandbox-x; }
+  resolve_vetting_posture() { echo off; }
+  resolve_inference_endpoint() { echo ""; }
+  kubectl() { echo apply >> "${applied}"; }
+  # Gate stubs record invocation; all pass for the first case.
+  workspace_prescan()   { echo prescan >> "${gatelog}"; }
+  check_masking_paths() { echo masking >> "${gatelog}"; }
+  vetting_gate_repos()  { echo vetting >> "${gatelog}"; }
+  secret_gate_repos()   { echo secret  >> "${gatelog}"; }
+
+  # Case A — all gates pass: every gate runs, then the apply happens.
+  ( recreate_session_pod "ses-gate-test" ) >/dev/null 2>&1 || true
+  local ran; ran="$(tr '\n' ',' < "${gatelog}")"
+  { grep -q prescan "${gatelog}" && grep -q masking "${gatelog}" \
+    && grep -q vetting "${gatelog}" && grep -q secret "${gatelog}"; } \
+    && pass "all four workspace gates run on recreate" || fail "missing gate(s): ${ran}"
+  [[ -s "${applied}" ]] && pass "apply proceeds once gates pass" || fail "apply did not run when gates passed"
+
+  # Case B — a gate refuses: apply must NOT run. The real gates fail closed via
+  # die (exit), so the stub does the same; recreate_session_pod calls it as a
+  # bare statement, so the exit aborts before any build/apply.
+  : > "${applied}"
+  secret_gate_repos() { die "secret gate refused (test)"; }
+  ( recreate_session_pod "ses-gate-test" ) >/dev/null 2>&1 || true
+  [[ ! -s "${applied}" ]] && pass "a gate refusal aborts before any cluster apply" \
+    || fail "apply ran despite a gate refusal — resume would relaunch an ungated workspace"
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   test_blocker_allows_simple_sessions
   test_blocker_guides_the_rest
   test_guide_command_reconstructs_run
+  test_recreate_reruns_gates_before_apply
   echo "All ${TEST_NAME} tests passed."
 }
 
