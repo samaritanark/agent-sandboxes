@@ -143,7 +143,7 @@ USAGE:
 
 COMMANDS:
   run          Launch a sandboxed agent session
-  resume       Reconnect to a running session
+  resume       Reconnect to a session (recreating the pod if it was torn down)
   allow        Add domains to a running session's egress allowlist (no restart)
   list         List active and recent sessions
   logs         Show audit log for a session
@@ -1581,7 +1581,135 @@ cmd_stop() {
 }
 
 ###############################################################################
-# cmd_resume — reconnect to a running session
+# resume-of-an-exited-pod helpers (issue #70)
+#
+# When a session ends, cmd_stop deletes the pod, its policy, and ALL secret
+# material (infra token, kubeconfig, opencode key, profile session-secrets) —
+# PRINCIPLES.md rule 2 keeps secrets from persisting in the cluster. session.json
+# retains only the non-secret config. So resume can rebuild a torn-down session's
+# pod ONLY when its full input survives in session.json and its credentials are
+# re-usable without re-prompting; otherwise it guides the operator to relaunch.
+###############################################################################
+
+# _resume_recreate_blocker <session_json> — echo a human reason resume must NOT
+# auto-recreate this session (guide instead), or nothing when it can. The gate is
+# deliberately conservative — the recreate path below reconstructs only what
+# these conditions leave fully derivable from session.json:
+#   macOS   — the tier 2/3 workspace is a VM-local copy that stop deletes; only a
+#             fresh launch re-syncs it (Linux mounts the host repo directly).
+#   tier 3  — the infra token + kubeconfig are never persisted.
+#   profile — dependencies and profile session-secrets are re-resolved from live
+#             profile/catalogue state at launch, not stored here.
+#   opencode— its key + model list come from host env at launch, not agent-home.
+_resume_recreate_blocker() {
+  local sj="$1"
+  local tier agent profile
+  tier="$(jq -r '.tier // 1' "${sj}" 2>/dev/null || echo 1)"
+  agent="$(jq -r '.agent // "claude"' "${sj}" 2>/dev/null || echo claude)"
+  profile="$(jq -r '.profile // ""' "${sj}" 2>/dev/null || echo "")"
+  if is_macos; then echo "macOS rebuilds the VM-local workspace copy on launch"; return; fi
+  [[ "${tier}" -eq 3 ]] && { echo "tier 3 infra credentials are never persisted"; return; }
+  [[ -n "${profile}" ]] && { echo "it used profile '${profile}' (dependencies/secrets re-resolve at launch)"; return; }
+  [[ "${agent}" == "opencode" ]] && { echo "opencode reads its key + model list from your environment at launch"; return; }
+  echo ""
+}
+
+# _resume_extras_json <session_json> <agent> <tier> — the session's extra allowed
+# domains (allowed_domains minus the agent + tier defaults), as a compact JSON
+# array. build_cilium_policy / sandbox run re-add the defaults, so both the
+# recreate policy and the guide command must pass extras only — same computation
+# as cmd_allow.
+_resume_extras_json() {
+  local sj="$1" agent="$2" tier="$3"
+  # Suppress the domain helpers' stderr: for an opencode session get_agent_domains
+  # wants OPENCODE_BASE_URL (unset exactly when we're guiding it), and this list
+  # is only used to trim already-covered defaults from an informational command.
+  local agent_dom_json tier_dom_json
+  agent_dom_json="$(get_agent_domains "${agent}" 2>/dev/null | jq -R . | jq -s -c .)"
+  tier_dom_json="$(get_tier_domains "${tier}" 2>/dev/null | jq -R . | jq -s -c .)"
+  jq -c -n \
+    --argjson cur "$(jq -c '.allowed_domains // []' "${sj}")" \
+    --argjson a "${agent_dom_json}" \
+    --argjson t "${tier_dom_json}" \
+    '$cur - ($a + $t)'
+}
+
+# _resume_guide_command <session_json> — reconstruct the `sandbox run` invocation
+# that starts an equivalent session, for the cases resume can't rebuild. Emits
+# extras-only allow-domains so the line is minimal.
+_resume_guide_command() {
+  local sj="$1"
+  local agent tier profile name
+  agent="$(jq -r '.agent // "claude"' "${sj}")"
+  tier="$(jq -r '.tier // 1' "${sj}")"
+  profile="$(jq -r '.profile // ""' "${sj}")"
+  name="$(jq -r '.name // ""' "${sj}")"
+
+  local cmd="sandbox run --agent ${agent} --tier ${tier}"
+  [[ -n "${profile}" ]] && cmd+=" --profile ${profile}"
+  local r
+  while IFS= read -r r; do
+    [[ -n "${r}" ]] && cmd+=" --repo ${r}"
+  done < <(jq -r '.repos[]? // empty' "${sj}")
+  [[ -n "${name}" ]] && cmd+=" --name '${name}'"
+  local d
+  while IFS= read -r d; do
+    [[ -n "${d}" ]] && cmd+=" --allow-domain ${d}"
+  done < <(jq -r '.[]?' <<<"$(_resume_extras_json "${sj}" "${agent}" "${tier}")")
+  echo "${cmd}"
+}
+
+# recreate_session_pod <session_id> — rebuild and apply the policy + pod for a
+# torn-down session from the non-secret state in session.json, leaving the pod
+# Running and ready to attach. Only called after _resume_recreate_blocker clears
+# it, so tier is 1 or 2, there is no profile/infra/opencode secret to restore,
+# and (Linux) the workspace repos are still mounted straight off the host.
+recreate_session_pod() {
+  local session_id="$1"
+  local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
+  local sj="${log_dir}/session.json"
+  local pod_name
+  pod_name="$(resolve_pod_name "${session_id}")"
+
+  local agent tier name user kube_api_cidr kube_api_port
+  agent="$(jq -r '.agent // "claude"' "${sj}")"
+  tier="$(jq -r '.tier // 1' "${sj}")"
+  name="$(jq -r '.name // ""' "${sj}")"
+  user="$(jq -r '.user // "unknown"' "${sj}")"
+  kube_api_cidr="$(jq -r '.kube_api_cidr // ""' "${sj}")"
+  kube_api_port="$(jq -r '.kube_api_port // ""' "${sj}")"
+
+  local -a repos=()
+  read_into_array repos < <(jq -r '.repos[]? // empty' "${sj}")
+
+  local container_image="docker.io/library/sandbox:${agent}"
+
+  local -a extras=()
+  read_into_array extras < <(jq -r '.[]?' <<<"$(_resume_extras_json "${sj}" "${agent}" "${tier}")")
+
+  echo "==> Recreating pod for ${session_id} (${agent}, tier ${tier})..."
+  prepare_agent_home "${agent}"
+
+  local policy_yaml pod_yaml
+  policy_yaml="$(build_cilium_policy "${session_id}" "${agent}" "${tier}" \
+    "${kube_api_cidr}" "${kube_api_port}" "${extras[@]+"${extras[@]}"}")"
+  # infra_token / infra_kubeconfig_flag / kube alias are empty: the gate excluded
+  # tier 3 and infra, so none apply here.
+  pod_yaml="$(build_pod_manifest "${session_id}" "${agent}" "${tier}" \
+    "${container_image}" "${name}" "${user}" "" "${pod_name}" "" "" "" \
+    "${repos[@]+"${repos[@]}"}")"
+
+  echo "==> Applying CiliumNetworkPolicy..."
+  echo "${policy_yaml}" | kubectl apply -f - >/dev/null
+  echo "==> Applying pod..."
+  echo "${pod_yaml}" | kubectl apply -f - >/dev/null
+  echo "==> Waiting for pod to become Ready..."
+  wait_for_pod "${pod_name}"
+}
+
+###############################################################################
+# cmd_resume — reconnect to a running session, recreating an exited one when the
+# session.json state allows (issue #70)
 ###############################################################################
 cmd_resume() {
   local opt_keep_alive="false"
@@ -1590,7 +1718,14 @@ cmd_resume() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --keep-alive) opt_keep_alive="true" ;;
-      --help|-h)    echo "Usage: sandbox resume <SESSION_ID> [--keep-alive]"; exit 0 ;;
+      --help|-h)
+        echo "Usage: sandbox resume <SESSION_ID> [--keep-alive]"
+        echo ""
+        echo "Reconnects to a session. If its pod is still running, re-attaches."
+        echo "If the pod was torn down, recreates it from the recorded session"
+        echo "state when possible (Linux, tier 1/2, no profile, non-opencode);"
+        echo "otherwise prints the 'sandbox run' command to relaunch an equivalent."
+        exit 0 ;;
       -*)           die "Unknown option: $1" ;;
       *)
         if [[ -z "${session_id}" ]]; then
@@ -1620,14 +1755,30 @@ cmd_resume() {
   agent_session_id="$(jq -r '.agent_session_id // ""' "${session_json}" 2>/dev/null || echo "")"
 
   if ! kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null 2>&1; then
-    die "Pod ${pod_name} not found. Use 'sandbox list' to check session state."
-  fi
-
-  local pod_phase
-  pod_phase="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
-    -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")"
-  if [[ "${pod_phase}" != "Running" ]]; then
-    die "Pod is not running (phase: ${pod_phase}). Use 'sandbox stop ${session_id}' to clean up."
+    # The pod was torn down (the common case — cmd_stop deletes it on exit).
+    # Recreate it from session.json when we can fully reconstruct the session;
+    # otherwise guide the operator to relaunch an equivalent one.
+    local _blocker
+    _blocker="$(_resume_recreate_blocker "${session_json}")"
+    if [[ -n "${_blocker}" ]]; then
+      echo "Session ${session_id}'s pod was torn down and can't be auto-recreated:" >&2
+      echo "  ${_blocker}." >&2
+      echo "" >&2
+      echo "Relaunch an equivalent session (its conversation history is preserved in" >&2
+      echo "~/.sandbox/agent-home/${agent}/ and continues via the agent's /resume):" >&2
+      echo "" >&2
+      echo "  $(_resume_guide_command "${session_json}")" >&2
+      exit 1
+    fi
+    ensure_cluster_ready
+    recreate_session_pod "${session_id}"
+  else
+    local pod_phase
+    pod_phase="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+      -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")"
+    if [[ "${pod_phase}" != "Running" ]]; then
+      die "Pod is not running (phase: ${pod_phase}). Use 'sandbox stop ${session_id}' to clean up."
+    fi
   fi
 
   echo "==> Resuming session: ${session_id}"

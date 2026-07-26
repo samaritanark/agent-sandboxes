@@ -38,6 +38,7 @@ tasks:
       - bash tests/test-workspace-mount.sh
       - bash tests/test-secrets.sh
       - bash tests/test-allow.sh
+      - bash tests/test-resume.sh
       - bash tests/test-audit.sh
       - bash tests/test-catalogue.sh
       - bash tests/test-dependency-manifest.sh
