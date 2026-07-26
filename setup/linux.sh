@@ -139,7 +139,9 @@ copy_k3s_kubeconfig() {
 wait_for_k3s() {
   local retries="${1:-30}"
   local i=0
-  until sudo "$(k3s_bin)" kubectl get nodes &>/dev/null 2>&1; do
+  local k3s
+  k3s="$(k3s_bin)"
+  until sudo "${k3s}" kubectl get nodes &>/dev/null 2>&1; do
     (( i++ )) || true
     if [[ "${i}" -ge "${retries}" ]]; then
       echo "ERROR: k3s did not become ready within ${retries} attempts." >&2
@@ -365,7 +367,9 @@ EOF
   sleep 10
   local retries=20
   local i=0
-  until sudo "$(k3s_bin)" kubectl get nodes &>/dev/null 2>&1; do
+  local k3s
+  k3s="$(k3s_bin)"
+  until sudo "${k3s}" kubectl get nodes &>/dev/null 2>&1; do
     (( i++ )) || true
     [[ "${i}" -ge "${retries}" ]] && { echo "ERROR: k3s did not restart." >&2; exit 1; }
     sleep 5

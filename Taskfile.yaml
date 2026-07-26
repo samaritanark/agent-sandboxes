@@ -27,6 +27,7 @@ tasks:
       - bash tests/test-vetting.sh
       - bash tests/test-dns.sh
       - bash tests/test-firewalld.sh
+      - bash tests/test-platform.sh
       - bash tests/test-profile.sh
       - bash tests/test-link.sh
       - bash tests/test-blocked-domains.sh

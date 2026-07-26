@@ -716,9 +716,11 @@ build_images() {
   fi
 
   echo "  Importing images into k3s containerd..."
+  local k3s
+  k3s="$(k3s_bin)"
   for tag in "${image_tags[@]}"; do
     echo "  Importing ${tag}..."
-    "${container_cli}" save "${tag}" | sudo "$(k3s_bin)" ctr images import -
+    "${container_cli}" save "${tag}" | sudo "${k3s}" ctr images import -
     echo "  Imported ${tag}"
   done
   echo "  All images imported into k3s containerd."
