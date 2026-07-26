@@ -132,22 +132,41 @@ is_macos() {
   [[ "$(detect_platform)" == "macos" ]]
 }
 
-# stamp_version_if_git — refresh the embedded .version from git so
+# stamp_version_if_git [VERSION] — refresh the embedded .version from git so
 # `sandbox version` reflects the current checkout. Call at lifecycle points that
 # follow a code change (install, upgrade). A no-op outside a git work tree or
 # without git, which correctly leaves a released tarball's authoritative
 # .version untouched. The runtime READ path never calls this — it must not shell
 # out to git (see the version block in bin/sandbox), so stamping is confined to
 # these explicit operator commands. Uses the caller's SANDBOX_ROOT global.
+#
+# An explicit VERSION is written verbatim — the upgrade path passes the resolved
+# release tag so the stamp equals the target by construction, rather than
+# trusting `git describe` to reproduce it (describe can pick a different tag when
+# several sit on one commit, or append `-dirty`; see issue #67). With no argument
+# the script derives the version from git (the install/dev path).
 stamp_version_if_git() {
   local root="${SANDBOX_ROOT:-}"
   [[ -n "${root}" ]] || return 0
   if [[ -f "${root}/scripts/stamp-version.sh" ]] \
      && command -v git >/dev/null 2>&1 \
      && git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    bash "${root}/scripts/stamp-version.sh" \
+    bash "${root}/scripts/stamp-version.sh" "$@" \
       || echo "WARN: version stamp failed; 'sandbox version' will report 'dev'." >&2
   fi
+}
+
+# read_stamped_version — echo the VERSION currently recorded in .version (empty
+# if the file is absent or carries no VERSION line). Parses, never sources, so a
+# malformed file can't execute — the same discipline as the runtime version
+# block in bin/sandbox. Used to confirm a stamp actually took before a caller
+# reports success.
+read_stamped_version() {
+  local root="${SANDBOX_ROOT:-}" _key _val
+  [[ -n "${root}" && -f "${root}/.version" ]] || return 0
+  while IFS='=' read -r _key _val; do
+    [[ "${_key}" == "VERSION" ]] && { echo "${_val}"; return 0; }
+  done < "${root}/.version"
 }
 
 # is_wsl — true when running inside a WSL distro on a Windows host.
