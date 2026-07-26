@@ -2989,12 +2989,20 @@ them. 'mask add' extends that set per-repo: each RELPATH (relative to the
 repo root) is recorded under masked_paths: in <repo>/.sandbox/config.yaml
 and mounted as an empty overlay at launch.
 
+A RELPATH may be a regular file OR a directory. A directory is masked with
+an empty directory (hiding the whole subtree, like the built-in .kube/); a
+file with an empty file. The type is taken from what's on disk; for a path
+that doesn't exist yet, a trailing slash marks it as a directory.
+
 This is what 'sandbox run' suggests when its betterleaks scan finds a
 secret in a file the mask would not otherwise hide.
 
 EXAMPLES:
   # Mask a nested config file flagged by the secret gate
   sandbox mask add --repo ~/repos/app config/prod/secrets.yaml
+
+  # Mask an entire directory (its whole subtree is hidden)
+  sandbox mask add --repo ~/repos/app config/secrets/
 
   # Show the effective masked set (built-in + configured) for a repo
   sandbox mask list --repo ~/repos/app
@@ -3039,13 +3047,31 @@ cmd_mask() {
         if [[ "${rel}" == /* ]] || [[ "${rel}" == ../* ]] || [[ "${rel}" == */../* ]]; then
           die "mask add: RELPATH must be relative to the repo root and inside it: ${rel}"
         fi
-        if [[ ! -e "${repo}/${rel}" ]]; then
-          warn "Path does not exist in repo (masking it anyway): ${rel}"
-        elif [[ ! -f "${repo}/${rel}" ]]; then
-          die "mask add: only regular files can be masked (found a non-file): ${rel}"
+        # A directory mask is stored with a trailing slash (like the built-in
+        # .kube/), a file mask without — the manifest builder keys the mount type
+        # off that (an emptyDir over a directory, an empty file over a file; the
+        # two are not interchangeable, gVisor crashes on a mismatch). Take the
+        # type from disk when the path exists; otherwise honour a trailing slash
+        # the operator typed.
+        local bare="${rel%/}"
+        local stored
+        if [[ -e "${repo}/${bare}" ]]; then
+          if [[ -d "${repo}/${bare}" ]]; then
+            stored="${bare}/"
+          elif [[ -f "${repo}/${bare}" ]]; then
+            stored="${bare}"
+          else
+            die "mask add: only regular files and directories can be masked (found a non-file/non-dir): ${bare}"
+          fi
+        elif [[ "${rel}" == */ ]]; then
+          stored="${bare}/"
+          warn "Path does not exist in repo (masking as a directory anyway): ${bare}/"
+        else
+          stored="${bare}"
+          warn "Path does not exist in repo (masking as a file anyway): ${bare}"
         fi
-        config_add_masked_path "${config_file}" "${rel}"
-        echo "Masked '${rel}' in $(basename "${repo}") (${config_file/#${HOME}/\~})."
+        config_add_masked_path "${config_file}" "${stored}"
+        echo "Masked '${stored}' in $(basename "${repo}") (${config_file/#${HOME}/\~})."
       done
       ;;
     list)
@@ -3075,7 +3101,13 @@ cmd_mask() {
       while IFS= read -r p; do
         [[ -z "${p}" ]] && continue
         any=true
-        if [[ -f "${repo}/${p}" ]]; then
+        if [[ "${p}" == */ ]]; then
+          if [[ -d "${repo}/${p%/}" ]]; then
+            echo "  ${p}  (directory)"
+          else
+            echo "  ${p}  (directory, not present in repo)"
+          fi
+        elif [[ -f "${repo}/${p}" ]]; then
           echo "  ${p}"
         else
           echo "  ${p}  (not present in repo)"
