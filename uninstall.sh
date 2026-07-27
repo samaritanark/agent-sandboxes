@@ -123,6 +123,65 @@ remove_sandbox_masquerade_service() {
   fi
 }
 
+# Canonical k3s systemd unit written by the get.k3s.io installer. Its ExecStart
+# records the flags setup passed via INSTALL_K3S_EXEC (setup/linux.sh).
+K3S_SERVICE_UNIT="/etc/systemd/system/k3s.service"
+
+# _recover_cidr_from_k3s_unit <flag> — echo the CIDR passed to a k3s server flag
+# (--cluster-cidr or --service-cidr) as baked into the installed k3s systemd
+# unit's ExecStart. setup/linux.sh always passes BOTH flags explicitly, even
+# when the defaults are in effect, so this authoritatively recovers whatever a
+# `setup.sh --pod-cidr ... --service-cidr ...` install actually used. Echoes
+# nothing when the unit or flag is absent (caller falls back to the default).
+_recover_cidr_from_k3s_unit() {
+  local flag="$1"
+  [[ -f "${K3S_SERVICE_UNIT}" ]] || return 0
+  grep -oE -- "${flag}[= ][0-9.]+/[0-9]+" "${K3S_SERVICE_UNIT}" \
+    | head -1 | grep -oE '[0-9.]+/[0-9]+' || true
+}
+
+# remove_firewalld_trusted_cidrs — undo configure_firewalld (setup/linux.sh):
+# drop the pod/service CIDRs from firewalld's trusted zone. Same guards as the
+# installer, so it is a no-op on hosts without an active firewalld (e.g.
+# Ubuntu), and idempotent via --query-source. Linux-only.
+#
+# The CIDRs are recovered from the installed k3s unit rather than assumed to be
+# the common.sh defaults, so a custom-CIDR install (`setup.sh --pod-cidr ...`)
+# is cleaned up correctly — a trusted-zone source is accept-all for that range,
+# so a stale entry for a CIDR that later gets reused on the host is a real
+# residue. This mirrors how remove_sandbox_masquerade_service recovers the pod
+# CIDR from its own unit; note that unit is already gone by the time this runs
+# (removed just above), so the still-present k3s unit is the source here. We do
+# NOT enumerate `firewall-cmd --list-sources` and remove everything, since the
+# operator may have added unrelated trusted sources we must not touch. The
+# common.sh defaults are only a fallback for when the k3s unit is missing.
+remove_firewalld_trusted_cidrs() {
+  command -v firewall-cmd &>/dev/null || { skip "firewalld not present."; return 0; }
+  systemctl is-active --quiet firewalld 2>/dev/null || { skip "firewalld not active."; return 0; }
+
+  local pod_cidr svc_cidr
+  pod_cidr="$(_recover_cidr_from_k3s_unit --cluster-cidr)"
+  svc_cidr="$(_recover_cidr_from_k3s_unit --service-cidr)"
+  pod_cidr="${pod_cidr:-${SANDBOX_POD_CIDR:-100.64.0.0/10}}"
+  svc_cidr="${svc_cidr:-${SANDBOX_SERVICE_CIDR:-10.43.0.0/16}}"
+
+  local changed=0 cidr
+  for cidr in "${pod_cidr}" "${svc_cidr}"; do
+    if sudo firewall-cmd --permanent --zone=trusted --query-source="${cidr}" &>/dev/null; then
+      info "Removing ${cidr} from firewalld trusted zone..."
+      try sudo firewall-cmd --permanent --zone=trusted --remove-source="${cidr}"
+      changed=1
+    else
+      skip "${cidr} not in firewalld trusted zone."
+    fi
+  done
+
+  if [[ "${changed}" -eq 1 ]]; then
+    try sudo firewall-cmd --reload
+    ok "firewalld trusted CIDRs removed."
+  fi
+}
+
 # sweep_cilium_host_artifacts — belt-and-suspenders pass for anything
 # cilium-dbg cleanup didn't get (or in the case where it didn't run at all).
 # All operations are idempotent. Linux-only.
@@ -433,6 +492,7 @@ fi
 
 if [[ "${PLATFORM}" == "Linux" ]]; then
   remove_sandbox_masquerade_service
+  remove_firewalld_trusted_cidrs
 fi
 
 # ---------------------------------------------------------------------------
@@ -455,10 +515,11 @@ if [[ "${OPT_KEEP_IMAGES}" == "false" ]]; then
   # and will be deleted when the VM is deleted.
   if [[ "${PLATFORM}" == "Linux" ]] && command -v k3s &>/dev/null; then
     info "Removing images from k3s containerd..."
+    k3s="$(k3s_bin)"
     for img in "${SANDBOX_IMAGES[@]}"; do
-      if sudo k3s ctr images ls --quiet 2>/dev/null | grep -qF "${img}"; then
-        try sudo k3s ctr images rm "docker.io/library/${img}" 2>/dev/null || \
-          try sudo k3s ctr images rm "${img}"
+      if sudo "${k3s}" ctr images ls --quiet 2>/dev/null | grep -qF "${img}"; then
+        try sudo "${k3s}" ctr images rm "docker.io/library/${img}" 2>/dev/null || \
+          try sudo "${k3s}" ctr images rm "${img}"
         ok "Removed: ${img}"
       else
         skip "Not found: ${img}"

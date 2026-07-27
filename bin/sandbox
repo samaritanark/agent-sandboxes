@@ -2058,7 +2058,9 @@ cmd_rebuild() {
       return 0
     fi
     echo "    Importing ${tag} into k3s containerd..."
-    "${container_cli}" save "${tag}" | sudo k3s ctr images import -
+    local k3s
+    k3s="$(k3s_bin)"
+    "${container_cli}" save "${tag}" | sudo "${k3s}" ctr images import -
   }
 
   # _record_build <tag> — append version info to image-builds.log

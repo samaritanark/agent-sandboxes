@@ -11,11 +11,54 @@ setup_linux() {
 
   check_linux_prerequisites
   install_k3s_linux
+  # Trust the pod/service CIDRs in firewalld (RHEL/Alma/Fedora family) BEFORE
+  # Cilium installs, so the reload's nftables flush lands before Cilium lays its
+  # datapath. No-op on hosts without an active firewalld (e.g. Ubuntu).
+  configure_firewalld
   # Cilium must be installed (as the CNI) before gVisor configuration triggers
   # a k3s restart — without a CNI, system pods cannot start after that restart.
   install_cilium_helm
   install_masquerade_service
   configure_containerd_gvisor
+}
+
+# configure_firewalld — trust the pod and service CIDRs on hosts running
+# firewalld (RHEL / Alma / Fedora family). firewalld's default zone rejects
+# forwarded traffic and permits only a handful of INPUT services, which drops
+# the entire Cilium datapath: pods cannot reach the API server or CoreDNS
+# ClusterIPs, so CoreDNS never goes Ready, cluster DNS dies, and pod egress
+# times out. Adding the CIDRs as *source-based* trusted-zone entries lets
+# pod-sourced packets bypass the default-zone rejects — source-matched zones
+# take precedence over interface-matched zones in firewalld.
+#
+# This is a deliberate no-op when firewalld is absent or inactive, so the
+# Debian/Ubuntu path (ufw, or no host firewall at all) is left untouched: the
+# `command -v` guard returns before anything else runs when firewall-cmd is not
+# installed, and the `is-active` guard returns when the daemon is stopped.
+#
+# Idempotent: --query-source skips CIDRs already trusted, and firewalld is
+# reloaded only when something actually changed (so re-running setup on a
+# configured host neither errors nor flushes nftables needlessly).
+configure_firewalld() {
+  command -v firewall-cmd &>/dev/null || return 0
+  systemctl is-active --quiet firewalld 2>/dev/null || return 0
+
+  echo "  firewalld is active — trusting pod/service CIDRs for the Cilium datapath..."
+  local changed=0 cidr
+  for cidr in "${SANDBOX_POD_CIDR}" "${SANDBOX_SERVICE_CIDR}"; do
+    if sudo firewall-cmd --permanent --zone=trusted --query-source="${cidr}" &>/dev/null; then
+      echo "    ${cidr} already trusted."
+    else
+      sudo firewall-cmd --permanent --zone=trusted --add-source="${cidr}" >/dev/null
+      echo "    Trusted ${cidr}."
+      changed=1
+    fi
+  done
+
+  if [[ "${changed}" -eq 1 ]]; then
+    echo "  Reloading firewalld to apply trusted CIDRs..."
+    sudo firewall-cmd --reload >/dev/null
+  fi
 }
 
 check_linux_prerequisites() {
@@ -90,10 +133,15 @@ copy_k3s_kubeconfig() {
 # Use 'k3s kubectl' rather than bare 'kubectl': k3s may have skipped creating
 # the /usr/local/bin/kubectl symlink (if another kubectl exists), so bare
 # 'sudo kubectl' won't find the k3s kubeconfig at /etc/rancher/k3s/k3s.yaml.
+# Invoke k3s by absolute path via k3s_bin: `sudo` may run with a secure_path
+# that omits /usr/local/bin, so a bare `sudo k3s` would fail "command not
+# found" here and stall this loop until it times out even on a healthy k3s.
 wait_for_k3s() {
   local retries="${1:-30}"
   local i=0
-  until sudo k3s kubectl get nodes &>/dev/null 2>&1; do
+  local k3s
+  k3s="$(k3s_bin)"
+  until sudo "${k3s}" kubectl get nodes &>/dev/null 2>&1; do
     (( i++ )) || true
     if [[ "${i}" -ge "${retries}" ]]; then
       echo "ERROR: k3s did not become ready within ${retries} attempts." >&2
@@ -319,7 +367,9 @@ EOF
   sleep 10
   local retries=20
   local i=0
-  until sudo k3s kubectl get nodes &>/dev/null 2>&1; do
+  local k3s
+  k3s="$(k3s_bin)"
+  until sudo "${k3s}" kubectl get nodes &>/dev/null 2>&1; do
     (( i++ )) || true
     [[ "${i}" -ge "${retries}" ]] && { echo "ERROR: k3s did not restart." >&2; exit 1; }
     sleep 5
