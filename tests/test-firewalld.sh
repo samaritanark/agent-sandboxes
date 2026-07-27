@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Samaritan's Purse
-# tests/test-firewalld.sh — configure_firewalld (setup/linux.sh) routing.
+# tests/test-firewalld.sh — configure_firewalld (setup/linux.sh) and its
+# uninstall sibling remove_firewalld_trusted_cidrs (uninstall.sh).
 # Cluster-free. Verifies the RHEL/Alma datapath fix without touching the real
-# host firewall by shimming firewall-cmd / systemctl / sudo onto PATH:
+# host firewall by shimming firewall-cmd / systemctl / sudo onto PATH.
+#
+# configure_firewalld:
 #   - absent firewalld  -> clean no-op (the Ubuntu-without-firewalld case)
 #   - inactive firewalld-> clean no-op (the Ubuntu-with-firewalld-stopped case)
 #   - active + untrusted-> both CIDRs added to the trusted zone, one reload
 #   - active + trusted  -> idempotent: no add-source, no reload
+#
+# remove_firewalld_trusted_cidrs:
+#   - recovers the ACTUAL CIDRs from the installed k3s unit, so a custom-CIDR
+#     (`setup.sh --pod-cidr ...`) install is cleaned up instead of leaving a
+#     stale accept-all trusted-zone source behind
+#   - falls back to the common.sh defaults only when the k3s unit is gone
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"
 
@@ -99,5 +108,63 @@ if ! grep -q -- "--add-source" "${CALLS}"; then \
 if ! grep -q -- "--reload" "${CALLS}"; then \
   pass "active/trusted: no needless reload"; \
   else fail "trusted re-run should not reload, saw:"$'\n'"$(calls)"; fi
+
+# --- Uninstall side: remove_firewalld_trusted_cidrs ----------------------
+# uninstall.sh runs its main body at source time, so we can't source it whole.
+# Extract just the CIDR-recovery helper and the removal function (a contiguous
+# block) and eval them, backed by stub versions of the log/try helpers they
+# call. K3S_SERVICE_UNIT is a plain (non-readonly) assignment, so we repoint it
+# at a fake unit per case.
+skip() { :; }
+info() { :; }
+ok()   { :; }
+try()  { "$@"; }
+eval "$(awk '
+  /^# Canonical k3s systemd unit/ {cap=1}
+  cap {print}
+  /^remove_firewalld_trusted_cidrs\(\)/ {infn=1}
+  infn && /^}/ {exit}
+' "${SANDBOX_ROOT}/uninstall.sh")"
+
+FAKE_UNIT="$(mktemp)"
+trap 'rm -rf "${SHIMBIN}" "${CALLS}" "${FAKE_UNIT}"' EXIT
+
+# --- Case 5: custom-CIDR install — recover from the k3s unit, not defaults --
+# The unit records the non-default CIDRs setup baked into INSTALL_K3S_EXEC.
+cat > "${FAKE_UNIT}" <<'EOF'
+ExecStart=/usr/local/bin/k3s \
+    server \
+	'--flannel-backend=none' \
+	'--cluster-cidr=10.99.0.0/16' \
+	'--service-cidr=10.200.0.0/16' \
+EOF
+K3S_SERVICE_UNIT="${FAKE_UNIT}"
+FWD_ACTIVE=1 FWD_TRUSTED=1 run_case remove_firewalld_trusted_cidrs
+if grep -q -- "--remove-source=10.99.0.0/16" "${CALLS}"; then \
+  pass "custom-CIDR uninstall: recovered pod CIDR removed"; \
+  else fail "expected --remove-source=10.99.0.0/16, saw:"$'\n'"$(calls)"; fi
+if grep -q -- "--remove-source=10.200.0.0/16" "${CALLS}"; then \
+  pass "custom-CIDR uninstall: recovered service CIDR removed"; \
+  else fail "expected --remove-source=10.200.0.0/16, saw:"$'\n'"$(calls)"; fi
+if ! grep -q -- "100.64.0.0/10" "${CALLS}"; then \
+  pass "custom-CIDR uninstall: default pod CIDR never touched"; \
+  else fail "must not act on the default CIDR, saw:"$'\n'"$(calls)"; fi
+
+# --- Case 6: k3s unit missing — fall back to the common.sh defaults ---------
+K3S_SERVICE_UNIT="${FAKE_UNIT}.gone"
+FWD_ACTIVE=1 FWD_TRUSTED=1 run_case remove_firewalld_trusted_cidrs
+if grep -q -- "--remove-source=100.64.0.0/10" "${CALLS}"; then \
+  pass "missing unit: falls back to default pod CIDR"; \
+  else fail "expected default pod CIDR fallback, saw:"$'\n'"$(calls)"; fi
+if grep -q -- "--remove-source=10.43.0.0/16" "${CALLS}"; then \
+  pass "missing unit: falls back to default service CIDR"; \
+  else fail "expected default service CIDR fallback, saw:"$'\n'"$(calls)"; fi
+
+# --- Case 7: firewalld inactive — clean no-op on the uninstall side too -----
+K3S_SERVICE_UNIT="${FAKE_UNIT}"
+FWD_ACTIVE=0 run_case remove_firewalld_trusted_cidrs
+if ! grep -q -- "--remove-source" "${CALLS}"; then \
+  pass "inactive firewalld uninstall: no --remove-source"; \
+  else fail "inactive firewalld should not modify rules, saw:"$'\n'"$(calls)"; fi
 
 echo "All firewalld tests passed."
