@@ -2564,8 +2564,18 @@ _upgrade_app_phase() {
     # so reconcile the stamp before declaring victory.
     if [[ "${SANDBOX_VERSION}" != "${target}" ]]; then
       echo "HEAD is at ${target}, but .version reads ${SANDBOX_VERSION}; re-stamping."
-      stamp_version_if_git
-      echo "Stamped ${target}. Run the command that prompted this upgrade again."
+      # Pass the resolved target so .version is written to it verbatim, then read
+      # it back and only claim success if the write matches — otherwise the old
+      # message re-hid the very deadlock this branch exists to clear (a swallowed
+      # stamp failure, or `git describe` resolving to a different tag). See #67.
+      stamp_version_if_git "${target}"
+      local stamped
+      stamped="$(read_stamped_version)"
+      if [[ "${stamped}" == "${target}" ]]; then
+        echo "Stamped ${target}. Run the command that prompted this upgrade again."
+      else
+        die "Re-stamp did not take: .version reads '${stamped:-<none>}', expected '${target}'. 'sandbox version' and the upgrade gate will stay stale — check scripts/stamp-version.sh."
+      fi
     else
       echo "Already at ${target}. Nothing to do."
     fi
