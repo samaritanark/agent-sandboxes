@@ -313,6 +313,14 @@ _kube_overlay_volume_name() {
   else echo "overlay-kube-dir-${idx}"
   fi
 }
+# A configured directory mask gets its own emptyDir, named by (repo index, line
+# index within that repo's masked_paths list). The name is a pure function of
+# those two so the volumes: and volumeMounts: blocks — built by separate
+# functions that both walk load_repo_masked_paths in order — always agree.
+_mask_dir_volume_name() {
+  local repo_idx="$1" line_idx="$2"
+  echo "overlay-mask-dir-${repo_idx}-${line_idx}"
+}
 _workspace_mount_path() {
   local repo="$1" total="$2"
   if [[ "${total}" -eq 1 ]]; then echo "/workspace"
@@ -413,6 +421,21 @@ EOF
     fi
   done
 
+  # Per-repo configured *directory* masks (trailing-slash entries): each existing
+  # one gets its own emptyDir, mirroring .kube. File entries share
+  # overlay-empty-file above; the line index keys the volume name so the mounts
+  # block agrees (see _mask_dir_volume_name).
+  local didx dmp
+  for i in "${!repos[@]}"; do
+    didx=0
+    while IFS= read -r dmp; do
+      if [[ -n "${dmp}" ]] && [[ "${dmp}" == */ ]] && [[ -d "${repos[$i]}/${dmp%/}" ]]; then
+        printf '    - name: %s\n      emptyDir: {}\n' "$(_mask_dir_volume_name "$i" "${didx}")"
+      fi
+      didx=$((didx + 1))
+    done < <(load_repo_masked_paths "${repos[$i]}")
+  done
+
   [[ -n "${agent_home}" ]] && cat <<EOF
     - name: agent-home
       hostPath:
@@ -491,14 +514,25 @@ EOF
       printf '        - name: overlay-empty-file\n          mountPath: %s/%s\n          readOnly: true\n' \
         "${mpath}" "$(basename "${openrc_file}")"
     done < <(find "${r}" -maxdepth 1 -name "${MASKED_OPENRC_PATTERN}" -type f -print 2>/dev/null | sort)
-    # Per-repo configured masked_paths: each existing one is a file overlay
-    # (type-validated by lib/filesystem.sh:check_masking_paths before launch).
-    local configured_mp
+    # Per-repo configured masked_paths (type-validated by
+    # lib/filesystem.sh:check_masking_paths before launch): a trailing-slash
+    # entry is a directory, overlaid with its own emptyDir (name keyed by line
+    # index, matching build_volumes_block); everything else is a file overlaid
+    # with the shared empty file. Only mount overlays for paths present in repo.
+    local configured_mp cidx=0
     while IFS= read -r configured_mp; do
-      [[ -z "${configured_mp}" ]] && continue
-      [[ -f "${r}/${configured_mp}" ]] || continue
-      printf '        - name: overlay-empty-file\n          mountPath: %s/%s\n          readOnly: true\n' \
-        "${mpath}" "${configured_mp}"
+      if [[ -n "${configured_mp}" ]]; then
+        if [[ "${configured_mp}" == */ ]]; then
+          [[ -d "${r}/${configured_mp%/}" ]] \
+            && printf '        - name: %s\n          mountPath: %s/%s\n' \
+              "$(_mask_dir_volume_name "$i" "${cidx}")" "${mpath}" "${configured_mp%/}"
+        else
+          [[ -f "${r}/${configured_mp}" ]] \
+            && printf '        - name: overlay-empty-file\n          mountPath: %s/%s\n          readOnly: true\n' \
+              "${mpath}" "${configured_mp}"
+        fi
+      fi
+      cidx=$((cidx + 1))
     done < <(load_repo_masked_paths "${r}")
     if [[ -d "${r}/${MASKED_DIR_PATH}" ]]; then
       kdname="$(_kube_overlay_volume_name "$i" "${total}")"

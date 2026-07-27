@@ -168,10 +168,19 @@ is_path_masked() {
     return 0
   fi
 
-  # Configured masked_paths (exact workspace-relative match).
+  # Configured masked_paths. A trailing-slash entry is a directory mask: it
+  # hides the directory itself and everything under it (like .kube above). A
+  # plain entry is an exact file match.
+  local d
   while IFS= read -r p; do
     [[ -z "${p}" ]] && continue
-    [[ "${relpath}" == "${p}" ]] && return 0
+    if [[ "${p}" == */ ]]; then
+      d="${p%/}"
+      [[ "${relpath}" == "${d}" ]] && return 0
+      [[ "${relpath}" == "${d}/"* ]] && return 0
+    else
+      [[ "${relpath}" == "${p}" ]] && return 0
+    fi
   done < <(load_repo_masked_paths "${repo}")
 
   return 1
@@ -1301,20 +1310,24 @@ _classify_one_repo_for_masking() {
     fi
   done < <(find "${repo}" -maxdepth 1 -name "${MASKED_OPENRC_PATTERN}" -print0 2>/dev/null)
 
-  # Configured masked_paths are file overlays (FileOrCreate). Validate each
-  # that exists is a regular file, mirroring the built-in file checks above,
-  # so the type-mismatch guard refuses a launch that would crash gVisor.
-  local rel
+  # Configured masked_paths. A trailing-slash entry is a directory overlay
+  # (emptyDir), everything else a file overlay (FileOrCreate). Validate each that
+  # exists against its declared type, mirroring the built-in checks above, so the
+  # type-mismatch guard refuses a launch that would crash gVisor.
+  local rel want bare
   while IFS= read -r rel; do
     [[ -z "${rel}" ]] && continue
-    full="${repo}/${rel}"
+    if [[ "${rel}" == */ ]]; then want="directory"; bare="${rel%/}"; else want="file"; bare="${rel}"; fi
+    full="${repo}/${bare}"
     [[ -e "${full}" ]] || continue
     if _is_likely_mount_detritus "${full}"; then
       MASKING_DETRITUS+=("${full}")
       continue
     fi
-    if [[ ! -f "${full}" ]]; then
-      MASKING_MISMATCH+=("${full}|file|$(_path_type "${full}")")
+    if [[ "${want}" == "directory" ]]; then
+      [[ -d "${full}" ]] || MASKING_MISMATCH+=("${full}|directory|$(_path_type "${full}")")
+    else
+      [[ -f "${full}" ]] || MASKING_MISMATCH+=("${full}|file|$(_path_type "${full}")")
     fi
   done < <(load_repo_masked_paths "${repo}")
 }

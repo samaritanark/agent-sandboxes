@@ -288,6 +288,15 @@ test_is_path_masked() {
   # After configuring it, the nested file becomes masked.
   printf 'masked_paths:\n  - "nested/config.txt"\n' > "${repo}/.sandbox/config.yaml"
   is_path_masked "${repo}" "nested/config.txt" && pass "configured path masked" || fail "configured nested should be masked"
+
+  # A configured *directory* mask (trailing slash) hides the dir and its whole
+  # subtree, but not a sibling that merely shares the name prefix (issue #69).
+  printf 'masked_paths:\n  - "config/secrets/"\n' > "${repo}/.sandbox/config.yaml"
+  is_path_masked "${repo}" "config/secrets"          && pass "dir mask hides the dir itself"   || fail "config/secrets should be masked"
+  is_path_masked "${repo}" "config/secrets/prod.env" && pass "dir mask hides subtree"           || fail "config/secrets/prod.env should be masked"
+  is_path_masked "${repo}" "config/secrets/a/b.yaml" && pass "dir mask hides deep subtree"      || fail "deep path should be masked"
+  is_path_masked "${repo}" "config/secrets-notes.md" && fail "prefix sibling should NOT match"  || pass "prefix sibling unmasked"
+  is_path_masked "${repo}" "config/other.txt"        && fail "sibling file should NOT match"    || pass "sibling file unmasked"
 }
 
 ###############################################################################
@@ -1556,6 +1565,66 @@ test_manifest_mount() {
     || fail "built-in .env overlay missing"
 }
 
+# A configured directory mask must reach the manifest as its OWN emptyDir volume
+# mounted over the directory — NOT a file overlay (gVisor crashes on a file
+# volume mounted over a directory). Issue #69.
+test_manifest_mount_directory() {
+  info "Testing a configured directory mask emits an emptyDir volume + mount..."
+  local repo="${TEST_DIR}/manifest-dir"
+  make_repo "${repo}"
+  mkdir -p "${repo}/config/secrets"
+  printf 'token=deadbeef\n' > "${repo}/config/secrets/prod.env"
+  config_add_masked_path "${repo}/.sandbox/config.yaml" "config/secrets/"
+
+  local vols mounts
+  vols="$(build_volumes_block 2 "" "" "" "${repo}")"
+  mounts="$(build_volume_mounts_block 2 "" "" "" "${repo}")"
+
+  # Single repo, first (only) masked_paths line → overlay-mask-dir-0-0.
+  echo "${vols}" | grep -A1 "name: overlay-mask-dir-0-0" | grep -q "emptyDir: {}" \
+    && pass "directory mask emits a dedicated emptyDir volume" \
+    || fail "expected emptyDir volume overlay-mask-dir-0-0 in:\n${vols}"
+  echo "${mounts}" | grep -A1 "name: overlay-mask-dir-0-0" | grep -q "mountPath: /workspace/config/secrets$" \
+    && pass "directory mask mounts over the directory path" \
+    || fail "expected overlay-mask-dir-0-0 mounted at /workspace/config/secrets in:\n${mounts}"
+  # It must NOT be masked as a file (would crash gVisor).
+  echo "${mounts}" | grep -q "name: overlay-empty-file.*config/secrets" \
+    && fail "directory must not get a file overlay" \
+    || pass "directory not treated as a file overlay"
+}
+
+# The launch-time guard must catch a configured entry whose declared type
+# (trailing slash = directory) disagrees with what's on disk, so check_masking_paths
+# refuses rather than letting gVisor crash on a mismatched mount. Issue #69.
+test_mask_type_mismatch() {
+  info "Testing masked_paths type validation (dir vs file) flags mismatches..."
+  local repo="${TEST_DIR}/masktype"
+  mkdir -p "${repo}/.sandbox"
+
+  # A dir-typed mask over a real file → mismatch.
+  printf 'x\n' > "${repo}/notadir"
+  printf 'masked_paths:\n  - "notadir/"\n' > "${repo}/.sandbox/config.yaml"
+  MASKING_MISMATCH=(); MASKING_DETRITUS=()
+  _classify_one_repo_for_masking "${repo}"
+  [[ "${#MASKING_MISMATCH[@]}" -ge 1 ]] \
+    && pass "dir mask over a file is flagged" || fail "expected a type mismatch for notadir/"
+
+  # A file-typed mask over a real directory → mismatch.
+  mkdir -p "${repo}/reallyadir"; printf 'y\n' > "${repo}/reallyadir/f"
+  printf 'masked_paths:\n  - "reallyadir"\n' > "${repo}/.sandbox/config.yaml"
+  MASKING_MISMATCH=(); MASKING_DETRITUS=()
+  _classify_one_repo_for_masking "${repo}"
+  [[ "${#MASKING_MISMATCH[@]}" -ge 1 ]] \
+    && pass "file mask over a dir is flagged" || fail "expected a type mismatch for reallyadir"
+
+  # A correctly-typed dir mask is clean.
+  printf 'masked_paths:\n  - "reallyadir/"\n' > "${repo}/.sandbox/config.yaml"
+  MASKING_MISMATCH=(); MASKING_DETRITUS=()
+  _classify_one_repo_for_masking "${repo}"
+  [[ "${#MASKING_MISMATCH[@]}" -eq 0 ]] \
+    && pass "correctly-typed dir mask is clean" || fail "unexpected mismatch: ${MASKING_MISMATCH[*]}"
+}
+
 # resolve_inference_endpoint + inference_endpoint_is_trusted — endpoint identity
 # extraction and the overlay-owned trust list that gates the secret-gate
 # downgrade.
@@ -1707,6 +1776,8 @@ main() {
   test_exceptions_accept_list
   test_fingerprint_resolver
   test_manifest_mount
+  test_manifest_mount_directory
+  test_mask_type_mismatch
   test_finding_is_encrypted
   test_scan_classification
   test_dep_dir_exclusion
