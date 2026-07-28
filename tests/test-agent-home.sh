@@ -82,6 +82,39 @@ test_pod_uid_tracks_operator() {
   ( SANDBOX_POD_UID="1003"; eq "macOS ignores operator uid (VM)"  "1000" "$(resolve_pod_uid)" )
 }
 
+test_prepare_home_fallback_is_symlink_safe() {
+  info "Testing prepare_agent_home's chown fallback skips symlinks and never sets the world bit..."
+  command -v stat >/dev/null 2>&1 || skip "stat(1) unavailable"
+  (
+    source "${SANDBOX_ROOT}/lib/lima.sh"
+    _set_platform linux
+
+    ah_tmp="$(mktemp -d)"
+    trap 'rm -rf "${ah_tmp}"' EXIT
+    ah_staging="${ah_tmp}/ah_staging"; ah_secret="${ah_tmp}/ah_secret-token"
+    mkdir -p "${ah_staging}"
+    printf 'TOKEN\n' > "${ah_secret}"; chmod 600 "${ah_secret}"
+    printf 'x\n' > "${ah_staging}/regular"; chmod 600 "${ah_staging}/regular"
+    # An agent could plant this across sessions to redirect chmod onto a
+    # sensitive target outside the tree (~/.claude/.credentials.json etc).
+    ln -s "${ah_secret}" "${ah_staging}/link"
+
+    # Force the chown to fail so the fallback fires: a uid we cannot chown to
+    # as a non-root operator (the --homedir-owned-by-someone-else case).
+    host_agent_home() { echo "${ah_staging}"; }
+    resolve_agent_home() { echo "${ah_staging}"; }
+    resolve_pod_uid() { echo 4294967294; }
+
+    prepare_agent_home claude
+
+    ah_mode="$(stat -c %A "${ah_secret}")"
+    [[ "${ah_mode}" == "-rw-------" ]] || fail "symlink target was modified via fallback: ${ah_mode}"
+    ah_mode="$(stat -c %A "${ah_staging}/regular")"
+    [[ "${ah_mode}" == *"rw-"*"rw-"*"---" ]] || fail "regular file not group-writable / leaked world bit: ${ah_mode}"
+    pass "fallback left the symlink target untouched and set no world bit"
+  )
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   test_macos_uses_vm_local
@@ -90,6 +123,7 @@ main() {
   test_vm_base_is_overridable
   test_home_dir_is_overridable
   test_pod_uid_tracks_operator
+  test_prepare_home_fallback_is_symlink_safe
   echo "All ${TEST_NAME} tests passed."
 }
 

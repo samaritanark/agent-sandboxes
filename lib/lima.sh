@@ -111,9 +111,12 @@ lima_kubectl() {
 # (the operator), so it is already owned by the pod uid and the chown is a
 # harmless no-op; the one case it does work is a root operator (e.g. WSL), where
 # resolve_pod_uid clamps to 1000 and root can chown to it. Group is left as-is:
-# owning the dir is what grants the agent write, not the group. Fall back to the
-# historical world-writable chmod if the chown can't run (e.g. a --homedir that
-# points at a pre-existing dir owned by someone else).
+# owning the dir is what grants the agent write, not the group. Fall back to a
+# group-writable chmod if the chown can't run (e.g. a --homedir that points at a
+# pre-existing dir owned by someone else). The fallback skips symlinks (! -type
+# l) so an agent-planted link can't redirect chmod onto a target outside the
+# tree, and never sets the world bit — this tree holds OAuth tokens
+# (~/.claude/.credentials.json), so go+rwX was the wrong default.
 prepare_agent_home() {
   local agent="$1"
   local mount_home staging
@@ -139,7 +142,7 @@ prepare_agent_home() {
       || die "Failed to prepare VM-local agent-home for '${agent}' inside ${LIMA_VM_NAME}."
   else
     chown -R "$(resolve_pod_uid)" "${staging}" 2>/dev/null \
-      || find "${staging}" -exec chmod u+rwX,go+rwX {} + 2>/dev/null \
+      || find "${staging}" ! -type l -exec chmod u+rwX,g+rwX {} + 2>/dev/null \
       || true
   fi
 }
