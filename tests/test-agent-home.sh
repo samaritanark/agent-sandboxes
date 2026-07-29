@@ -99,11 +99,15 @@ test_prepare_home_fallback_is_symlink_safe() {
     # sensitive target outside the tree (~/.claude/.credentials.json etc).
     ln -s "${ah_secret}" "${ah_staging}/link"
 
-    # Force the chown to fail so the fallback fires: a uid we cannot chown to
-    # as a non-root operator (the --homedir-owned-by-someone-else case).
+    # Force the chown to fail so the fallback fires (the
+    # --homedir-owned-by-someone-else case). Stub chown itself rather than aim
+    # at an unreachable uid: a uid-based failure only triggers for a non-root
+    # caller, so a root operator (WSL-root is a supported context) or a root CI
+    # runner would see the chown succeed, skip the fallback, and red-line here.
     host_agent_home() { echo "${ah_staging}"; }
     resolve_agent_home() { echo "${ah_staging}"; }
-    resolve_pod_uid() { echo 4294967294; }
+    resolve_pod_uid() { echo 1000; }
+    chown() { return 1; }
 
     prepare_agent_home claude
 
