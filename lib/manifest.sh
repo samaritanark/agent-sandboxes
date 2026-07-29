@@ -35,6 +35,12 @@ build_pod_manifest() {
   # the installed binaries baked into the image are not shadowed.
   local agent_home
   agent_home="$(resolve_agent_home "${agent}")"
+
+  # uid the agent runs as. On Linux/WSL this is the invoking operator's uid so
+  # the agent owns (and can write) the hostPath-mounted workspace + agent-home;
+  # 1000 on macOS and for a root operator. See resolve_pod_uid (issue #71).
+  local pod_uid
+  pod_uid="$(resolve_pod_uid)"
   local agent_config_mount
   case "${agent}" in
     claude)   agent_config_mount="/home/agent/.claude" ;;
@@ -153,7 +159,12 @@ ${host_aliases_block}
       - name: ndots
         value: "1"
   securityContext:
-    runAsUser: 1000
+    # runAsUser tracks the operator (resolve_pod_uid) so hostPath workspace/
+    # agent-home writes land as a file the operator owns. Group stays the baked
+    # 'agent' group (gid 1000): /home/agent is group-writable (docker/
+    # Dockerfile.base) and fsGroup 1000 chowns emptyDir volumes to it, so the
+    # baked $HOME and ephemeral volumes stay writable whatever the uid is.
+    runAsUser: ${pod_uid}
     runAsGroup: 1000
     fsGroup: 1000
     runAsNonRoot: true

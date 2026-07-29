@@ -61,12 +61,73 @@ test_vm_base_is_overridable() {
     eq "override applies" "/data/agent-home/claude" "$(resolve_agent_home claude)" )
 }
 
+test_home_dir_is_overridable() {
+  info "Testing SANDBOX_AGENT_HOME_BASE / _OVERRIDE relocate host_agent_home (issue #68)..."
+  _set_platform linux
+  ( SANDBOX_AGENT_HOME_BASE="/srv/ah"
+    eq "BASE relocates per-agent subdir" "/srv/ah/claude" "$(host_agent_home claude)" )
+  ( SANDBOX_AGENT_HOME_OVERRIDE="/x/y"
+    eq "OVERRIDE is used verbatim (agent-agnostic)" "/x/y" "$(host_agent_home claude)" )
+  ( SANDBOX_AGENT_HOME_BASE="/srv/ah"; SANDBOX_AGENT_HOME_OVERRIDE="/x/y"
+    eq "OVERRIDE wins over BASE" "/x/y" "$(host_agent_home codex)" )
+}
+
+test_pod_uid_tracks_operator() {
+  info "Testing resolve_pod_uid tracks the operator on Linux, stays 1000 on macOS (issue #71)..."
+  _set_platform linux
+  ( SANDBOX_POD_UID="1003"; eq "linux honors operator uid"        "1003" "$(resolve_pod_uid)" )
+  ( SANDBOX_POD_UID="0";    eq "root clamps to 1000 (nonRoot)"    "1000" "$(resolve_pod_uid)" )
+  ( SANDBOX_POD_UID="nope"; eq "non-numeric clamps to 1000"       "1000" "$(resolve_pod_uid)" )
+  _set_platform macos
+  ( SANDBOX_POD_UID="1003"; eq "macOS ignores operator uid (VM)"  "1000" "$(resolve_pod_uid)" )
+}
+
+test_prepare_home_fallback_is_symlink_safe() {
+  info "Testing prepare_agent_home's chown fallback skips symlinks and never sets the world bit..."
+  command -v stat >/dev/null 2>&1 || skip "stat(1) unavailable"
+  (
+    source "${SANDBOX_ROOT}/lib/lima.sh"
+    _set_platform linux
+
+    ah_tmp="$(mktemp -d)"
+    trap 'rm -rf "${ah_tmp}"' EXIT
+    ah_staging="${ah_tmp}/ah_staging"; ah_secret="${ah_tmp}/ah_secret-token"
+    mkdir -p "${ah_staging}"
+    printf 'TOKEN\n' > "${ah_secret}"; chmod 600 "${ah_secret}"
+    printf 'x\n' > "${ah_staging}/regular"; chmod 600 "${ah_staging}/regular"
+    # An agent could plant this across sessions to redirect chmod onto a
+    # sensitive target outside the tree (~/.claude/.credentials.json etc).
+    ln -s "${ah_secret}" "${ah_staging}/link"
+
+    # Force the chown to fail so the fallback fires (the
+    # --homedir-owned-by-someone-else case). Stub chown itself rather than aim
+    # at an unreachable uid: a uid-based failure only triggers for a non-root
+    # caller, so a root operator (WSL-root is a supported context) or a root CI
+    # runner would see the chown succeed, skip the fallback, and red-line here.
+    host_agent_home() { echo "${ah_staging}"; }
+    resolve_agent_home() { echo "${ah_staging}"; }
+    resolve_pod_uid() { echo 1000; }
+    chown() { return 1; }
+
+    prepare_agent_home claude
+
+    ah_mode="$(stat -c %A "${ah_secret}")"
+    [[ "${ah_mode}" == "-rw-------" ]] || fail "symlink target was modified via fallback: ${ah_mode}"
+    ah_mode="$(stat -c %A "${ah_staging}/regular")"
+    [[ "${ah_mode}" == *"rw-"*"rw-"*"---" ]] || fail "regular file not group-writable / leaked world bit: ${ah_mode}"
+    pass "fallback left the symlink target untouched and set no world bit"
+  )
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   test_macos_uses_vm_local
   test_linux_uses_host_home
   test_host_agent_home_is_platform_independent
   test_vm_base_is_overridable
+  test_home_dir_is_overridable
+  test_pod_uid_tracks_operator
+  test_prepare_home_fallback_is_symlink_safe
   echo "All ${TEST_NAME} tests passed."
 }
 

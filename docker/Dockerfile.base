@@ -171,4 +171,17 @@ RUN git lfs install --skip-repo
 # Health check: verify core tools are present
 RUN python3 --version && node --version && git --version && jq --version
 
+# Make the agent's baked $HOME group-writable (+ setgid on dirs) so the pod can
+# run as an arbitrary operator uid (see resolve_pod_uid in lib/platform.sh, issue
+# #71) while keeping the 'agent' group (gid 1000) as its group. Write access to
+# the baked $HOME then comes from group membership, not uid ownership, so a uid
+# != 1000 can still create ~/.cache, ~/.config, shell history, etc. Anything the
+# agent creates at runtime is owned by the running uid and writable regardless.
+# The mounted config dir (~/.claude, …) and the workspace are hostPath volumes
+# owned by the operator, so they are unaffected by this. (Runtime `npm install
+# -g` / `go install` into the baked prefixes is the one thing a non-1000 uid
+# still can't do; agents install their tooling at build time, not at runtime.)
+RUN chmod -R g+rwX /home/agent \
+    && find /home/agent -type d -exec chmod g+s {} +
+
 # No CMD/ENTRYPOINT in base — defined by derived images
