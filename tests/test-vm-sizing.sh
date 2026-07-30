@@ -25,6 +25,20 @@ assert_eq() {
   fi
 }
 
+# assert_rejects <label> <resolver-fn> — pass iff the resolver refuses to run
+# with the (hostile) env the caller set. The resolver aborts via exit inside
+# _resources_die; running it in a command substitution confines that exit to
+# the substitution subshell, so a non-zero status here means "validation caught
+# it" and the harness keeps going. Any stdout means it emitted a value (bad).
+assert_rejects() {
+  local label="$1" fn="$2" out
+  if out="$("${fn}" 2>/dev/null)"; then
+    fail "${label}: '${fn}' accepted a hostile value (emitted '${out}')"
+  else
+    pass "${label}"
+  fi
+}
+
 # --- Explicit overrides win --------------------------------------------------
 (
   SANDBOX_VM_CPUS=7 SANDBOX_VM_MEMORY_GI=13 SANDBOX_VM_DISK_GI=100
@@ -144,6 +158,47 @@ fi
   # shellcheck disable=SC1090
   source "${SANDBOX_ROOT}/lib/resources.sh"
   assert_eq "explicit HOST_RESERVE_MEM_GI honored" "${HOST_RESERVE_MEM_GI}" "9"
+)
+
+# --- Hostile values are rejected, not rendered or evaluated ------------------
+# These are the negative tests finding 1/2 of the PR security review asked for:
+# the resolvers must refuse non-integer input rather than pass it through to
+# `sed` (YAML/line injection) or bash `$(( ))` (command substitution).
+(
+  # shellcheck disable=SC1090
+  source "${SANDBOX_ROOT}/lib/resources.sh"
+
+  # sed-injection shapes in an explicit override (the value goes straight to sed).
+  SANDBOX_VM_CPUS='4; rm -rf /' assert_rejects "reject shell-ish --vm-cpus"    lima_vm_cpus
+  SANDBOX_VM_CPUS='4/mounts'    assert_rejects "reject slash in --vm-cpus"      lima_vm_cpus
+  # A literal backslash-n — GNU sed would expand this to a newline in the render.
+  SANDBOX_VM_CPUS='4\nmounts:'  assert_rejects "reject newline-escape --vm-cpus" lima_vm_cpus
+  SANDBOX_VM_MEMORY_GI='8 evil' assert_rejects "reject space in --vm-memory"    lima_vm_memory_gib
+  SANDBOX_VM_DISK_GI='60\nprovision:' assert_rejects "reject newline in --vm-disk" lima_vm_disk_gib
+  # A hostile floor/min on the auto path is rejected too (non-integer).
+  SANDBOX_VM_CPUS='' SANDBOX_VM_MEMORY_GI='' SANDBOX_VM_MEMORY_MIN_GI='x' \
+    assert_rejects "reject non-integer memory floor" lima_vm_memory_gib
+)
+
+# Arithmetic-context command substitution must never execute. Point the payload
+# at a canary path and assert the resolver both refuses AND never ran the touch.
+(
+  # shellcheck disable=SC1090
+  source "${SANDBOX_ROOT}/lib/resources.sh"
+  canary="$(mktemp -u)"
+
+  # SANDBOX_VM_CPUS empty -> auto path, where the reserve lands in $(( )).
+  SANDBOX_VM_CPUS="" SANDBOX_VM_HOST_RESERVE_CPU="a[\$(touch ${canary})]" \
+    assert_rejects "reject arithmetic-subscript CPU reserve" lima_vm_cpus
+  [[ -e "${canary}" ]] && fail "arithmetic injection EXECUTED (CPU reserve canary created)"
+  pass "arithmetic injection did not execute (CPU reserve)"
+
+  SANDBOX_VM_MEMORY_GI="" SANDBOX_VM_HOST_RESERVE_MEM_GI="a[\$(touch ${canary})]" \
+    assert_rejects "reject arithmetic-subscript mem reserve" lima_vm_memory_gib
+  [[ -e "${canary}" ]] && fail "arithmetic injection EXECUTED (mem reserve canary created)"
+  pass "arithmetic injection did not execute (mem reserve)"
+
+  rm -f "${canary}"
 )
 
 echo "All VM sizing tests passed."

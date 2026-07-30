@@ -19,6 +19,31 @@
 # consumed by setup/common.sh.
 set -euo pipefail
 
+# --- Input validation -------------------------------------------------------
+# Every numeric below is env-overridable (SANDBOX_VM_* / HOST_RESERVE_*), and
+# these values flow into two dangerous places: bash arithmetic `$(( ))` in the
+# resolvers, where an array-subscript payload like `a[$(cmd)]` triggers command
+# substitution, and `sed` substitutions in lib/lima.sh / setup/macos.sh, where
+# GNU sed expands `\n` in the replacement and so a crafted value can inject
+# whole lines into the rendered Lima config (which grants root inside the VM).
+# The CLI-flag path validates in setup.sh, but `sandbox run` renders the Lima
+# config directly from these resolvers without ever touching setup.sh — so the
+# guard has to live here, at the point of use, to hold regardless of caller.
+# bin/sandbox's `die` is not defined yet when this file is sourced, so keep this
+# self-contained. `${!1-}` (indirect expansion) and `10#` are bash-3.2-safe.
+_resources_die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# _resources_require_uint <var-name> <min> — abort unless the named variable
+# holds a whole integer >= <min>. The regex runs first, so `10#${val}` in the
+# range check only ever sees digits (no arithmetic evaluation of the raw value).
+_resources_require_uint() {
+  local name="$1" min="$2" val="${!1-}"
+  [[ "${val}" =~ ^[0-9]+$ ]] \
+    || _resources_die "${name} must be a whole non-negative integer (got: '${val}')"
+  (( 10#${val} >= min )) \
+    || _resources_die "${name} must be >= ${min} (got: '${val}')"
+}
+
 # --- Per-pod resources ------------------------------------------------------
 # requests = guaranteed share used for scheduling; limits = burst ceiling.
 POD_CPU_REQUEST="1"
@@ -93,9 +118,14 @@ SANDBOX_VM_CPUS_MIN="${SANDBOX_VM_CPUS_MIN:-4}"
 SANDBOX_VM_MEMORY_MIN_GI="${SANDBOX_VM_MEMORY_MIN_GI:-8}"
 
 # _host_cpus — logical CPU count of the Mac; 0 when not resolvable or off-macOS.
+# Forced through awk printf "%d" (like _host_mem_gib) so the result is always a
+# bare integer even if sysctl ever emits something unexpected — nothing raw
+# reaches the `(( host <= 0 ))` arithmetic below.
 _host_cpus() {
   [[ "$(uname -s)" == "Darwin" ]] || { echo 0; return; }
-  sysctl -n hw.ncpu 2>/dev/null || echo 0
+  local n
+  n="$(sysctl -n hw.ncpu 2>/dev/null || echo 0)"
+  awk -v n="${n}" 'BEGIN { printf "%d", n }'
 }
 
 # _host_mem_gib — physical RAM of the Mac in whole GiB (rounded down); 0 when
@@ -112,7 +142,12 @@ _host_mem_gib() {
 # SANDBOX_VM_CPUS_MIN and capped at the physical core count. Falls back to the
 # floor if the host is unreadable.
 lima_vm_cpus() {
-  if [[ -n "${SANDBOX_VM_CPUS:-}" ]]; then echo "${SANDBOX_VM_CPUS}"; return; fi
+  if [[ -n "${SANDBOX_VM_CPUS:-}" ]]; then
+    _resources_require_uint SANDBOX_VM_CPUS 1
+    echo "${SANDBOX_VM_CPUS}"; return
+  fi
+  _resources_require_uint SANDBOX_VM_HOST_RESERVE_CPU 0
+  _resources_require_uint SANDBOX_VM_CPUS_MIN 1
   local host n
   host="$(_host_cpus)"
   if (( host <= 0 )); then echo "${SANDBOX_VM_CPUS_MIN}"; return; fi
@@ -128,7 +163,12 @@ lima_vm_cpus() {
 # SANDBOX_VM_MEMORY_MIN_GI, and always leaving at least 2Gi for macOS. Falls
 # back to the floor if the host is unreadable.
 lima_vm_memory_gib() {
-  if [[ -n "${SANDBOX_VM_MEMORY_GI:-}" ]]; then echo "${SANDBOX_VM_MEMORY_GI}"; return; fi
+  if [[ -n "${SANDBOX_VM_MEMORY_GI:-}" ]]; then
+    _resources_require_uint SANDBOX_VM_MEMORY_GI 1
+    echo "${SANDBOX_VM_MEMORY_GI}"; return
+  fi
+  _resources_require_uint SANDBOX_VM_HOST_RESERVE_MEM_GI 0
+  _resources_require_uint SANDBOX_VM_MEMORY_MIN_GI 1
   local host n cap
   host="$(_host_mem_gib)"
   if (( host <= 0 )); then echo "${SANDBOX_VM_MEMORY_MIN_GI}"; return; fi
@@ -144,7 +184,8 @@ lima_vm_memory_gib() {
 # lima_vm_disk_gib — resolve the VM's disk in GiB (plain default; disk has no
 # host-relative meaning).
 lima_vm_disk_gib() {
-  echo "${SANDBOX_VM_DISK_GI:-60}"
+  _resources_require_uint SANDBOX_VM_DISK_GI 1
+  echo "${SANDBOX_VM_DISK_GI}"
 }
 
 # --- Per-session dependency ceiling (Phase 5) -------------------------------
@@ -207,6 +248,8 @@ compute_pod_ceiling() {
     return 0
   fi
 
+  _resources_require_uint HOST_RESERVE_CPU 0
+  _resources_require_uint HOST_RESERVE_MEM_GI 0
   local avail_cpu=$(( alloc_cpu - HOST_RESERVE_CPU ))
   local avail_mem=$(( alloc_mem - HOST_RESERVE_MEM_GI ))
 

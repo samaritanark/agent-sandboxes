@@ -60,11 +60,24 @@ ensure_lima_running() {
       # 'sandbox setup' to pick a different port or VM size (--apiserver-port /
       # --vm-cpus / --vm-memory / --vm-disk).
       mkdir -p "${HOME}/.sandbox"
+      # Resolve every substituted value into a local FIRST, so a rejected value
+      # aborts here (a bare assignment from a failing command substitution trips
+      # set -e) with the resolver's own error, rather than rendering an empty
+      # field into the config. The VM-size resolvers and the version pins are
+      # already validated at their source (lib/resources.sh / setup/versions.sh);
+      # the apiserver port reaches sed only on this path, so gate it with the
+      # same shared uint guard rather than mirroring a regex here.
+      local apiserver_port vm_cpus vm_memory vm_disk
+      apiserver_port="${SANDBOX_APISERVER_PORT:-6443}"
+      _resources_require_uint apiserver_port 1
+      vm_cpus="$(lima_vm_cpus)"
+      vm_memory="$(lima_vm_memory_gib)"
+      vm_disk="$(lima_vm_disk_gib)"
       sed \
-        -e "s/__APISERVER_PORT__/${SANDBOX_APISERVER_PORT:-6443}/g" \
-        -e "s/__VM_CPUS__/$(lima_vm_cpus)/g" \
-        -e "s/__VM_MEMORY__/$(lima_vm_memory_gib)GiB/g" \
-        -e "s/__VM_DISK__/$(lima_vm_disk_gib)GiB/g" \
+        -e "s/__APISERVER_PORT__/${apiserver_port}/g" \
+        -e "s/__VM_CPUS__/${vm_cpus}/g" \
+        -e "s/__VM_MEMORY__/${vm_memory}GiB/g" \
+        -e "s/__VM_DISK__/${vm_disk}GiB/g" \
         -e "s/__K3S_VERSION__/${SANDBOX_K3S_VERSION:-}/g" \
         -e "s/__CILIUM_VERSION__/${SANDBOX_CILIUM_VERSION:-}/g" \
         -e "s/__GVISOR_RELEASE__/${SANDBOX_GVISOR_RELEASE:-}/g" \
