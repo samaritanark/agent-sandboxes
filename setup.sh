@@ -46,9 +46,34 @@ main() {
         SANDBOX_DNS="${1#*=}"
         shift
         ;;
+      --vm-cpus)
+        SANDBOX_VM_CPUS="$2"
+        shift 2
+        ;;
+      --vm-cpus=*)
+        SANDBOX_VM_CPUS="${1#*=}"
+        shift
+        ;;
+      --vm-memory)
+        SANDBOX_VM_MEMORY_GI="$2"
+        shift 2
+        ;;
+      --vm-memory=*)
+        SANDBOX_VM_MEMORY_GI="${1#*=}"
+        shift
+        ;;
+      --vm-disk)
+        SANDBOX_VM_DISK_GI="$2"
+        shift 2
+        ;;
+      --vm-disk=*)
+        SANDBOX_VM_DISK_GI="${1#*=}"
+        shift
+        ;;
       *)
         echo "ERROR: Unknown argument: $1" >&2
         echo "Usage: $0 [--pod-cidr CIDR] [--service-cidr CIDR] [--apiserver-port PORT] [--dns IP[,IP]]" >&2
+        echo "          [--vm-cpus N] [--vm-memory GIB] [--vm-disk GIB]   (macOS/Lima only)" >&2
         exit 1
         ;;
     esac
@@ -62,6 +87,30 @@ main() {
      || (( SANDBOX_APISERVER_PORT < 1 || SANDBOX_APISERVER_PORT > 65535 )); then
     echo "ERROR: --apiserver-port must be an integer between 1 and 65535 (got: '${SANDBOX_APISERVER_PORT}')" >&2
     exit 1
+  fi
+
+  # VM sizing (macOS/Lima only). Whole positive integers — CPUs (count) and
+  # memory/disk (GiB). Empty CPU/memory means "auto" (host-relative), so only
+  # validate values that were actually supplied. On Linux these are inert (the
+  # cluster runs on the host, not in a VM); warn rather than silently ignore.
+  local entry varname flagname val
+  for entry in \
+    "SANDBOX_VM_CPUS:--vm-cpus" \
+    "SANDBOX_VM_MEMORY_GI:--vm-memory" \
+    "SANDBOX_VM_DISK_GI:--vm-disk"; do
+    varname="${entry%%:*}"
+    flagname="${entry#*:}"
+    val="${!varname}"
+    if [[ -n "${val}" ]] && { ! [[ "${val}" =~ ^[0-9]+$ ]] || (( val < 1 )); }; then
+      echo "ERROR: ${flagname} must be a positive integer (got: '${val}')" >&2
+      exit 1
+    fi
+  done
+  if [[ "$(uname -s)" != "Darwin" ]] \
+     && { [[ -n "${SANDBOX_VM_CPUS}" ]] || [[ -n "${SANDBOX_VM_MEMORY_GI}" ]] \
+          || [[ "${SANDBOX_VM_DISK_GI}" != "60" ]]; }; then
+    echo "WARN: --vm-cpus/--vm-memory/--vm-disk apply only on macOS (Lima VM);" >&2
+    echo "      on Linux the cluster runs on the host and these are ignored." >&2
   fi
 
   local platform

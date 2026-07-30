@@ -18,10 +18,15 @@ images:
   - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
     arch: "aarch64"
 
-# CPU and memory — sized for k3s + gVisor + agent workloads
-cpus: 4
-memory: "8GiB"
-disk: "60GiB"
+# CPU, memory and disk — substituted by render_lima_config (setup/macos.sh)
+# from the resolvers in lib/resources.sh. By default these are sized from the
+# Mac's own hardware (host cores/RAM minus a reserve for macOS), so a larger
+# Mac gets more concurrent sandboxes automatically; override with
+# --vm-cpus / --vm-memory / --vm-disk (or SANDBOX_VM_*). Changing them on an
+# existing VM requires a recreate: 'limactl delete sandbox-vm' then re-run setup.
+cpus: __VM_CPUS__
+memory: "__VM_MEMORY__"
+disk: "__VM_DISK__"
 
 # Virtualization backend: prefer vz (macOS Virtualization.framework), fall back to qemu
 vmType: "vz"

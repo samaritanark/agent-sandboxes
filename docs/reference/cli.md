@@ -68,6 +68,7 @@ sandbox cleanup [--older-than DAYS]            default: 90
 sandbox check <WORKSPACE_PATH>
 sandbox status
 sandbox install [--pod-cidr CIDR] [--service-cidr CIDR] [--apiserver-port PORT] [--dns IPS]
+                [--vm-cpus N] [--vm-memory GIB] [--vm-disk GIB]   # macOS/Lima only
 sandbox setup   [...]                           # alias of `install` (compat)
 sandbox uninstall [--yes] [--keep-logs] [--keep-images]
                   [--keep-lima] [--keep-kubetools]
@@ -135,6 +136,25 @@ live working-tree state.
   Thin wrapper over `setup.sh`; `sandbox setup` is a retained alias, and running
   `./setup.sh` directly still works. Component versions come from
   `setup/versions.sh` (see [Upgrading infrastructure](../how-to/upgrading-infra.md)).
+  On **macOS** the cluster runs inside a Lima VM, and how many sandboxes run at
+  once is bounded by that VM's resources. By default the VM is sized from the
+  Mac's own hardware (host cores/RAM minus a reserve for macOS), so a larger Mac
+  gets more concurrent sandboxes automatically. Override with `--vm-cpus N`,
+  `--vm-memory GIB`, `--vm-disk GIB` (or the `SANDBOX_VM_CPUS` /
+  `SANDBOX_VM_MEMORY_GI` / `SANDBOX_VM_DISK_GI` environment). Lima sizes the VM
+  only at creation, so changing these on an existing VM needs a recreate
+  (`limactl delete sandbox-vm && sandbox install`). These flags are inert on
+  Linux, where the cluster runs directly on the host.
+
+  On **Windows** the cluster runs inside a WSL2 distro, and concurrency is
+  bounded the same way — by the WSL2 VM's RAM. WSL2 sizes that VM from the
+  **global** `%UserProfile%\.wslconfig` (default: `min(50% of host RAM, 8 GB)`),
+  not from our tooling, so by default even a large machine may only fit one
+  sandbox. `setup.ps1` prints a sizing advisory, and accepts opt-in
+  `-VmMemory <GB>` / `-VmCpus <N>` that write `[wsl2] memory=` / `processors=`
+  into `.wslconfig` and run `wsl --shutdown` for you. Note this file is
+  **global to every WSL2 distro**, not just the sandbox distro; `setup.ps1`
+  never edits it unless you pass one of those flags (and backs it up first).
 - **`sandbox uninstall`** — tears the cluster and host artifacts back down
   (mirror of install). `--yes` skips the prompt; `--keep-logs` / `--keep-images`
   / `--keep-lima` / `--keep-kubetools` preserve individual pieces. Wrapper over

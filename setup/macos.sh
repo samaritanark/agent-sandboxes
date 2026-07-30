@@ -22,15 +22,28 @@ setup_macos() {
   configure_host_kubectl
 }
 
-# render_lima_config — substitute the API server port and the pinned component
-# versions (setup/versions.sh) into the Lima template, producing the concrete
-# config that limactl consumes. The version tokens let the in-VM provisioning
-# script install the same k3s/Cilium/gVisor/nerdctl as the Linux host path; an
-# empty pin renders an empty token, which each in-VM step treats as "latest".
+# render_lima_config — substitute the API server port, the VM sizing, and the
+# pinned component versions (setup/versions.sh) into the Lima template,
+# producing the concrete config that limactl consumes. The version tokens let
+# the in-VM provisioning script install the same k3s/Cilium/gVisor/nerdctl as
+# the Linux host path; an empty pin renders an empty token, which each in-VM
+# step treats as "latest". The VM sizing tokens come from the resolvers in
+# lib/resources.sh — host-relative by default, overridable with --vm-* /
+# SANDBOX_VM_* — so a bigger Mac fits more concurrent sandboxes out of the box.
 render_lima_config() {
   mkdir -p "${HOME}/.sandbox"
+
+  local vm_cpus vm_mem vm_disk
+  vm_cpus="$(lima_vm_cpus)"
+  vm_mem="$(lima_vm_memory_gib)"
+  vm_disk="$(lima_vm_disk_gib)"
+  echo "  VM sizing: ${vm_cpus} vCPU / ${vm_mem}GiB RAM / ${vm_disk}GiB disk"
+
   sed \
     -e "s/__APISERVER_PORT__/${SANDBOX_APISERVER_PORT}/g" \
+    -e "s/__VM_CPUS__/${vm_cpus}/g" \
+    -e "s/__VM_MEMORY__/${vm_mem}GiB/g" \
+    -e "s/__VM_DISK__/${vm_disk}GiB/g" \
     -e "s/__K3S_VERSION__/${SANDBOX_K3S_VERSION}/g" \
     -e "s/__CILIUM_VERSION__/${SANDBOX_CILIUM_VERSION}/g" \
     -e "s/__GVISOR_RELEASE__/${SANDBOX_GVISOR_RELEASE}/g" \
@@ -99,6 +112,29 @@ start_or_create_lima_vm() {
       echo "    limactl delete ${LIMA_VM_NAME}" >&2
       echo "    ./setup.sh --apiserver-port ${SANDBOX_APISERVER_PORT}" >&2
       exit 1
+    fi
+
+    # Lima applies cpus/memory/disk from config only at VM-creation time; an
+    # existing VM keeps whatever size it was created with. If the resolved
+    # sizing differs (e.g. the operator passed --vm-memory, or upgraded the
+    # Mac), say so — resizing means recreating the VM, which re-provisions and
+    # loses in-VM state. This is a note, not a hard stop: an under-sized VM
+    # still works, just with fewer concurrent sandboxes.
+    local want_cpus want_mem cur
+    want_cpus="$(lima_vm_cpus)"
+    want_mem="$(lima_vm_memory_gib)"
+    cur="$(limactl list --format '{{.CPUs}} {{.Memory}}' "${LIMA_VM_NAME}" 2>/dev/null || true)"
+    if [[ -n "${cur}" && "${cur}" == *" "* ]]; then
+      local cur_cpus cur_bytes cur_mem
+      cur_cpus="${cur%% *}"
+      cur_bytes="${cur##* }"
+      cur_mem="$(awk -v b="${cur_bytes}" 'BEGIN { printf "%d", b / 1073741824 }')"
+      if [[ "${cur_cpus}" != "${want_cpus}" || "${cur_mem}" != "${want_mem}" ]]; then
+        echo "  NOTE: existing VM is ${cur_cpus} vCPU / ${cur_mem}GiB; the resolved size is ${want_cpus} vCPU / ${want_mem}GiB." >&2
+        echo "        Lima sizes the VM only at creation, so applying this needs a recreate:" >&2
+        echo "          limactl delete ${LIMA_VM_NAME} && ./setup.sh" >&2
+        echo "        (Recreating re-runs provisioning; in-VM state is lost.)" >&2
+      fi
     fi
 
     local status
