@@ -28,6 +28,21 @@
   without a pod-reachable resolver agents cannot resolve their APIs. Use a
   public resolver (e.g. 1.1.1.1,8.8.8.8) or an internal DNS IP pods can reach.
 
+.PARAMETER VmMemory
+  Optional. Memory (in whole GB) to give the WSL2 VM, written to
+  %UserProfile%\.wslconfig as `[wsl2] memory=`. This is the lever for running
+  more sandboxes at once on Windows: WSL2 defaults to min(50% of host RAM,
+  8 GB), and each Tier-1 pod reserves up to 6 GB with no memory overcommit.
+  NOTE: .wslconfig is GLOBAL to every WSL2 distro, not just the sandbox distro,
+  and applying it runs `wsl --shutdown` (stopping all distros). Omitted =
+  .wslconfig is left untouched and only sizing guidance is printed.
+
+.PARAMETER VmCpus
+  Optional. vCPU count for the WSL2 VM, written to %UserProfile%\.wslconfig as
+  `[wsl2] processors=`. Same global caveat as -VmMemory. Omitted = the WSL2
+  default (all host processors). Disk is not sized here — the WSL2 virtual disk
+  grows on demand.
+
 .PARAMETER SourceDistro
   Existing WSL distro to clone as the sandbox base. Default: Ubuntu-24.04.
   The source distro is read once (wsl --export) and is otherwise untouched.
@@ -46,6 +61,8 @@ param(
     [string]$ServiceCidr,
     [int]$ApiserverPort = 6443,
     [string]$Dns,
+    [int]$VmMemory,
+    [int]$VmCpus,
     [string]$SourceDistro = "Ubuntu-24.04",
     [string]$DistroName = "sandbox-vm",
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "sandbox-vm")
@@ -128,6 +145,68 @@ function Repair-UnixLineEndings {
     return $fixed
 }
 
+# Set-WslConfigWsl2 — merge the given keys into the [wsl2] section of a
+# .wslconfig file, in place. Existing keys in that section are replaced;
+# missing keys are appended to the section (creating a [wsl2] section, or the
+# file itself, if absent); every other line is preserved verbatim. WSL2 has no
+# per-distro resource limit, so this single global file is the only place the
+# VM's CPU/RAM can be sized.
+function Set-WslConfigWsl2 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][hashtable]$Values
+    )
+    $lines = @()
+    if (Test-Path -LiteralPath $Path) {
+        $lines = @([System.IO.File]::ReadAllLines($Path))
+    }
+    $out = New-Object System.Collections.Generic.List[string]
+    $remaining = @{}
+    foreach ($k in $Values.Keys) { $remaining[$k] = $Values[$k] }
+    $inWsl2 = $false
+    $sawWsl2 = $false
+
+    foreach ($line in $lines) {
+        $trimmed = $line.Trim()
+        if ($trimmed -match '^\[(.+)\]$') {
+            # Leaving a section: flush any [wsl2] keys not already replaced.
+            if ($inWsl2 -and $remaining.Count -gt 0) {
+                foreach ($k in @($remaining.Keys)) { $out.Add("$k=$($remaining[$k])") }
+                $remaining.Clear()
+            }
+            $inWsl2 = ($matches[1].Trim().ToLower() -eq 'wsl2')
+            if ($inWsl2) { $sawWsl2 = $true }
+            $out.Add($line)
+            continue
+        }
+        if ($inWsl2 -and ($trimmed -match '^\s*([^#;=]+?)\s*=')) {
+            $key = $matches[1].Trim()
+            if ($remaining.ContainsKey($key)) {
+                $out.Add("$key=$($remaining[$key])")
+                $remaining.Remove($key)
+                continue
+            }
+        }
+        $out.Add($line)
+    }
+    if ($remaining.Count -gt 0) {
+        if (-not $sawWsl2) { $out.Add('[wsl2]') }
+        foreach ($k in @($remaining.Keys)) { $out.Add("$k=$($remaining[$k])") }
+    }
+    [System.IO.File]::WriteAllLines($Path, $out)
+}
+
+# Validate the opt-in VM sizing flags (whole positive integers). PowerShell
+# coerces an unpassed [int] to 0, so gate on ContainsKey to tell "not passed"
+# from an explicit 0.
+if ($PSBoundParameters.ContainsKey('VmMemory') -and $VmMemory -lt 1) {
+    Fail "-VmMemory must be a positive integer number of GB (got: $VmMemory)."
+}
+if ($PSBoundParameters.ContainsKey('VmCpus') -and $VmCpus -lt 1) {
+    Fail "-VmCpus must be a positive integer (got: $VmCpus)."
+}
+$applyVmSizing = $PSBoundParameters.ContainsKey('VmMemory') -or $PSBoundParameters.ContainsKey('VmCpus')
+
 Write-Header "AI Agent Sandbox Setup (Windows)"
 Write-Info "Distro:          $DistroName"
 Write-Info "Install dir:     $InstallDir"
@@ -136,6 +215,7 @@ Write-Info "Pod CIDR:        $(if ($PodCidr)     { $PodCidr }     else { '(defau
 Write-Info "Service CIDR:    $(if ($ServiceCidr) { $ServiceCidr } else { '(default)' })"
 Write-Info "API server port: $ApiserverPort"
 Write-Info "DNS resolver:    $(if ($Dns) { $Dns } else { '(required on WSL2 — pass -Dns)' })"
+Write-Info "VM sizing:       $(if ($applyVmSizing) { 'custom (writes global .wslconfig)' } else { 'WSL2 defaults (-VmMemory/-VmCpus to raise)' })"
 Write-Host ""
 
 # 1. WSL2 + a recent-enough build (systemd support requires 0.67.6+).
@@ -215,6 +295,35 @@ default=root
     & wsl.exe --terminate $DistroName | Out-Null
 }
 
+# 2.5 Optional VM sizing. WSL2 reads CPU/RAM from the GLOBAL %UserProfile%\.wslconfig
+#     — there is no per-distro limit — so applying -VmMemory/-VmCpus affects every
+#     WSL2 distro and needs a full 'wsl --shutdown' to take effect before setup.sh
+#     computes the sandbox quota from the VM's allocatable RAM. Opt-in only:
+#     without these flags we never touch .wslconfig (guidance is printed at the end).
+if ($applyVmSizing) {
+    Write-Step "Applying WSL2 VM sizing to .wslconfig"
+    Write-Host "  NOTE: %UserProfile%\.wslconfig is GLOBAL to ALL your WSL2 distros," -ForegroundColor Yellow
+    Write-Host "        not just '$DistroName'. Applying it runs 'wsl --shutdown'," -ForegroundColor Yellow
+    Write-Host "        which stops every running distro." -ForegroundColor Yellow
+
+    $wslConfigPath = Join-Path $env:USERPROFILE ".wslconfig"
+    if (Test-Path -LiteralPath $wslConfigPath) {
+        $backup = "$wslConfigPath.bak-$(Get-Date -Format yyyyMMddHHmmss)"
+        Copy-Item -LiteralPath $wslConfigPath -Destination $backup
+        Write-Info "Backed up existing .wslconfig to $backup"
+    }
+
+    $vals = @{}
+    if ($PSBoundParameters.ContainsKey('VmMemory')) { $vals['memory']     = "${VmMemory}GB" }
+    if ($PSBoundParameters.ContainsKey('VmCpus'))   { $vals['processors'] = "$VmCpus" }
+    Set-WslConfigWsl2 -Path $wslConfigPath -Values $vals
+
+    $applied = ($vals.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '
+    Write-Info "Set [wsl2] $applied in $wslConfigPath"
+    Write-Info "Shutting down WSL so the new sizing takes effect..."
+    & wsl.exe --shutdown | Out-Null
+}
+
 # 3. systemd must be PID 1 before setup.sh runs (k3s won't otherwise start).
 Write-Step "Verifying systemd is running in '$DistroName'"
 $pid1 = (& wsl.exe -d $DistroName --user root -- bash -c "ps -p 1 -o comm= 2>/dev/null").Trim()
@@ -261,6 +370,34 @@ if ($LASTEXITCODE -ne 0) { Fail "setup.sh inside $DistroName failed (exit $LASTE
 Write-Host ""
 Write-Header "Setup complete"
 Write-Host ""
+
+# Concurrency advisory. On Windows the number of sandboxes that run at once is
+# bounded by the WSL2 VM's RAM (each Tier-1 pod reserves up to 6 GB, no memory
+# overcommit). Report what the VM actually has and how to raise it — mirroring
+# the host-relative sizing that macOS/Lima gets automatically.
+$memGb = ""
+try {
+    $memLine = (& wsl.exe -d $DistroName --user root -- bash -c 'grep -m1 MemTotal /proc/meminfo' 2>$null)
+    if ($memLine -match '(\d+)\s*kB') { $memGb = [math]::Round([int64]$matches[1] / 1048576, 1) }
+} catch { }
+
+Write-Step "Sandbox concurrency (WSL2)"
+if ($memGb) {
+    Write-Info "The WSL2 VM has ~$memGb GB RAM — this bounds how many sandboxes run at once"
+} else {
+    Write-Info "How many sandboxes run at once is bounded by the WSL2 VM's RAM"
+}
+Write-Info "(each Tier-1 pod reserves up to 6 GB, no memory overcommit)."
+if ($applyVmSizing) {
+    Write-Info "Custom sizing was applied to $env:USERPROFILE\.wslconfig (global to all WSL2 distros)."
+} else {
+    Write-Info "WSL2 defaults to min(50% of host RAM, 8 GB). To run more at once, either:"
+    Write-Info "  - re-run:  .\setup.ps1 -VmMemory <GB> [-VmCpus <N>]"
+    Write-Info "  - or edit  $env:USERPROFILE\.wslconfig  ([wsl2] memory=, processors=) then 'wsl --shutdown'."
+    Write-Info "  NOTE: .wslconfig is GLOBAL to all your WSL2 distros, not just '$DistroName'."
+}
+Write-Host ""
+
 Write-Info "Add the CLI to PATH for this PowerShell session:"
 Write-Info "    `$env:Path = `"$RepoRoot\bin;`$env:Path`""
 Write-Info ""

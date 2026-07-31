@@ -60,3 +60,26 @@ SANDBOX_NERDCTL_VERSION="${SANDBOX_NERDCTL_VERSION:-2.3.5}"
 # an already-present copy against this pin, upgrading only if it is older.
 # renovate: datasource=github-releases depName=betterleaks/betterleaks versioning=semver
 SANDBOX_BETTERLEAKS_VERSION="${SANDBOX_BETTERLEAKS_VERSION:-1.7.0}"
+
+# Guard: each pin is substituted into the Lima config through `sed` (lib/lima.sh
+# on the `sandbox run` path, setup/macos.sh on the setup path) and handed to the
+# component installers. A value carrying a slash, `&`, or a newline would break
+# — or, via GNU sed's `\n` expansion, inject lines into — that render. Constrain
+# each to a conservative version charset; empty stays valid and means
+# "unpinned/latest" (see the header). Env overrides are applied above at
+# assignment, so this validates whatever the operator actually supplied. Kept
+# self-contained (no dependency on lib helpers) so versions.sh is safe to source
+# on its own.
+_versions_require_pin() {
+  local name="$1" val="${!1-}"
+  if [[ -n "${val}" ]] && ! [[ "${val}" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+    printf 'ERROR: %s must be a plain version string [A-Za-z0-9._+-] (got: %s)\n' \
+      "${name}" "${val}" >&2
+    exit 1
+  fi
+}
+for _pin in SANDBOX_K3S_VERSION SANDBOX_CILIUM_VERSION SANDBOX_GVISOR_RELEASE \
+            SANDBOX_HELM_VERSION SANDBOX_NERDCTL_VERSION SANDBOX_BETTERLEAKS_VERSION; do
+  _versions_require_pin "${_pin}"
+done
+unset _pin

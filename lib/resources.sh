@@ -19,6 +19,31 @@
 # consumed by setup/common.sh.
 set -euo pipefail
 
+# --- Input validation -------------------------------------------------------
+# Every numeric below is env-overridable (SANDBOX_VM_* / HOST_RESERVE_*), and
+# these values flow into two dangerous places: bash arithmetic `$(( ))` in the
+# resolvers, where an array-subscript payload like `a[$(cmd)]` triggers command
+# substitution, and `sed` substitutions in lib/lima.sh / setup/macos.sh, where
+# GNU sed expands `\n` in the replacement and so a crafted value can inject
+# whole lines into the rendered Lima config (which grants root inside the VM).
+# The CLI-flag path validates in setup.sh, but `sandbox run` renders the Lima
+# config directly from these resolvers without ever touching setup.sh — so the
+# guard has to live here, at the point of use, to hold regardless of caller.
+# bin/sandbox's `die` is not defined yet when this file is sourced, so keep this
+# self-contained. `${!1-}` (indirect expansion) and `10#` are bash-3.2-safe.
+_resources_die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# _resources_require_uint <var-name> <min> — abort unless the named variable
+# holds a whole integer >= <min>. The regex runs first, so `10#${val}` in the
+# range check only ever sees digits (no arithmetic evaluation of the raw value).
+_resources_require_uint() {
+  local name="$1" min="$2" val="${!1-}"
+  [[ "${val}" =~ ^[0-9]+$ ]] \
+    || _resources_die "${name} must be a whole non-negative integer (got: '${val}')"
+  (( 10#${val} >= min )) \
+    || _resources_die "${name} must be >= ${min} (got: '${val}')"
+}
+
 # --- Per-pod resources ------------------------------------------------------
 # requests = guaranteed share used for scheduling; limits = burst ceiling.
 POD_CPU_REQUEST="1"
@@ -32,14 +57,136 @@ POD_EPHEMERAL_LIMIT_GI="20"
 # CPU/RAM kept aside for the OS, the k3s + containerd + Cilium + CoreDNS +
 # hubble + gVisor stack, and the operator's own IDE/browser. Subtracted from
 # node-allocatable before the sandbox quota is sized.
-HOST_RESERVE_CPU="2"
-HOST_RESERVE_MEM_GI="6"
+#
+# On macOS the "node" k3s sees is the Lima VM, and on Windows it is the WSL2
+# utility VM — both run ONLY the isolation stack, while the operator's IDE,
+# browser and other apps live on the host, outside the VM. A full Linux-sized
+# 6Gi reserve inside such a VM would waste a whole pod's worth of RAM and
+# needlessly cap concurrency, so the in-VM reserve is smaller there. Bare-metal
+# Linux keeps the larger reserve — the operator's own apps share that host.
+# Both honor an explicit environment override. Detection reads uname / /proc
+# directly (not the is_macos / is_wsl helpers in lib/platform.sh) so this is
+# correct even when a test sources only this file; the osrelease path is
+# overridable so that WSL branch is testable off-Windows.
+_RESOURCES_OSRELEASE_FILE="${_RESOURCES_OSRELEASE_FILE:-/proc/sys/kernel/osrelease}"
+_resources_in_wsl() {
+  [[ "$(uname -s)" == "Linux" ]] \
+    && [[ -r "${_RESOURCES_OSRELEASE_FILE}" ]] \
+    && grep -qiE 'microsoft|wsl' "${_RESOURCES_OSRELEASE_FILE}" 2>/dev/null
+}
+if [[ "$(uname -s)" == "Darwin" ]] || _resources_in_wsl; then
+  HOST_RESERVE_CPU="${HOST_RESERVE_CPU:-1}"
+  HOST_RESERVE_MEM_GI="${HOST_RESERVE_MEM_GI:-2}"
+else
+  HOST_RESERVE_CPU="${HOST_RESERVE_CPU:-2}"
+  HOST_RESERVE_MEM_GI="${HOST_RESERVE_MEM_GI:-6}"
+fi
 
 # --- Bounds on the computed concurrent-pod ceiling --------------------------
 # MAX is a defensive cap for large hosts, not a capacity estimate; raise it
 # if a single node genuinely needs to run more sandboxes at once.
 POD_CEILING_MIN="1"
 POD_CEILING_MAX="16"
+
+# --- Lima VM sizing (macOS) -------------------------------------------------
+# On macOS the sandbox cluster runs inside a Lima VM, so the "node" k3s sees is
+# that VM — and compute_pod_ceiling above sizes concurrency from the VM's
+# resources, not the Mac's. A fixed small VM therefore pins every Mac to a
+# single sandbox no matter how much hardware it has. Mirroring the
+# node-relative philosophy of this file, the VM defaults are derived from the
+# Mac's own CPU/RAM (sysctl), leaving a reserve for macOS and the operator's
+# apps, floored so the cluster stack always fits and capped at the physical
+# hardware so we never over-allocate.
+#
+# Explicit overrides always win: --vm-cpus / --vm-memory / --vm-disk in
+# setup.sh, or the SANDBOX_VM_* environment. Empty CPU/MEM == "auto"
+# (host-relative); disk has no host-relative meaning so it takes a plain
+# default. Values are whole integers — CPUs (count) and memory/disk (GiB).
+SANDBOX_VM_CPUS="${SANDBOX_VM_CPUS:-}"
+SANDBOX_VM_MEMORY_GI="${SANDBOX_VM_MEMORY_GI:-}"
+SANDBOX_VM_DISK_GI="${SANDBOX_VM_DISK_GI:-60}"
+
+# Kept aside on the Mac for macOS itself plus the operator's apps when
+# auto-sizing the VM; subtracted from host CPU/RAM before the VM gets the rest.
+SANDBOX_VM_HOST_RESERVE_CPU="${SANDBOX_VM_HOST_RESERVE_CPU:-2}"
+SANDBOX_VM_HOST_RESERVE_MEM_GI="${SANDBOX_VM_HOST_RESERVE_MEM_GI:-6}"
+
+# Floors: never hand the VM less than this even on a small Mac — the isolation
+# stack itself needs headroom to come up. The physical CPU/RAM still cap the
+# result (and auto-sizing always leaves at least 2Gi for macOS).
+SANDBOX_VM_CPUS_MIN="${SANDBOX_VM_CPUS_MIN:-4}"
+SANDBOX_VM_MEMORY_MIN_GI="${SANDBOX_VM_MEMORY_MIN_GI:-8}"
+
+# _host_cpus — logical CPU count of the Mac; 0 when not resolvable or off-macOS.
+# Forced through awk printf "%d" (like _host_mem_gib) so the result is always a
+# bare integer even if sysctl ever emits something unexpected — nothing raw
+# reaches the `(( host <= 0 ))` arithmetic below.
+_host_cpus() {
+  [[ "$(uname -s)" == "Darwin" ]] || { echo 0; return; }
+  local n
+  n="$(sysctl -n hw.ncpu 2>/dev/null || echo 0)"
+  awk -v n="${n}" 'BEGIN { printf "%d", n }'
+}
+
+# _host_mem_gib — physical RAM of the Mac in whole GiB (rounded down); 0 when
+# not resolvable or off-macOS.
+_host_mem_gib() {
+  [[ "$(uname -s)" == "Darwin" ]] || { echo 0; return; }
+  local bytes
+  bytes="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+  awk -v b="${bytes}" 'BEGIN { printf "%d", b / 1073741824 }'
+}
+
+# lima_vm_cpus — resolve the VM's vCPU count: explicit override, else
+# host-relative (host cores minus the macOS reserve), floored to
+# SANDBOX_VM_CPUS_MIN and capped at the physical core count. Falls back to the
+# floor if the host is unreadable.
+lima_vm_cpus() {
+  if [[ -n "${SANDBOX_VM_CPUS:-}" ]]; then
+    _resources_require_uint SANDBOX_VM_CPUS 1
+    echo "${SANDBOX_VM_CPUS}"; return
+  fi
+  _resources_require_uint SANDBOX_VM_HOST_RESERVE_CPU 0
+  _resources_require_uint SANDBOX_VM_CPUS_MIN 1
+  local host n
+  host="$(_host_cpus)"
+  if (( host <= 0 )); then echo "${SANDBOX_VM_CPUS_MIN}"; return; fi
+  n=$(( host - SANDBOX_VM_HOST_RESERVE_CPU ))
+  # Below the floor, take the floor but never exceed the physical core count.
+  (( n < SANDBOX_VM_CPUS_MIN )) && n=$(( SANDBOX_VM_CPUS_MIN < host ? SANDBOX_VM_CPUS_MIN : host ))
+  (( n > host )) && n="${host}"
+  echo "${n}"
+}
+
+# lima_vm_memory_gib — resolve the VM's RAM in GiB: explicit override, else
+# host-relative (host RAM minus the macOS reserve), floored to
+# SANDBOX_VM_MEMORY_MIN_GI, and always leaving at least 2Gi for macOS. Falls
+# back to the floor if the host is unreadable.
+lima_vm_memory_gib() {
+  if [[ -n "${SANDBOX_VM_MEMORY_GI:-}" ]]; then
+    _resources_require_uint SANDBOX_VM_MEMORY_GI 1
+    echo "${SANDBOX_VM_MEMORY_GI}"; return
+  fi
+  _resources_require_uint SANDBOX_VM_HOST_RESERVE_MEM_GI 0
+  _resources_require_uint SANDBOX_VM_MEMORY_MIN_GI 1
+  local host n cap
+  host="$(_host_mem_gib)"
+  if (( host <= 0 )); then echo "${SANDBOX_VM_MEMORY_MIN_GI}"; return; fi
+  n=$(( host - SANDBOX_VM_HOST_RESERVE_MEM_GI ))
+  cap=$(( host - 2 ))                    # always leave 2Gi for macOS
+  # Below the floor, take the floor but never eat into the 2Gi macOS headroom.
+  (( n < SANDBOX_VM_MEMORY_MIN_GI )) && n=$(( SANDBOX_VM_MEMORY_MIN_GI < cap ? SANDBOX_VM_MEMORY_MIN_GI : cap ))
+  (( n > cap )) && n="${cap}"
+  (( n < 1 )) && n=1
+  echo "${n}"
+}
+
+# lima_vm_disk_gib — resolve the VM's disk in GiB (plain default; disk has no
+# host-relative meaning).
+lima_vm_disk_gib() {
+  _resources_require_uint SANDBOX_VM_DISK_GI 1
+  echo "${SANDBOX_VM_DISK_GI}"
+}
 
 # --- Per-session dependency ceiling (Phase 5) -------------------------------
 # A session's dependency pods (MCP servers, services, a browser) count against
@@ -101,6 +248,8 @@ compute_pod_ceiling() {
     return 0
   fi
 
+  _resources_require_uint HOST_RESERVE_CPU 0
+  _resources_require_uint HOST_RESERVE_MEM_GI 0
   local avail_cpu=$(( alloc_cpu - HOST_RESERVE_CPU ))
   local avail_mem=$(( alloc_mem - HOST_RESERVE_MEM_GI ))
 
