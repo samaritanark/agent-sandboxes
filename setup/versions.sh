@@ -59,4 +59,4 @@ SANDBOX_NERDCTL_VERSION="${SANDBOX_NERDCTL_VERSION:-2.3.5}"
 # version` output); the installer prepends `v` for the release tag and compares
 # an already-present copy against this pin, upgrading only if it is older.
 # renovate: datasource=github-releases depName=betterleaks/betterleaks versioning=semver
-SANDBOX_BETTERLEAKS_VERSION="${SANDBOX_BETTERLEAKS_VERSION:-1.6.1}"
+SANDBOX_BETTERLEAKS_VERSION="${SANDBOX_BETTERLEAKS_VERSION:-1.7.0}"
