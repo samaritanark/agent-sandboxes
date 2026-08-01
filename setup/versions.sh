@@ -59,7 +59,7 @@ SANDBOX_NERDCTL_VERSION="${SANDBOX_NERDCTL_VERSION:-2.3.5}"
 # version` output); the installer prepends `v` for the release tag and compares
 # an already-present copy against this pin, upgrading only if it is older.
 # renovate: datasource=github-releases depName=betterleaks/betterleaks versioning=semver
-SANDBOX_BETTERLEAKS_VERSION="${SANDBOX_BETTERLEAKS_VERSION:-1.7.0}"
+SANDBOX_BETTERLEAKS_VERSION="${SANDBOX_BETTERLEAKS_VERSION:-1.7.3}"
 
 # Guard: each pin is substituted into the Lima config through `sed` (lib/lima.sh
 # on the `sandbox run` path, setup/macos.sh on the setup path) and handed to the
