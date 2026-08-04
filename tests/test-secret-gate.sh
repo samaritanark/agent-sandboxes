@@ -736,6 +736,118 @@ test_operator_ignore_baseline() {
 }
 
 ###############################################################################
+# leakscan_config_url / operator-supplied betterleaks config (pure replace)
+###############################################################################
+
+# An operator config committed into the overlay is used VERBATIM as -c: a path
+# it allowlists is suppressed, but non-allowlisted findings are still scanned.
+test_operator_config_verbatim() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  info "Testing operator overlay betterleaks.toml used verbatim..."
+
+  local repo="${TEST_DIR}/opcfg"; make_repo "${repo}"
+  local overlay="${TEST_DIR}/opcfg-overlay"; mkdir -p "${overlay}"
+
+  # Baseline: with no operator config the generated one flags nested/config.txt.
+  ( export SANDBOX_OVERLAY="${overlay}"; scan_repo_secrets "${repo}" ) > "${TEST_DIR}/opcfg-gen.out"
+  grep -q 'nested/config.txt' "${TEST_DIR}/opcfg-gen.out" \
+    || fail "baseline: generated config should flag nested/config.txt, got: $(cat "${TEST_DIR}/opcfg-gen.out")"
+
+  # Operator config that allowlists nested/config.txt -> that finding disappears.
+  cat > "${overlay}/betterleaks.toml" <<'TOML'
+[extend]
+useDefault = true
+[[allowlists]]
+paths = ['''(^|/)nested/config\.txt$''']
+TOML
+  ( export SANDBOX_OVERLAY="${overlay}"; scan_repo_secrets "${repo}" ) > "${TEST_DIR}/opcfg-op.out"
+  grep -q 'nested/config.txt' "${TEST_DIR}/opcfg-op.out" \
+    && fail "operator betterleaks.toml not used verbatim: nested/config.txt still flagged" \
+    || pass "operator overlay betterleaks.toml used verbatim as -c"
+  grep -q "$(printf '\t.env\t')" "${TEST_DIR}/opcfg-op.out" \
+    && pass "operator config still scans non-allowlisted files (.env)" \
+    || fail "operator config wrongly suppressed .env, got: $(cat "${TEST_DIR}/opcfg-op.out")"
+}
+
+# leakscan_config_url: fetch -> validate -> cache -> sha256/source pin; a
+# configured-but-unfetched URL resolves empty (gate falls back to generated); a
+# tampered cache fails the pin; a changed remote is announced as an update.
+test_leakscan_config_url_fetch() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v curl &>/dev/null || skip "curl not installed"
+  info "Testing leakscan_config_url fetch/validate/cache/pin..."
+
+  local _saved_user="${USER_SANDBOX_CONFIG}" _saved_cache="${LEAKSCAN_CACHE_DIR}"
+  USER_SANDBOX_CONFIG="${TEST_DIR}/urlcfg-user.yaml"; : > "${USER_SANDBOX_CONFIG}"
+  LEAKSCAN_CACHE_DIR="${TEST_DIR}/urlcache"
+
+  local overlay="${TEST_DIR}/urlcfg-overlay"; mkdir -p "${overlay}"
+  local shared="${TEST_DIR}/shared.betterleaks.toml"
+  cat > "${shared}" <<'TOML'
+[extend]
+useDefault = true
+[[allowlists]]
+paths = ['''(^|/)nested/config\.txt$''']
+TOML
+  printf 'leakscan_config_url: file://%s\n' "${shared}" > "${overlay}/config.yaml"
+  export SANDBOX_OVERLAY="${overlay}"
+
+  eq "url set, nothing fetched -> resolver empty" "" "$(_leakscan_operator_config)"
+
+  local out; out="$(_leakscan_fetch_config 2>/dev/null)"
+  [[ -f "${LEAKSCAN_CACHE_DIR}/betterleaks.toml" ]] || fail "fetch did not create the cache file"
+  pass "leakscan_config_url fetch caches the config locally"
+  case "${out}" in *"fetched from"*) pass "first fetch announced" ;; *) fail "expected fetch announcement, got: ${out}" ;; esac
+
+  eq "cached + pinned -> resolver returns cache path" "${LEAKSCAN_CACHE_DIR}/betterleaks.toml" "$(_leakscan_operator_config)"
+  grep -q '^leakscan_config_sha256:' "${USER_SANDBOX_CONFIG}" || fail "sha256 pin not recorded"
+  grep -q '^leakscan_config_source:'  "${USER_SANDBOX_CONFIG}" || fail "source URL not recorded"
+  pass "sha256 pin + source URL recorded in user config"
+
+  printf '\n# tampered\n' >> "${LEAKSCAN_CACHE_DIR}/betterleaks.toml"
+  eq "tampered cache (sha mismatch) -> resolver empty" "" "$(_leakscan_operator_config)"
+
+  # Change the remote (still valid) -> re-fetch announces an update and restores.
+  cat >> "${shared}" <<'TOML'
+
+[[allowlists]]
+paths = ['''(^|/)\.env$''']
+TOML
+  out="$(_leakscan_fetch_config 2>/dev/null)"
+  case "${out}" in *"updated from"*) pass "changed remote announced as an update" ;; *) fail "expected update announcement, got: ${out}" ;; esac
+  eq "after re-fetch -> resolver returns cache path" "${LEAKSCAN_CACHE_DIR}/betterleaks.toml" "$(_leakscan_operator_config)"
+
+  unset SANDBOX_OVERLAY
+  USER_SANDBOX_CONFIG="${_saved_user}"; LEAKSCAN_CACHE_DIR="${_saved_cache}"
+}
+
+# An invalid remote config is never adopted: the cache is not written and the
+# resolver stays empty so the gate falls back to its generated (strict) config.
+test_leakscan_config_url_invalid() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v curl &>/dev/null || skip "curl not installed"
+  info "Testing leakscan_config_url with an invalid remote (not adopted)..."
+
+  local _saved_user="${USER_SANDBOX_CONFIG}" _saved_cache="${LEAKSCAN_CACHE_DIR}"
+  USER_SANDBOX_CONFIG="${TEST_DIR}/urlbad-user.yaml"; : > "${USER_SANDBOX_CONFIG}"
+  LEAKSCAN_CACHE_DIR="${TEST_DIR}/urlbadcache"
+
+  local overlay="${TEST_DIR}/urlbad-overlay"; mkdir -p "${overlay}"
+  local bad="${TEST_DIR}/bad.toml"; printf 'not valid toml = = =\n[[[\n' > "${bad}"
+  printf 'leakscan_config_url: file://%s\n' "${bad}" > "${overlay}/config.yaml"
+  export SANDBOX_OVERLAY="${overlay}"
+
+  _leakscan_fetch_config >/dev/null 2>&1 || true
+  [[ -f "${LEAKSCAN_CACHE_DIR}/betterleaks.toml" ]] \
+    && fail "invalid remote was adopted into the cache" \
+    || pass "invalid fetched config rejected (not cached)"
+  eq "invalid remote -> resolver empty (fallback to generated)" "" "$(_leakscan_operator_config)"
+
+  unset SANDBOX_OVERLAY
+  USER_SANDBOX_CONFIG="${_saved_user}"; LEAKSCAN_CACHE_DIR="${_saved_cache}"
+}
+
+###############################################################################
 # secret_gate_repos — refuse, then pass after masking, then override
 ###############################################################################
 test_gate() {
@@ -1786,6 +1898,9 @@ main() {
   test_inline_allow_default_honored
   test_inline_allow_overlay_disallow
   test_operator_ignore_baseline
+  test_operator_config_verbatim
+  test_leakscan_config_url_fetch
+  test_leakscan_config_url_invalid
   test_gate
   test_gate_records_override
   test_gitconfig_secret

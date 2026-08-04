@@ -37,18 +37,18 @@ You don't have to hand-write the YAML — `sandbox profile save` generates
 it from the same flags you'd pass to `run`:
 
 ```bash
-# Saves ~/.sandbox/profiles/stratum-codex.yaml
+# Saves ~/.sandbox/profiles/myapp-codex.yaml
 sandbox profile save --tier 2 --agent codex \
-  --repo ~/git/public/stratum --name stratum-codex
+  --repo ~/git/public/myapp --name myapp-codex
 
 # --name is optional; omitted, it's derived from the repo and agent
-# (here → "stratum-codex"). --agent is optional too:
-sandbox profile save --tier 2 --repo ~/git/public/stratum   # → "stratum"
+# (here → "myapp-codex"). --agent is optional too:
+sandbox profile save --tier 2 --repo ~/git/public/myapp   # → "myapp"
 
 sandbox profile list                  # user + overlay profiles
-sandbox profile show stratum-codex    # print one
-sandbox profile delete stratum-codex  # remove one of yours
-sandbox run --profile stratum-codex   # launch it
+sandbox profile show myapp-codex    # print one
+sandbox profile delete myapp-codex  # remove one of yours
+sandbox run --profile myapp-codex   # launch it
 ```
 
 `save` only writes YAML — it never launches anything, and every value is
