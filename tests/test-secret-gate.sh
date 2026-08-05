@@ -847,6 +847,88 @@ test_leakscan_config_url_invalid() {
   USER_SANDBOX_CONFIG="${_saved_user}"; LEAKSCAN_CACHE_DIR="${_saved_cache}"
 }
 
+# A config that PARSES but resolves to zero rules (blank, or useDefault=false
+# with no rules) must not be adopted: 'betterleaks config check' passes it as
+# "OK: 0 rules", which would silently turn the gate into a no-op. The rule-count
+# floor refuses it and the resolver stays empty (gate uses its generated config).
+test_leakscan_config_url_empty_ruleset() {
+  command -v betterleaks &>/dev/null || skip "betterleaks not installed"
+  command -v curl &>/dev/null || skip "curl not installed"
+  info "Testing leakscan_config_url with a zero-rule config (not adopted)..."
+
+  local _saved_user="${USER_SANDBOX_CONFIG}" _saved_cache="${LEAKSCAN_CACHE_DIR}"
+  USER_SANDBOX_CONFIG="${TEST_DIR}/urlempty-user.yaml"; : > "${USER_SANDBOX_CONFIG}"
+  LEAKSCAN_CACHE_DIR="${TEST_DIR}/urlemptycache"
+
+  local overlay="${TEST_DIR}/urlempty-overlay"; mkdir -p "${overlay}"
+  # Valid TOML, parses fine, but no rules and no default ruleset.
+  local empty="${TEST_DIR}/empty.betterleaks.toml"
+  printf '[extend]\nuseDefault = false\n' > "${empty}"
+  printf 'leakscan_config_url: file://%s\n' "${empty}" > "${overlay}/config.yaml"
+  export SANDBOX_OVERLAY="${overlay}"
+
+  local out; out="$(_leakscan_fetch_config 2>&1)"
+  [[ -f "${LEAKSCAN_CACHE_DIR}/betterleaks.toml" ]] \
+    && fail "zero-rule config was adopted into the cache" \
+    || pass "zero-rule config rejected (not cached)"
+  case "${out}" in *"rule(s)"*|*"refusing to adopt"*) pass "zero-rule refusal warned" ;; *) fail "expected a rule-count refusal warning, got: ${out}" ;; esac
+  eq "zero-rule remote -> resolver empty (fallback to generated)" "" "$(_leakscan_operator_config)"
+
+  unset SANDBOX_OVERLAY
+  USER_SANDBOX_CONFIG="${_saved_user}"; LEAKSCAN_CACHE_DIR="${_saved_cache}"
+}
+
+# A leakscan_config_url carrying a backslash (the YAML/curl-arg injection carrier)
+# is rejected before any fetch: nothing is cached and nothing is written back to
+# the user config. Defense in depth alongside the verbatim upsert helper.
+test_leakscan_config_url_bad_shape() {
+  info "Testing leakscan_config_url with a backslash carrier (rejected pre-fetch)..."
+
+  local _saved_user="${USER_SANDBOX_CONFIG}" _saved_cache="${LEAKSCAN_CACHE_DIR}"
+  USER_SANDBOX_CONFIG="${TEST_DIR}/urlshape-user.yaml"; : > "${USER_SANDBOX_CONFIG}"
+  LEAKSCAN_CACHE_DIR="${TEST_DIR}/urlshapecache"
+
+  local overlay="${TEST_DIR}/urlshape-overlay"; mkdir -p "${overlay}"
+  # Literal backslash-n in the URL value — a static server would ignore ?x=... .
+  printf 'leakscan_config_url: file:///nope/b.toml?x=\\noverlay:/tmp/evil\n' > "${overlay}/config.yaml"
+  export SANDBOX_OVERLAY="${overlay}"
+
+  local out; out="$(_leakscan_fetch_config 2>&1)"
+  [[ -f "${LEAKSCAN_CACHE_DIR}/betterleaks.toml" ]] \
+    && fail "malformed URL produced a cache file" \
+    || pass "malformed (backslash) URL rejected before fetch"
+  case "${out}" in *"backslash"*|*"control"*|*"whitespace"*) pass "malformed URL refusal warned" ;; *) fail "expected a URL-shape refusal warning, got: ${out}" ;; esac
+  grep -q '^leakscan_config_source:' "${USER_SANDBOX_CONFIG}" \
+    && fail "source URL recorded despite rejection" \
+    || pass "nothing written back to the user config"
+
+  unset SANDBOX_OVERLAY
+  USER_SANDBOX_CONFIG="${_saved_user}"; LEAKSCAN_CACHE_DIR="${_saved_cache}"
+}
+
+# Recording the source URL back into the user config must not let a crafted URL
+# inject extra top-level YAML keys. A literal "\n" in the value used to become a
+# real newline via `awk -v` and could plant e.g. extra_allowed_domains (an
+# egress-loosening key). The upsert helper now writes the value verbatim.
+test_leakscan_config_source_no_yaml_injection() {
+  info "Testing leakscan_config_source write does not inject YAML keys..."
+
+  local cfg="${TEST_DIR}/inject-user.yaml"
+  printf 'tier: 2\nleakscan_config_source: OLD\nagent: codex\n' > "${cfg}"
+
+  # Replace branch (key already present) is the one that used to expand escapes.
+  upsert_yaml_scalar_in_file "${cfg}" leakscan_config_source \
+    'https://evil.example.org/c.toml\nextra_allowed_domains:\n  - exfil.example.org'
+
+  grep -q '^extra_allowed_domains:' "${cfg}" \
+    && fail "injected extra_allowed_domains key landed in the config" \
+    || pass "no injected top-level key from a crafted source value"
+  # The literal value (backslash-n intact) is stored on the one line.
+  eq "value stored verbatim on one line" \
+    'https://evil.example.org/c.toml\nextra_allowed_domains:\n  - exfil.example.org' \
+    "$(extract_yaml_scalar_from_file "${cfg}" leakscan_config_source)"
+}
+
 ###############################################################################
 # secret_gate_repos — refuse, then pass after masking, then override
 ###############################################################################
@@ -1901,6 +1983,9 @@ main() {
   test_operator_config_verbatim
   test_leakscan_config_url_fetch
   test_leakscan_config_url_invalid
+  test_leakscan_config_url_empty_ruleset
+  test_leakscan_config_url_bad_shape
+  test_leakscan_config_source_no_yaml_injection
   test_gate
   test_gate_records_override
   test_gitconfig_secret

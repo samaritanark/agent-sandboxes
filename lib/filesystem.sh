@@ -423,6 +423,21 @@ _leakscan_operator_config() {
 _leakscan_fetch_config() {
   local url; url="$(_leakscan_config_url)"
   [[ -n "${url}" ]] || return 0
+  # Reject a malformed URL before it reaches curl or gets recorded back into the
+  # user config. A backslash, whitespace, or control character in the value is
+  # never legitimate here and is the carrier for both the config.yaml YAML
+  # injection and curl argument-injection: curl transmits a literal backslash in
+  # a path unmodified, so "...toml?x=\noverlay:/tmp/evil" would round-trip. We
+  # stay scheme-agnostic (file:// is a valid air-gapped/test carrier) — the
+  # actual injection is closed at the writer (upsert_yaml_scalar_in_file); this
+  # is defense in depth that also rejects a leading '-' curl would read as a flag.
+  case "${url}" in
+    -*) warn "leakscan config: ignoring leakscan_config_url that begins with '-' (looks like a flag)."; return 0 ;;
+  esac
+  if printf '%s' "${url}" | LC_ALL=C grep -q '[[:cntrl:][:space:]\\]'; then
+    warn "leakscan config: ignoring leakscan_config_url containing whitespace, control, or backslash characters."
+    return 0
+  fi
   if ! command -v curl >/dev/null 2>&1; then
     warn "leakscan_config_url is set but 'curl' is not on PATH; the secret gate will use its generated config."
     return 0
@@ -444,9 +459,23 @@ _leakscan_fetch_config() {
     return 0
   fi
 
-  if ! betterleaks config check --config "${tmp}" >/dev/null 2>&1; then
+  local check_out
+  if ! check_out="$(betterleaks config check --config "${tmp}" 2>/dev/null)"; then
     rm -f "${tmp}"
     warn "leakscan config: the config fetched from ${url} failed 'betterleaks config check'; keeping the previous copy (or the generated config)."
+    return 0
+  fi
+  # 'config check' proves the config PARSES, not that it detects anything: a
+  # blank file or one with `useDefault = false` and no rules passes as
+  # "OK: 0 rules". Adopting that silently turns the gate into a no-op while the
+  # launch banner still reads "config updated". Refuse a config that resolves to
+  # fewer than LEAKSCAN_MIN_RULES (default 1), so the degraded state is a loud,
+  # visible refusal and the gate falls back to its generated strict config.
+  local rule_count
+  rule_count="$(printf '%s\n' "${check_out}" | sed -n 's/^OK: \([0-9][0-9]*\) rules.*/\1/p' | head -n1)"
+  if [[ -z "${rule_count}" || "${rule_count}" -lt "${LEAKSCAN_MIN_RULES:-1}" ]]; then
+    rm -f "${tmp}"
+    warn "leakscan config: the config fetched from ${url} resolves to ${rule_count:-no} rule(s); refusing to adopt it. The secret gate will use its generated config."
     return 0
   fi
 
