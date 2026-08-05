@@ -1,7 +1,8 @@
 ---
 # yaml-language-server:$schema=https://json.schemastore.org/github-workflow.json
 #
-# Run the cluster-free test suite on every push.
+# Run the cluster-free test suite on every pull request (on open and on each
+# new commit) and on master after merge.
 #
 # This workflow lives under .github/workflows/ rather than .gitea/workflows/
 # so it runs on both platforms: Gitea Actions reads .github/workflows/ by
@@ -20,7 +21,13 @@
 # case and exit 0 — a green check that silently skips the entire gate suite.
 
 on:  # yamllint disable-line rule:truthy
+  # pull_request covers PR open + every subsequent commit (opened / synchronize
+  # / reopened), including fork PRs, which never fire `push` in this repo. push
+  # is scoped to master so merges are still tested. A same-repo PR branch matches
+  # only pull_request (its pushes aren't to master), so there's no duplicate run.
+  pull_request:
   push:
+    branches: [master]
 
 jobs:
   test:
