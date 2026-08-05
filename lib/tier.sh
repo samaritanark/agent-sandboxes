@@ -50,6 +50,7 @@ registry.npmjs.org
 registry.terraform.io
 go.dev
 dl.google.com
+storage.googleapis.com
 proxy.golang.org
 sum.golang.org
 EOF
