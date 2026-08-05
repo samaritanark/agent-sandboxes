@@ -217,7 +217,7 @@ test_is_valid_profile_name() {
   info "Testing is_valid_profile_name..."
 
   local n
-  for n in stratum-codex dev_app foo.bar a1 ABC tier2; do
+  for n in myapp-codex dev_app foo.bar a1 ABC tier2; do
     is_valid_profile_name "${n}" || fail "is_valid_profile_name '${n}' should be valid"
   done
   pass "accepts normal names"
@@ -272,7 +272,7 @@ test_render_profile_yaml() {
 test_cli_profile_lifecycle() {
   info "Testing 'sandbox profile' lifecycle via the real CLI..."
   local sb="${SANDBOX_ROOT}/bin/sandbox"
-  local repo="${TEST_DIR}/repo/stratum"
+  local repo="${TEST_DIR}/repo/myapp"
   mkdir -p "${repo}"
   unset SANDBOX_OVERLAY
 
@@ -290,14 +290,14 @@ test_cli_profile_lifecycle() {
   # Real save with name derived from repo + agent.
   "${sb}" profile save --tier 2 --agent codex --repo "${repo}" >/dev/null \
     || fail "save failed"
-  [[ -f "${HOME}/.sandbox/profiles/stratum-codex.yaml" ]] \
-    || fail "expected derived-name profile stratum-codex.yaml"
+  [[ -f "${HOME}/.sandbox/profiles/myapp-codex.yaml" ]] \
+    || fail "expected derived-name profile myapp-codex.yaml"
   pass "save writes a derived-name profile"
 
   # list + show surface it.
-  "${sb}" profile list | grep -q 'stratum-codex' || fail "list omits the saved profile"
+  "${sb}" profile list | grep -q 'myapp-codex' || fail "list omits the saved profile"
   pass "list shows the saved profile"
-  "${sb}" profile show stratum-codex | grep -q '^tier: 2$' || fail "show omits content"
+  "${sb}" profile show myapp-codex | grep -q '^tier: 2$' || fail "show omits content"
   pass "show prints the profile"
 
   # Overwrite refused without --force, allowed with it.
@@ -305,13 +305,13 @@ test_cli_profile_lifecycle() {
     fail "overwrite should be refused without --force"
   fi
   pass "overwrite refused without --force"
-  "${sb}" profile save --tier 1 --name stratum-codex --force >/dev/null \
+  "${sb}" profile save --tier 1 --name myapp-codex --force >/dev/null \
     || fail "--force overwrite should succeed"
   pass "--force overwrites"
 
   # delete removes it.
-  "${sb}" profile delete stratum-codex --yes >/dev/null || fail "delete failed"
-  [[ -f "${HOME}/.sandbox/profiles/stratum-codex.yaml" ]] \
+  "${sb}" profile delete myapp-codex --yes >/dev/null || fail "delete failed"
+  [[ -f "${HOME}/.sandbox/profiles/myapp-codex.yaml" ]] \
     && fail "profile still present after delete"
   pass "delete removes the profile"
 }

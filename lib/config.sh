@@ -92,8 +92,14 @@ upsert_yaml_scalar_in_file() {
 
   local tmp="${path}.tmp.$$"
   if grep -q "^${key}:" "${path}" 2>/dev/null; then
-    awk -v key="${key}" -v val="${value}" '
-      !done && $0 ~ "^"key":" { print key": "val; done=1; next }
+    # Pass the value via the environment, not `awk -v`: `-v` performs C-style
+    # escape processing on its argument, so a literal "\n" in the value would
+    # become a real newline and inject additional top-level YAML keys into this
+    # file — a trust source (extra_allowed_domains feeds the egress allowlist).
+    # ENVIRON[] is used verbatim, no escape expansion. The append branch below
+    # uses printf '%s' which also does not expand, so both writes stay literal.
+    _UPSERT_VAL="${value}" awk -v key="${key}" '
+      !done && $0 ~ "^"key":" { print key": " ENVIRON["_UPSERT_VAL"]; done=1; next }
       { print }
     ' "${path}" > "${tmp}"
   else

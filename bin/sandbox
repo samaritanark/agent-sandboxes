@@ -180,8 +180,8 @@ EXAMPLES:
   sandbox run --agent claude --tier 3 --repo ~/repos/infra \\
       --infra-kubeconfig ~/.kube/config --infra-kube-context dev
   sandbox run --agent opencode --tier 3 --repo ~/repos/infra --infra-token ~/.infra-token
-  sandbox profile save --tier 2 --agent codex --repo ~/git/public/stratum --name stratum-codex
-  sandbox run --profile stratum-codex
+  sandbox profile save --tier 2 --agent codex --repo ~/git/public/myapp --name myapp-codex
+  sandbox run --profile myapp-codex
   sandbox list
   sandbox logs ses-20260401-143022-a7b3
   sandbox cleanup --older-than 30
@@ -530,6 +530,13 @@ cmd_run() {
   # — with one hard stop: an overlay that now requires a newer CLI. Skipped
   # entirely by SANDBOX_NO_LINK_CHECK=1.
   link_sync_on_run || true
+
+  # If the active overlay points the secret gate at an external betterleaks
+  # config (leakscan_config_url), refresh the local cache the gate reads. Runs
+  # here — after the overlay is synced, before the gate — so the network fetch
+  # never happens inside the fail-closed scan. Fail-safe: a bad/absent fetch
+  # leaves the previous cache (or the generated config) in place.
+  _leakscan_fetch_config || true
 
   # Any active overlay — linked or hand-set — may declare the minimum CLI
   # version it needs (min_sandbox_version in its config.yaml). An older CLI
@@ -3978,6 +3985,10 @@ _link_clone() {
   echo "  ref:    ${ref}"
   echo "  commit: ${commit:0:12}"
   echo "  pointer written to the 'overlay:' key in ${USER_SANDBOX_CONFIG/#${HOME}/\~}"
+
+  # If this overlay points the secret gate at an external betterleaks config,
+  # fetch it now so the first launch already has the cached copy (best-effort).
+  _leakscan_fetch_config || true
 }
 
 # _link_status — show the active link and whether it's behind its ref.
@@ -4165,7 +4176,7 @@ SAVE OPTIONS (mirror 'sandbox run'):
                             a profile that 'run' would reject is never saved.
   --name <NAME>             Profile name → filename. If omitted, it's derived
                             from the repo basename and agent (e.g. the example
-                            below yields 'stratum-codex'), or the agent alone,
+                            below yields 'myapp-codex'), or the agent alone,
                             or 'tier<N>' for a bare-tier profile.
   --force                   Overwrite an existing profile of the same name.
   --dry-run                 Print the YAML to stdout instead of writing it.
@@ -4178,12 +4189,12 @@ NOTES:
     Multi-repo launches still work via 'run --repo ... --repo ...'.
 
 EXAMPLES:
-  sandbox profile save --tier 2 --agent codex --repo ~/git/public/stratum \\
-      --name stratum-codex
-  sandbox profile save --tier 2 --repo ~/git/public/stratum   # → 'stratum'
+  sandbox profile save --tier 2 --agent codex --repo ~/git/public/myapp \\
+      --name myapp-codex
+  sandbox profile save --tier 2 --repo ~/git/public/myapp   # → 'myapp'
   sandbox profile list
-  sandbox profile show stratum-codex
-  sandbox run --profile stratum-codex
+  sandbox profile show myapp-codex
+  sandbox run --profile myapp-codex
 EOF
   exit 0
 }

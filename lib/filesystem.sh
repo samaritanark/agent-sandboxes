@@ -233,6 +233,12 @@ LEAKSCAN_SKIP_PATHS=(
   .secrets.baseline
 )
 
+# LEAKSCAN_CACHE_DIR — host-side cache for an operator-supplied betterleaks
+# config fetched from leakscan_config_url (_leakscan_fetch_config). The gate
+# reads the cached file; it never reaches the network itself. Kept out of any
+# git-linked overlay clone so it can't trip the link worktree-dirty guard.
+LEAKSCAN_CACHE_DIR="${LEAKSCAN_CACHE_DIR:-${HOME}/.sandbox/cache/leakscan}"
+
 # _leakscan_is_dep_dir <basename> <glob>... — 0 if <basename> matches one of
 # the candidate globs. The effective set is passed in (built-in + operator
 # additions), not read from the global, so widening stays operator-scoped.
@@ -343,6 +349,155 @@ _leakscan_inline_allow_enabled() {
 # can be embedded in an allowlist regex.
 _leakscan_regex_escape() {
   printf '%s' "$1" | sed 's/[][\.^$*+?(){}|]/\\&/g'
+}
+
+# _leakscan_sha256 <file> — portable SHA-256 of a file (bare hex, no filename):
+# sha256sum (Linux/coreutils) or shasum -a 256 (macOS). Empty if neither exists,
+# which safely degrades an operator-config cache to the generated config.
+_leakscan_sha256() {
+  local f="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${f}" 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${f}" 2>/dev/null | awk '{print $1}'
+  fi
+}
+
+# _leakscan_config_url — the active operator overlay's `leakscan_config_url:` (a
+# URL to a betterleaks config that REPLACES the gate's generated one), or empty.
+# Read ONLY from the operator overlay — never a repo's or a user's own config —
+# because supplying the scan config is a loosening authority, exactly like
+# leakscan_inline_allow / leakscan_extra_dep_dirs.
+_leakscan_config_url() {
+  local overlay
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" && -f "${overlay}/config.yaml" ]] || return 0
+  extract_yaml_scalar_from_file "${overlay}/config.yaml" leakscan_config_url 2>/dev/null || true
+}
+
+# _leakscan_operator_config — path to an operator-provided betterleaks config the
+# gate should use VERBATIM instead of generating one, or empty to generate.
+# Resolution (operator trust level throughout):
+#   1. leakscan_config_url set in the overlay -> the local cache populated by
+#      _leakscan_fetch_config, but ONLY when the recorded source URL and sha256
+#      pin both still match (closes a stale-cache window when the URL changes,
+#      and makes a hand-edited cache fall back). A configured-but-unfetched URL
+#      returns empty so the caller uses the generated strict config and warns —
+#      the gate never skips scanning.
+#   2. else a betterleaks.toml / .betterleaks.toml the operator committed into
+#      the overlay itself (air-gapped / hand-set delivery; no fetch needed).
+#   3. else empty (generate the config as before).
+_leakscan_operator_config() {
+  local overlay url
+  overlay="$(resolve_overlay_path 2>/dev/null || true)"
+  [[ -n "${overlay}" ]] || return 0
+  url="$(_leakscan_config_url)"
+
+  if [[ -n "${url}" ]]; then
+    local cache="${LEAKSCAN_CACHE_DIR}/betterleaks.toml" pin src cur
+    pin="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" leakscan_config_sha256 2>/dev/null || true)"
+    src="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" leakscan_config_source 2>/dev/null || true)"
+    if [[ -f "${cache}" && -n "${pin}" && "${src}" == "${url}" ]]; then
+      cur="$(_leakscan_sha256 "${cache}")"
+      [[ -n "${cur}" && "${cur}" == "${pin}" ]] && { echo "${cache}"; return 0; }
+    fi
+    return 0
+  fi
+
+  local f
+  for f in betterleaks.toml .betterleaks.toml; do
+    [[ -f "${overlay}/${f}" ]] && { echo "${overlay}/${f}"; return 0; }
+  done
+  return 0
+}
+
+# _leakscan_fetch_config — if the active overlay declares leakscan_config_url,
+# fetch it into LEAKSCAN_CACHE_DIR (the file the gate reads via
+# _leakscan_operator_config). Called from the run path (before each launch) and
+# at 'sandbox link' time — never from the gate itself, so no network is ever
+# reached inside the fail-closed scan. Best-effort and fail-safe: on any failure
+# the previous cache (or the generated config) stands, so a launch is never
+# wedged. A fetched config is adopted only after it PARSES ('betterleaks config
+# check'); its sha256 + source URL are pinned so a changed remote is announced,
+# not silently swapped in.
+_leakscan_fetch_config() {
+  local url; url="$(_leakscan_config_url)"
+  [[ -n "${url}" ]] || return 0
+  # Reject a malformed URL before it reaches curl or gets recorded back into the
+  # user config. A backslash, whitespace, or control character in the value is
+  # never legitimate here and is the carrier for both the config.yaml YAML
+  # injection and curl argument-injection: curl transmits a literal backslash in
+  # a path unmodified, so "...toml?x=\noverlay:/tmp/evil" would round-trip. We
+  # stay scheme-agnostic (file:// is a valid air-gapped/test carrier) — the
+  # actual injection is closed at the writer (upsert_yaml_scalar_in_file); this
+  # is defense in depth that also rejects a leading '-' curl would read as a flag.
+  case "${url}" in
+    -*) warn "leakscan config: ignoring leakscan_config_url that begins with '-' (looks like a flag)."; return 0 ;;
+  esac
+  if printf '%s' "${url}" | LC_ALL=C grep -q '[[:cntrl:][:space:]\\]'; then
+    warn "leakscan config: ignoring leakscan_config_url containing whitespace, control, or backslash characters."
+    return 0
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "leakscan_config_url is set but 'curl' is not on PATH; the secret gate will use its generated config."
+    return 0
+  fi
+  command -v betterleaks >/dev/null 2>&1 || return 0
+
+  local cache_dir="${LEAKSCAN_CACHE_DIR}" cache tmp
+  mkdir -p "${cache_dir}" 2>/dev/null || true
+  cache="${cache_dir}/betterleaks.toml"
+  tmp="$(mktemp "${cache_dir}/fetch-XXXXXX" 2>/dev/null)" || return 0
+
+  if ! curl -fsSL --max-time "${LINK_FETCH_TIMEOUT_SECONDS:-10}" "${url}" -o "${tmp}" 2>/dev/null; then
+    rm -f "${tmp}"
+    if [[ -f "${cache}" ]]; then
+      warn "leakscan config: could not fetch ${url}; the secret gate will use the cached copy."
+    else
+      warn "leakscan config: could not fetch ${url} and there is no cached copy; the secret gate will use its generated config."
+    fi
+    return 0
+  fi
+
+  local check_out
+  if ! check_out="$(betterleaks config check --config "${tmp}" 2>/dev/null)"; then
+    rm -f "${tmp}"
+    warn "leakscan config: the config fetched from ${url} failed 'betterleaks config check'; keeping the previous copy (or the generated config)."
+    return 0
+  fi
+  # 'config check' proves the config PARSES, not that it detects anything: a
+  # blank file or one with `useDefault = false` and no rules passes as
+  # "OK: 0 rules". Adopting that silently turns the gate into a no-op while the
+  # launch banner still reads "config updated". Refuse a config that resolves to
+  # fewer than LEAKSCAN_MIN_RULES (default 1), so the degraded state is a loud,
+  # visible refusal and the gate falls back to its generated strict config.
+  local rule_count
+  rule_count="$(printf '%s\n' "${check_out}" | sed -n 's/^OK: \([0-9][0-9]*\) rules.*/\1/p' | head -n1)"
+  if [[ -z "${rule_count}" || "${rule_count}" -lt "${LEAKSCAN_MIN_RULES:-1}" ]]; then
+    rm -f "${tmp}"
+    warn "leakscan config: the config fetched from ${url} resolves to ${rule_count:-no} rule(s); refusing to adopt it. The secret gate will use its generated config."
+    return 0
+  fi
+
+  local new_sha old_sha
+  new_sha="$(_leakscan_sha256 "${tmp}")"
+  old_sha="$(extract_yaml_scalar_from_file "${USER_SANDBOX_CONFIG}" leakscan_config_sha256 2>/dev/null || true)"
+  if ! mv -f "${tmp}" "${cache}" 2>/dev/null; then
+    rm -f "${tmp}"
+    return 0
+  fi
+  chmod 0644 "${cache}" 2>/dev/null || true
+  if [[ -n "${new_sha}" ]]; then
+    upsert_yaml_scalar_in_file "${USER_SANDBOX_CONFIG}" leakscan_config_sha256 "${new_sha}"
+    upsert_yaml_scalar_in_file "${USER_SANDBOX_CONFIG}" leakscan_config_source "${url}"
+  fi
+
+  if [[ -z "${old_sha}" ]]; then
+    echo "==> Secret-gate config fetched from ${url} (${new_sha:0:12})"
+  elif [[ "${old_sha}" != "${new_sha}" ]]; then
+    echo "==> Secret-gate config updated from ${url} (${old_sha:0:12} -> ${new_sha:0:12})"
+  fi
+  return 0
 }
 
 # _leakscan_write_config <repo> <config_out> — write a betterleaks config to
@@ -822,10 +977,23 @@ scan_repo_secrets() {
     done < <(strip_ignore_file_comments < "${real_repo}/${ignf}")
   done
 
-  local report config
+  # An operator overlay may supply the betterleaks config to use verbatim
+  # (leakscan_config_url, or a committed overlay betterleaks.toml); otherwise we
+  # generate one. `config_tmp` is set only for a config WE generated, so cleanup
+  # never deletes an operator's cached/committed file.
+  local report config config_tmp="" op_config
   report="$(mktemp "${TMPDIR:-/tmp}/sandbox-leakscan-XXXXXX")"
-  config="$(mktemp "${TMPDIR:-/tmp}/sandbox-leakcfg-XXXXXX")"
-  _leakscan_write_config "${repo}" "${config}"
+  op_config="$(_leakscan_operator_config)"
+  if [[ -n "${op_config}" ]]; then
+    config="${op_config}"
+  else
+    config="$(mktemp "${TMPDIR:-/tmp}/sandbox-leakcfg-XXXXXX")"
+    config_tmp="${config}"
+    _leakscan_write_config "${repo}" "${config}"
+    if [[ -n "$(_leakscan_config_url)" ]]; then
+      warn "leakscan_config_url is set but no validated cached secret-gate config is available; scanning with the generated fallback. Launch once while online (or run 'sandbox link sync') to fetch it."
+    fi
+  fi
 
   # betterleaks -i: an operator-owned baseline of accepted fingerprints when the
   # overlay ships one, else a neutral empty dir so the -i default (".", the
@@ -842,7 +1010,8 @@ scan_repo_secrets() {
   # (1) Whole-workspace scan.
   if ! _betterleaks_run "${real_repo}" "${report}" "${config}" "${ignore_path}"; then
     printf 'error\tbetterleaks scan failed (exit %s)\n' "${LEAKSCAN_RC}"
-    rm -f "${report}" "${config}"
+    rm -f "${report}"
+    [[ -n "${config_tmp}" ]] && rm -f "${config_tmp}"
     [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
     return 0
   fi
@@ -876,7 +1045,8 @@ scan_repo_secrets() {
     : > "${report}"
     if ! _betterleaks_run "${gitcfg}" "${report}" "${config}" "${ignore_path}" no; then
       printf 'error\tbetterleaks scan of .git/config failed (exit %s)\n' "${LEAKSCAN_RC}"
-      rm -f "${report}" "${config}"
+      rm -f "${report}"
+      [[ -n "${config_tmp}" ]] && rm -f "${config_tmp}"
       [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
       return 0
     fi
@@ -887,7 +1057,8 @@ scan_repo_secrets() {
                "${report}" 2>/dev/null)
   fi
 
-  rm -f "${report}" "${config}"
+  rm -f "${report}"
+  [[ -n "${config_tmp}" ]] && rm -f "${config_tmp}"
   [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
 }
 
@@ -905,11 +1076,17 @@ leakscan_fingerprints_for() {
   command -v jq &>/dev/null || return 3
   [[ "${line}" =~ ^[0-9]+$ ]] || return 1
 
-  local real_repo report config ignore_path empty_ignore_dir=""
+  local real_repo report config config_tmp="" op_config ignore_path empty_ignore_dir=""
   real_repo="$(realpath "${repo}")"
   report="$(mktemp "${TMPDIR:-/tmp}/sandbox-bl-fp-XXXXXX")"
-  config="$(mktemp "${TMPDIR:-/tmp}/sandbox-bl-cfg-XXXXXX")"
-  _leakscan_write_config "${repo}" "${config}"
+  op_config="$(_leakscan_operator_config)"
+  if [[ -n "${op_config}" ]]; then
+    config="${op_config}"
+  else
+    config="$(mktemp "${TMPDIR:-/tmp}/sandbox-bl-cfg-XXXXXX")"
+    config_tmp="${config}"
+    _leakscan_write_config "${repo}" "${config}"
+  fi
   ignore_path="$(_leakscan_ignore_path)"
   if [[ -z "${ignore_path}" ]]; then
     empty_ignore_dir="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-bl-ign-XXXXXX")"
@@ -932,7 +1109,8 @@ leakscan_fingerprints_for() {
     fi
   fi
 
-  rm -f "${report}" "${config}"
+  rm -f "${report}"
+  [[ -n "${config_tmp}" ]] && rm -f "${config_tmp}"
   [[ -n "${empty_ignore_dir}" ]] && rmdir "${empty_ignore_dir}" 2>/dev/null || true
   return "${rc}"
 }

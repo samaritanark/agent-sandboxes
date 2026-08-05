@@ -214,3 +214,24 @@ vetting: advisory
 # credential-dense, and not something the team's other betterleaks runs scan.
 #
 # leakscan_inline_allow: off
+
+# leakscan_config_url: a URL to a betterleaks config the launch secret gate uses
+# VERBATIM in place of the one it generates. Use this to keep the gate and
+# another betterleaks-based tool (CI, a GitOps scanner) on a single shared
+# config — point both at the same file.
+#
+# It is fetched, validated with `betterleaks config check`, and cached locally
+# at `sandbox link` / `sandbox link sync` time and before each launch — NEVER
+# inside the scan, so the fail-closed gate never touches the network. The cache
+# is sha256-pinned: a changed remote is announced on the next fetch, not
+# silently adopted. Fail-safe on a bad/unreachable fetch — the previous cached
+# copy stands, or the gate falls back to its generated (strict) config and
+# warns; it never skips scanning.
+#
+# Read ONLY from the overlay (supplying the scan config is a loosening
+# authority, like leakscan_inline_allow / leakscan_extra_dep_dirs). Absent ⇒ the
+# gate generates its own config as before. An operator who would rather ship the
+# file directly can instead commit a `betterleaks.toml` at this overlay's root;
+# it is used the same way, with no fetch.
+#
+# leakscan_config_url: https://git.example.org/security/betterleaks-config/raw/branch/main/betterleaks.toml
