@@ -89,6 +89,25 @@ hostname only resolves via a VPN-side DNS that the host's
 `/etc/resolv.conf` doesn't see either — fix `getent hosts <name>` on
 the host first, then re-run `sandbox run`.
 
+**`kubectl` hangs or times out reaching the Tier 3 API server, despite a
+correct `--infra-kubeconfig`.** If the infra cluster's API server happens to
+be running on the *same physical machine* as the sandbox itself (e.g. a
+local k3d/podman cluster used for testing), a plain IP-based egress rule
+gets masqueraded out the host's primary network interface — which then
+needs the interface/switch to "hairpin" the packet back to the same
+machine, something not every network supports (seen failing identically
+over both Wi-Fi and wired Ethernet). `bin/sandbox` detects this same-node
+case (the resolved API server IP matches one of the host's own addresses)
+and `lib/policy.sh` then grants the API port via Cilium's `reserved:host`
+identity in addition to the ordinary CIDR rule specifically to route around
+this — no physical NIC involved, so no hairpin needed. This grant is only
+added for the same-node case, never for a genuinely remote cluster — see
+[Local k3d cluster on podman](../how-to/local-k3d-podman.md) for why. If
+you still see this hang against a local cluster on an up-to-date install,
+confirm the applied policy actually carries the rule:
+`kubectl get ciliumnetworkpolicy -n sandbox policy-<session-id> -o yaml`
+should show a `toEntities: [host]` entry alongside the `toCIDR` one.
+
 If a session reaches the cluster but then gets unexpected `403 Forbidden`
 from `kubectl`, that's RBAC on the target cluster — the
 ServiceAccount your token came from doesn't have the verb/resource the

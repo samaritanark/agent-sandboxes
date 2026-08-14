@@ -50,6 +50,19 @@ detect_primary_ipv4() {
     | jq -r '[.[].addr_info[]? | select(.scope == "global") | .local] | first // empty'
 }
 
+# host_owns_ipv4 <ip> — true if <ip> is configured on ANY local interface
+# (every device, every scope, including loopback — not just the primary
+# interface's global-scope address that detect_primary_ipv4 returns). Used to
+# tell a genuinely remote Tier 3 kube API server apart from one that resolves
+# to this same host (e.g. a local k3d/podman cluster) — the case where
+# Cilium's reserved:host egress grant is safe to add (see lib/policy.sh).
+host_owns_ipv4() {
+  local ip="$1"
+  [[ -z "${ip}" ]] && return 1
+  ip -j -4 addr show 2>/dev/null \
+    | jq -e --arg ip "${ip}" '[.[].addr_info[]?.local] | index($ip) != null' >/dev/null
+}
+
 # Node annotation used to remember the IPv4 address of the host's primary
 # interface at the time the cluster was last reconciled. Compared against the
 # live value on every `sandbox run` to detect a same-name-different-IP drift

@@ -22,6 +22,7 @@ the operator.
 - [Accept secret-gate false positives](how-to/secret-exceptions.md)
 - [MCP & service dependencies](how-to/mcp-and-dependencies.md)
 - [Tier 3 infra credentials](how-to/tier3-infra-credentials.md)
+- [Local k3d cluster on podman](how-to/local-k3d-podman.md)
 - [Resume and keep-alive sessions](how-to/resuming-sessions.md)
 - [Reach clusters behind a corporate VPN (Linux)](how-to/corporate-vpn.md)
 - [Corporate TLS-intercept proxies (Zscaler, Netskope…)](how-to/tls-intercept-proxies.md)
