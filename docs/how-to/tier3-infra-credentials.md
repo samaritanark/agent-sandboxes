@@ -5,20 +5,35 @@
 Tier 3 sessions need at least one credential slot — the two are orthogonal
 and can be combined:
 
-- **`--infra-token <PATH>`** — flat file containing a single bearer-style
-  token. The contents are stored in a per-session K8s Secret and injected
-  into the pod as `$INFRA_TOKEN`. Use for Vault, custom internal APIs, or
-  any service that takes one opaque secret.
+- **`--infra-token <[NAME=]PATH>`** — flat file containing a single
+  bearer-style token. The contents are stored in a per-session K8s Secret and
+  injected into the pod as `$INFRA_TOKEN`. Use for Vault, custom internal APIs,
+  or any service that takes one opaque secret. **Repeatable:** a bare `PATH`
+  maps to `$INFRA_TOKEN`; `NAME=PATH` maps to `$INFRA_TOKEN_<NAME>`, so several
+  tokens can ride into one session under distinct env names (e.g.
+  `--infra-token ~/.vault --infra-token registry=~/.reg-token` gives the agent
+  `$INFRA_TOKEN` and `$INFRA_TOKEN_registry`). Names must be a valid env-var
+  suffix (letters, digits, underscores; not starting with a digit) and each
+  target must be distinct.
 - **`--infra-kubeconfig <PATH>`** — kubeconfig the agent should use to talk
   to a Kubernetes cluster. The file is minified to a **single context**
   (`--infra-kube-context <NAME>`, defaulting to the kubeconfig's
   `current-context`) and flattened so any externally-referenced CA/cert
   paths are inlined. The result is stored in a per-session K8s Secret and
   mounted read-only at `/home/agent/.kube/config`; `$KUBECONFIG` is set
-  inside the pod. The API server's hostname and port (extracted from
+  inside the pod. **Repeatable:** pass it more than once and the minified
+  results are merged into one `~/.kube/config` with each source's context
+  preserved (names suffixed `-2`, `-3`, … only on collision), so the agent
+  switches clusters with `kubectl config use-context <name>`. The first
+  kubeconfig's context is the active one. Each cluster is handled independently
+  — every API server gets its own egress rule and hostAlias (below).
+  `--infra-kube-context` applies only when you pass a single kubeconfig; with
+  several, pre-select the context in each file. Exec-plugin kubeconfigs can't
+  be merged (see below), so an exec-based one must be the only
+  `--infra-kubeconfig`. Each API server's hostname and port (extracted from
   `clusters[].cluster.server`) are auto-added to the egress allowlist, so
-  you don't also need `--infra-endpoint` for the cluster itself. This
-  auto-add is still checked against the block list (org + overlay + your
+  you don't also need `--infra-endpoint` for the clusters themselves. Every
+  such auto-add is still checked against the block list (org + overlay + your
   `~/.sandbox/config.yaml`) before launch — including the server's IP against
   `blocked_cidrs` — so an accidentally-supplied production cluster fails fast
   rather than being silently allowlisted. See [Never-allow](persistent-domains.md#never-allow-a-personal-block-list).
@@ -34,8 +49,21 @@ sandbox run --agent claude --tier 3 --repo ~/repos/infra \
   --infra-kubeconfig ~/.kube/config --infra-kube-context dev
 ```
 
-The minified kubeconfig only exists in a 0600 temp file long enough to be
-loaded into the Secret, after which the temp file is deleted. The Secret
+Reach two clusters in one session by passing `--infra-kubeconfig` twice. Each
+is pre-selected to a single context, so give the tool per-cluster kubeconfigs
+(or a `kubectl config view --minify --flatten --context <ctx>` of a larger one)
+rather than a single file plus `--infra-kube-context`:
+
+```bash
+# Both contexts land in ~/.kube/config; switch inside the sandbox with
+# `kubectl config use-context dev` / `... prod`. dev is active at launch.
+sandbox run --agent claude --tier 3 --repo ~/repos/infra \
+  --infra-kubeconfig ~/.kube/sandbox-dev.yaml \
+  --infra-kubeconfig ~/.kube/sandbox-prod.yaml
+```
+
+The minified kubeconfig(s) only exist in a 0600 temp dir long enough to be
+loaded into the Secret, after which the temp dir is deleted. The Secret
 is deleted on session teardown.
 
 **Exec credential plugins are not supported.** If the chosen context auths

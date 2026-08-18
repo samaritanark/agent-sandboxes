@@ -179,7 +179,10 @@ EXAMPLES:
   sandbox run --agent claude --tier 2 --repo ~/repos/my-project
   sandbox run --agent claude --tier 3 --repo ~/repos/infra \\
       --infra-kubeconfig ~/.kube/config --infra-kube-context dev
-  sandbox run --agent opencode --tier 3 --repo ~/repos/infra --infra-token ~/.infra-token
+  sandbox run --agent claude --tier 3 --repo ~/repos/infra \\
+      --infra-kubeconfig ~/.kube/dev.yaml --infra-kubeconfig ~/.kube/prod.yaml
+  sandbox run --agent opencode --tier 3 --repo ~/repos/infra \\
+      --infra-token ~/.infra-token --infra-token vault=~/.vault-token
   sandbox profile save --tier 2 --agent codex --repo ~/git/public/myapp --name myapp-codex
   sandbox run --profile myapp-codex
   sandbox list
@@ -216,15 +219,19 @@ OPTIONS:
                                     opencode agent. Overrides OPENCODE_BASE_URL
                                     in the host env. Required for opencode
                                     (via this flag or the env var).
-  --infra-token <PATH>              Path to infra token file (tier 3)
-                                    Injected as INFRA_TOKEN env var inside pod.
-  --infra-kubeconfig <PATH>         Path to kubeconfig file (tier 3)
-                                    Minified to a single context, mounted as a
-                                    Secret at /home/agent/.kube/config, and
-                                    KUBECONFIG is set. The cluster's API
-                                    server hostname/port is auto-allowlisted.
-  --infra-kube-context <NAME>       Context to extract from --infra-kubeconfig
-                                    (default: kubeconfig's current-context)
+  --infra-token <[NAME=]PATH>       Path to an infra token file (tier 3, repeatable).
+                                    A bare PATH injects as INFRA_TOKEN; NAME=PATH
+                                    injects as INFRA_TOKEN_<NAME>, so several
+                                    tokens can ride into one session.
+  --infra-kubeconfig <PATH>         Path to a kubeconfig file (tier 3, repeatable).
+                                    Each is minified to a single context; one
+                                    mounts as-is, several are merged into one
+                                    Secret at /home/agent/.kube/config (contexts
+                                    preserved — switch with 'kubectl config
+                                    use-context'). KUBECONFIG is set and each
+                                    cluster's API server host/port is allowlisted.
+  --infra-kube-context <NAME>       Context to extract (only with a single
+                                    --infra-kubeconfig; default: current-context)
   --allow-exec-plugin               Don't prompt when --infra-kubeconfig uses
                                     an exec credential plugin (it won't work
                                     in the pod; useful only if kubectl access
@@ -446,8 +453,8 @@ cmd_run() {
   local opt_profile=""
   local -a opt_repos=()
   local opt_name=""
-  local opt_infra_token=""
-  local opt_infra_kubeconfig=""
+  local -a opt_infra_tokens=()
+  local -a opt_infra_kubeconfigs=()
   local opt_infra_kube_context=""
   local opt_allow_exec_plugin="false"
   local opt_dry_run="false"
@@ -478,10 +485,10 @@ cmd_run() {
       --base-url=*)            opt_base_url="${1#--base-url=}" ;;
       --homedir)               opt_homedir="${2:?--homedir requires a value}"; shift ;;
       --homedir=*)             opt_homedir="${1#--homedir=}" ;;
-      --infra-token)           opt_infra_token="${2:?--infra-token requires a value}"; shift ;;
-      --infra-token=*)         opt_infra_token="${1#--infra-token=}" ;;
-      --infra-kubeconfig)      opt_infra_kubeconfig="${2:?--infra-kubeconfig requires a value}"; shift ;;
-      --infra-kubeconfig=*)    opt_infra_kubeconfig="${1#--infra-kubeconfig=}" ;;
+      --infra-token)           opt_infra_tokens+=("${2:?--infra-token requires a value}"); shift ;;
+      --infra-token=*)         opt_infra_tokens+=("${1#--infra-token=}") ;;
+      --infra-kubeconfig)      opt_infra_kubeconfigs+=("${2:?--infra-kubeconfig requires a value}"); shift ;;
+      --infra-kubeconfig=*)    opt_infra_kubeconfigs+=("${1#--infra-kubeconfig=}") ;;
       --infra-kube-context)    opt_infra_kube_context="${2:?--infra-kube-context requires a value}"; shift ;;
       --infra-kube-context=*)  opt_infra_kube_context="${1#--infra-kube-context=}" ;;
       --allow-exec-plugin)     opt_allow_exec_plugin="true" ;;
@@ -504,9 +511,9 @@ cmd_run() {
   for _i in "${!opt_repos[@]}"; do
     opt_repos[$_i]="${opt_repos[$_i]/#\~/${HOME}}"
   done
-  if [[ -n "${opt_infra_kubeconfig}" ]]; then
-    opt_infra_kubeconfig="${opt_infra_kubeconfig/#\~/${HOME}}"
-  fi
+  for _i in "${!opt_infra_kubeconfigs[@]}"; do
+    opt_infra_kubeconfigs[$_i]="${opt_infra_kubeconfigs[$_i]/#\~/${HOME}}"
+  done
 
   # --homedir DIR relocates the agent-home the pod mounts (issue #68): the
   # persistence dir for auth tokens + session state, mounted at ~/.claude (etc.).
@@ -675,23 +682,55 @@ cmd_run() {
     fi
   fi
 
+  # Resolve --infra-token entries into ENVNAME=PATH pairs. A bare PATH (no '=')
+  # injects as INFRA_TOKEN (back-compat); NAME=PATH injects as INFRA_TOKEN_<NAME>,
+  # so several credentials can ride into one session under distinct env names.
+  local -a opt_infra_token_pairs=()
+  local _tok _tname _tpath _envname _seen
+  local -a _seen_env=()
+  for _tok in "${opt_infra_tokens[@]+"${opt_infra_tokens[@]}"}"; do
+    if [[ "${_tok}" == *=* ]]; then
+      _tname="${_tok%%=*}"
+      _tpath="${_tok#*=}"
+      if [[ ! "${_tname}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        die "Invalid --infra-token name '${_tname}'. Use letters, digits and underscores; it must not start with a digit."
+      fi
+      _envname="INFRA_TOKEN_${_tname}"
+    else
+      _tpath="${_tok}"
+      _envname="INFRA_TOKEN"
+    fi
+    _tpath="${_tpath/#\~/${HOME}}"
+    for _seen in "${_seen_env[@]+"${_seen_env[@]}"}"; do
+      [[ "${_seen}" == "${_envname}" ]] \
+        && die "Duplicate infra token target '${_envname}'. Give each --infra-token a distinct NAME=PATH (a bare --infra-token maps to INFRA_TOKEN)."
+    done
+    _seen_env+=("${_envname}")
+    opt_infra_token_pairs+=("${_envname}=${_tpath}")
+  done
+
   if [[ "${opt_tier}" -eq 3 ]]; then
-    if [[ -z "${opt_infra_token}" ]] && [[ -z "${opt_infra_kubeconfig}" ]]; then
-      die "Tier 3 requires at least one of --infra-token <PATH> or --infra-kubeconfig <PATH>."
+    if [[ "${#opt_infra_token_pairs[@]}" -eq 0 ]] && [[ "${#opt_infra_kubeconfigs[@]}" -eq 0 ]]; then
+      die "Tier 3 requires at least one of --infra-token <[NAME=]PATH> or --infra-kubeconfig <PATH>."
     fi
-    if [[ -n "${opt_infra_token}" ]] && [[ ! -f "${opt_infra_token}" ]]; then
-      die "Infra token file not found: ${opt_infra_token}."
-    fi
-    if [[ -n "${opt_infra_kubeconfig}" ]] && [[ ! -f "${opt_infra_kubeconfig}" ]]; then
-      die "Kubeconfig file not found: ${opt_infra_kubeconfig}."
-    fi
+    for _tok in "${opt_infra_token_pairs[@]+"${opt_infra_token_pairs[@]}"}"; do
+      _tpath="${_tok#*=}"
+      [[ ! -f "${_tpath}" ]] && die "Infra token file not found: ${_tpath}."
+    done
+    local _kc
+    for _kc in "${opt_infra_kubeconfigs[@]+"${opt_infra_kubeconfigs[@]}"}"; do
+      [[ ! -f "${_kc}" ]] && die "Kubeconfig file not found: ${_kc}."
+    done
   else
-    if [[ -n "${opt_infra_kubeconfig}" ]]; then
+    if [[ "${#opt_infra_kubeconfigs[@]}" -gt 0 ]]; then
       die "--infra-kubeconfig is only valid for tier 3."
     fi
   fi
-  if [[ -n "${opt_infra_kube_context}" ]] && [[ -z "${opt_infra_kubeconfig}" ]]; then
+  if [[ -n "${opt_infra_kube_context}" ]] && [[ "${#opt_infra_kubeconfigs[@]}" -eq 0 ]]; then
     die "--infra-kube-context requires --infra-kubeconfig."
+  fi
+  if [[ -n "${opt_infra_kube_context}" ]] && [[ "${#opt_infra_kubeconfigs[@]}" -gt 1 ]]; then
+    die "--infra-kube-context is only valid with a single --infra-kubeconfig. With multiple kubeconfigs, each contributes its own current-context; pre-select the context in each file before mounting."
   fi
 
   # Merge persistent extras from ~/.sandbox/config.yaml and the
@@ -841,94 +880,136 @@ cmd_run() {
   fi
 
   ###########################################################################
-  # Step 1b: Process --infra-kubeconfig (minify, scan for exec plugins,
-  #          extract API server host/port). The minified file lives in a
-  #          0600 temp file that we delete on exit.
+  # Step 1b: Process --infra-kubeconfig(s). Each kubeconfig is minified to a
+  #          single self-contained context; its API server is extracted for
+  #          per-cluster egress (toCIDR + hostAlias + allowlist). One kubeconfig
+  #          mounts as-is; several are merged into one ~/.kube/config with
+  #          collision-free context names (merge_kubeconfigs). All parts and the
+  #          merged file live in a 0700 temp dir removed on exit.
   ###########################################################################
   local kubeconfig_minified=""
-  local kube_server_host=""
-  local kube_server_port=""
-  local kube_server_ip=""
-  if [[ -n "${opt_infra_kubeconfig}" ]]; then
-    kubeconfig_minified="$(mktemp -t sandbox-kubeconfig.XXXXXX)"
-    chmod 0600 "${kubeconfig_minified}"
+  local -a kube_api_cidrs=()     # resolved API server CIDRs (ip/32), one per cluster
+  local -a kube_api_ports=()     # API server ports, index-aligned with kube_api_cidrs
+  local -a kube_alias_ips=()     # hostAlias IPs, index-aligned with kube_api_cidrs
+  local -a kube_alias_hosts=()   # hostAlias hostnames, index-aligned
+  if [[ "${#opt_infra_kubeconfigs[@]}" -gt 0 ]]; then
+    local _kc_multi="false"
+    [[ "${#opt_infra_kubeconfigs[@]}" -gt 1 ]] && _kc_multi="true"
+
+    # One temp dir holds every per-cluster minified part plus the final merged
+    # file; a single trap reaps them all (the mounted Secret is created from the
+    # merged file before this process exits).
+    local _kc_tmpdir
+    _kc_tmpdir="$(mktemp -d -t sandbox-kubeconfigs.XXXXXX)"
+    chmod 0700 "${_kc_tmpdir}"
+    kubeconfig_minified="${_kc_tmpdir}/config"
     # shellcheck disable=SC2064
-    trap "rm -f '${kubeconfig_minified}'" EXIT
+    trap "rm -rf '${_kc_tmpdir}'" EXIT
 
-    echo "==> Minifying kubeconfig (context: ${opt_infra_kube_context:-<current-context>})..."
-    minify_kubeconfig "${opt_infra_kubeconfig}" "${opt_infra_kube_context}" \
-      > "${kubeconfig_minified}"
+    local -a _kc_parts=()
+    local _kc _idx=0 _part _ctx_arg exec_cmd server_url _khost _kport _kip
+    for _kc in "${opt_infra_kubeconfigs[@]}"; do
+      _part="${_kc_tmpdir}/part-${_idx}"
+      _kc_parts+=("${_part}")
 
-    local exec_cmd
-    exec_cmd="$(kubeconfig_exec_command "${kubeconfig_minified}")"
-    if [[ -n "${exec_cmd}" ]]; then
-      warn "kubeconfig uses exec credential plugin '${exec_cmd}'."
-      warn "  That binary is NOT present inside the sandbox image, and even if"
-      warn "  it were, its host-side config (e.g. ~/.tsh/, ~/.aws/) is not"
-      warn "  mounted. Every kubectl call inside the sandbox WILL FAIL at auth."
-      warn "  Bake a static kubeconfig before mounting — see examples/ in the"
-      warn "  repo, or docs/how-to/tier3-infra-credentials.md."
-      if [[ "${opt_allow_exec_plugin}" == "true" ]]; then
-        warn "  --allow-exec-plugin set; continuing anyway."
-      elif [[ "${opt_dry_run}" == "true" ]]; then
-        : # dry-run never launches; no need to prompt
-      elif [[ ! -t 0 ]]; then
-        die "stdin is not a TTY; refusing to launch with a broken kubeconfig. Pass --allow-exec-plugin to override."
+      # A named context applies only in the single-kubeconfig case (guarded at
+      # parse time). With several kubeconfigs each contributes its current-context.
+      _ctx_arg=""
+      [[ "${_kc_multi}" == "false" ]] && _ctx_arg="${opt_infra_kube_context}"
+
+      if [[ "${_kc_multi}" == "true" ]]; then
+        echo "==> Minifying kubeconfig $((_idx + 1))/${#opt_infra_kubeconfigs[@]}: ${_kc} (current-context)..."
       else
-        local reply=""
-        printf "  Continue anyway? [y/N] " >&2
-        read -r reply
-        case "${reply}" in
-          y|Y|yes|YES) ;;
-          *) die "Aborted. Bake static credentials and retry, or re-run with --allow-exec-plugin." ;;
-        esac
+        echo "==> Minifying kubeconfig (context: ${opt_infra_kube_context:-<current-context>})..."
       fi
-    fi
+      minify_kubeconfig "${_kc}" "${_ctx_arg}" > "${_part}"
 
-    local server_url
-    server_url="$(kubeconfig_server_url "${kubeconfig_minified}")"
-    if [[ -z "${server_url}" ]]; then
-      die "Could not read cluster.server from minified kubeconfig."
-    fi
-    kube_server_host="$(url_host "${server_url}")"
-    kube_server_port="$(url_port "${server_url}")"
-    echo "  Cluster API: ${server_url}"
-    echo "  Auto-allowlisting: ${kube_server_host}:${kube_server_port:-443}"
+      # Exec credential plugins can't run inside the sandbox (the binary and its
+      # host-side config are absent). Single kubeconfig: warn + prompt/override
+      # as before. Multiple: refuse — merge_kubeconfigs rebuilds credentials and
+      # cannot carry an exec block, so silently dropping it would be worse than a
+      # clear error.
+      exec_cmd="$(kubeconfig_exec_command "${_part}")"
+      if [[ -n "${exec_cmd}" ]]; then
+        if [[ "${_kc_multi}" == "true" ]]; then
+          die "kubeconfig '${_kc}' uses an exec credential plugin ('${exec_cmd}'), which cannot be merged with other kubeconfigs. Pass it as the only --infra-kubeconfig, or bake static credentials first (docs/how-to/tier3-infra-credentials.md)."
+        fi
+        warn "kubeconfig uses exec credential plugin '${exec_cmd}'."
+        warn "  That binary is NOT present inside the sandbox image, and even if"
+        warn "  it were, its host-side config (e.g. ~/.tsh/, ~/.aws/) is not"
+        warn "  mounted. Every kubectl call inside the sandbox WILL FAIL at auth."
+        warn "  Bake a static kubeconfig before mounting — see examples/ in the"
+        warn "  repo, or docs/how-to/tier3-infra-credentials.md."
+        if [[ "${opt_allow_exec_plugin}" == "true" ]]; then
+          warn "  --allow-exec-plugin set; continuing anyway."
+        elif [[ "${opt_dry_run}" == "true" ]]; then
+          : # dry-run never launches; no need to prompt
+        elif [[ ! -t 0 ]]; then
+          die "stdin is not a TTY; refusing to launch with a broken kubeconfig. Pass --allow-exec-plugin to override."
+        else
+          local reply=""
+          printf "  Continue anyway? [y/N] " >&2
+          read -r reply
+          case "${reply}" in
+            y|Y|yes|YES) ;;
+            *) die "Aborted. Bake static credentials and retry, or re-run with --allow-exec-plugin." ;;
+          esac
+        fi
+      fi
 
-    # Record the API server hostname in the session allowlist — audit
-    # (session.json) and a toFQDNs fallback. Primary enforcement is the
-    # toCIDR rule keyed on kube_server_ip (Step 7).
-    opt_allow_domains+=("${kube_server_host}")
+      server_url="$(kubeconfig_server_url "${_part}")"
+      if [[ -z "${server_url}" ]]; then
+        die "Could not read cluster.server from minified kubeconfig '${_kc}'."
+      fi
+      _khost="$(url_host "${server_url}")"
+      _kport="$(url_port "${server_url}")"
+      echo "  Cluster API: ${server_url}"
+      echo "  Auto-allowlisting: ${_khost}:${_kport:-443}"
 
-    # Resolve the API server hostname on the host and pin it as a pod
-    # hostAlias. This sidesteps environments where the pod's CoreDNS can't
-    # reach the resolver that knows the name (corporate VPN-only DNS, split-
-    # horizon DNS, per-link systemd-resolved entries, etc.). Prefer IPv4.
-    if [[ "${kube_server_host}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      # Already a literal IP — no host-side lookup needed.
-      kube_server_ip="${kube_server_host}"
+      # Record each API server hostname in the session allowlist — audit
+      # (session.json) and a toFQDNs fallback. Primary enforcement is the
+      # per-cluster toCIDR rule keyed on the resolved IP (Step 7).
+      opt_allow_domains+=("${_khost}")
+
+      # Resolve the API server on the host and pin it as a pod hostAlias. This
+      # sidesteps environments where the pod's CoreDNS can't reach the resolver
+      # that knows the name (VPN-only DNS, split-horizon, per-link resolved
+      # entries, etc.). Prefer IPv4.
+      if [[ "${_khost}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        _kip="${_khost}"
+      else
+        _kip="$(getent ahostsv4 "${_khost}" 2>/dev/null | awk 'NR==1 {print $1}')"
+      fi
+
+      # Close the auto-allowlist bypass: each API host was appended to
+      # opt_allow_domains AFTER the block-validation loop ran, so validate it
+      # (and the resolved IP) now — before any policy/pod/Secret is created — so
+      # a hostname that resolves into a blocked CIDR is caught even when the name
+      # itself matches no blocked_domains pattern.
+      check_egress_target_not_blocked "${_khost}"
+      if [[ -n "${_kip}" ]]; then
+        check_ip_not_in_blocked_cidrs "${_kip}"
+        echo "  Pinning hostAlias: ${_khost} → ${_kip}"
+        kube_api_cidrs+=("${_kip}/32")
+        kube_api_ports+=("${_kport:-443}")
+        kube_alias_ips+=("${_kip}")
+        kube_alias_hosts+=("${_khost}")
+      else
+        warn "Could not resolve ${_khost} on host; the pod will rely on cluster"
+        warn "  DNS and this cluster's toFQDNs allowlist entry. If the pod fails"
+        warn "  with 'no such host', resolve it yourself (DNS or a hosts entry)."
+      fi
+
+      _idx=$((_idx + 1))
+    done
+
+    if [[ "${_kc_multi}" == "true" ]]; then
+      echo "==> Merging ${#opt_infra_kubeconfigs[@]} kubeconfigs into one (contexts preserved)..."
+      merge_kubeconfigs "${kubeconfig_minified}" "${_kc_parts[@]}"
     else
-      kube_server_ip="$(getent ahostsv4 "${kube_server_host}" 2>/dev/null \
-        | awk 'NR==1 {print $1}')"
-      if [[ -z "${kube_server_ip}" ]]; then
-        warn "Could not resolve ${kube_server_host} on host; pod will rely on"
-        warn "  cluster DNS. If the pod fails with 'no such host', resolve the"
-        warn "  hostname yourself and add it via your DNS or a hosts entry."
-      else
-        echo "  Pinning hostAlias: ${kube_server_host} → ${kube_server_ip}"
-      fi
+      cp "${_kc_parts[0]}" "${kubeconfig_minified}"
     fi
-
-    # Close the auto-allowlist bypass: the API host was appended to
-    # opt_allow_domains AFTER the block-validation loop above ran, so it would
-    # otherwise never be checked. Validate it now — and the resolved IP too, so
-    # a production hostname that resolves into a blocked CIDR is caught even
-    # though the name itself matches no blocked_domains pattern. Still fails
-    # fast, before any policy/pod/Secret is created (Step 6+).
-    check_egress_target_not_blocked "${kube_server_host}"
-    if [[ -n "${kube_server_ip}" ]]; then
-      check_ip_not_in_blocked_cidrs "${kube_server_ip}"
-    fi
+    chmod 0600 "${kubeconfig_minified}"
   fi
 
   ###########################################################################
@@ -1076,14 +1157,16 @@ cmd_run() {
     repos_json="$(printf '%s\n' "${opt_repos[@]}" | jq -R . | jq -s -c .)"
   fi
 
-  # Snapshot the kube API server for 'sandbox allow' to use when it
-  # rebuilds the policy later. Empty for Tier 1/2.
-  if [[ -n "${kube_server_ip}" ]]; then
-    SESSION_KUBE_API_CIDR="${kube_server_ip}/32"
+  # Snapshot the kube API server(s) for 'sandbox allow'/resume to reuse when
+  # they rebuild the policy later. Comma-joined, index-aligned lists (one entry
+  # per resolved cluster); empty for Tier 1/2 and for unresolved API hosts.
+  if [[ "${#kube_api_cidrs[@]}" -gt 0 ]]; then
+    SESSION_KUBE_API_CIDR="$(IFS=,; printf '%s' "${kube_api_cidrs[*]}")"
+    SESSION_KUBE_API_PORT="$(IFS=,; printf '%s' "${kube_api_ports[*]}")"
   else
     SESSION_KUBE_API_CIDR=""
+    SESSION_KUBE_API_PORT=""
   fi
-  SESSION_KUBE_API_PORT="${kube_server_port:-}"
   export SESSION_KUBE_API_CIDR SESSION_KUBE_API_PORT
 
   audit_write_session_json \
@@ -1139,15 +1222,17 @@ cmd_run() {
   # Step 7: Build CiliumNetworkPolicy
   ###########################################################################
   echo "==> Building network policy..."
-  local kube_api_cidr=""
-  [[ -n "${kube_server_ip}" ]] && kube_api_cidr="${kube_server_ip}/32"
+  # Comma-joined, index-aligned CIDR/port lists (one entry per resolved cluster,
+  # empty when none); build_cilium_policy emits one toCIDR rule per pair.
+  local kube_api_cidr="${SESSION_KUBE_API_CIDR}"
+  local kube_api_port="${SESSION_KUBE_API_PORT}"
   local policy_yaml
   policy_yaml="$(build_cilium_policy \
     "${session_id}" \
     "${opt_agent}" \
     "${opt_tier}" \
     "${kube_api_cidr}" \
-    "${kube_server_port:-443}" \
+    "${kube_api_port}" \
     "${opt_infra_endpoints[@]+"${opt_infra_endpoints[@]}"}" \
     "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}")"
 
@@ -1157,7 +1242,15 @@ cmd_run() {
   echo "==> Building pod manifest..."
   local pod_yaml
   local infra_kubeconfig_flag=""
-  [[ -n "${opt_infra_kubeconfig}" ]] && infra_kubeconfig_flag="1"
+  [[ "${#opt_infra_kubeconfigs[@]}" -gt 0 ]] && infra_kubeconfig_flag="1"
+  local infra_token_present=""
+  [[ "${#opt_infra_token_pairs[@]}" -gt 0 ]] && infra_token_present="1"
+  # hostAliases: comma-joined, index-aligned IP/host lists (empty when none).
+  local kube_alias_ip_list="" kube_alias_host_list=""
+  if [[ "${#kube_alias_ips[@]}" -gt 0 ]]; then
+    kube_alias_ip_list="$(IFS=,; printf '%s' "${kube_alias_ips[*]}")"
+    kube_alias_host_list="$(IFS=,; printf '%s' "${kube_alias_hosts[*]}")"
+  fi
   pod_yaml="$(build_pod_manifest \
     "${session_id}" \
     "${opt_agent}" \
@@ -1165,11 +1258,11 @@ cmd_run() {
     "${container_image}" \
     "${opt_name}" \
     "${current_user}" \
-    "${opt_infra_token}" \
+    "${infra_token_present}" \
     "${pod_name}" \
     "${infra_kubeconfig_flag}" \
-    "${kube_server_ip}" \
-    "${kube_server_host}" \
+    "${kube_alias_ip_list}" \
+    "${kube_alias_host_list}" \
     "${opt_repos[@]+"${opt_repos[@]}"}")"
 
   ###########################################################################
@@ -1203,7 +1296,7 @@ cmd_run() {
       echo "==> DRY RUN — session policy WITH dependency reach (re-applied at launch):"
       SESSION_DEP_ENDPOINTS=("${SESSION_DEP_ENDPOINTS_PENDING[@]}")
       build_cilium_policy "${session_id}" "${opt_agent}" "${opt_tier}" \
-        "${kube_api_cidr}" "${kube_server_port:-443}" \
+        "${kube_api_cidr}" "${kube_api_port}" \
         "${opt_infra_endpoints[@]+"${opt_infra_endpoints[@]}"}" \
         "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}"
       SESSION_DEP_ENDPOINTS=()
@@ -1218,12 +1311,14 @@ cmd_run() {
     return 0
   fi
 
-  # Handle Tier 3 infra token secret (optional now that --infra-kubeconfig exists)
+  # Handle Tier 3 infra token secret(s) (optional now that --infra-kubeconfig
+  # exists). Each resolved ENVNAME=PATH pair becomes a key in the one Secret,
+  # injected via envFrom (so INFRA_TOKEN and any INFRA_TOKEN_<NAME> all appear).
   local infra_secret_name=""
-  if [[ "${opt_tier}" -eq 3 ]] && [[ -n "${opt_infra_token}" ]]; then
+  if [[ "${opt_tier}" -eq 3 ]] && [[ "${#opt_infra_token_pairs[@]}" -gt 0 ]]; then
     infra_secret_name="infra-token-${session_id}"
-    echo "==> Creating infra token secret: ${infra_secret_name}..."
-    create_infra_token_secret "${infra_secret_name}" "${opt_infra_token}"
+    echo "==> Creating infra token secret: ${infra_secret_name} (${#opt_infra_token_pairs[@]} token(s))..."
+    create_infra_token_secret "${infra_secret_name}" "${opt_infra_token_pairs[@]}"
   fi
 
   # Profile-declared secrets: bundle the host-side values into one
@@ -1235,8 +1330,8 @@ cmd_run() {
     create_session_secrets "${session_id}" "${SESSION_PROFILE_SECRETS_LIST[@]}"
   fi
 
-  # Handle Tier 3 kubeconfig secret
-  if [[ -n "${opt_infra_kubeconfig}" ]]; then
+  # Handle Tier 3 kubeconfig secret (single merged file, one or many sources)
+  if [[ "${#opt_infra_kubeconfigs[@]}" -gt 0 ]]; then
     local kc_secret_name="kubeconfig-${session_id}"
     echo "==> Creating kubeconfig secret: ${kc_secret_name}..."
     create_kubeconfig_secret "${kc_secret_name}" "${kubeconfig_minified}"
@@ -1316,7 +1411,7 @@ cmd_run() {
       "${opt_agent}" \
       "${opt_tier}" \
       "${kube_api_cidr}" \
-      "${kube_server_port:-443}" \
+      "${kube_api_port}" \
       "${opt_infra_endpoints[@]+"${opt_infra_endpoints[@]}"}" \
       "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}")"
     SESSION_DEP_ENDPOINTS=()

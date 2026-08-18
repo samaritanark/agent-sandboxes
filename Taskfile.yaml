@@ -45,6 +45,7 @@ tasks:
       - bash tests/test-catalogue.sh
       - bash tests/test-dependency-manifest.sh
       - bash tests/test-policy-deps.sh
+      - bash tests/test-infra-multi.sh
       - bash tests/test-infra-versions.sh
       - bash tests/test-vm-sizing.sh
       - bash tests/test-upgrade.sh

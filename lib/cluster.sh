@@ -153,17 +153,27 @@ assert_session_identity_distinct() {
   done
 }
 
-# create_infra_token_secret — create K8s Secret for Tier 3 infra token
+# create_infra_token_secret — create K8s Secret for Tier 3 infra token(s).
+# Signature: create_infra_token_secret <secret_name> <ENVNAME=PATH> [ENVNAME=PATH ...]
+# Each pair becomes a literal key ENVNAME in the one Secret; the pod pulls them
+# all in via envFrom (lib/manifest.sh). Command substitution strips trailing
+# newlines from each token file, matching the historical single-token behavior.
 create_infra_token_secret() {
   local secret_name="$1"
-  local token_file="$2"
+  shift
 
-  local token_value
-  token_value="$(cat "${token_file}")"
+  local -a lit_args=()
+  local pair envname path token_value
+  for pair in "$@"; do
+    envname="${pair%%=*}"
+    path="${pair#*=}"
+    token_value="$(cat "${path}")"
+    lit_args+=("--from-literal=${envname}=${token_value}")
+  done
 
   kubectl create secret generic "${secret_name}" \
     --namespace "${SANDBOX_NAMESPACE}" \
-    --from-literal="INFRA_TOKEN=${token_value}" \
+    "${lit_args[@]}" \
     --dry-run=client -o yaml | kubectl apply -f -
 
   echo "  Created secret: ${secret_name}"
@@ -194,6 +204,113 @@ minify_kubeconfig() {
     exit 1
   fi
   rm -f "${errfile}"
+}
+
+# merge_kubeconfigs — combine several already-minified, single-context
+# kubeconfigs into one self-contained file.
+# Signature: merge_kubeconfigs <dest> <part1> <part2> [part3 ...]
+#
+# Each part is expected to hold exactly one cluster/user/context (the shape
+# minify_kubeconfig produces). We rebuild each into <dest> under index-based
+# cluster/user names (sandbox-cluster-N / sandbox-user-N) so two parts can never
+# collide on those internal names — kubectl's native merge is first-wins by
+# name, which would otherwise silently drop a second cluster called "kubernetes".
+# The user-facing CONTEXT name is preserved (that is what 'kubectl config
+# use-context' selects), only suffixed -2, -3, ... on collision. The first
+# part's context becomes current-context.
+#
+# Credentials are carried via 'kubectl config set ... --set-raw-bytes=false',
+# which round-trips the base64 blob through kubectl itself — so no host 'base64'
+# binary is needed (portable to the macOS host). Static auth only: token,
+# client cert/key, or basic auth. Exec plugins are rejected upstream before a
+# multi-kubeconfig launch ever reaches here.
+merge_kubeconfigs() {
+  local dest="$1"
+  shift
+
+  : > "${dest}"
+  chmod 0600 "${dest}"
+
+  local -a used_ctx=()
+  local part idx=0 first_ctx=""
+  local ctx newctx cname uname_new seen collide n
+  local server ca_data insecure token cc_data ck_data username password
+  for part in "$@"; do
+    ctx="$(kubectl --kubeconfig="${part}" config current-context 2>/dev/null)"
+    [[ -z "${ctx}" ]] && ctx="context-${idx}"
+
+    # Preserve the context name; suffix only to dodge a collision with one
+    # already taken by an earlier part.
+    newctx="${ctx}"
+    n=2
+    while :; do
+      collide="false"
+      for seen in "${used_ctx[@]+"${used_ctx[@]}"}"; do
+        [[ "${seen}" == "${newctx}" ]] && collide="true" && break
+      done
+      [[ "${collide}" == "false" ]] && break
+      newctx="${ctx}-${n}"
+      n=$((n + 1))
+    done
+    used_ctx+=("${newctx}")
+    [[ -z "${first_ctx}" ]] && first_ctx="${newctx}"
+
+    cname="sandbox-cluster-${idx}"
+    uname_new="sandbox-user-${idx}"
+
+    # --- cluster ---
+    server="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null)"
+    ca_data="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' 2>/dev/null)"
+    insecure="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.clusters[0].cluster.insecure-skip-tls-verify}' 2>/dev/null)"
+
+    local -a clu_args=("--kubeconfig=${dest}" config set-cluster "${cname}" "--server=${server}")
+    if [[ -z "${ca_data}" ]] && [[ "${insecure}" == "true" ]]; then
+      clu_args+=("--insecure-skip-tls-verify=true")
+    fi
+    kubectl "${clu_args[@]}" >/dev/null
+    if [[ -n "${ca_data}" ]]; then
+      kubectl --kubeconfig="${dest}" config set \
+        "clusters.${cname}.certificate-authority-data" "${ca_data}" --set-raw-bytes=false >/dev/null
+    fi
+
+    # --- user ---
+    token="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.users[0].user.token}' 2>/dev/null)"
+    cc_data="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.users[0].user.client-certificate-data}' 2>/dev/null)"
+    ck_data="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.users[0].user.client-key-data}' 2>/dev/null)"
+    username="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.users[0].user.username}' 2>/dev/null)"
+    password="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.users[0].user.password}' 2>/dev/null)"
+
+    local have_cred="false"
+    [[ -n "${token}" ]] && have_cred="true"
+    [[ -n "${cc_data}" ]] && [[ -n "${ck_data}" ]] && have_cred="true"
+    [[ -n "${username}" ]] && have_cred="true"
+    if [[ "${have_cred}" == "false" ]]; then
+      echo "ERROR: kubeconfig for context '${ctx}' has no static credentials this" >&2
+      echo "  tool can merge (token, client cert+key, or basic auth). Bake static" >&2
+      echo "  credentials, or pass it as the only --infra-kubeconfig." >&2
+      exit 1
+    fi
+
+    local -a cred_args=("--kubeconfig=${dest}" config set-credentials "${uname_new}")
+    [[ -n "${token}" ]] && cred_args+=("--token=${token}")
+    [[ -n "${username}" ]] && cred_args+=("--username=${username}")
+    [[ -n "${username}" ]] && [[ -n "${password}" ]] && cred_args+=("--password=${password}")
+    kubectl "${cred_args[@]}" >/dev/null
+    if [[ -n "${cc_data}" ]] && [[ -n "${ck_data}" ]]; then
+      kubectl --kubeconfig="${dest}" config set \
+        "users.${uname_new}.client-certificate-data" "${cc_data}" --set-raw-bytes=false >/dev/null
+      kubectl --kubeconfig="${dest}" config set \
+        "users.${uname_new}.client-key-data" "${ck_data}" --set-raw-bytes=false >/dev/null
+    fi
+
+    # --- context ---
+    kubectl --kubeconfig="${dest}" config set-context "${newctx}" \
+      --cluster="${cname}" --user="${uname_new}" >/dev/null
+
+    idx=$((idx + 1))
+  done
+
+  kubectl --kubeconfig="${dest}" config use-context "${first_ctx}" >/dev/null
 }
 
 # kubeconfig_server_url — print the server: URL from a (minified) kubeconfig
