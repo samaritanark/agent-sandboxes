@@ -721,6 +721,10 @@ build_images() {
   for tag in "${image_tags[@]}"; do
     echo "  Importing ${tag}..."
     "${container_cli}" save "${tag}" | sudo "${k3s}" ctr images import -
+    # Pin against kubelet image GC: these Never-policy images have no registry
+    # to re-pull from, so an eviction would strand the next launch. See
+    # pin_k3s_image in lib/platform.sh.
+    pin_k3s_image "${tag}"
     echo "  Imported ${tag}"
   done
   echo "  All images imported into k3s containerd."
@@ -782,6 +786,15 @@ build_images_macos() {
     run_with_retries 3 5 "build of ${tag}" -- \
       "${nerdctl[@]}" build \
         -t "${tag}" -f "${docker_dir}/${dockerfile}" "$@" "${docker_dir}"
+    # Pin against kubelet image GC inside the VM — same rationale as the Linux
+    # path (pin_k3s_image in lib/platform.sh), but done here because the build
+    # lands directly in the VM's containerd. Use 'k3s ctr' (nerdctl has no image
+    # label subcommand); the VM's Ubuntu sudo secure_path includes /usr/local/bin.
+    # Best-effort: never fail the build.
+    limactl shell "${LIMA_VM_NAME:-sandbox-vm}" -- \
+      sudo k3s ctr -n k8s.io images label "${tag}" \
+      io.cri-containerd.pinned=pinned >/dev/null 2>&1 \
+      || echo "  WARN: could not pin ${tag} against kubelet image GC" >&2
     echo "  Built ${tag}"
   }
 

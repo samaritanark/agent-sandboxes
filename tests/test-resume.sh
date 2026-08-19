@@ -142,12 +142,51 @@ test_recreate_reruns_gates_before_apply() {
     || fail "apply ran despite a gate refusal — resume would relaunch an ungated workspace"
 }
 
+# A pod that never becomes Ready must be torn down, not left orphaned in
+# Pending/Running/Error for the operator to clean up by hand. recreate_session_pod
+# runs wait_for_pod in a subshell and calls cmd_stop on failure.
+test_recreate_tears_down_on_pod_failure() {
+  info "Testing a recreated pod that fails to become Ready is torn down..."
+  _set_platform linux
+  local stoplog="${TEST_DIR}/stoplog"
+  : > "${stoplog}"
+
+  SANDBOX_LOGS_DIR="${TEST_DIR}/logs"
+  local sdir="${SANDBOX_LOGS_DIR}/ses-fail-test"
+  mkdir -p "${sdir}" "${TEST_DIR}/repoB"
+  printf '{"agent":"claude","tier":2,"name":"t","user":"u","repos":["%s"],"allowed_domains":[],"kube_api_cidr":"","kube_api_port":""}\n' \
+    "${TEST_DIR}/repoB" > "${sdir}/session.json"
+
+  # Stub the build/cluster steps; gates all pass so the path reaches the wait.
+  prepare_agent_home() { :; }
+  build_cilium_policy() { echo policy; }
+  build_pod_manifest() { echo pod; }
+  resolve_pod_name() { echo sandbox-x; }
+  resolve_vetting_posture() { echo off; }
+  resolve_inference_endpoint() { echo ""; }
+  kubectl() { :; }
+  workspace_prescan()   { :; }
+  check_masking_paths() { :; }
+  vetting_gate_repos()  { :; }
+  secret_gate_repos()   { :; }
+  # The pod never becomes Ready: wait_for_pod exits non-zero (as the real one
+  # does via exit 1). cmd_stop records that teardown ran.
+  wait_for_pod() { return 1; }
+  cmd_stop() { echo "stopped $1" >> "${stoplog}"; }
+
+  ( recreate_session_pod "ses-fail-test" ) >/dev/null 2>&1 || true
+  grep -q "stopped ses-fail-test" "${stoplog}" \
+    && pass "failed pod triggers cmd_stop teardown" \
+    || fail "pod-start failure did not tear down the session — pod would be orphaned"
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   test_blocker_allows_simple_sessions
   test_blocker_guides_the_rest
   test_guide_command_reconstructs_run
   test_recreate_reruns_gates_before_apply
+  test_recreate_tears_down_on_pod_failure
   echo "All ${TEST_NAME} tests passed."
 }
 

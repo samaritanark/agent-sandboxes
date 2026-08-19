@@ -1268,7 +1268,18 @@ cmd_run() {
   # Step 10: Wait for pod Running
   ###########################################################################
   echo "==> Waiting for pod to become Ready..."
-  wait_for_pod "${pod_name}"
+  # Run in a subshell so wait_for_pod's exit-on-failure is caught here and the
+  # partial session is torn down, rather than aborting the CLI and orphaning the
+  # pod/policy/secrets created above. A pod that fails to start (ErrImageNeverPull
+  # after an image-GC eviction, crash-loop, timeout) otherwise lingers in
+  # Pending/Running/Error and forces a later manual 'sandbox stop'. cmd_stop
+  # deletes the pod regardless of phase. Mirrors the dependency-failure handling
+  # below and in lib/dependency.sh.
+  if ! ( wait_for_pod "${pod_name}" ); then
+    echo "==> Pod failed to become Ready; tearing down session ${session_id}." >&2
+    cmd_stop "${session_id}" >/dev/null 2>&1 || true
+    die "Session pod ${pod_name} failed to start; torn down. See the describe output above."
+  fi
 
   ###########################################################################
   # Step 10b: Bring up profile-declared dependencies (Phase 5)
@@ -1758,7 +1769,13 @@ recreate_session_pod() {
   echo "==> Applying pod..."
   echo "${pod_yaml}" | kubectl apply -f - >/dev/null
   echo "==> Waiting for pod to become Ready..."
-  wait_for_pod "${pod_name}"
+  # Subshell + teardown on failure: a recreated pod that fails to start must not
+  # be left orphaned in Pending/Running/Error (see the cmd_run launch path).
+  if ! ( wait_for_pod "${pod_name}" ); then
+    echo "==> Recreated pod failed to become Ready; tearing down ${session_id}." >&2
+    cmd_stop "${session_id}" >/dev/null 2>&1 || true
+    die "Session pod ${pod_name} failed to start; torn down. See the describe output above."
+  fi
 }
 
 ###############################################################################
@@ -2266,6 +2283,9 @@ cmd_rebuild() {
     local k3s
     k3s="$(k3s_bin)"
     "${container_cli}" save "${tag}" | sudo "${k3s}" ctr images import -
+    # Re-pin against kubelet image GC: a fresh import resets the label, and these
+    # Never-policy images cannot be re-pulled once evicted. See lib/platform.sh.
+    pin_k3s_image "${tag}"
   }
 
   # _record_build <tag> — append version info to image-builds.log
