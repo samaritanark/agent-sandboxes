@@ -398,6 +398,15 @@ install_cilium_helm() {
   # packet in transit (after gVisor builds it, before host routing). Both
   # paths produce identical results for runc pods; gVisor pods only work
   # via the TC path.
+  #
+  # hubble.relay.resources.requests: give hubble-relay a memory request so it
+  # runs Burstable rather than BestEffort. hubble-relay aggregates the egress
+  # flow log that is this platform's network audit channel; left BestEffort it
+  # is the kubelet's first OOM/eviction victim under memory pressure, which lets
+  # an in-sandbox agent silence its own egress audit by driving the node toward
+  # OOM. A modest request (well inside the "hubble" share of HOST_RESERVE in
+  # lib/resources.sh) makes it no longer the first victim on either the memory
+  # or the disk axis. See PR #79 finding 4 / issue #80 and PR #92 finding F3.
   helm --kubeconfig "${SANDBOX_KUBECONFIG}" upgrade --install cilium cilium/cilium \
     "${cilium_version_args[@]+"${cilium_version_args[@]}"}" \
     --namespace kube-system \
@@ -405,6 +414,9 @@ install_cilium_helm() {
     --set hubble.relay.enabled=true \
     --set hubble.enabled=true \
     --set hubble.metrics.enableOpenMetrics=false \
+    --set hubble.relay.resources.requests.cpu="${SANDBOX_HUBBLE_RELAY_CPU_REQUEST:-50m}" \
+    --set hubble.relay.resources.requests.memory="${SANDBOX_HUBBLE_RELAY_MEM_REQUEST:-128Mi}" \
+    --set hubble.relay.resources.limits.memory="${SANDBOX_HUBBLE_RELAY_MEM_LIMIT:-256Mi}" \
     --set kubeProxyReplacement=true \
     --set k8sServiceHost="127.0.0.1" \
     --set k8sServicePort="${SANDBOX_APISERVER_PORT}" \

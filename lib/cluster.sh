@@ -250,6 +250,48 @@ create_kubeconfig_secret() {
   echo "  Created secret: ${secret_name}"
 }
 
+# adopt_session_secrets — set an ownerReference on each of the session's
+# credential Secrets so Kubernetes garbage-collects them whenever the session
+# pod is deleted BY ANY PATH, including a kubelet eviction that bypasses
+# cmd_stop entirely (PR #92 finding F3). Without this, a disk- or memory-
+# pressure eviction of the pod leaves infra-token-*/kubeconfig-* live in the
+# namespace with no revocation and no teardown — an anti-forensics primitive an
+# in-sandbox agent can trigger by filling its own ephemeral storage.
+#
+# The Secrets are created before the pod exists (they must be mountable at pod
+# creation), so the owner UID is unknown at creation time; we patch it in here
+# once the pod has been applied and has a UID — the same create-then-adopt
+# pattern the Phase-5 dependency objects use (lib/dependency.sh). cmd_stop still
+# deletes them explicitly, so this is a backstop for the paths cmd_stop never
+# runs on, not a replacement for it. Owner and dependents share a namespace, as
+# cross-namespace ownerReferences are disallowed. Best-effort per Secret: a
+# patch failure only reverts that Secret to the label/explicit-delete path.
+adopt_session_secrets() {
+  local session_id="$1"
+  local owner_name="$2"
+  local owner_uid="$3"
+  [[ -z "${owner_name}" || -z "${owner_uid}" ]] && return 0
+
+  local patch
+  patch="$(cat <<EOF
+{"metadata":{"ownerReferences":[{"apiVersion":"v1","kind":"Pod","name":"${owner_name}","uid":"${owner_uid}","controller":false,"blockOwnerDeletion":false}]}}
+EOF
+)"
+
+  local secret
+  for secret in \
+    "infra-token-${session_id}" \
+    "kubeconfig-${session_id}" \
+    "opencode-apikey-${session_id}" \
+    "$(session_secrets_name "${session_id}")"; do
+    kubectl get secret -n "${SANDBOX_NAMESPACE}" "${secret}" &>/dev/null || continue
+    kubectl patch secret -n "${SANDBOX_NAMESPACE}" "${secret}" \
+      --type=merge -p "${patch}" >/dev/null 2>&1 \
+      || warn "Could not set pod ownerReference on secret ${secret}; it will be" \
+              "reaped by cmd_stop but not by GC if the pod is evicted."
+  done
+}
+
 # delete_kubeconfig_secret — remove kubeconfig secret after session
 delete_kubeconfig_secret() {
   local session_id="$1"

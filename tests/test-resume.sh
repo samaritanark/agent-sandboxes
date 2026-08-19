@@ -223,6 +223,49 @@ test_teardown_partial_session_integrity() {
     || fail "lingering pod produced no warning (F2 regression)"
 }
 
+# adopt_session_secrets must ownerReference the pod onto every session Secret
+# that exists (so a kubelet eviction, which bypasses cmd_stop, still gets them
+# GC'd — PR #92 finding F3), skip the ones that don't, and no-op entirely when
+# the pod UID is unknown.
+test_adopt_session_secrets_ownerrefs() {
+  info "Testing adopt_session_secrets patches only present secrets with the pod ownerReference..."
+  SANDBOX_NAMESPACE="sandbox"
+  local patchlog="${TEST_DIR}/patchlog"
+  : > "${patchlog}"
+
+  # Two of the four candidate secrets exist for this session.
+  local present=" infra-token-sess1 opencode-apikey-sess1 "
+  kubectl() {
+    case "$1" in
+      get)   case "${present}" in *" $5 "*) return 0 ;; *) return 1 ;; esac ;;
+      patch) printf '%s|%s\n' "$5" "$8" >> "${patchlog}" ;;
+      *)     return 0 ;;
+    esac
+  }
+
+  adopt_session_secrets "sess1" "sandbox-sess1" "uid-123"
+
+  grep -q '^infra-token-sess1|' "${patchlog}" \
+    && pass "present secret infra-token is adopted" \
+    || fail "infra-token-sess1 was not patched"
+  grep -q '^opencode-apikey-sess1|' "${patchlog}" \
+    && pass "present secret opencode-apikey is adopted" \
+    || fail "opencode-apikey-sess1 was not patched"
+  grep -q 'kubeconfig-sess1\|session-secrets-sess1' "${patchlog}" \
+    && fail "an absent secret was patched" \
+    || pass "absent secrets are skipped"
+  grep -q 'uid-123' "${patchlog}" && grep -q 'sandbox-sess1' "${patchlog}" \
+    && pass "ownerReference carries the pod name and uid" \
+    || fail "patch payload missing pod name/uid"
+
+  # No UID (pod not yet created / lookup failed): adopt must not patch anything.
+  : > "${patchlog}"
+  adopt_session_secrets "sess1" "sandbox-sess1" ""
+  [[ ! -s "${patchlog}" ]] \
+    && pass "empty pod uid is a no-op" \
+    || fail "adopt patched with an unknown owner uid"
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   test_blocker_allows_simple_sessions
@@ -231,6 +274,7 @@ main() {
   test_recreate_reruns_gates_before_apply
   test_recreate_tears_down_on_pod_failure
   test_teardown_partial_session_integrity
+  test_adopt_session_secrets_ownerrefs
   echo "All ${TEST_NAME} tests passed."
 }
 

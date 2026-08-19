@@ -201,10 +201,29 @@ _k3s_install_exec() {
     echo "  CoreDNS will forward to ${SANDBOX_DNS} (--resolv-conf ${resolv_conf})" >&2
   fi
 
+  # Graceful disk-pressure eviction (PR #92 finding F3). The sandbox agent
+  # images are pinned and so excluded from kubelet image GC; once the node
+  # crosses a disk-pressure threshold the kubelet can no longer reclaim an image
+  # and must evict a pod instead. The highest-ranked victim is a running sandbox
+  # pod (large ephemeral limit, agent-controlled fill rate), and an eviction
+  # bypasses cmd_stop entirely. The kubelet's default HARD eviction stays as the
+  # fast-filler backstop; these SOFT thresholds trip a little earlier and, unlike
+  # a hard eviction, grant a termination grace window (eviction-max-pod-grace-
+  # period) so the pod's terminationGracePeriodSeconds / preStop hook can run
+  # before SIGKILL — letting the agent flush state to the host-mounted agent-home
+  # and drop an eviction breadcrumb. Sized conservatively without a per-node
+  # measurement of the pinned footprint; an operator who has measured it can
+  # widen the thresholds via these env vars. See lib/manifest.sh (preStop) and
+  # adopt_session_secrets (the secret-GC half of the same fix).
+  local evict_soft="${SANDBOX_EVICTION_SOFT:-nodefs.available<15%,imagefs.available<15%}"
+  local evict_grace="${SANDBOX_EVICTION_SOFT_GRACE:-nodefs.available=30s,imagefs.available=30s}"
+  local evict_pod_grace="${SANDBOX_EVICTION_MAX_POD_GRACE:-30}"
+  local kubelet_args="--kubelet-arg=eviction-soft=${evict_soft} --kubelet-arg=eviction-soft-grace-period=${evict_grace} --kubelet-arg=eviction-max-pod-grace-period=${evict_pod_grace}"
+
   # --cluster-cidr aligns k3s' controller-manager with Cilium's IPAM pool so the
   # Node's .spec.podCIDR matches; --service-cidr is passed explicitly so the
   # value is visible/overridable in one place. See setup/common.sh.
-  echo "--flannel-backend=none --disable-network-policy --disable=servicelb --disable=traefik --disable=metrics-server --resolv-conf=${resolv_conf} --cluster-cidr=${SANDBOX_POD_CIDR} --service-cidr=${SANDBOX_SERVICE_CIDR}"
+  echo "--flannel-backend=none --disable-network-policy --disable=servicelb --disable=traefik --disable=metrics-server --resolv-conf=${resolv_conf} --cluster-cidr=${SANDBOX_POD_CIDR} --service-cidr=${SANDBOX_SERVICE_CIDR} ${kubelet_args}"
 }
 
 # upgrade_k3s_linux — move an existing k3s install to ${SANDBOX_K3S_VERSION} in

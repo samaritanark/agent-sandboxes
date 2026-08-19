@@ -395,3 +395,15 @@ If you observe unexpected agent behavior during a session, the
 recommended sequence is: stop the session (`sandbox stop <id>`), do
 not push any changes from it, preserve the audit log, and review what
 happened before deciding whether any of the work is salvageable.
+
+A session's audit log is written by `sandbox stop`, and most abnormal
+endings still reach it — if a pod crashes or is evicted while you are
+attached, the session disconnects and teardown runs as usual. The one
+gap is a detached (`--keep-alive`) session that the node evicts under
+resource pressure: its teardown never runs, so the Hubble flow export
+for that session is lost. Its credentials are still revoked — the
+session Secrets are owned by the pod and garbage-collected on eviction
+— and its transcript still persists on the host, but treat a session
+that ended by eviction as one whose network-flow record may be
+incomplete. The pod leaves a `.sandbox-termination` breadcrumb in its
+agent-home to mark this case.

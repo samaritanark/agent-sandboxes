@@ -1297,6 +1297,15 @@ cmd_run() {
   echo "==> Applying pod..."
   echo "${pod_yaml}" | kubectl apply -f - 2>&1
 
+  # Adopt the session's credential Secrets to the pod (ownerReference) as soon as
+  # it has a UID — before the readiness wait — so Kubernetes GC reaps them if the
+  # pod is later evicted, a path that bypasses cmd_stop (PR #92 finding F3). No-op
+  # when the session created no such secrets.
+  local pod_uid_for_adopt
+  pod_uid_for_adopt="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+    -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+  adopt_session_secrets "${session_id}" "${pod_name}" "${pod_uid_for_adopt}"
+
   ###########################################################################
   # Step 10: Wait for pod Running
   ###########################################################################

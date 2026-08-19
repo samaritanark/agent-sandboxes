@@ -86,7 +86,14 @@ provision:
       # (100.64.0.0/10) and operators don't see a phantom CIDR mismatch
       # during triage. If you change either default in setup/common.sh,
       # update the matching value here too.
-      export INSTALL_K3S_EXEC="--flannel-backend=none --disable-network-policy --disable=servicelb --disable=traefik --disable=metrics-server --cluster-cidr=100.64.0.0/10 --service-cidr=10.43.0.0/16"
+      #
+      # --kubelet-arg eviction-soft/*: graceful disk-pressure eviction, matching
+      # _k3s_install_exec in setup/linux.sh (PR #92 finding F3). Pinned sandbox
+      # images are excluded from image GC, so disk pressure escalates to pod
+      # eviction; the soft thresholds grant a termination grace window so a
+      # doomed pod's preStop/terminationGracePeriod can run before SIGKILL. Keep
+      # these in sync with the Linux defaults.
+      export INSTALL_K3S_EXEC="--flannel-backend=none --disable-network-policy --disable=servicelb --disable=traefik --disable=metrics-server --cluster-cidr=100.64.0.0/10 --service-cidr=10.43.0.0/16 --kubelet-arg=eviction-soft=nodefs.available<15%,imagefs.available<15% --kubelet-arg=eviction-soft-grace-period=nodefs.available=30s,imagefs.available=30s --kubelet-arg=eviction-max-pod-grace-period=30"
       # Pinned by setup/versions.sh (substituted at render time). Empty == the
       # k3s installer's default latest stable channel.
       export INSTALL_K3S_VERSION="__K3S_VERSION__"
@@ -153,6 +160,9 @@ provision:
         --set hubble.relay.enabled=true \
         --set hubble.enabled=true \
         --set hubble.metrics.enableOpenMetrics=false \
+        --set hubble.relay.resources.requests.cpu=50m \
+        --set hubble.relay.resources.requests.memory=128Mi \
+        --set hubble.relay.resources.limits.memory=256Mi \
         --set kubeProxyReplacement=true \
         --set k8sServiceHost="127.0.0.1" \
         --set k8sServicePort="__APISERVER_PORT__" \
