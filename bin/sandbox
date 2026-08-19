@@ -436,6 +436,39 @@ print_session_banner() {
 }
 
 ###############################################################################
+# teardown_partial_session — tear down a session whose launch failed partway.
+#
+# Wraps cmd_stop for the launch failure paths. Two reasons it exists rather than
+# an inline `cmd_stop ... || true`:
+#
+#   1. Credential integrity. cmd_stop's revocation reminders (infra token,
+#      kubeconfig) and its Hubble-export warning are written to stderr by warn().
+#      A failed launch has already created those Tier-3 secrets, and the pod may
+#      have run long enough to read them, so the operator MUST see the reminders.
+#      cmd_stop's routine progress lines go to stdout; we drop only those.
+#
+#   2. Success integrity. cmd_stop runs with errexit suspended (via `|| true`)
+#      and echoes "Pod deleted." unconditionally, so a delete that failed still
+#      looks clean. We re-check that the pod is actually gone before the caller
+#      is allowed to tell the operator it was torn down.
+#
+# Returns 0 if the pod is gone after teardown, 1 if it lingers (secrets deleted
+# but pod still Running is the worst state — the caller must not claim success).
+###############################################################################
+teardown_partial_session() {
+  local session_id="$1"
+  local pod_name="$2"
+  cmd_stop "${session_id}" >/dev/null || true
+  if kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null; then
+    warn "Teardown did not remove pod ${pod_name}; it may still be Running with"
+    warn "its secrets deleted. Run 'sandbox stop ${session_id}' and verify no"
+    warn "leftover secrets remain in namespace ${SANDBOX_NAMESPACE}."
+    return 1
+  fi
+  return 0
+}
+
+###############################################################################
 # cmd_run — main session launch
 ###############################################################################
 cmd_run() {
@@ -1277,8 +1310,10 @@ cmd_run() {
   # below and in lib/dependency.sh.
   if ! ( wait_for_pod "${pod_name}" ); then
     echo "==> Pod failed to become Ready; tearing down session ${session_id}." >&2
-    cmd_stop "${session_id}" >/dev/null 2>&1 || true
-    die "Session pod ${pod_name} failed to start; torn down. See the describe output above."
+    if teardown_partial_session "${session_id}" "${pod_name}"; then
+      die "Session pod ${pod_name} failed to start; torn down. See the describe output above."
+    fi
+    die "Session pod ${pod_name} failed to start and teardown left it behind. Run 'sandbox stop ${session_id}' and check for leftover secrets."
   fi
 
   ###########################################################################
@@ -1293,7 +1328,7 @@ cmd_run() {
     echo "==> Verifying per-session network identity..."
     if ! ( assert_session_identity_distinct "${pod_name}" ); then
       echo "==> Identity assertion failed; tearing down session ${session_id}." >&2
-      cmd_stop "${session_id}" >/dev/null 2>&1 || true
+      teardown_partial_session "${session_id}" "${pod_name}" || true
       die "Per-session network identity could not be verified; aborted."
     fi
 
@@ -1308,7 +1343,7 @@ cmd_run() {
     if ! bring_up_dependencies "${session_id}" "${opt_tier}" "${pod_name}" \
          "${owner_uid}" "${log_dir}"; then
       echo "==> Dependency startup failed; tearing down session ${session_id}." >&2
-      cmd_stop "${session_id}" >/dev/null 2>&1 || true
+      teardown_partial_session "${session_id}" "${pod_name}" || true
       die "One or more dependencies failed to start; aborted."
     fi
 
@@ -1773,8 +1808,10 @@ recreate_session_pod() {
   # be left orphaned in Pending/Running/Error (see the cmd_run launch path).
   if ! ( wait_for_pod "${pod_name}" ); then
     echo "==> Recreated pod failed to become Ready; tearing down ${session_id}." >&2
-    cmd_stop "${session_id}" >/dev/null 2>&1 || true
-    die "Session pod ${pod_name} failed to start; torn down. See the describe output above."
+    if teardown_partial_session "${session_id}" "${pod_name}"; then
+      die "Session pod ${pod_name} failed to start; torn down. See the describe output above."
+    fi
+    die "Session pod ${pod_name} failed to start and teardown left it behind. Run 'sandbox stop ${session_id}' and check for leftover secrets."
   fi
 }
 

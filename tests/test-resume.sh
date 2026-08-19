@@ -164,7 +164,9 @@ test_recreate_tears_down_on_pod_failure() {
   resolve_pod_name() { echo sandbox-x; }
   resolve_vetting_posture() { echo off; }
   resolve_inference_endpoint() { echo ""; }
-  kubectl() { :; }
+  # `get pod` returns non-zero so teardown_partial_session sees the pod as gone
+  # (the happy path); every other kubectl call is a harmless no-op.
+  kubectl() { case "$1" in get) return 1 ;; *) return 0 ;; esac; }
   workspace_prescan()   { :; }
   check_masking_paths() { :; }
   vetting_gate_repos()  { :; }
@@ -180,6 +182,47 @@ test_recreate_tears_down_on_pod_failure() {
     || fail "pod-start failure did not tear down the session — pod would be orphaned"
 }
 
+# teardown_partial_session must (F1) let cmd_stop's stderr through — the infra-
+# token and kubeconfig revocation reminders and the Hubble-export warning all
+# live there — while dropping only the routine stdout chatter, and (F2) report a
+# non-zero result when the pod is still present afterward so the caller cannot
+# tell the operator a partial teardown was clean.
+test_teardown_partial_session_integrity() {
+  info "Testing teardown_partial_session preserves reminders and flags a lingering pod..."
+  SANDBOX_NAMESPACE="sandbox"
+  local outf="${TEST_DIR}/tps.out" errf="${TEST_DIR}/tps.err" rc
+
+  # cmd_stop writes routine progress to stdout and a revocation reminder to
+  # stderr, exactly as the real one does (echo vs warn).
+  cmd_stop() {
+    echo "  Pod deleted."
+    warn "REMINDER: Revoke infra token used in this session."
+  }
+
+  # Case 1: pod gone after teardown (`get` -> not found). Helper returns 0.
+  kubectl() { case "$1" in get) return 1 ;; *) return 0 ;; esac; }
+  teardown_partial_session ses-x sandbox-x >"${outf}" 2>"${errf}" && rc=0 || rc=$?
+  [[ "${rc}" -eq 0 ]] \
+    && pass "gone pod: teardown reports success" \
+    || fail "gone pod: expected rc 0, got ${rc}"
+  grep -q "REMINDER: Revoke infra token" "${errf}" \
+    && pass "revocation reminder reaches stderr (F1)" \
+    || fail "revocation reminder was swallowed (F1 regression)"
+  grep -q "Pod deleted" "${errf}" \
+    && fail "routine stdout chatter leaked onto stderr" \
+    || pass "routine chatter stays off stderr"
+
+  # Case 2: pod still present (`get` -> found). Helper returns 1 and warns.
+  kubectl() { return 0; }
+  teardown_partial_session ses-x sandbox-x >"${outf}" 2>"${errf}" && rc=0 || rc=$?
+  [[ "${rc}" -eq 1 ]] \
+    && pass "lingering pod: teardown reports failure (F2)" \
+    || fail "lingering pod: expected rc 1, got ${rc}"
+  grep -q "Teardown did not remove pod" "${errf}" \
+    && pass "lingering pod: operator is warned" \
+    || fail "lingering pod produced no warning (F2 regression)"
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   test_blocker_allows_simple_sessions
@@ -187,6 +230,7 @@ main() {
   test_guide_command_reconstructs_run
   test_recreate_reruns_gates_before_apply
   test_recreate_tears_down_on_pod_failure
+  test_teardown_partial_session_integrity
   echo "All ${TEST_NAME} tests passed."
 }
 
