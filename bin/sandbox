@@ -689,12 +689,14 @@ cmd_run() {
   local _tok _tname _tpath _envname _seen
   local -a _seen_env=()
   for _tok in "${opt_infra_tokens[@]+"${opt_infra_tokens[@]}"}"; do
-    if [[ "${_tok}" == *=* ]]; then
-      _tname="${_tok%%=*}"
+    # NAME=PATH only when the part before the first '=' is a valid env-name; a
+    # path that merely contains '=' (e.g. /tmp/a=b) is otherwise misread as the
+    # name '/tmp/a'. Deciding on the prefix shape rather than the mere presence
+    # of '=' keeps such paths intact (they fall through to the bare-PATH branch,
+    # where the file-existence check below reports a real error if wrong).
+    _tname="${_tok%%=*}"
+    if [[ "${_tok}" == *=* ]] && [[ "${_tname}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
       _tpath="${_tok#*=}"
-      if [[ ! "${_tname}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-        die "Invalid --infra-token name '${_tname}'. Use letters, digits and underscores; it must not start with a digit."
-      fi
       _envname="INFRA_TOKEN_${_tname}"
     else
       _tpath="${_tok}"
@@ -888,6 +890,7 @@ cmd_run() {
   #          merged file live in a 0700 temp dir removed on exit.
   ###########################################################################
   local kubeconfig_minified=""
+  SESSION_KUBE_API_CONTEXTS=""   # merged context names for the audit trail (global)
   local -a kube_api_cidrs=()     # resolved API server CIDRs (ip/32), one per cluster
   local -a kube_api_ports=()     # API server ports, index-aligned with kube_api_cidrs
   local -a kube_alias_ips=()     # hostAlias IPs, index-aligned with kube_api_cidrs
@@ -963,6 +966,17 @@ cmd_run() {
       fi
       _khost="$(url_host "${server_url}")"
       _kport="$(url_port "${server_url}")"
+      # Validate the port before it enters the comma-joined, index-aligned
+      # kube_api_ports list. url_port returns everything after the last colon
+      # with no validation, so a malformed server URL (e.g. a stray
+      # "https://10.0.0.5:6443,22") would inject a comma and shift every later
+      # cluster's port by one in build_cilium_policy. Empty is fine — it defaults
+      # to 443 below. Anything present must be a single 1–65535 integer.
+      if [[ -n "${_kport}" ]]; then
+        if ! [[ "${_kport}" =~ ^[0-9]{1,5}$ ]] || (( _kport < 1 || _kport > 65535 )); then
+          die "Refusing kubeconfig '${_kc}': API server port '${_kport}' (from '${server_url}') is not a valid 1–65535 port."
+        fi
+      fi
       echo "  Cluster API: ${server_url}"
       echo "  Auto-allowlisting: ${_khost}:${_kport:-443}"
 
@@ -975,7 +989,10 @@ cmd_run() {
       # sidesteps environments where the pod's CoreDNS can't reach the resolver
       # that knows the name (VPN-only DNS, split-horizon, per-link resolved
       # entries, etc.). Prefer IPv4.
-      if [[ "${_khost}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      # Octet-validating dotted-quad match (not just [0-9]+\.…): a host that only
+      # looks IP-ish falls through to getent rather than being pinned verbatim as
+      # a bogus /32 CIDR.
+      if [[ "${_khost}" =~ ^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$ ]]; then
         _kip="${_khost}"
       else
         _kip="$(getent ahostsv4 "${_khost}" 2>/dev/null | awk 'NR==1 {print $1}')"
@@ -1010,6 +1027,14 @@ cmd_run() {
       cp "${_kc_parts[0]}" "${kubeconfig_minified}"
     fi
     chmod 0600 "${kubeconfig_minified}"
+
+    # Record the context names the session was handed, for the audit trail. The
+    # per-cluster IPs are already captured (kube_api_cidrs), but an incident
+    # reviewer needs to know which identity was reachable against each — the
+    # context is that handle. Explicit --kubeconfig= so it wins over the
+    # platform.sh kubectl() wrapper's forced --kubeconfig. Comma-joined.
+    SESSION_KUBE_API_CONTEXTS="$(kubectl --kubeconfig="${kubeconfig_minified}" \
+      config get-contexts -o name 2>/dev/null | paste -sd, - || true)"
   fi
 
   ###########################################################################
@@ -1167,7 +1192,7 @@ cmd_run() {
     SESSION_KUBE_API_CIDR=""
     SESSION_KUBE_API_PORT=""
   fi
-  export SESSION_KUBE_API_CIDR SESSION_KUBE_API_PORT
+  export SESSION_KUBE_API_CIDR SESSION_KUBE_API_PORT SESSION_KUBE_API_CONTEXTS
 
   audit_write_session_json \
     "${log_dir}" \

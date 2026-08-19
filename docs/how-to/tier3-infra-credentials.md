@@ -66,6 +66,20 @@ The minified kubeconfig(s) only exist in a 0600 temp dir long enough to be
 loaded into the Secret, after which the temp dir is deleted. The Secret
 is deleted on session teardown.
 
+> **Combining clusters widens the blast radius.** A session handed two
+> kubeconfigs holds both credentials at once and has egress open to both API
+> servers, and the in-sandbox agent is the adversary in this tool's threat
+> model. One compromised session reaches *every* cluster you combined. Pair a
+> production kubeconfig with anything else only when you actually intend that
+> session to reach production — otherwise launch separate sessions. Only static
+> credentials merge (a bearer token, or a client cert+key pair); basic-auth
+> `username`/`password` fields are dropped, since the API server no longer
+> honours them.
+>
+> Avoid keying a profile-declared session secret as `INFRA_TOKEN` or
+> `INFRA_TOKEN_<NAME>`: a secret injected under the same name as a mounted infra
+> token shadows it (env-var precedence resolves the profile secret last).
+
 **Exec credential plugins are not supported.** If the chosen context auths
 via an `exec:` block (e.g. `tsh`, `aws eks get-token`,
 `gke-gcloud-auth-plugin`, `kubelogin`), kubectl inside the pod will load

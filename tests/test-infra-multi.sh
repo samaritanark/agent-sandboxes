@@ -216,8 +216,73 @@ EOF
     || fail "a cluster server was dropped (got '${servers}')"
 }
 
+###############################################################################
+# merge_kubeconfigs — credential handling: basic auth is not a mergeable
+# credential (the API server dropped it in k8s 1.19), so a username-only source
+# is refused, and a source that carries a token AND basic auth keeps the token
+# with the basic-auth fields stripped rather than aborting on kubectl's
+# "more than one authentication method" error.
+###############################################################################
+test_merge_kubeconfigs_credentials() {
+  if ! command -v kubectl >/dev/null 2>&1; then
+    info "no kubectl client available — skipping merge_kubeconfigs credential check"
+    return 0
+  fi
+  info "Testing merge_kubeconfigs credential handling (basic auth rejected/stripped)..."
+
+  # A username-only user carries no credential this tool can use.
+  cat > "${TEST_DIR}/useronly.yaml" <<'EOF'
+apiVersion: v1
+kind: Config
+clusters:
+- {name: c, cluster: {server: https://u.example.com:6443, certificate-authority-data: Y2E=}}
+users:
+- {name: c, user: {username: admin}}
+contexts:
+- {name: c, context: {cluster: c, user: c}}
+current-context: c
+EOF
+  minify_kubeconfig "${TEST_DIR}/useronly.yaml" "" > "${TEST_DIR}/uo-part"
+  if ( merge_kubeconfigs "${TEST_DIR}/uo-merged" "${TEST_DIR}/uo-part" ) >/dev/null 2>&1; then
+    fail "username-only kubeconfig was accepted (basic auth cannot authenticate)"
+  else
+    pass "username-only kubeconfig is refused"
+  fi
+
+  # A user with a token AND basic auth must not abort; the token is kept and the
+  # basic-auth fields are dropped (kubectl rejects token + username together).
+  cat > "${TEST_DIR}/mixed.yaml" <<'EOF'
+apiVersion: v1
+kind: Config
+clusters:
+- {name: c, cluster: {server: https://m.example.com:6443, certificate-authority-data: Y2E=}}
+users:
+- {name: c, user: {token: mixed-token-xyz, username: admin, password: hunter2}}
+contexts:
+- {name: c, context: {cluster: c, user: c}}
+current-context: c
+EOF
+  minify_kubeconfig "${TEST_DIR}/mixed.yaml" "" > "${TEST_DIR}/mx-part"
+  if ! ( merge_kubeconfigs "${TEST_DIR}/mx-merged" "${TEST_DIR}/mx-part" ) >/dev/null 2>&1; then
+    fail "token+basic-auth source aborted the merge (should strip basic auth)"
+  else
+    local mtok muser
+    mtok="$(kubectl --kubeconfig="${TEST_DIR}/mx-merged" config view --raw \
+      -o jsonpath='{.users[0].user.token}')"
+    muser="$(kubectl --kubeconfig="${TEST_DIR}/mx-merged" config view --raw \
+      -o jsonpath='{.users[0].user.username}')"
+    [[ "${mtok}" == "mixed-token-xyz" ]] \
+      && pass "token preserved when basic auth is present" \
+      || fail "token lost (got '${mtok}')"
+    [[ -z "${muser}" ]] \
+      && pass "basic-auth username stripped from the merged config" \
+      || fail "basic-auth username survived (got '${muser}')"
+  fi
+}
+
 info "Running test-infra-multi tests..."
 test_policy_multi_cidr
 test_manifest_multi_hostalias
 test_merge_kubeconfigs
+test_merge_kubeconfigs_credentials
 echo "All test-infra-multi tests passed."

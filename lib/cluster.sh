@@ -211,32 +211,57 @@ minify_kubeconfig() {
 # Signature: merge_kubeconfigs <dest> <part1> <part2> [part3 ...]
 #
 # Each part is expected to hold exactly one cluster/user/context (the shape
-# minify_kubeconfig produces). We rebuild each into <dest> under index-based
-# cluster/user names (sandbox-cluster-N / sandbox-user-N) so two parts can never
-# collide on those internal names — kubectl's native merge is first-wins by
-# name, which would otherwise silently drop a second cluster called "kubernetes".
-# The user-facing CONTEXT name is preserved (that is what 'kubectl config
+# minify_kubeconfig produces). We rename each part's cluster/user to index-based
+# names (sandbox-cluster-N / sandbox-user-N) so two parts can never collide on
+# those internal names — kubectl's native merge is first-wins by name, which
+# would otherwise silently drop a second cluster called "kubernetes". The
+# user-facing CONTEXT name is preserved (that is what 'kubectl config
 # use-context' selects), only suffixed -2, -3, ... on collision. The first
 # part's context becomes current-context.
 #
-# Credentials are carried via 'kubectl config set ... --set-raw-bytes=false',
-# which round-trips the base64 blob through kubectl itself — so no host 'base64'
-# binary is needed (portable to the macOS host). Static auth only: token,
-# client cert/key, or basic auth. Exec plugins are rejected upstream before a
-# multi-kubeconfig launch ever reaches here.
+# The rename happens on a JSON dump of each part (kubectl config view --minify
+# --flatten --raw), edited with jq, then all parts are combined via kubectl's
+# own KUBECONFIG merge. Nothing secret ever reaches a command line: jq's --arg
+# carries only the (non-secret) names, KUBECONFIG carries file paths, and the
+# credential material stays inside the files. This deliberately avoids putting
+# tokens / client keys on the argv (readable via /proc/PID/cmdline and, on
+# macOS, other users' `ps`), which the earlier per-field 'config set-credentials
+# --token=…' / 'config set …-key-data' approach did.
+#
+# jq is a hard dependency of this tool (require_command jq in bin/sandbox), so
+# no new dependency is introduced. Static auth only: token or client cert+key.
+# Basic auth (username/password) is dropped — the API server dropped it in
+# k8s 1.19, so it cannot authenticate and, mixed with a token, would make
+# kubectl reject the credential outright. Exec plugins are rejected upstream
+# before a multi-kubeconfig launch ever reaches here. tls-server-name and
+# proxy-url, if present on a source cluster, ride through unchanged (the whole
+# cluster object is carried, not a hand-picked field subset).
 merge_kubeconfigs() {
   local dest="$1"
   shift
 
+  # Scratch lives beside dest, in the caller's 0700 temp dir that is reaped on
+  # EXIT (bin/sandbox Step 1b). The per-part JSON holds credential material, so
+  # keep it 0600 even inside that dir.
+  local scratch
+  scratch="$(dirname "${dest}")"
+
   : > "${dest}"
   chmod 0600 "${dest}"
 
-  local -a used_ctx=()
+  local -a used_ctx=() renamed=()
   local part idx=0 first_ctx=""
-  local ctx newctx cname uname_new seen collide n
-  local server ca_data insecure token cc_data ck_data username password
+  local part_json ctx newctx cname uname_new seen collide n
+  local token cc_data ck_data rfile
   for part in "$@"; do
-    ctx="$(kubectl --kubeconfig="${part}" config current-context 2>/dev/null)"
+    # One JSON dump per part; every field read below comes from this, so the
+    # part file is opened once and no value transits a command line.
+    part_json="$(kubectl --kubeconfig="${part}" config view --minify --flatten --raw -o json)"
+
+    # Context name — preserved for use-context. Parts are minified so
+    # contexts[0].name == current-context; fall back defensively. The `// ""`
+    # keeps an empty field from tripping set -e (it never exits nonzero here).
+    ctx="$(jq -r '.contexts[0].name // ."current-context" // ""' <<<"${part_json}")"
     [[ -z "${ctx}" ]] && ctx="context-${idx}"
 
     # Preserve the context name; suffix only to dodge a collision with one
@@ -258,58 +283,52 @@ merge_kubeconfigs() {
     cname="sandbox-cluster-${idx}"
     uname_new="sandbox-user-${idx}"
 
-    # --- cluster ---
-    server="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null)"
-    ca_data="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' 2>/dev/null)"
-    insecure="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.clusters[0].cluster.insecure-skip-tls-verify}' 2>/dev/null)"
-
-    local -a clu_args=("--kubeconfig=${dest}" config set-cluster "${cname}" "--server=${server}")
-    if [[ -z "${ca_data}" ]] && [[ "${insecure}" == "true" ]]; then
-      clu_args+=("--insecure-skip-tls-verify=true")
-    fi
-    kubectl "${clu_args[@]}" >/dev/null
-    if [[ -n "${ca_data}" ]]; then
-      kubectl --kubeconfig="${dest}" config set \
-        "clusters.${cname}.certificate-authority-data" "${ca_data}" --set-raw-bytes=false >/dev/null
-    fi
-
-    # --- user ---
-    token="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.users[0].user.token}' 2>/dev/null)"
-    cc_data="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.users[0].user.client-certificate-data}' 2>/dev/null)"
-    ck_data="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.users[0].user.client-key-data}' 2>/dev/null)"
-    username="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.users[0].user.username}' 2>/dev/null)"
-    password="$(kubectl --kubeconfig="${part}" config view --raw -o jsonpath='{.users[0].user.password}' 2>/dev/null)"
-
-    local have_cred="false"
-    [[ -n "${token}" ]] && have_cred="true"
-    [[ -n "${cc_data}" ]] && [[ -n "${ck_data}" ]] && have_cred="true"
-    [[ -n "${username}" ]] && have_cred="true"
-    if [[ "${have_cred}" == "false" ]]; then
+    # Static-credential guard: refuse a part whose user carries neither a bearer
+    # token nor a client cert+key pair, so a credential-less context can never
+    # fall back to ambient auth inside the pod. Basic auth does NOT count (see
+    # header). Read from the JSON dump, not the argv.
+    token="$(jq -r '.users[0].user.token // ""' <<<"${part_json}")"
+    cc_data="$(jq -r '.users[0].user["client-certificate-data"] // ""' <<<"${part_json}")"
+    ck_data="$(jq -r '.users[0].user["client-key-data"] // ""' <<<"${part_json}")"
+    if [[ -z "${token}" ]] && { [[ -z "${cc_data}" ]] || [[ -z "${ck_data}" ]]; }; then
       echo "ERROR: kubeconfig for context '${ctx}' has no static credentials this" >&2
-      echo "  tool can merge (token, client cert+key, or basic auth). Bake static" >&2
-      echo "  credentials, or pass it as the only --infra-kubeconfig." >&2
+      echo "  tool can merge (a bearer token, or a client cert+key pair). Bake" >&2
+      echo "  static credentials, or pass it as the only --infra-kubeconfig." >&2
       exit 1
     fi
 
-    local -a cred_args=("--kubeconfig=${dest}" config set-credentials "${uname_new}")
-    [[ -n "${token}" ]] && cred_args+=("--token=${token}")
-    [[ -n "${username}" ]] && cred_args+=("--username=${username}")
-    [[ -n "${username}" ]] && [[ -n "${password}" ]] && cred_args+=("--password=${password}")
-    kubectl "${cred_args[@]}" >/dev/null
-    if [[ -n "${cc_data}" ]] && [[ -n "${ck_data}" ]]; then
-      kubectl --kubeconfig="${dest}" config set \
-        "users.${uname_new}.client-certificate-data" "${cc_data}" --set-raw-bytes=false >/dev/null
-      kubectl --kubeconfig="${dest}" config set \
-        "users.${uname_new}.client-key-data" "${ck_data}" --set-raw-bytes=false >/dev/null
-    fi
-
-    # --- context ---
-    kubectl --kubeconfig="${dest}" config set-context "${newctx}" \
-      --cluster="${cname}" --user="${uname_new}" >/dev/null
+    # Rename cluster/user/context and strip basic auth, all inside jq — the only
+    # jq inputs are the non-secret names. Write to a 0600 part JSON that the
+    # KUBECONFIG merge below reads back.
+    rfile="${scratch}/merge-part-${idx}.json"
+    ( umask 077; : > "${rfile}" )
+    jq --arg c "${cname}" --arg u "${uname_new}" --arg x "${newctx}" '
+      .clusters[0].name = $c
+      | .users[0].name = $u
+      | .users[0].user |= del(.username, .password)
+      | .contexts[0].name = $x
+      | .contexts[0].context.cluster = $c
+      | .contexts[0].context.user = $u
+      | ."current-context" = $x
+    ' <<<"${part_json}" > "${rfile}"
+    renamed+=("${rfile}")
 
     idx=$((idx + 1))
   done
 
+  # Combine every renamed part via kubectl's own KUBECONFIG merge. current-context
+  # resolves to the first file's, which is first_ctx; use-context makes that
+  # explicit regardless of merge order.
+  #
+  # 'command kubectl' bypasses the kubectl() wrapper in lib/platform.sh, which
+  # forces '--kubeconfig ${SANDBOX_KUBECONFIG}' onto every call. An explicit
+  # --kubeconfig flag overrides the KUBECONFIG env var, so through the wrapper
+  # this merge would read the sandbox cluster's config instead of our renamed
+  # parts. The per-part reads above are immune (their own --kubeconfig=… is a
+  # later flag and wins), but the env-driven merge has no flag to win with.
+  local kubeconfig_list
+  kubeconfig_list="$(IFS=':'; printf '%s' "${renamed[*]}")"
+  KUBECONFIG="${kubeconfig_list}" command kubectl config view --flatten --raw -o yaml > "${dest}"
   kubectl --kubeconfig="${dest}" config use-context "${first_ctx}" >/dev/null
 }
 
