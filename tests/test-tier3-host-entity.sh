@@ -49,6 +49,7 @@ source "${SANDBOX_ROOT}/lib/checks.sh"
 source "${SANDBOX_ROOT}/lib/agents.sh"
 source "${SANDBOX_ROOT}/lib/tier.sh"
 source "${SANDBOX_ROOT}/lib/policy.sh"
+source "${SANDBOX_ROOT}/lib/network.sh"
 
 eq() {
   local label="$1" expected="$2" actual="$3"
@@ -102,10 +103,55 @@ test_no_kube_api_cidr_grants_neither() {
     "$(echo "${pol}" | yq e '[.spec.egress[] | select(.toEntities)] | length' -)"
 }
 
+# SESSION_KUBE_HOST_ENTITY is comma-joined and index-aligned with kube_api_cidr
+# / kube_api_port, same convention as those two — a multi-cluster session can
+# have one same-node cluster (e.g. a local k3d/podman cluster) alongside a
+# genuinely remote one, and only the same-node index's port may get the
+# reserved:host grant. Guards against a naive merge of this feature with
+# multi-kubeconfig support (#91) that would grant reserved:host for every
+# cluster's port whenever ANY cluster is same-node.
+test_multi_cluster_mixed_host_entity() {
+  info "Testing a multi-cluster session grants toEntities:host only for the same-node cluster's index/port..."
+  local pol
+  SESSION_KUBE_HOST_ENTITY="true," \
+    pol="$(build_cilium_policy "${SID}" claude 3 "192.168.1.38/32,203.0.113.9/32" "6550,6443")"
+  echo "${pol}" | yq e '.' >/dev/null || fail "policy is not valid YAML"
+
+  eq "two toCIDR rules" "2" \
+    "$(echo "${pol}" | yq e '[.spec.egress[] | select(.toCIDR)] | length' -)"
+  eq "exactly one toEntities:host rule" "1" \
+    "$(echo "${pol}" | yq e '[.spec.egress[] | select(.toEntities)] | length' -)"
+  eq "toEntities port matches the same-node cluster's port" "6550" \
+    "$(echo "${pol}" | yq e '.spec.egress[] | select(.toEntities) | .toPorts[0].ports[0].port' -)"
+}
+
+# The loopback case (PR #90 review from DavidRBanks): `k3d kubeconfig get`
+# writes `server: https://127.0.0.1:<port>`, which is correct on the host but
+# means "this pod" from inside a Tier 3 pod, not "the host" — there is no
+# cluster on the other end to reach. bin/sandbox rejects it outright with
+# is_loopback_ipv4 before same-node detection ever runs (see bin/sandbox's
+# --infra-kubeconfig handling), so it never reaches build_cilium_policy at
+# all. This is the pure-logic unit test for that gate: every loopback address
+# in 127.0.0.0/8 must be caught, and no non-loopback address must be.
+test_is_loopback_ipv4() {
+  info "Testing is_loopback_ipv4 catches all of 127.0.0.0/8 and nothing else..."
+  local ip
+  for ip in "127.0.0.1" "127.0.0.53" "127.255.255.255"; do
+    is_loopback_ipv4 "${ip}" && pass "is_loopback_ipv4 ${ip}" \
+      || fail "is_loopback_ipv4 ${ip}: expected true"
+  done
+  for ip in "192.168.1.38" "10.89.0.1" "203.0.113.9" "0.0.0.0" ""; do
+    is_loopback_ipv4 "${ip}" && fail "is_loopback_ipv4 ${ip}: expected false" \
+      || pass "is_loopback_ipv4 ${ip}"
+  done
+}
+
 main() {
   test_same_node_grants_both_cidr_and_host_entity
   test_remote_cluster_grants_cidr_only
   test_no_kube_api_cidr_grants_neither
+  test_multi_cluster_mixed_host_entity
+  test_is_loopback_ipv4
   echo "All tier3-host-entity tests passed."
 }
 main "$@"

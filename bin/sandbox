@@ -1033,6 +1033,19 @@ cmd_run() {
         _kip="$(getent ahostsv4 "${_khost}" 2>/dev/null | awk 'NR==1 {print $1}')"
       fi
 
+      # Reject a loopback API address outright. `k3d kubeconfig get` writes
+      # `server: https://127.0.0.1:<port>` — correct for kubectl on the host,
+      # meaningless from inside a pod, where 127.0.0.1 means "this pod," not
+      # "the host." There's nothing functional to preserve (toCIDR on a pod's
+      # own loopback reaches nothing), and letting it through would silently
+      # widen egress: the same-node check below treats loopback as "this host"
+      # and adds the reserved:host grant, but the operator only ever sees the
+      # toCIDR side fail and never learns their egress got broadened. Fail
+      # fast and point at the fix instead.
+      if [[ -n "${_kip}" ]] && is_loopback_ipv4 "${_kip}"; then
+        die "kubeconfig '${_kc}' server resolves to loopback (${_kip}); a pod's 127.0.0.1 is its own network namespace, not the host. Rewrite the server address with examples/k3d-podman/bake-kubeconfig.sh."
+      fi
+
       # Close the auto-allowlist bypass: each API host was appended to
       # opt_allow_domains AFTER the block-validation loop ran, so validate it
       # (and the resolved IP) now — before any policy/pod/Secret is created — so

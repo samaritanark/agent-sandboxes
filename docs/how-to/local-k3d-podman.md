@@ -26,9 +26,10 @@ past this step — see your platform's podman/k3d setup guide if not.
 `127.0.0.1:<port>` (or `0.0.0.0:<port>`). That's correct for `kubectl` running
 directly on your host — but an agent session's `kubectl` runs **inside a pod**,
 in its own network namespace. `127.0.0.1` there means "this pod," not "the
-machine podman is running on." Pointing `--infra-kubeconfig` at a kubeconfig
-with that server address will fail to connect (or connect to nothing) once
-mounted into the pod.
+machine podman is running on." `sandbox run --infra-kubeconfig` rejects a
+loopback `server:` address outright at launch, before creating anything, with
+an error pointing at the fix below — rather than silently letting the session
+launch against an address that can never work once mounted into the pod.
 
 This isn't a rootless-podman-specific wrinkle, and rootless isn't an extra
 obstacle here: a published port's listener (`rootlessport`, or `pasta` in

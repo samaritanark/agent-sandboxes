@@ -56,11 +56,28 @@ detect_primary_ipv4() {
 # tell a genuinely remote Tier 3 kube API server apart from one that resolves
 # to this same host (e.g. a local k3d/podman cluster) — the case where
 # Cilium's reserved:host egress grant is safe to add (see lib/policy.sh).
+#
+# Callers gating a same-node decision on this should reject loopback FIRST
+# via is_loopback_ipv4 rather than relying on this to say "not owned" for it
+# — loopback genuinely is a host-owned address (every host has one), so this
+# correctly reports it as owned. bin/sandbox's --infra-kubeconfig handling is
+# the caller that matters here: a kubeconfig `server: https://127.0.0.1:<port>`
+# (what plain `k3d kubeconfig get` writes) means "this pod" from inside a Tier
+# 3 pod, not "the host" — there's no cluster on the other end of that address
+# to reach, so it needs a hard failure, not a quiet same-node classification.
 host_owns_ipv4() {
   local ip="$1"
   [[ -z "${ip}" ]] && return 1
   ip -j -4 addr show 2>/dev/null \
     | jq -e --arg ip "${ip}" '[.[].addr_info[]?.local] | index($ip) != null' >/dev/null
+}
+
+# is_loopback_ipv4 <ip> — true if <ip> is in 127.0.0.0/8. Pure string check,
+# no host state involved. See host_owns_ipv4's comment above for why callers
+# resolving a Tier 3 kube API address need to check this first.
+is_loopback_ipv4() {
+  local ip="$1"
+  [[ "${ip}" =~ ^127\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
 
 # Node annotation used to remember the IPv4 address of the host's primary
