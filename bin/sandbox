@@ -476,6 +476,57 @@ teardown_partial_session() {
 }
 
 ###############################################################################
+# Teardown-on-signal trap — shared by the two interactive attach sites
+# (cmd_run, cmd_resume). While the operator is ATTACHED, a killed CLI process (a
+# closed terminal or dropped ssh → SIGHUP, `kill` → SIGTERM, Ctrl-C → SIGINT, a
+# laptop suspend) would otherwise skip teardown, leaving a NON-keep-alive pod
+# running with its infra token and kubeconfig Secrets live (PR #93 findings F1,
+# N1, N2). Trap those signals for the duration of the attach and run teardown
+# from the handler.
+#
+# The handler runs in the caller's frame (dynamic scope), so it reads the
+# caller's locals directly: opt_keep_alive, session_id, log_dir, and the
+# _session_torn_down one-shot flag. Every attach site MUST declare
+# `local _session_torn_down="false"` before arming, and gate its own post-attach
+# teardown on that flag so cmd_stop runs exactly once.
+#
+# Guards:
+#   - keep-alive is exempt: its whole contract is "leave the pod running after
+#     disconnect"; PRINCIPLES.md documents that its credentials rely on a later
+#     `sandbox stop`.
+#   - the handler disarms first (one-shot) and sets _session_torn_down.
+#   - CRITICAL (N1): the terminal this handler exists to cope with is often
+#     already GONE (closed terminal / dropped ssh), so writes to the inherited
+#     stderr return EIO. Under `set -e` an UNGUARDED failed echo would abort the
+#     handler BEFORE cmd_stop — orphaning the pod with live Secrets, i.e. the
+#     exact F1 bug in F1's own headline scenario. So every terminal write here is
+#     `|| true`-guarded, a durable breadcrumb is written to the session log
+#     independently of terminal state, and `cmd_stop ... || true` disables
+#     errexit for everything cmd_stop does (so its writes to a dead terminal are
+#     harmless and every teardown step still runs).
+# Scope: covers the attach only, NOT pre-attach setup (readiness wait, dependency
+# bring-up run in subshells where an armed trap would fire in both child and
+# parent) nor an untrappable SIGKILL/OOM/power loss — those still need a manual
+# `sandbox stop` (documented in PRINCIPLES.md). Not trapping EXIT: it fires on
+# normal completion too and would double-teardown or tear down a keep-alive pod.
+###############################################################################
+_teardown_on_signal() {
+  trap - INT TERM HUP
+  [[ "${opt_keep_alive}" == "true" ]] && return 0
+  [[ "${_session_torn_down}" == "true" ]] && return 0
+  _session_torn_down="true"
+  # Durable record of the signalled teardown, independent of terminal state.
+  echo "Session ${session_id} interrupted by signal; running teardown." \
+    >>"${log_dir}/teardown-on-signal.log" 2>/dev/null || true
+  # Best-effort terminal notice — GUARDED (see CRITICAL above): a dead pty write
+  # returns EIO and must not abort the handler before teardown.
+  echo "==> Session ${session_id} interrupted; running teardown so credentials are revoked." >&2 || true
+  cmd_stop "${session_id}" || true
+}
+_arm_teardown_trap() { trap '_teardown_on_signal' INT TERM HUP; }
+_disarm_teardown_trap() { trap - INT TERM HUP; }
+
+###############################################################################
 # cmd_run — main session launch
 ###############################################################################
 cmd_run() {
@@ -1572,42 +1623,19 @@ cmd_run() {
     [[ "${#_mcp_args[@]}" -gt 0 ]] && agent_cmd+=("${_mcp_args[@]}")
   fi
 
-  # While the operator is ATTACHED, a killed CLI process (a closed terminal or
-  # dropped ssh → SIGHUP, `kill` → SIGTERM, a laptop suspend) would otherwise
-  # skip the teardown below, leaving a NON-keep-alive pod running with its infra
-  # token and kubeconfig Secrets live (PR #93 finding F1). Trap those signals for
-  # the duration of the attach and run teardown from the handler. Guards:
-  #   - keep-alive is exempt: its whole contract is "leave the pod running after
-  #     disconnect", and PRINCIPLES.md documents that its credentials rely on a
-  #     later `sandbox stop`.
-  #   - the handler disarms the trap first (one-shot) and sets _session_torn_down;
-  #     immediately after the attach returns we disarm again and Step 12 skips its
-  #     own teardown when the flag is set — so cmd_stop runs exactly once whether
-  #     the attach ended normally or via a trapped signal.
-  # Scope: this covers the attach only, NOT the pre-attach setup (readiness wait,
-  # dependency bring-up) — those run in subshells where an armed trap would fire
-  # in both child and parent — nor an untrappable SIGKILL/OOM/power loss. A signal
-  # in those windows still needs a manual `sandbox stop` (documented in
-  # PRINCIPLES.md). Not trapping EXIT: it fires on normal completion too and would
-  # double-teardown or tear down a keep-alive pod.
+  # Teardown-on-signal covers the attach so a killed CLI still revokes credentials
+  # (see _teardown_on_signal above; PR #93 findings F1/N1). Every attach site
+  # declares this one-shot flag, arms before the attach, and disarms after; Step
+  # 12 below skips its own teardown when the handler already ran.
   local _session_torn_down="false"
-  _teardown_on_signal() {
-    trap - INT TERM HUP
-    [[ "${opt_keep_alive}" == "true" ]] && return 0
-    [[ "${_session_torn_down}" == "true" ]] && return 0
-    _session_torn_down="true"
-    echo "" >&2
-    echo "==> Session ${session_id} interrupted; running teardown so credentials are revoked." >&2
-    cmd_stop "${session_id}" || true
-  }
-  trap '_teardown_on_signal' INT TERM HUP
+  _arm_teardown_trap
 
   echo "==> Attaching to session (Ctrl-D or 'exit' to end)..."
   kubectl exec -n "${SANDBOX_NAMESPACE}" -it "${pod_name}" -c agent -- "${agent_cmd[@]}" || true
 
   # Attach returned — normally, or because a trapped signal already tore the
   # session down. Disarm so neither Step 12 nor a late signal re-enters cmd_stop.
-  trap - INT TERM HUP
+  _disarm_teardown_trap
 
   ###########################################################################
   # Step 12: Disconnect — tear down by default; --keep-alive preserves the pod
@@ -2140,15 +2168,22 @@ cmd_resume() {
     agent_cmd+=("${resume_flag}" "${agent_session_id}")
   fi
 
+  # Same teardown-on-signal coverage as cmd_run: a resumed non-keep-alive session
+  # whose CLI is signalled mid-attach must still revoke credentials, and
+  # PRINCIPLES.md's guarantee is unqualified across resume too (PR #93 finding N2).
+  local _session_torn_down="false"
+  _arm_teardown_trap
   kubectl exec -n "${SANDBOX_NAMESPACE}" -it "${pod_name}" -c agent -- "${agent_cmd[@]}" || true
+  _disarm_teardown_trap
 
   echo ""
   if [[ "${opt_keep_alive}" == "true" ]]; then
     echo "==> Disconnected from session ${session_id} (pod kept alive)."
     echo "    Resume:  sandbox resume ${session_id}"
     echo "    Stop:    sandbox stop ${session_id}"
-  else
+  elif [[ "${_session_torn_down}" != "true" ]]; then
     echo "==> Disconnected — tearing down session to free cluster resources..."
+    _session_torn_down="true"
     cmd_stop "${session_id}"
     echo ""
     echo "    Conversation history preserved in ~/.sandbox/agent-home/${agent}/"

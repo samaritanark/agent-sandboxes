@@ -144,13 +144,18 @@ the audit record when the path is abnormal. Blast-radius and eviction *tuning*
 are in scope here (they are NOT mere DoS) **when getting them wrong disables a
 security control or widens which sessions are affected.** Size eviction/GC
 settings against **k3s's compiled-in defaults, not vanilla kubelet's** — they
-differ: k3s overrides `EvictionHard` (to `imagefs.available<5%,nodefs.available<5%`,
-dropping the vanilla `memory.available<100Mi` threshold entirely) and sets a 10%
-`EvictionMinimumReclaim` (vanilla defaults to 0). The 5-minute
+differ: k3s *appears* to override `EvictionHard` (to
+`imagefs.available<5%,nodefs.available<5%`, which would drop the vanilla
+`memory.available<100Mi` threshold entirely) and to set a 10%
+`EvictionMinimumReclaim` (vanilla defaults to 0). Both are **inferred from
+secondary sources, not confirmed against k3s docs at the pinned tag** — treat
+them as leads to check, not facts to cite, and don't build a finding on the
+*absence* of memory eviction without confirming it. The 5-minute
 `evictionPressureTransitionPeriod`, by contrast, is the **vanilla upstream
 default**, not a k3s override — don't cite it as a k3s difference. Confirm each
-against the kubelet args on a real node at the pinned tag; a misattributed
-mechanism is itself an invariant-6 claim.
+against the kubelet args on a real node at the pinned tag (one `ps`/node-args
+check settles all three); a misattributed mechanism is itself an invariant-6
+claim, and so is stating an inference as fact.
 
 ## What to report vs. skip (this repo's rules, overriding the generic ones)
 
@@ -194,6 +199,25 @@ a static read. So:
 - **Never "clear" an invariant from the changed lines alone.** "The diff's new
   code looks fine" is not "the invariant holds across every path an operator now
   travels." Verify the steady state the change produces, not just the delta.
+- **Run the remediation in the exact failure condition it names — the fix can be
+  broken by the very scenario it claims to cover.** A trap/cleanup/error handler
+  that "runs teardown when the terminal closes" executes *with the terminal
+  already gone*: under `set -euo pipefail`, an unguarded `echo >&2` (or any I/O to
+  a dead fd, an unset var, a missing dir) returns non-zero and aborts the handler
+  **before** it does its security job. Confirming the handler *exists* is not
+  confirming it *survives its own trigger*. For every error-path handler, mentally
+  (or actually) execute it in the adverse environment — dead pty / `EIO`, errexit
+  active, empty state — and check it reaches the revocation/audit call. Watch for
+  the bash idiom subtlety: `foo || true` disables errexit *inside* `foo`, but a
+  bare `cmd` on the line *before* it does not.
+- **A new control must be armed at EVERY sibling call site, not just the one in
+  the diff.** When a change adds a guard around one instance of a repeated pattern
+  (here: the teardown trap around one `kubectl exec -it` attach), `grep` for all
+  instances of that pattern (`kubectl exec -it`, every attach/entry/teardown site)
+  and confirm the control is present at each. A doc guarantee is written
+  unqualified ("while you are attached…"), so it silently extends to the sibling
+  the fix missed (`cmd_resume`). Prefer a shared helper over a copied block, and
+  flag the asymmetry when one path has the control and its twin does not.
 - **Re-audit the RESIDUAL claims and the tests that guard them.** A change that is
   a genuine improvement can still leave a neighbouring assertion false (transcript
   "persists regardless"), or ship a test that asserts a weaker property than the
@@ -248,6 +272,23 @@ instance.
 - **The review harness as an attack surface** — `.claude/skills/**` is tracked and
   agent-writable on tier 2/3 and loads host-side as instructions; a change under
   it (or the `.gitignore`/masks that govern it) is security-bearing. (Invariant 5.)
+- **A signal/cleanup handler that dies before its security step** — the teardown
+  trap wrote to stderr under `set -e` *before* calling `cmd_stop`; when the
+  terminal is gone (the closed-terminal / dropped-ssh case the trap exists for)
+  the write hits `EIO`, errexit aborts the handler, and the pod is orphaned with
+  live Secrets — the fix broken by its own headline scenario. Any error-path
+  handler must be errexit-safe and free of dead-fd I/O before the revocation call.
+  (Invariants 4, 6.)
+- **A control added to one call site but not its twin** — the teardown-on-signal
+  trap landed on `cmd_run`'s attach but not `cmd_resume`'s identical
+  `kubectl exec -it` attach, while the doc guarantee read unqualified. Enumerate
+  every sibling site of a repeated security pattern; a copied block is where the
+  next one gets forgotten. (Invariants 4, 6.)
+- **A security assurance stated as fact from an inference** — a comment/skill/doc
+  asserting a compiled-in default (k3s eviction thresholds) as verified when it
+  was only inferred from secondary sources; future readers cite the parenthetical,
+  not the caveat two sentences later. State inferences as inferences until checked
+  at the pinned tag. (Invariant 6.)
 
 ## Execution
 

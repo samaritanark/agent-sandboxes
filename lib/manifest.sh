@@ -174,7 +174,8 @@ ${host_aliases_block}
     # agent-home writes land as a file the operator owns. Group stays the baked
     # 'agent' group (gid 1000): /home/agent is group-writable (docker/
     # Dockerfile.base) and fsGroup 1000 chowns emptyDir volumes to it, so the
-    # baked $HOME and ephemeral volumes stay writable whatever the uid is.
+    # baked \$HOME and ephemeral volumes stay writable whatever the uid is
+    # (escaped: this heredoc expands at render time — see the preStop note below).
     runAsUser: ${pod_uid}
     runAsGroup: 1000
     fsGroup: 1000
