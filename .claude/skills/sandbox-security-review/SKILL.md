@@ -5,8 +5,9 @@ description: >
   using its real threat model — operator trusted, in-sandbox agent adversarial —
   instead of a generic web-app vuln checklist. Use in place of the built-in
   /security-review whenever reviewing changes to bin/sandbox, lib/, setup/,
-  lima/, docker/, manifests/, or the security-bearing docs (PRINCIPLES.md,
-  SECURITY.md, docs/explanation/security-model.md). Checks containment,
+  lima/, docker/, manifests/, the security-bearing docs (PRINCIPLES.md,
+  SECURITY.md, docs/explanation/security-model.md), or the review harness itself
+  (.claude/skills/ and the .gitignore/masks that govern it). Checks containment,
   egress-evasion, audit/forensic integrity, credential lifecycle across ALL
   termination paths, gate integrity, and the truthfulness of security claims —
   and verifies platform behavior, not just the diff text.
@@ -111,6 +112,23 @@ read from committed/attested content — never from the working copy in a way th
 contained agent could self-serve. See security-model.md §§ "Owning betterleaks'
 allowlist inputs" and "Customising the skip list."
 
+   *The review harness is itself a workspace-authored surface.* `.claude/skills/`
+   is tracked in the repo and is **not** masked (`lib/filesystem.sh`
+   `MASKED_FILE_PATHS`/`MASKED_DIR_PATH` omit `.claude`), so on tier 2/3 the
+   in-sandbox agent has read-write access to `.claude/skills/**` — including this
+   file. Its content loads as **instructions into the operator's host-side agent
+   session**, outside the sandbox, so it attacks the review process rather than
+   having to survive containment. Human PR review is the control, but treat any
+   change under `.claude/skills/**` (and the `.gitignore` rules that ship it) as
+   security-bearing and review it with the same lens as `lib/`. Consider whether
+   it should be masked. Note also that `.claude/skills/**` is now *tracked*
+   (the `.gitignore` re-includes it), so a file the in-sandbox agent plants there
+   is swept into a `git add -A` — the review harness can be **propagated to other
+   operators' host sessions via an accidental commit**, not just read in the
+   current one. The residual control is human PR review plus, optionally, a
+   pre-commit guard that rejects `.claude/skills/**` changes not authored
+   host-side.
+
 **6. Security claims must be TRUE.** Every assertion in a doc, code comment, or
 operator-facing message that tells the operator a control holds — "credentials
 are revoked," "the pod owns the Secret," "the breadcrumb records the eviction,"
@@ -126,8 +144,13 @@ the audit record when the path is abnormal. Blast-radius and eviction *tuning*
 are in scope here (they are NOT mere DoS) **when getting them wrong disables a
 security control or widens which sessions are affected.** Size eviction/GC
 settings against **k3s's compiled-in defaults, not vanilla kubelet's** — they
-differ (k3s overrides `EvictionHard`, sets a 10% `EvictionMinimumReclaim` and a
-5-min pressure-transition). Cite the pinned upstream tag when it matters.
+differ: k3s overrides `EvictionHard` (to `imagefs.available<5%,nodefs.available<5%`,
+dropping the vanilla `memory.available<100Mi` threshold entirely) and sets a 10%
+`EvictionMinimumReclaim` (vanilla defaults to 0). The 5-minute
+`evictionPressureTransitionPeriod`, by contrast, is the **vanilla upstream
+default**, not a k3s override — don't cite it as a k3s difference. Confirm each
+against the kubelet args on a real node at the pinned tag; a misattributed
+mechanism is itself an invariant-6 claim.
 
 ## What to report vs. skip (this repo's rules, overriding the generic ones)
 
@@ -159,7 +182,33 @@ a static read. So:
   check it at the **pinned version** (`setup/versions.sh`).
 - **Trace every exit path**, not the happy path — that is where revocation and
   audit gaps live.
+- **Follow claims and prescribed remediations into UNCHANGED code — do not stop
+  at the diff.** The two findings this skill missed on its first run both lived
+  outside the diff: a "teardown runs" claim whose *other* trigger paths (a killed
+  CLI with no signal trap) were never traced, and a "run `sandbox stop`"
+  remediation whose target (`cmd_stop`) was never opened to check it records the
+  eviction. When a change adds/corrects a claim or tells the operator to run a
+  command, `grep` for the mechanism (the trap, the GC owner-delete, the mask) and
+  **open the command it names** before you believe it. Prove absences by searching
+  the whole tree, not the hunk.
+- **Never "clear" an invariant from the changed lines alone.** "The diff's new
+  code looks fine" is not "the invariant holds across every path an operator now
+  travels." Verify the steady state the change produces, not just the delta.
+- **Re-audit the RESIDUAL claims and the tests that guard them.** A change that is
+  a genuine improvement can still leave a neighbouring assertion false (transcript
+  "persists regardless"), or ship a test that asserts a weaker property than the
+  bug needs (a breadcrumb under *any* mount, when `/tmp` is an `emptyDir` mount).
+  Read the guarding test as adversarially as the code.
+- **Review the harness's own introduction.** When the diff adds or edits
+  `.claude/skills/**`, this file, the `.gitignore` rules that ship it, or the
+  masks in `lib/filesystem.sh`, turn every invariant on *those* changes too.
 - **Consult the past-finding library** below and check the diff for analogues.
+
+**Severity calibration.** A security assurance that is false in a state the
+operator can actually occupy **without having opted into the risk** is not LOW —
+weight it by whether the operator consented to the exposure, not by how narrow the
+trigger looks. (A `--keep-alive` gap is an accepted trade-off; a plain session
+orphaning its credentials because the terminal closed is not.)
 
 ## Past findings — check every diff for a recurrence of these
 
@@ -182,6 +231,23 @@ instance.
   authority. (Invariants 2, 5.)
 - **Sudo/PATH and cross-platform gaps** — a control that silently no-ops on one
   platform (macOS/lima vs Linux/WSL) or under a restricted `sudo secure_path`.
+- **Credential survival via a killed CLI, not just eviction** — teardown that runs
+  only on normal exit / pod-eviction leaves a non-`--keep-alive` session's pod and
+  Secrets live when the `sandbox` process itself is signalled or killed (closed
+  terminal, dropped ssh, suspend, `kill`). Prove the trap exists — `grep` the
+  whole CLI — don't assume "the connection falls through to teardown." (Invariants 4, 6.)
+- **Prescribed remediation leaves no durable record** — a doc says "run `sandbox
+  stop`" to fix an abnormal ending, but `cmd_stop` stamps `end_time` at stop time
+  and records no reason, so the remediated `session.json` is indistinguishable
+  from a clean teardown and `sandbox status`/`list` can't surface it. Trace the
+  remediation, not just the claim. (Invariants 3, 4, 6.)
+- **Test asserts a weaker property than the bug requires** — e.g. a breadcrumb
+  under *any* `mountPath` passes even for `/tmp` (`emptyDir`, ephemeral); the test
+  must assert the backing volume kind (`hostPath`). Read guarding tests
+  adversarially. (Invariants 3, 7.)
+- **The review harness as an attack surface** — `.claude/skills/**` is tracked and
+  agent-writable on tier 2/3 and loads host-side as instructions; a change under
+  it (or the `.gitignore`/masks that govern it) is security-bearing. (Invariant 5.)
 
 ## Execution
 
