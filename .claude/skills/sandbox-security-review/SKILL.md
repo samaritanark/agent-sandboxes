@@ -289,6 +289,14 @@ instance.
   was only inferred from secondary sources; future readers cite the parenthetical,
   not the caveat two sentences later. State inferences as inferences until checked
   at the pinned tag. (Invariant 6.)
+- **Revocation ordered last in a re-entrant teardown** — `cmd_stop` ran the four
+  credential-Secret deletions AFTER slow best-effort capture (workspace diff,
+  transcript, Hubble export) and the pod delete. Once teardown can fire at moments
+  the operator didn't choose (a signalled disconnect) where the process may be
+  killed AGAIN mid-run, whatever is ordered last is what gets skipped — so put the
+  security-critical, dependency-free steps FIRST. When a change makes a teardown
+  path newly re-entrant, re-check the ordering of every step inside it, not just
+  the new entry point. (Invariants 4, 7.)
 
 ## Execution
 

@@ -1801,6 +1801,42 @@ cmd_stop() {
     agent_session_id="$(jq -r '.agent_session_id // ""' "${session_json}" 2>/dev/null || echo "")"
   fi
 
+  # Revoke session credentials FIRST — ahead of the slow best-effort capture
+  # (workspace diff, transcript, Hubble export) and the pod delete (PR #93 finding
+  # N3). Teardown is now reachable at moments the operator did not choose (a
+  # signalled disconnect, an eviction remediation) and under conditions where the
+  # process may be killed AGAIN mid-run (a second Ctrl-C, an OOM, power loss). If
+  # that happens, the credential deletions must already be done rather than queued
+  # behind the capture. They have no dependency on the pod or the capture steps;
+  # deleting the Secret objects API-side while the pod still runs is harmless (the
+  # pod keeps its already-mounted copy until it too is deleted below) and revokes
+  # namespace-side as early as possible. The rotate/revoke reminders still print.
+
+  # Delete infra token secret if present (Tier 3)
+  local infra_secret_name="infra-token-${session_id}"
+  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${infra_secret_name}" \
+       &>/dev/null 2>&1; then
+    kubectl delete secret -n "${SANDBOX_NAMESPACE}" "${infra_secret_name}" \
+      --ignore-not-found=true 2>&1 || true
+    warn "REMINDER: Revoke infra token used in this session."
+  fi
+
+  # Delete kubeconfig secret if present (Tier 3 --infra-kubeconfig)
+  local kc_secret_name="kubeconfig-${session_id}"
+  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${kc_secret_name}" \
+       &>/dev/null 2>&1; then
+    delete_kubeconfig_secret "${session_id}"
+    warn "REMINDER: kubeconfig credentials used in this session may still be"
+    warn "         valid on the target cluster. Rotate or let them expire."
+  fi
+
+  # Delete opencode API key secret if present
+  delete_opencode_apikey_secret "${session_id}"
+
+  # Delete profile-declared session-secrets bundle if present. No-op
+  # when the session didn't use any. PRINCIPLES.md rule 2.
+  delete_session_secrets "${session_id}"
+
   # Workspace diff (Tier 2/3)
   if [[ "${tier}" -ge 2 ]] && [[ "${#repos[@]}" -gt 0 ]]; then
     # macOS: flush the agent's final edits from the VM-local copy back to the
@@ -1869,30 +1905,8 @@ cmd_stop() {
   # No-op when the session declared no dependencies.
   teardown_dependencies "${session_id}"
 
-  # Delete infra token secret if present (Tier 3)
-  local infra_secret_name="infra-token-${session_id}"
-  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${infra_secret_name}" \
-       &>/dev/null 2>&1; then
-    kubectl delete secret -n "${SANDBOX_NAMESPACE}" "${infra_secret_name}" \
-      --ignore-not-found=true 2>&1 || true
-    warn "REMINDER: Revoke infra token used in this session."
-  fi
-
-  # Delete kubeconfig secret if present (Tier 3 --infra-kubeconfig)
-  local kc_secret_name="kubeconfig-${session_id}"
-  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${kc_secret_name}" \
-       &>/dev/null 2>&1; then
-    delete_kubeconfig_secret "${session_id}"
-    warn "REMINDER: kubeconfig credentials used in this session may still be"
-    warn "         valid on the target cluster. Rotate or let them expire."
-  fi
-
-  # Delete opencode API key secret if present
-  delete_opencode_apikey_secret "${session_id}"
-
-  # Delete profile-declared session-secrets bundle if present. No-op
-  # when the session didn't use any. PRINCIPLES.md rule 2.
-  delete_session_secrets "${session_id}"
+  # (Session credential Secrets were already revoked near the top of teardown,
+  # ahead of the capture steps and the pod delete — see PR #93 finding N3.)
 
   # Mark session ended
   if [[ -d "${log_dir}" ]]; then

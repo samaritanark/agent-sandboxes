@@ -374,6 +374,93 @@ test_audit_record_end_reason() {
   esac
 }
 
+# N3: cmd_stop must revoke the session credential Secrets BEFORE the slow
+# best-effort capture (workspace diff, transcript, Hubble export) and the pod
+# delete. Teardown is now reachable at moments the operator didn't choose (a
+# signalled disconnect) where the process may be killed again mid-run; if that
+# happens partway, the revocation must already be done rather than queued behind
+# the capture. Run the REAL cmd_stop with recording stubs and assert the order.
+test_cmd_stop_revokes_before_capture() {
+  info "Testing cmd_stop deletes the credential Secrets before capture + pod delete (N3)..."
+  # Earlier tests globally redefine cmd_stop (and other helpers) with stubs; this
+  # test drives the REAL cmd_stop, so restore the genuine definitions first.
+  # bin/sandbox is source-guarded, so this only redefines functions.
+  # shellcheck disable=SC1090
+  source "${SANDBOX_ROOT}/bin/sandbox" >/dev/null 2>&1
+  SANDBOX_NAMESPACE="sandbox"
+  SANDBOX_LOGS_DIR="${TEST_DIR}/logs-n3"
+  local sid="ses-n3"
+  local sdir="${SANDBOX_LOGS_DIR}/${sid}"
+  mkdir -p "${sdir}"
+  # Tier 2 with a repo so the workspace-diff capture runs; agent set so the
+  # transcript capture runs.
+  printf '%s\n' '{"agent":"claude","tier":2,"repos":["/repo/a"],"agent_session_id":"as1"}' \
+    > "${sdir}/session.json"
+
+  local order="${TEST_DIR}/n3-order"
+  : > "${order}"
+
+  resolve_pod_name() { echo "sandbox-${1}"; }
+  # All session Secrets and the pod are "present". Record credential deletions and
+  # the pod delete; keep the end-reason probe on the clean (Running) path.
+  kubectl() {
+    case "$1 $2" in
+      "get secret")   return 0 ;;
+      "delete secret") echo "SECRET:${5}" >> "${order}"; return 0 ;;
+      "get pod")
+        case "$*" in
+          *jsonpath*phase*) echo "Running" ;;
+          *jsonpath*)       echo "" ;;
+          *)                return 0 ;;
+        esac ;;
+      "delete pod")               echo "PODDELETE"  >> "${order}"; return 0 ;;
+      "delete ciliumnetworkpolicy") return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  # Credential-delete helpers (record as SECRET markers).
+  delete_kubeconfig_secret()      { echo "SECRET:kubeconfig"   >> "${order}"; }
+  delete_opencode_apikey_secret() { echo "SECRET:opencode"     >> "${order}"; }
+  delete_session_secrets()        { echo "SECRET:session-bndl" >> "${order}"; }
+  # Capture steps (record as CAPTURE markers) — the slow best-effort work.
+  teardown_workspace_sync()  { :; }
+  capture_workspace_diff()   { echo "CAPTURE:workspace"  >> "${order}"; }
+  sync_agent_home_back()     { :; }
+  host_agent_home()          { echo "/host/agent-home/$1"; }
+  audit_capture_transcript() { echo "CAPTURE:transcript" >> "${order}"; }
+  export_hubble_flows()      { echo "CAPTURE:hubble"     >> "${order}"; }
+  # Remaining teardown tail — no-ops for this test.
+  teardown_dependencies()          { :; }
+  audit_update_end_time()          { :; }
+  audit_record_end_reason()        { :; }
+  audit_record_dependencies_down() { :; }
+
+  cmd_stop "${sid}" >/dev/null 2>&1
+
+  # Every SECRET marker must precede every CAPTURE marker and the PODDELETE.
+  local last_secret first_capture pod_delete
+  last_secret="$(grep -n '^SECRET:'  "${order}" | tail -1 | cut -d: -f1)"
+  first_capture="$(grep -n '^CAPTURE:' "${order}" | head -1 | cut -d: -f1)"
+  pod_delete="$(grep -n '^PODDELETE'  "${order}" | head -1 | cut -d: -f1)"
+
+  local n_secret n_capture
+  n_secret="$(grep -c '^SECRET:'  "${order}")"
+  n_capture="$(grep -c '^CAPTURE:' "${order}")"
+
+  if [[ "${n_secret}" -lt 4 ]]; then
+    fail "expected 4 credential deletions, saw ${n_secret}: $(tr '\n' ' ' < "${order}")"
+  fi
+  [[ "${n_capture}" -ge 1 && -n "${pod_delete}" ]] \
+    || fail "capture/pod-delete markers missing: $(tr '\n' ' ' < "${order}")"
+
+  [[ "${last_secret}" -lt "${first_capture}" ]] \
+    && pass "all credential Secrets revoked before any capture step" \
+    || fail "a capture step ran before a credential deletion: $(tr '\n' ' ' < "${order}")"
+  [[ "${last_secret}" -lt "${pod_delete}" ]] \
+    && pass "all credential Secrets revoked before the pod delete" \
+    || fail "the pod delete ran before a credential deletion: $(tr '\n' ' ' < "${order}")"
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   test_blocker_allows_simple_sessions
@@ -385,6 +472,7 @@ main() {
   test_adopt_session_secrets_ownerrefs
   test_prestop_breadcrumb_persists
   test_audit_record_end_reason
+  test_cmd_stop_revokes_before_capture
   echo "All ${TEST_NAME} tests passed."
 }
 
