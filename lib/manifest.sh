@@ -16,8 +16,9 @@ build_pod_manifest() {
   local pod_name="${8:-sandbox-${session_id}}"
   # "1" if --infra-kubeconfig was supplied (mount kubeconfig secret + set KUBECONFIG)
   local infra_kubeconfig="${9:-}"
-  # Optional hostAlias for the kube API server (so pod DNS doesn't need to
-  # know about it). Both must be set together.
+  # Optional hostAliases for the kube API server(s), so pod DNS doesn't need to
+  # know about them. Comma-joined, index-aligned IP and hostname lists (one
+  # entry per resolved cluster); both empty together when there are none.
   local kube_alias_ip="${10:-}"
   local kube_alias_host="${11:-}"
   shift 11
@@ -105,16 +106,26 @@ EOF
     name_annotation="    sandbox-name: \"${name}\""
   fi
 
-  # hostAliases block — only when both pieces are present.
+  # hostAliases block — one entry per kube API server IP↔host pair. IPs and
+  # hostnames arrive as comma-joined, index-aligned lists (empty when none).
   local host_aliases_block=""
   if [[ -n "${kube_alias_ip}" ]] && [[ -n "${kube_alias_host}" ]]; then
-    host_aliases_block="$(cat <<EOF
-  hostAliases:
-    - ip: "${kube_alias_ip}"
-      hostnames:
-        - "${kube_alias_host}"
-EOF
-)"
+    local -a _alias_ips _alias_hosts
+    local _oldifs="$IFS"
+    IFS=','
+    # shellcheck disable=SC2206
+    _alias_ips=(${kube_alias_ip})
+    # shellcheck disable=SC2206
+    _alias_hosts=(${kube_alias_host})
+    IFS="${_oldifs}"
+    local _ha
+    host_aliases_block="$(
+      printf '  hostAliases:\n'
+      for _ha in "${!_alias_ips[@]}"; do
+        printf '    - ip: "%s"\n      hostnames:\n        - "%s"\n' \
+          "${_alias_ips[$_ha]}" "${_alias_hosts[$_ha]}"
+      done
+    )"
   fi
 
   cat <<EOF

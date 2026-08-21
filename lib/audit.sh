@@ -104,6 +104,9 @@ audit_write_session_json() {
   #   SESSION_KUBE_API_CIDR / SESSION_KUBE_API_PORT — Tier 3 + --infra-kubeconfig
   #     metadata that 'sandbox allow' needs to rebuild the policy without
   #     re-resolving the kube API server. Empty for Tier 1/2.
+  #   SESSION_KUBE_API_CONTEXTS — the merged kubeconfig context name(s) the
+  #     session was handed (comma-joined), so a post-incident reviewer can tie a
+  #     reachable API IP to the identity used against it. Empty for Tier 1/2.
   jq -n \
     --arg id "${session_id}" \
     --arg agent "${agent}" \
@@ -120,6 +123,7 @@ audit_write_session_json() {
     --arg overlay "${SESSION_OVERLAY:-}" \
     --arg kube_api_cidr "${SESSION_KUBE_API_CIDR:-}" \
     --arg kube_api_port "${SESSION_KUBE_API_PORT:-}" \
+    --arg kube_api_contexts "${SESSION_KUBE_API_CONTEXTS:-}" \
     '{
       id: $id,
       agent: $agent,
@@ -136,6 +140,7 @@ audit_write_session_json() {
       overlay: $overlay,
       kube_api_cidr: $kube_api_cidr,
       kube_api_port: $kube_api_port,
+      kube_api_contexts: $kube_api_contexts,
       allowed_domains: $domains,
       retention_days: $retention_days
     }' > "${log_dir}/session.json"

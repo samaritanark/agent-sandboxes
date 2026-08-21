@@ -6,13 +6,15 @@ set -euo pipefail
 
 # build_cilium_policy — emit CiliumNetworkPolicy YAML for a session
 # Args: session_id agent tier kube_api_cidr kube_api_port [allow_domains...]
-#   kube_api_cidr: CIDR of the Tier 3 kube API server (e.g. "10.0.0.1/32"),
-#                  or "" when there is none. Allowed via toCIDR rather than
-#                  toFQDNs: when the API server is pinned as a pod hostAlias,
-#                  kubectl resolves it from /etc/hosts with no DNS query, so a
-#                  toFQDNs rule would never be populated by the DNS proxy.
-#   kube_api_port: TCP port for the kube API server (e.g. "6443"); used only
-#                  when kube_api_cidr is non-empty.
+#   kube_api_cidr: comma-joined CIDRs of the Tier 3 kube API server(s) (e.g.
+#                  "10.0.0.1/32" or "10.0.0.1/32,10.0.0.2/32"), or "" when there
+#                  is none. Allowed via toCIDR rather than toFQDNs: when the API
+#                  server is pinned as a pod hostAlias, kubectl resolves it from
+#                  /etc/hosts with no DNS query, so a toFQDNs rule would never be
+#                  populated by the DNS proxy.
+#   kube_api_port: comma-joined TCP ports, index-aligned with kube_api_cidr
+#                  (e.g. "6443" or "6443,443"); used only when kube_api_cidr is
+#                  non-empty. A missing/short entry defaults to 443.
 #   allow_domains: extra FQDNs to allow on 443/TCP beyond the built-in
 #                  per-agent and per-tier lists (--allow-domain, --infra-endpoint).
 build_cilium_policy() {
@@ -134,18 +136,33 @@ EOF
 )"$'\n'
   done
 
-  # Tier 3 kube API server — allowed by IP (see kube_api_cidr note above).
+  # Tier 3 kube API server(s) — allowed by IP (see kube_api_cidr note above).
+  # One toCIDR rule per cluster, from the comma-joined, index-aligned lists.
   local kube_cidr_block=""
   if [[ -n "${kube_api_cidr}" ]]; then
-    kube_cidr_block="$(cat <<EOF
+    local -a _kcidrs _kports
+    local _oldifs="$IFS"
+    IFS=','
+    # shellcheck disable=SC2206
+    _kcidrs=(${kube_api_cidr})
+    # shellcheck disable=SC2206
+    _kports=(${kube_api_port})
+    IFS="${_oldifs}"
+    local _kc _kp
+    for _kc in "${!_kcidrs[@]}"; do
+      _kp="${_kports[$_kc]:-443}"
+      [[ -z "${_kp}" ]] && _kp="443"
+      kube_cidr_block+="$(cat <<EOF
     - toCIDR:
-        - "${kube_api_cidr}"
+        - "${_kcidrs[$_kc]}"
       toPorts:
         - ports:
-            - port: "${kube_api_port:-443}"
+            - port: "${_kp}"
               protocol: TCP
 EOF
-)"
+)"$'\n'
+    done
+    kube_cidr_block="${kube_cidr_block%$'\n'}"
   fi
 
   # Blocked CIDRs — deny egress to forbidden IP ranges even when an allow-listed
