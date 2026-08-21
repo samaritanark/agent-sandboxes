@@ -38,6 +38,19 @@ and can be combined:
   `blocked_cidrs` — so an accidentally-supplied production cluster fails fast
   rather than being silently allowlisted. See [Never-allow](persistent-domains.md#never-allow-a-personal-block-list).
 
+  The API server's port is always granted via a `toCIDR` rule for the
+  resolved IP — the only thing that matters for a genuinely remote cluster.
+  `sandbox run` additionally checks whether that IP is one of the host's own
+  addresses (e.g. a local k3d cluster on the same machine; see
+  [Local k3d cluster on podman](local-k3d-podman.md)) and, only in that case,
+  also grants the port via a Cilium `toEntities: host` rule. This grant is
+  deliberately conditional, not automatic for every Tier 3 session: unlike a
+  `toCIDR` rule, `toEntities: host` matches on the sandbox's own node rather
+  than on the resolved IP, so granting it unconditionally would open a path
+  from every Tier 3 pod to the sandbox's own control plane on that port —
+  exactly the kind of reach the egress policy exists to prevent — even for
+  sessions talking to a genuinely remote cluster.
+
 Example:
 
 ```bash

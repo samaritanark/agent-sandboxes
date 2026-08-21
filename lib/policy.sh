@@ -14,9 +14,21 @@ set -euo pipefail
 #                  populated by the DNS proxy.
 #   kube_api_port: comma-joined TCP ports, index-aligned with kube_api_cidr
 #                  (e.g. "6443" or "6443,443"); used only when kube_api_cidr is
-#                  non-empty. A missing/short entry defaults to 443.
+#                  non-empty. A missing/short entry defaults to 443. Granted via
+#                  toCIDR, and per-index ALSO via Cilium's reserved:host
+#                  toEntities when that index is "true" in SESSION_KUBE_HOST_
+#                  ENTITY — see that block below for why toCIDR alone isn't
+#                  reliable when the infra cluster happens to be running on
+#                  this same node, and why the host-entity grant must stay
+#                  gated to that case.
 #   allow_domains: extra FQDNs to allow on 443/TCP beyond the built-in
 #                  per-agent and per-tier lists (--allow-domain, --infra-endpoint).
+# Reads (optional globals, same read-from-env convention as SESSION_DEP_ENDPOINTS):
+#   SESSION_KUBE_HOST_ENTITY: comma-joined, index-aligned with kube_api_cidr —
+#                  "true" at an index to also grant that cluster's kube API
+#                  port via toEntities: host, "" to skip it. Set by bin/sandbox
+#                  only for clusters it has determined resolve to one of this
+#                  host's own addresses (the same-node k3d/podman case).
 build_cilium_policy() {
   local session_id="$1"
   local agent="$2"
@@ -138,15 +150,42 @@ EOF
 
   # Tier 3 kube API server(s) — allowed by IP (see kube_api_cidr note above).
   # One toCIDR rule per cluster, from the comma-joined, index-aligned lists.
+  # Per-cluster, ALSO via Cilium's reserved:host identity when the caller has
+  # identified that cluster as the same-node case (via the SESSION_KUBE_HOST_
+  # ENTITY global — a comma-joined, index-aligned "true"/empty list, same
+  # convention as kube_api_cidr/kube_api_port, and same read-from-env
+  # convention as SESSION_DEP_ENDPOINTS above). Confirmed on real hardware: a
+  # toCIDR rule alone gets treated as ordinary "world" egress and masquerades
+  # out the primary interface, which then needs the interface/switch to
+  # hairpin the packet back to the same host when the infra cluster's API
+  # server happens to be running on this very node (e.g. a local k3d/podman
+  # cluster) — not something every network supports (failed identically over
+  # both Wi-Fi and wired Ethernet here). toEntities: host is Cilium's
+  # purpose-built, no-physical-NIC path for node-local traffic (the same one
+  # pods use to reach kubelet), verified working in isolation before this
+  # landed.
+  #
+  # This must stay conditional, not unconditional-whenever-kube_api_cidr-is-
+  # set: toEntities: host matches on the *sandbox's own node*, not on a given
+  # cluster's IP, so an unconditional rule would open pod → this node on that
+  # cluster's port for every Tier 3 session, including genuinely remote
+  # ones — reaching the very k3s control plane the policy exists to fence
+  # off, if a remote cluster's API happens to share the same port (6443 is
+  # the default for both). The caller (bin/sandbox) is responsible for only
+  # marking a cluster's index "true" in SESSION_KUBE_HOST_ENTITY when that
+  # cluster's IP was resolved to be one of this host's own addresses.
   local kube_cidr_block=""
+  local kube_host_entity_block=""
   if [[ -n "${kube_api_cidr}" ]]; then
-    local -a _kcidrs _kports
+    local -a _kcidrs _kports _kentities
     local _oldifs="$IFS"
     IFS=','
     # shellcheck disable=SC2206
     _kcidrs=(${kube_api_cidr})
     # shellcheck disable=SC2206
     _kports=(${kube_api_port})
+    # shellcheck disable=SC2206
+    _kentities=(${SESSION_KUBE_HOST_ENTITY:-})
     IFS="${_oldifs}"
     local _kc _kp
     for _kc in "${!_kcidrs[@]}"; do
@@ -161,8 +200,20 @@ EOF
               protocol: TCP
 EOF
 )"$'\n'
+      if [[ "${_kentities[$_kc]:-}" == "true" ]]; then
+        kube_host_entity_block+="$(cat <<EOF
+    - toEntities:
+        - host
+      toPorts:
+        - ports:
+            - port: "${_kp}"
+              protocol: TCP
+EOF
+)"$'\n'
+      fi
     done
     kube_cidr_block="${kube_cidr_block%$'\n'}"
+    kube_host_entity_block="${kube_host_entity_block%$'\n'}"
   fi
 
   # Blocked CIDRs — deny egress to forbidden IP ranges even when an allow-listed
@@ -232,6 +283,7 @@ ${fqdn_block}
             - port: "443"
               protocol: TCP
 ${dep_endpoints_block}${kube_cidr_block}
+${kube_host_entity_block}
 ${egress_deny_block}
   ingress:
     # Allow return traffic for all outbound connections.

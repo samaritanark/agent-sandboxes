@@ -107,6 +107,12 @@ audit_write_session_json() {
   #   SESSION_KUBE_API_CONTEXTS — the merged kubeconfig context name(s) the
   #     session was handed (comma-joined), so a post-incident reviewer can tie a
   #     reachable API IP to the identity used against it. Empty for Tier 1/2.
+  #   SESSION_KUBE_HOST_ENTITY — comma-joined, index-aligned with
+  #     SESSION_KUBE_API_CIDR; "true" at an index whose kube API server
+  #     resolved to this same host (see lib/network.sh's host_owns_ipv4);
+  #     gates build_cilium_policy's per-cluster reserved:host grant.
+  #     Persisted so resume/hot-reload rebuild the identical policy shape
+  #     without re-probing.
   jq -n \
     --arg id "${session_id}" \
     --arg agent "${agent}" \
@@ -124,6 +130,7 @@ audit_write_session_json() {
     --arg kube_api_cidr "${SESSION_KUBE_API_CIDR:-}" \
     --arg kube_api_port "${SESSION_KUBE_API_PORT:-}" \
     --arg kube_api_contexts "${SESSION_KUBE_API_CONTEXTS:-}" \
+    --arg kube_host_entity "${SESSION_KUBE_HOST_ENTITY:-}" \
     '{
       id: $id,
       agent: $agent,
@@ -141,6 +148,7 @@ audit_write_session_json() {
       kube_api_cidr: $kube_api_cidr,
       kube_api_port: $kube_api_port,
       kube_api_contexts: $kube_api_contexts,
+      kube_host_entity: $kube_host_entity,
       allowed_domains: $domains,
       retention_days: $retention_days
     }' > "${log_dir}/session.json"

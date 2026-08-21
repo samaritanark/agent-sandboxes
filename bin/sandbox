@@ -924,10 +924,12 @@ cmd_run() {
   ###########################################################################
   local kubeconfig_minified=""
   SESSION_KUBE_API_CONTEXTS=""   # merged context names for the audit trail (global)
+  SESSION_KUBE_HOST_ENTITY=""    # comma-joined, index-aligned "true"/"" per cluster (global)
   local -a kube_api_cidrs=()     # resolved API server CIDRs (ip/32), one per cluster
   local -a kube_api_ports=()     # API server ports, index-aligned with kube_api_cidrs
   local -a kube_alias_ips=()     # hostAlias IPs, index-aligned with kube_api_cidrs
   local -a kube_alias_hosts=()   # hostAlias hostnames, index-aligned
+  local -a kube_host_entities=() # "true"/"" per cluster, index-aligned with kube_api_cidrs
   if [[ "${#opt_infra_kubeconfigs[@]}" -gt 0 ]]; then
     local _kc_multi="false"
     [[ "${#opt_infra_kubeconfigs[@]}" -gt 1 ]] && _kc_multi="true"
@@ -1031,6 +1033,19 @@ cmd_run() {
         _kip="$(getent ahostsv4 "${_khost}" 2>/dev/null | awk 'NR==1 {print $1}')"
       fi
 
+      # Reject a loopback API address outright. `k3d kubeconfig get` writes
+      # `server: https://127.0.0.1:<port>` — correct for kubectl on the host,
+      # meaningless from inside a pod, where 127.0.0.1 means "this pod," not
+      # "the host." There's nothing functional to preserve (toCIDR on a pod's
+      # own loopback reaches nothing), and letting it through would silently
+      # widen egress: the same-node check below treats loopback as "this host"
+      # and adds the reserved:host grant, but the operator only ever sees the
+      # toCIDR side fail and never learns their egress got broadened. Fail
+      # fast and point at the fix instead.
+      if [[ -n "${_kip}" ]] && is_loopback_ipv4 "${_kip}"; then
+        die "kubeconfig '${_kc}' server resolves to loopback (${_kip}); a pod's 127.0.0.1 is its own network namespace, not the host. Rewrite the server address with examples/k3d-podman/bake-kubeconfig.sh."
+      fi
+
       # Close the auto-allowlist bypass: each API host was appended to
       # opt_allow_domains AFTER the block-validation loop ran, so validate it
       # (and the resolved IP) now — before any policy/pod/Secret is created — so
@@ -1044,6 +1059,23 @@ cmd_run() {
         kube_api_ports+=("${_kport:-443}")
         kube_alias_ips+=("${_kip}")
         kube_alias_hosts+=("${_khost}")
+
+        # Same-node detection: only when this cluster's IP is actually one of
+        # this host's own addresses (e.g. a local k3d/podman cluster) does the
+        # reserved:host egress grant in lib/policy.sh get added for it. Gating
+        # this per-cluster — rather than granting it unconditionally for every
+        # Tier 3 session — keeps a genuinely remote cluster's egress exactly as
+        # narrow as it is today: reserved:host matches this node, not the
+        # cluster's IP, so an unconditional grant would also open pod → this
+        # host on that cluster's port for remote clusters too, reaching the
+        # sandbox's own confining control plane if a remote API happens to
+        # share its port (6443 by default, same as ours).
+        if host_owns_ipv4 "${_kip}"; then
+          kube_host_entities+=("true")
+          echo "  Detected same-node kube API server (${_kip}) — also granting egress via Cilium's reserved:host identity."
+        else
+          kube_host_entities+=("")
+        fi
       else
         warn "Could not resolve ${_khost} on host; the pod will rely on cluster"
         warn "  DNS and this cluster's toFQDNs allowlist entry. If the pod fails"
@@ -1221,11 +1253,13 @@ cmd_run() {
   if [[ "${#kube_api_cidrs[@]}" -gt 0 ]]; then
     SESSION_KUBE_API_CIDR="$(IFS=,; printf '%s' "${kube_api_cidrs[*]}")"
     SESSION_KUBE_API_PORT="$(IFS=,; printf '%s' "${kube_api_ports[*]}")"
+    SESSION_KUBE_HOST_ENTITY="$(IFS=,; printf '%s' "${kube_host_entities[*]}")"
   else
     SESSION_KUBE_API_CIDR=""
     SESSION_KUBE_API_PORT=""
+    SESSION_KUBE_HOST_ENTITY=""
   fi
-  export SESSION_KUBE_API_CIDR SESSION_KUBE_API_PORT SESSION_KUBE_API_CONTEXTS
+  export SESSION_KUBE_API_CIDR SESSION_KUBE_API_PORT SESSION_KUBE_API_CONTEXTS SESSION_KUBE_HOST_ENTITY
 
   audit_write_session_json \
     "${log_dir}" \
@@ -1883,6 +1917,8 @@ recreate_session_pod() {
   user="$(jq -r '.user // "unknown"' "${sj}")"
   kube_api_cidr="$(jq -r '.kube_api_cidr // ""' "${sj}")"
   kube_api_port="$(jq -r '.kube_api_port // ""' "${sj}")"
+  SESSION_KUBE_HOST_ENTITY="$(jq -r '.kube_host_entity // ""' "${sj}")"
+  export SESSION_KUBE_HOST_ENTITY
 
   local -a repos=()
   read_into_array repos < <(jq -r '.repos[]? // empty' "${sj}")
@@ -3286,6 +3322,8 @@ cmd_allow() {
   tier="$(jq -r '.tier' "${session_json}")"
   kube_api_cidr="$(jq -r '.kube_api_cidr // ""' "${session_json}")"
   kube_api_port="$(jq -r '.kube_api_port // ""' "${session_json}")"
+  SESSION_KUBE_HOST_ENTITY="$(jq -r '.kube_host_entity // ""' "${session_json}")"
+  export SESSION_KUBE_HOST_ENTITY
 
   # Compute the new "extras" list = (existing allowed_domains ∪ new) –
   # (agent_domains ∪ tier_domains). build_cilium_policy re-adds agent +
