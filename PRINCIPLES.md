@@ -397,13 +397,26 @@ not push any changes from it, preserve the audit log, and review what
 happened before deciding whether any of the work is salvageable.
 
 A session's audit log is written by `sandbox stop`, and most abnormal
-endings still reach it — if a pod crashes or is evicted while you are
-attached, the session disconnects and teardown runs as usual. The one
-gap is a detached (`--keep-alive`) session that the node evicts under
-resource pressure: its teardown never runs, so the Hubble flow export
-for that session is lost. Its credentials are still revoked — the
-session Secrets are owned by the pod and garbage-collected on eviction
-— and its transcript still persists on the host, but treat a session
-that ended by eviction as one whose network-flow record may be
-incomplete. The pod leaves a `.sandbox-termination` breadcrumb in its
-agent-home to mark this case.
+endings still reach it — if a pod crashes or is evicted during a normal
+(non-`--keep-alive`) session, the broken connection falls through to
+teardown, which runs as usual, revoking credentials and exporting the
+Hubble flows. The gap is a `--keep-alive` session — whether or not you
+are still attached to it — that the node evicts under resource pressure:
+nothing runs teardown, so the Hubble flow export is lost ***and the
+session's credentials are not revoked automatically***. A node-pressure
+eviction leaves the pod object behind in `Failed`/`Evicted` state
+rather than deleting it, so the ownerReference on the session Secrets
+never triggers garbage collection — the infra token and any kubeconfig
+stay live in the namespace until an operator acts. Run `sandbox stop
+<id>` to close such a session: it deletes the Evicted pod and its
+Secrets after the fact and captures what audit state survives (the
+transcript persists on the host regardless). Treat any session that
+ended by eviction as one whose network-flow record may be incomplete.
+
+To find these sessions, rely on operator-side state, not on anything
+the pod wrote: a session whose `session.json` has no `end_time` and
+whose pod is absent or `Failed` ended without teardown. The pod also
+tries to drop a `.sandbox-termination` breadcrumb in its agent-home,
+but that file lives in a directory the sandboxed agent can write, so
+treat it as a hint an eviction happened, never as evidence of what
+happened.

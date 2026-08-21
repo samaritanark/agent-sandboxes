@@ -1453,8 +1453,10 @@ cmd_run() {
 
   # Adopt the session's credential Secrets to the pod (ownerReference) as soon as
   # it has a UID — before the readiness wait — so Kubernetes GC reaps them if the
-  # pod is later evicted, a path that bypasses cmd_stop (PR #92 finding F3). No-op
-  # when the session created no such secrets.
+  # pod OBJECT is later deleted without cmd_stop running (a manual delete, a
+  # namespace teardown, or the sweep of an Evicted pod). An eviction alone leaves
+  # the pod object behind and does NOT trigger GC (PR #92 finding F3; see
+  # adopt_session_secrets). No-op when the session created no such secrets.
   local pod_uid_for_adopt
   pod_uid_for_adopt="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
     -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
@@ -1491,8 +1493,10 @@ cmd_run() {
     echo "==> Verifying per-session network identity..."
     if ! ( assert_session_identity_distinct "${pod_name}" ); then
       echo "==> Identity assertion failed; tearing down session ${session_id}." >&2
-      teardown_partial_session "${session_id}" "${pod_name}" || true
-      die "Per-session network identity could not be verified; aborted."
+      if teardown_partial_session "${session_id}" "${pod_name}"; then
+        die "Per-session network identity could not be verified; session torn down."
+      fi
+      die "Per-session network identity could not be verified, and teardown left the pod behind. Run 'sandbox stop ${session_id}' and check for leftover secrets."
     fi
 
     # The session pod owns the dependency objects: Kubernetes GC reaps them if
@@ -1506,8 +1510,10 @@ cmd_run() {
     if ! bring_up_dependencies "${session_id}" "${opt_tier}" "${pod_name}" \
          "${owner_uid}" "${log_dir}"; then
       echo "==> Dependency startup failed; tearing down session ${session_id}." >&2
-      teardown_partial_session "${session_id}" "${pod_name}" || true
-      die "One or more dependencies failed to start; aborted."
+      if teardown_partial_session "${session_id}" "${pod_name}"; then
+        die "One or more dependencies failed to start; session torn down."
+      fi
+      die "One or more dependencies failed to start, and teardown left the pod behind. Run 'sandbox stop ${session_id}' and check for leftover secrets."
     fi
 
     # Record the resolved dependencies (versions, egress allowlists, up-times)

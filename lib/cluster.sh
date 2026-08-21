@@ -387,12 +387,15 @@ create_kubeconfig_secret() {
 }
 
 # adopt_session_secrets — set an ownerReference on each of the session's
-# credential Secrets so Kubernetes garbage-collects them whenever the session
-# pod is deleted BY ANY PATH, including a kubelet eviction that bypasses
-# cmd_stop entirely (PR #92 finding F3). Without this, a disk- or memory-
-# pressure eviction of the pod leaves infra-token-*/kubeconfig-* live in the
-# namespace with no revocation and no teardown — an anti-forensics primitive an
-# in-sandbox agent can trigger by filling its own ephemeral storage.
+# credential Secrets so Kubernetes garbage-collects them when the session pod
+# OBJECT is deleted without cmd_stop having run: a manual `kubectl delete pod`,
+# a namespace teardown, or the eventual sweep of an Evicted pod. Owner-reference
+# GC fires on DELETION of the owner, not on it terminating — a node-pressure
+# eviction leaves the pod object behind in Failed/Evicted state, so it does NOT
+# trigger this cascade. An evicted --keep-alive session's Secrets therefore stay
+# live in the namespace until `sandbox stop` deletes the (Evicted) pod and the
+# Secrets (see PRINCIPLES.md). This is a backstop for pod-deletion paths cmd_stop
+# never runs on, not a revocation guarantee under eviction (PR #92 finding F3).
 #
 # The Secrets are created before the pod exists (they must be mountable at pod
 # creation), so the owner UID is unknown at creation time; we patch it in here
@@ -406,7 +409,31 @@ adopt_session_secrets() {
   local session_id="$1"
   local owner_name="$2"
   local owner_uid="$3"
-  [[ -z "${owner_name}" || -z "${owner_uid}" ]] && return 0
+
+  local secret
+  local -a session_secrets=(
+    "infra-token-${session_id}"
+    "kubeconfig-${session_id}"
+    "opencode-apikey-${session_id}"
+    "$(session_secrets_name "${session_id}")"
+  )
+
+  # No pod UID (lookup failed, or the pod vanished before we read it): we cannot
+  # set an ownerReference. Don't skip silently — but stay quiet for the common
+  # tier-1 case with no Secrets. Warn only when a credential Secret actually
+  # exists, so its operator learns it now rests entirely on `sandbox stop` for
+  # revocation, with no GC backstop (R6).
+  if [[ -z "${owner_name}" || -z "${owner_uid}" ]]; then
+    for secret in "${session_secrets[@]}"; do
+      if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${secret}" &>/dev/null; then
+        warn "Could not resolve pod UID for session ${session_id}; its credential" \
+             "Secrets were not adopted for garbage collection and now rely on" \
+             "'sandbox stop' for revocation."
+        break
+      fi
+    done
+    return 0
+  fi
 
   local patch
   patch="$(cat <<EOF
@@ -414,17 +441,13 @@ adopt_session_secrets() {
 EOF
 )"
 
-  local secret
-  for secret in \
-    "infra-token-${session_id}" \
-    "kubeconfig-${session_id}" \
-    "opencode-apikey-${session_id}" \
-    "$(session_secrets_name "${session_id}")"; do
+  for secret in "${session_secrets[@]}"; do
     kubectl get secret -n "${SANDBOX_NAMESPACE}" "${secret}" &>/dev/null || continue
     kubectl patch secret -n "${SANDBOX_NAMESPACE}" "${secret}" \
       --type=merge -p "${patch}" >/dev/null 2>&1 \
       || warn "Could not set pod ownerReference on secret ${secret}; it will be" \
-              "reaped by cmd_stop but not by GC if the pod is evicted."
+              "reaped by 'sandbox stop' but not garbage-collected if the pod" \
+              "object is later deleted without it."
   done
 }
 

@@ -258,12 +258,70 @@ test_adopt_session_secrets_ownerrefs() {
     && pass "ownerReference carries the pod name and uid" \
     || fail "patch payload missing pod name/uid"
 
-  # No UID (pod not yet created / lookup failed): adopt must not patch anything.
+  # No UID (pod not yet created / lookup failed): adopt must not patch anything,
+  # but because a credential Secret is present it must WARN rather than skip
+  # silently (R6) — those Secrets now rely on 'sandbox stop' for revocation.
   : > "${patchlog}"
-  adopt_session_secrets "sess1" "sandbox-sess1" ""
+  local warnout
+  warnout="$(adopt_session_secrets "sess1" "sandbox-sess1" "" 2>&1 >/dev/null)"
   [[ ! -s "${patchlog}" ]] \
-    && pass "empty pod uid is a no-op" \
+    && pass "empty pod uid is a no-op (no patch)" \
     || fail "adopt patched with an unknown owner uid"
+  case "${warnout}" in
+    *"Could not resolve pod UID"*) pass "empty pod uid with a present secret warns" ;;
+    *) fail "empty pod uid did not warn despite a present secret" ;;
+  esac
+
+  # ...and with NO Secrets present the empty-UID path stays quiet (tier-1 case).
+  present=" "
+  warnout="$(adopt_session_secrets "sess1" "sandbox-sess1" "" 2>&1 >/dev/null)"
+  [[ -z "${warnout}" ]] \
+    && pass "empty pod uid with no secrets is silent" \
+    || fail "empty pod uid warned with no secrets present"
+}
+
+# R2: the preStop breadcrumb must be written INSIDE the host-mounted agent-home
+# (agent_config_mount), not $HOME=/home/agent, or it lands in the ephemeral
+# container layer and dies with the pod. Invisible without a live cluster, so
+# assert it against the rendered manifest: the breadcrumb path must be a prefix
+# match on one of the container's volumeMount paths.
+test_prestop_breadcrumb_persists() {
+  info "Testing preStop breadcrumb is written into a mounted volume path..."
+  SANDBOX_NAMESPACE="sandbox"
+  # Earlier tests stub build_pod_manifest() globally; restore the real one.
+  # shellcheck disable=SC1090
+  source "${SANDBOX_ROOT}/lib/manifest.sh"
+  # Stub the environment-sensitive helpers so build_pod_manifest renders
+  # deterministically without touching the host filesystem or a live cluster.
+  # (bash dynamic scoping makes these locals/overrides visible to the callee.)
+  resolve_agent_home() { echo "/host/agent-home/${1}"; }
+  resolve_pod_uid() { echo 1000; }
+  local POD_CPU_LIMIT="1" POD_MEM_LIMIT_GI="2" POD_EPHEMERAL_LIMIT_GI="4"
+  local POD_CPU_REQUEST="500m" POD_MEM_REQUEST_GI="1" POD_EPHEMERAL_REQUEST_GI="2"
+
+  local yaml
+  yaml="$(build_pod_manifest sess-bc claude 1 img 2>/dev/null)" || true
+
+  local bc_path mount_path
+  bc_path="$(printf '%s\n' "${yaml}" | grep -o '/[^"]*/.sandbox-termination' | head -1 || true)"
+  bc_path="${bc_path%/.sandbox-termination}"
+  if [[ -z "${bc_path}" ]]; then
+    fail "no .sandbox-termination breadcrumb path found in the rendered manifest"
+    return
+  fi
+
+  # Does any mountPath in the manifest contain the breadcrumb directory?
+  local matched="false"
+  while IFS= read -r mount_path; do
+    mount_path="${mount_path#*mountPath: }"
+    case "${bc_path}/" in
+      "${mount_path}"/*|"${mount_path}") matched="true"; break ;;
+    esac
+  done < <(printf '%s\n' "${yaml}" | grep 'mountPath:')
+
+  [[ "${matched}" == "true" ]] \
+    && pass "breadcrumb path ${bc_path} is under a container volumeMount" \
+    || fail "breadcrumb path ${bc_path} is NOT under any volumeMount (ephemeral)"
 }
 
 main() {
@@ -275,6 +333,7 @@ main() {
   test_recreate_tears_down_on_pod_failure
   test_teardown_partial_session_integrity
   test_adopt_session_secrets_ownerrefs
+  test_prestop_breadcrumb_persists
   echo "All ${TEST_NAME} tests passed."
 }
 
