@@ -1572,8 +1572,42 @@ cmd_run() {
     [[ "${#_mcp_args[@]}" -gt 0 ]] && agent_cmd+=("${_mcp_args[@]}")
   fi
 
+  # While the operator is ATTACHED, a killed CLI process (a closed terminal or
+  # dropped ssh → SIGHUP, `kill` → SIGTERM, a laptop suspend) would otherwise
+  # skip the teardown below, leaving a NON-keep-alive pod running with its infra
+  # token and kubeconfig Secrets live (PR #93 finding F1). Trap those signals for
+  # the duration of the attach and run teardown from the handler. Guards:
+  #   - keep-alive is exempt: its whole contract is "leave the pod running after
+  #     disconnect", and PRINCIPLES.md documents that its credentials rely on a
+  #     later `sandbox stop`.
+  #   - the handler disarms the trap first (one-shot) and sets _session_torn_down;
+  #     immediately after the attach returns we disarm again and Step 12 skips its
+  #     own teardown when the flag is set — so cmd_stop runs exactly once whether
+  #     the attach ended normally or via a trapped signal.
+  # Scope: this covers the attach only, NOT the pre-attach setup (readiness wait,
+  # dependency bring-up) — those run in subshells where an armed trap would fire
+  # in both child and parent — nor an untrappable SIGKILL/OOM/power loss. A signal
+  # in those windows still needs a manual `sandbox stop` (documented in
+  # PRINCIPLES.md). Not trapping EXIT: it fires on normal completion too and would
+  # double-teardown or tear down a keep-alive pod.
+  local _session_torn_down="false"
+  _teardown_on_signal() {
+    trap - INT TERM HUP
+    [[ "${opt_keep_alive}" == "true" ]] && return 0
+    [[ "${_session_torn_down}" == "true" ]] && return 0
+    _session_torn_down="true"
+    echo "" >&2
+    echo "==> Session ${session_id} interrupted; running teardown so credentials are revoked." >&2
+    cmd_stop "${session_id}" || true
+  }
+  trap '_teardown_on_signal' INT TERM HUP
+
   echo "==> Attaching to session (Ctrl-D or 'exit' to end)..."
   kubectl exec -n "${SANDBOX_NAMESPACE}" -it "${pod_name}" -c agent -- "${agent_cmd[@]}" || true
+
+  # Attach returned — normally, or because a trapped signal already tore the
+  # session down. Disarm so neither Step 12 nor a late signal re-enters cmd_stop.
+  trap - INT TERM HUP
 
   ###########################################################################
   # Step 12: Disconnect — tear down by default; --keep-alive preserves the pod
@@ -1584,8 +1618,9 @@ cmd_run() {
     echo "    Resume:  sandbox resume ${session_id}"
     echo "    Stop:    sandbox stop ${session_id}"
     echo "    Logs:    ${log_dir}"
-  else
+  elif [[ "${_session_torn_down}" != "true" ]]; then
     echo "==> Disconnected — tearing down session to free cluster resources..."
+    _session_torn_down="true"
     cmd_stop "${session_id}"
     echo ""
     echo "    Conversation history preserved in ~/.sandbox/agent-home/${opt_agent}/"
@@ -1764,6 +1799,29 @@ cmd_stop() {
   export_hubble_flows "${session_id}" "${log_dir}" \
     || warn "Could not export Hubble flows (is hubble CLI available?)"
 
+  # Capture HOW the session ended BEFORE deleting the pod (PR #93 finding F3). A
+  # node-pressure eviction leaves the pod object in Failed/Evicted state; without
+  # this, once cmd_stop deletes it the remediated session.json is
+  # byte-indistinguishable from a clean teardown and cmd_list shows it as
+  # 'running' forever. Read phase/reason/message here; stamp it at end-time below.
+  local end_reason="" end_detail=""
+  if kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null 2>&1; then
+    local pod_phase pod_reason pod_message
+    pod_phase="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+      -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    pod_reason="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+      -o jsonpath='{.status.reason}' 2>/dev/null || true)"
+    pod_message="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+      -o jsonpath='{.status.message}' 2>/dev/null || true)"
+    if [[ "${pod_phase}" == "Failed" ]]; then
+      # "Evicted" is the kubelet's reason for node-pressure eviction; keep any
+      # other Failed reason verbatim so the record stays honest.
+      end_reason="$([[ "${pod_reason}" == "Evicted" ]] && echo "evicted" || echo "failed")"
+      end_detail="${pod_reason}${pod_message:+: ${pod_message}}"
+      warn "Session pod ended abnormally (phase=${pod_phase}${pod_reason:+, reason=${pod_reason}}) — teardown did not run at eviction time."
+    fi
+  fi
+
   # Delete pod
   if kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null 2>&1; then
     kubectl delete pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" --grace-period=10 2>&1
@@ -1813,6 +1871,10 @@ cmd_stop() {
     local end_time
     end_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     audit_update_end_time "${log_dir}" "${end_time}"
+    # Record an abnormal ending (eviction/Failed) captured above so the
+    # remediated session is distinguishable from a clean teardown (F3). No-op on
+    # the normal path (empty reason).
+    audit_record_end_reason "${log_dir}" "${end_reason}" "${end_detail}"
     # Stamp the dependency down-times alongside the session end (§2.6). No-op
     # when the session declared no dependencies.
     audit_record_dependencies_down "${log_dir}" "${end_time}"

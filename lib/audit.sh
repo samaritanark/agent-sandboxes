@@ -174,6 +174,29 @@ audit_update_end_time() {
   mv "${tmp}" "${session_json}"
 }
 
+# audit_record_end_reason — record HOW a session ended into session.json, so a
+# remediated eviction is not byte-indistinguishable from a clean teardown (PR #93
+# finding F3). `reason` is a short machine token ("evicted"), `detail` the
+# kubelet's human message. Operator-side, out of the sandboxed agent's reach.
+# No-op when reason is empty (the normal, clean-teardown path leaves the field
+# absent so its presence alone flags an abnormal ending).
+audit_record_end_reason() {
+  local log_dir="$1"
+  local reason="$2"
+  local detail="${3:-}"
+  local session_json="${log_dir}/session.json"
+
+  [[ -n "${reason}" ]] || return 0
+  [[ -f "${session_json}" ]] || return 0
+
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg reason "${reason}" --arg detail "${detail}" \
+    '.end_reason = $reason | .end_detail = $detail' \
+    "${session_json}" > "${tmp}"
+  mv "${tmp}" "${session_json}"
+}
+
 # audit_record_agent_session_id — store the agent's pinned conversation ID
 # into session.json so teardown can locate the exact transcript file.
 audit_record_agent_session_id() {

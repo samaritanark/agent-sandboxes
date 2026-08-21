@@ -302,7 +302,7 @@ test_prestop_breadcrumb_persists() {
   local yaml
   yaml="$(build_pod_manifest sess-bc claude 1 img 2>/dev/null)" || true
 
-  local bc_path mount_path
+  local bc_path
   bc_path="$(printf '%s\n' "${yaml}" | grep -o '/[^"]*/.sandbox-termination' | head -1 || true)"
   bc_path="${bc_path%/.sandbox-termination}"
   if [[ -z "${bc_path}" ]]; then
@@ -310,18 +310,68 @@ test_prestop_breadcrumb_persists() {
     return
   fi
 
-  # Does any mountPath in the manifest contain the breadcrumb directory?
-  local matched="false"
-  while IFS= read -r mount_path; do
-    mount_path="${mount_path#*mountPath: }"
-    case "${bc_path}/" in
-      "${mount_path}"/*|"${mount_path}") matched="true"; break ;;
+  # Find the volumeMount whose mountPath is the DEEPEST prefix of the breadcrumb
+  # path, then resolve that mount's volume name and assert the volume is backed
+  # by a hostPath (persists), NOT an emptyDir (ephemeral). Matching "some
+  # mountPath" is too weak: /tmp is an emptyDir mount, so a regression pointing
+  # the breadcrumb at /tmp/.sandbox-termination would pass a prefix-only check
+  # and silently reintroduce the exact bug this test guards (PR #93 finding F5).
+  local vol_name="" best_len=-1 cur_name="" line mp
+  while IFS= read -r line; do
+    case "${line}" in
+      *"- name: "*) cur_name="${line#*- name: }" ;;
+      *"mountPath: "*)
+        mp="${line#*mountPath: }"
+        case "${bc_path}/" in
+          "${mp}"/*|"${mp}")
+            (( ${#mp} > best_len )) && { best_len=${#mp}; vol_name="${cur_name}"; } ;;
+        esac ;;
     esac
-  done < <(printf '%s\n' "${yaml}" | grep 'mountPath:')
+  done < <(printf '%s\n' "${yaml}")
 
-  [[ "${matched}" == "true" ]] \
-    && pass "breadcrumb path ${bc_path} is under a container volumeMount" \
-    || fail "breadcrumb path ${bc_path} is NOT under any volumeMount (ephemeral)"
+  if [[ -z "${vol_name}" ]]; then
+    fail "breadcrumb path ${bc_path} is under NO volumeMount (ephemeral container layer)"
+    return
+  fi
+
+  # What backs the volume of that name — hostPath or emptyDir?
+  local vol_kind
+  vol_kind="$(printf '%s\n' "${yaml}" | awk -v n="${vol_name}" '
+    $1=="-" && $2=="name:" && $3==n {inblk=1; next}
+    inblk && $1=="-" && $2=="name:" {inblk=0}
+    inblk && $1=="hostPath:" {print "hostPath"; exit}
+    inblk && $1=="emptyDir:" {print "emptyDir"; exit}
+  ')"
+
+  [[ "${vol_kind}" == "hostPath" ]] \
+    && pass "breadcrumb path ${bc_path} is on volume '${vol_name}' (hostPath, persists past the pod)" \
+    || fail "breadcrumb path ${bc_path} is on volume '${vol_name}' backed by '${vol_kind:-unknown}', not hostPath (ephemeral)"
+}
+
+# F3: a remediated eviction must be distinguishable from a clean teardown.
+# audit_record_end_reason stamps end_reason/end_detail when (and only when) a
+# reason is present, so a normal stop leaves the field absent.
+test_audit_record_end_reason() {
+  info "Testing audit_record_end_reason marks abnormal endings, no-ops otherwise..."
+  local d="${TEST_DIR}/endreason"
+  mkdir -p "${d}"
+  printf '%s\n' '{"session_id":"s1","end_time":null}' > "${d}/session.json"
+
+  # Clean-teardown path: empty reason must NOT add the field.
+  audit_record_end_reason "${d}" "" ""
+  [[ "$(jq -r '.end_reason // "ABSENT"' "${d}/session.json")" == "ABSENT" ]] \
+    && pass "empty reason leaves end_reason absent (clean teardown indistinguishable only from clean)" \
+    || fail "empty reason wrote an end_reason"
+
+  # Eviction path: records the token and the kubelet detail.
+  audit_record_end_reason "${d}" "evicted" "Evicted: The node was low on resource: ephemeral-storage"
+  [[ "$(jq -r '.end_reason' "${d}/session.json")" == "evicted" ]] \
+    && pass "eviction records end_reason=evicted" \
+    || fail "end_reason not recorded"
+  case "$(jq -r '.end_detail' "${d}/session.json")" in
+    *"ephemeral-storage"*) pass "kubelet detail preserved in end_detail" ;;
+    *) fail "end_detail did not preserve the kubelet message" ;;
+  esac
 }
 
 main() {
@@ -334,6 +384,7 @@ main() {
   test_teardown_partial_session_integrity
   test_adopt_session_secrets_ownerrefs
   test_prestop_breadcrumb_persists
+  test_audit_record_end_reason
   echo "All ${TEST_NAME} tests passed."
 }
 
