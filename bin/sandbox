@@ -533,11 +533,16 @@ _teardown_on_signal() {
       >>"${_ld}/teardown-on-signal.log" 2>/dev/null || true
   fi
   # Best-effort terminal notice — GUARDED (see CRITICAL above): a dead pty write
-  # returns EIO and must not abort the handler before teardown.
-  echo "==> Session ${_sid:-unknown} interrupted; running teardown so credentials are revoked." >&2 || true
-  # With no session_id in scope there is nothing to tear down; skip rather than
-  # invoke cmd_stop with an empty id.
-  [[ -n "${_sid}" ]] && cmd_stop "${_sid}" || true
+  # returns EIO and must not abort the handler before teardown. The message must
+  # match what actually happens: with no session_id in scope (N8 degraded path)
+  # there is nothing to tear down, so say so honestly rather than claim a
+  # revocation that won't run.
+  if [[ -n "${_sid}" ]]; then
+    echo "==> Session ${_sid} interrupted; running teardown so credentials are revoked." >&2 || true
+    cmd_stop "${_sid}" || true
+  else
+    echo "==> Session interrupted but no session id is in scope; cannot run teardown — revoke any session credentials manually." >&2 || true
+  fi
 }
 _arm_teardown_trap() { trap '_teardown_on_signal' INT TERM HUP; }
 _disarm_teardown_trap() { trap - INT TERM HUP; }
@@ -1857,9 +1862,24 @@ cmd_stop() {
   fi
 
   # Delete pod — the containment action (see N7 note above). First, so a
-  # killed-again teardown still stops the agent.
+  # killed-again teardown still stops the agent: once the DELETE reaches the API
+  # server, termination proceeds server-side regardless of whether this CLI is
+  # killed next. `--grace-period=10` leaves a bounded shutdown tail in which an
+  # agent that ignores SIGTERM keeps running with its mounted token, but its
+  # egress stays policed (the CNP is removed last, below) and the kubelet SIGKILLs
+  # at grace end no matter what — so this is a bounded tail on already-guaranteed
+  # termination, not an escape. GUARDED with `|| true` + `--ignore-not-found`
+  # (PR #93 N7 follow-up): this is the FIRST step now and the ONLY delete in
+  # cmd_stop that could exit non-zero (a TOCTOU NotFound race — realistic in the
+  # eviction-remediation case where the kubelet/GC is also acting on the pod — or
+  # a transient API error). Unguarded, under `set -e` on the direct `sandbox stop`
+  # path it would abort teardown BEFORE the credential-Secret deletes it now
+  # precedes, leaving them live. Containment is the DELETE being issued, not its
+  # exit code, so suspending errexit here costs nothing and lets the idempotent
+  # revocation/CNP/dependency/audit steps always run.
   if kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null 2>&1; then
-    kubectl delete pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" --grace-period=10 2>&1
+    kubectl delete pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+      --ignore-not-found=true --grace-period=10 2>&1 || true
     echo "  Pod deleted."
   else
     warn "Pod ${pod_name} not found (already stopped)."

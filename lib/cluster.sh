@@ -481,7 +481,27 @@ export_hubble_flows() {
     flow_count="$(wc -l < "${log_dir}/flows.json" | tr -d ' ')"
     echo "  Exported ${flow_count} flow records."
   else
-    echo "  No flows captured (empty result)."
+    # An empty result here is AMBIGUOUS and must NOT be silently recorded as
+    # "no egress" (PR #93 N7 follow-up). cmd_stop now runs this export AFTER the
+    # session pod — and its Cilium endpoint — is deleted, so a genuinely quiet
+    # session and a session whose flows are no longer matched by the
+    # `--label sandbox-session=` filter once the endpoint is gone produce the
+    # SAME empty output. Treating that as "clean" would let a lost egress record
+    # read as a quiet one. So instead of silently dropping the file, leave an
+    # operator-side marker (this log dir is host-side, out of the agent's reach)
+    # recording that the export ran and returned nothing, and why that is
+    # ambiguous. The pending live check on the pinned Cilium tag (see the Hubble
+    # NOTE in cmd_stop) settles which case it is; until then, empty is UNVERIFIED,
+    # not clean.
+    echo "  No flow records returned — AMBIGUOUS (export runs post-endpoint-deletion; see flows.empty.note)."
     rm -f "${log_dir}/flows.json"
+    printf '%s\n' \
+      "Hubble flow export for session ${session_id} returned 0 records." \
+      "This export runs AFTER the session pod's Cilium endpoint is deleted (PR #93 N7)." \
+      "An empty result is AMBIGUOUS: it may mean the session made no egress, OR that" \
+      "hubble's --label filter no longer matched the ring-buffer flows once the" \
+      "endpoint was gone. Pending the live Cilium-tag check, do NOT read this as" \
+      "'no egress'. The flows, if any, remain in Cilium's ring buffer until it rolls." \
+      > "${log_dir}/flows.empty.note"
   fi
 }

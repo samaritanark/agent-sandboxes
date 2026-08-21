@@ -466,6 +466,72 @@ test_cmd_stop_deletes_pod_before_capture() {
     || fail "a capture step ran before the pod delete: $(tr '\n' ' ' < "${order}")"
 }
 
+# N7 follow-up: the pod delete is now the FIRST step in cmd_stop and the only
+# delete that can exit non-zero (a TOCTOU NotFound race, a transient API error).
+# It MUST be `|| true`/`--ignore-not-found`-guarded, or under `set -e` on the
+# direct `sandbox stop` path a failed pod delete aborts cmd_stop BEFORE the
+# credential-Secret deletes it now precedes — leaving them live.
+#
+# Faithfully reproducing that means running cmd_stop as a BARE command under
+# errexit (exactly the `stop)` dispatch path). We cannot call it inline with a
+# `|| true`/`if` guard here: putting a function in a `&&`/`||` list DISABLES
+# errexit inside the whole function (a bash rule), which would mask the very bug.
+# So run it in a child `bash -c` (its own `set -euo pipefail`, cmd_stop bare) and
+# inspect the order file it wrote plus the child's exit code. With the guard the
+# child exits 0 and revokes all four Secrets; without it the child aborts on the
+# failing pod delete (exit non-zero, zero Secret markers).
+test_cmd_stop_revokes_even_if_pod_delete_fails() {
+  info "Testing a non-zero pod delete does NOT abort cmd_stop before revocation (N7 guard)..."
+  local logs="${TEST_DIR}/logs-n7guard"
+  local sid="ses-n7g"
+  mkdir -p "${logs}/${sid}"
+  printf '%s\n' '{"agent":"claude","tier":3,"repos":[],"agent_session_id":"as1"}' \
+    > "${logs}/${sid}/session.json"
+  local order="${TEST_DIR}/n7g-order"
+  : > "${order}"
+
+  local rc=0
+  ORDER_FILE="${order}" SANDBOX_LOGS_DIR="${logs}" \
+  bash -c '
+    set -euo pipefail
+    source "'"${SANDBOX_ROOT}"'/bin/sandbox" >/dev/null 2>&1
+    SANDBOX_NAMESPACE="sandbox"
+    resolve_pod_name() { echo "sandbox-$1"; }
+    # Pod present so the delete runs; the delete FAILS (return 1) to simulate the
+    # NotFound/transient-error race. All session Secrets present.
+    kubectl() {
+      case "$1 $2" in
+        "get secret")    return 0 ;;
+        "delete secret") echo "SECRET:$5" >> "${ORDER_FILE}"; return 0 ;;
+        "get pod")
+          case "$*" in
+            *jsonpath*phase*) echo "Running" ;;
+            *jsonpath*)       echo "" ;;
+            *)                return 0 ;;
+          esac ;;
+        "delete pod")                 echo "PODDELETE" >> "${ORDER_FILE}"; return 1 ;;
+        "delete ciliumnetworkpolicy") return 0 ;;
+        *) return 0 ;;
+      esac
+    }
+    delete_kubeconfig_secret()      { echo "SECRET:kubeconfig"   >> "${ORDER_FILE}"; }
+    delete_opencode_apikey_secret() { echo "SECRET:opencode"     >> "${ORDER_FILE}"; }
+    delete_session_secrets()        { echo "SECRET:session-bndl" >> "${ORDER_FILE}"; }
+    teardown_workspace_sync()  { :; }; capture_workspace_diff()   { :; }
+    sync_agent_home_back()     { :; }; host_agent_home()          { echo "/h/$1"; }
+    audit_capture_transcript() { :; }; export_hubble_flows()      { :; }
+    teardown_dependencies()          { :; }; audit_update_end_time() { :; }
+    audit_record_end_reason()        { :; }; audit_record_dependencies_down() { :; }
+    cmd_stop "'"${sid}"'" >/dev/null 2>&1
+  ' >/dev/null 2>&1 || rc=$?
+
+  local n_secret
+  n_secret="$(grep -c '^SECRET:' "${order}" 2>/dev/null || echo 0)"
+  [[ "${rc}" -eq 0 && "${n_secret}" -ge 4 ]] \
+    && pass "all 4 credential Secrets revoked despite a failing pod delete (rc=${rc})" \
+    || fail "a failing pod delete aborted cmd_stop before revocation (rc=${rc}, saw ${n_secret}/4 secrets): $(tr '\n' ' ' < "${order}")"
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   # NOTE: this suite is ORDER-DEPENDENT. Earlier tests globally stub cmd_stop and
@@ -482,6 +548,7 @@ main() {
   test_prestop_breadcrumb_persists
   test_audit_record_end_reason
   test_cmd_stop_deletes_pod_before_capture
+  test_cmd_stop_revokes_even_if_pod_delete_fails
   echo "All ${TEST_NAME} tests passed."
 }
 

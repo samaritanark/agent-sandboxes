@@ -289,14 +289,27 @@ instance.
   was only inferred from secondary sources; future readers cite the parenthetical,
   not the caveat two sentences later. State inferences as inferences until checked
   at the pinned tag. (Invariant 6.)
-- **Revocation ordered last in a re-entrant teardown** — `cmd_stop` ran the four
-  credential-Secret deletions AFTER slow best-effort capture (workspace diff,
-  transcript, Hubble export) and the pod delete. Once teardown can fire at moments
+- **Ordering in a re-entrant teardown — the FIRST step must be the CONTAINMENT
+  action, not the credential-object deletes.** Once teardown can fire at moments
   the operator didn't choose (a signalled disconnect) where the process may be
   killed AGAIN mid-run, whatever is ordered last is what gets skipped — so put the
-  security-critical, dependency-free steps FIRST. When a change makes a teardown
-  path newly re-entrant, re-check the ordering of every step inside it, not just
-  the new entry point. (Invariants 4, 7.)
+  security-critical, dependency-free step FIRST. But identify that step correctly:
+  the round-2 fix (N3) moved the four credential-**Secret** deletions to the front,
+  and round-3 (N7) found that had containment backwards. Deleting a session's
+  Secret API object is namespace bookkeeping — the in-sandbox agent read the
+  projected token/kubeconfig long ago and holds its own copy, so removing the
+  Secret object does NOT stop a still-running agent. The step that actually
+  contains an adversarial agent is **deleting the POD** (removing its execution);
+  issuer-side revocation of the token is separate and manual. So `cmd_stop` deletes
+  the pod first (with the F3 end-reason read just before it), then the Secrets,
+  then the slow best-effort capture. Corollary: when the fix elevates the pod
+  delete to "the containment action," check it is itself hardened — it must be
+  `|| true`/`--ignore-not-found` guarded (it is the one delete that can race to
+  NotFound, and unguarded-first under `set -e` it would abort teardown before the
+  revocation it precedes), and note `--grace-period` leaves a bounded post-SIGTERM
+  tail (egress still policed by the not-yet-deleted CNP). When a change makes a
+  teardown path newly re-entrant, re-check the ordering of every step inside it,
+  not just the new entry point. (Invariants 4, 7.)
 
 ## Execution
 
