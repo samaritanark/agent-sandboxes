@@ -181,6 +181,14 @@ ${host_aliases_block}
     runAsNonRoot: true
     seccompProfile:
       type: RuntimeDefault
+  # Grace window for a graceful shutdown, including a kubelet soft eviction under
+  # disk pressure (PR #92 finding F3): long enough for the preStop hook to flush
+  # and the agent to persist its session state to the host-mounted agent-home
+  # before SIGKILL. Kept in step with eviction-max-pod-grace-period (setup/
+  # linux.sh, lima/sandbox-vm.yaml.tmpl), which caps the pod grace the kubelet
+  # actually honours during a soft eviction. An explicit 'sandbox stop' overrides
+  # this with --grace-period=10, so interactive teardown stays fast.
+  terminationGracePeriodSeconds: 30
   containers:
     - name: agent
       image: "${image}"
@@ -190,6 +198,24 @@ ${host_aliases_block}
       # the calling terminal's dimensions (kubectl attach uses the container's
       # pre-existing PTY which defaults to 80 columns).
       command: ["sleep", "infinity"]
+      # preStop runs on any pod termination, including a kubelet eviction that
+      # never reaches cmd_stop (PR #92 finding F3). It cannot run the host-side
+      # audit (Hubble export lives on the operator's machine), but it drops a
+      # breadcrumb into the host-mounted agent-home and fsyncs, so a later
+      # 'sandbox stop'/'resume' can distinguish an eviction from a clean teardown
+      # and the agent's own on-disk state is flushed before SIGKILL. The grace
+      # window comes from terminationGracePeriodSeconds above. Dollar signs are
+      # escaped so the shell runs them in-pod, not at manifest-render time; the
+      # hook always exits 0 so it can never block termination. HOME defaults to
+      # /home/agent when the agent-home volume is not mounted (breadcrumb is then
+      # ephemeral, which is harmless).
+      lifecycle:
+        preStop:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - 'ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown); printf "%s pod terminating; if this was an eviction, host-side teardown/audit did not run via cmd_stop\n" "\$ts" >> "\${HOME:-/home/agent}/.sandbox-termination" 2>/dev/null || true; sync 2>/dev/null || true; exit 0'
       resources:
         limits:
           cpu: "${POD_CPU_LIMIT}"

@@ -142,12 +142,139 @@ test_recreate_reruns_gates_before_apply() {
     || fail "apply ran despite a gate refusal — resume would relaunch an ungated workspace"
 }
 
+# A pod that never becomes Ready must be torn down, not left orphaned in
+# Pending/Running/Error for the operator to clean up by hand. recreate_session_pod
+# runs wait_for_pod in a subshell and calls cmd_stop on failure.
+test_recreate_tears_down_on_pod_failure() {
+  info "Testing a recreated pod that fails to become Ready is torn down..."
+  _set_platform linux
+  local stoplog="${TEST_DIR}/stoplog"
+  : > "${stoplog}"
+
+  SANDBOX_LOGS_DIR="${TEST_DIR}/logs"
+  local sdir="${SANDBOX_LOGS_DIR}/ses-fail-test"
+  mkdir -p "${sdir}" "${TEST_DIR}/repoB"
+  printf '{"agent":"claude","tier":2,"name":"t","user":"u","repos":["%s"],"allowed_domains":[],"kube_api_cidr":"","kube_api_port":""}\n' \
+    "${TEST_DIR}/repoB" > "${sdir}/session.json"
+
+  # Stub the build/cluster steps; gates all pass so the path reaches the wait.
+  prepare_agent_home() { :; }
+  build_cilium_policy() { echo policy; }
+  build_pod_manifest() { echo pod; }
+  resolve_pod_name() { echo sandbox-x; }
+  resolve_vetting_posture() { echo off; }
+  resolve_inference_endpoint() { echo ""; }
+  # `get pod` returns non-zero so teardown_partial_session sees the pod as gone
+  # (the happy path); every other kubectl call is a harmless no-op.
+  kubectl() { case "$1" in get) return 1 ;; *) return 0 ;; esac; }
+  workspace_prescan()   { :; }
+  check_masking_paths() { :; }
+  vetting_gate_repos()  { :; }
+  secret_gate_repos()   { :; }
+  # The pod never becomes Ready: wait_for_pod exits non-zero (as the real one
+  # does via exit 1). cmd_stop records that teardown ran.
+  wait_for_pod() { return 1; }
+  cmd_stop() { echo "stopped $1" >> "${stoplog}"; }
+
+  ( recreate_session_pod "ses-fail-test" ) >/dev/null 2>&1 || true
+  grep -q "stopped ses-fail-test" "${stoplog}" \
+    && pass "failed pod triggers cmd_stop teardown" \
+    || fail "pod-start failure did not tear down the session — pod would be orphaned"
+}
+
+# teardown_partial_session must (F1) let cmd_stop's stderr through — the infra-
+# token and kubeconfig revocation reminders and the Hubble-export warning all
+# live there — while dropping only the routine stdout chatter, and (F2) report a
+# non-zero result when the pod is still present afterward so the caller cannot
+# tell the operator a partial teardown was clean.
+test_teardown_partial_session_integrity() {
+  info "Testing teardown_partial_session preserves reminders and flags a lingering pod..."
+  SANDBOX_NAMESPACE="sandbox"
+  local outf="${TEST_DIR}/tps.out" errf="${TEST_DIR}/tps.err" rc
+
+  # cmd_stop writes routine progress to stdout and a revocation reminder to
+  # stderr, exactly as the real one does (echo vs warn).
+  cmd_stop() {
+    echo "  Pod deleted."
+    warn "REMINDER: Revoke infra token used in this session."
+  }
+
+  # Case 1: pod gone after teardown (`get` -> not found). Helper returns 0.
+  kubectl() { case "$1" in get) return 1 ;; *) return 0 ;; esac; }
+  teardown_partial_session ses-x sandbox-x >"${outf}" 2>"${errf}" && rc=0 || rc=$?
+  [[ "${rc}" -eq 0 ]] \
+    && pass "gone pod: teardown reports success" \
+    || fail "gone pod: expected rc 0, got ${rc}"
+  grep -q "REMINDER: Revoke infra token" "${errf}" \
+    && pass "revocation reminder reaches stderr (F1)" \
+    || fail "revocation reminder was swallowed (F1 regression)"
+  grep -q "Pod deleted" "${errf}" \
+    && fail "routine stdout chatter leaked onto stderr" \
+    || pass "routine chatter stays off stderr"
+
+  # Case 2: pod still present (`get` -> found). Helper returns 1 and warns.
+  kubectl() { return 0; }
+  teardown_partial_session ses-x sandbox-x >"${outf}" 2>"${errf}" && rc=0 || rc=$?
+  [[ "${rc}" -eq 1 ]] \
+    && pass "lingering pod: teardown reports failure (F2)" \
+    || fail "lingering pod: expected rc 1, got ${rc}"
+  grep -q "Teardown did not remove pod" "${errf}" \
+    && pass "lingering pod: operator is warned" \
+    || fail "lingering pod produced no warning (F2 regression)"
+}
+
+# adopt_session_secrets must ownerReference the pod onto every session Secret
+# that exists (so a kubelet eviction, which bypasses cmd_stop, still gets them
+# GC'd — PR #92 finding F3), skip the ones that don't, and no-op entirely when
+# the pod UID is unknown.
+test_adopt_session_secrets_ownerrefs() {
+  info "Testing adopt_session_secrets patches only present secrets with the pod ownerReference..."
+  SANDBOX_NAMESPACE="sandbox"
+  local patchlog="${TEST_DIR}/patchlog"
+  : > "${patchlog}"
+
+  # Two of the four candidate secrets exist for this session.
+  local present=" infra-token-sess1 opencode-apikey-sess1 "
+  kubectl() {
+    case "$1" in
+      get)   case "${present}" in *" $5 "*) return 0 ;; *) return 1 ;; esac ;;
+      patch) printf '%s|%s\n' "$5" "$8" >> "${patchlog}" ;;
+      *)     return 0 ;;
+    esac
+  }
+
+  adopt_session_secrets "sess1" "sandbox-sess1" "uid-123"
+
+  grep -q '^infra-token-sess1|' "${patchlog}" \
+    && pass "present secret infra-token is adopted" \
+    || fail "infra-token-sess1 was not patched"
+  grep -q '^opencode-apikey-sess1|' "${patchlog}" \
+    && pass "present secret opencode-apikey is adopted" \
+    || fail "opencode-apikey-sess1 was not patched"
+  grep -q 'kubeconfig-sess1\|session-secrets-sess1' "${patchlog}" \
+    && fail "an absent secret was patched" \
+    || pass "absent secrets are skipped"
+  grep -q 'uid-123' "${patchlog}" && grep -q 'sandbox-sess1' "${patchlog}" \
+    && pass "ownerReference carries the pod name and uid" \
+    || fail "patch payload missing pod name/uid"
+
+  # No UID (pod not yet created / lookup failed): adopt must not patch anything.
+  : > "${patchlog}"
+  adopt_session_secrets "sess1" "sandbox-sess1" ""
+  [[ ! -s "${patchlog}" ]] \
+    && pass "empty pod uid is a no-op" \
+    || fail "adopt patched with an unknown owner uid"
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   test_blocker_allows_simple_sessions
   test_blocker_guides_the_rest
   test_guide_command_reconstructs_run
   test_recreate_reruns_gates_before_apply
+  test_recreate_tears_down_on_pod_failure
+  test_teardown_partial_session_integrity
+  test_adopt_session_secrets_ownerrefs
   echo "All ${TEST_NAME} tests passed."
 }
 

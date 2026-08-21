@@ -398,6 +398,15 @@ install_cilium_helm() {
   # packet in transit (after gVisor builds it, before host routing). Both
   # paths produce identical results for runc pods; gVisor pods only work
   # via the TC path.
+  #
+  # hubble.relay.resources.requests: give hubble-relay a memory request so it
+  # runs Burstable rather than BestEffort. hubble-relay aggregates the egress
+  # flow log that is this platform's network audit channel; left BestEffort it
+  # is the kubelet's first OOM/eviction victim under memory pressure, which lets
+  # an in-sandbox agent silence its own egress audit by driving the node toward
+  # OOM. A modest request (well inside the "hubble" share of HOST_RESERVE in
+  # lib/resources.sh) makes it no longer the first victim on either the memory
+  # or the disk axis. See PR #79 finding 4 / issue #80 and PR #92 finding F3.
   helm --kubeconfig "${SANDBOX_KUBECONFIG}" upgrade --install cilium cilium/cilium \
     "${cilium_version_args[@]+"${cilium_version_args[@]}"}" \
     --namespace kube-system \
@@ -405,6 +414,9 @@ install_cilium_helm() {
     --set hubble.relay.enabled=true \
     --set hubble.enabled=true \
     --set hubble.metrics.enableOpenMetrics=false \
+    --set hubble.relay.resources.requests.cpu="${SANDBOX_HUBBLE_RELAY_CPU_REQUEST:-50m}" \
+    --set hubble.relay.resources.requests.memory="${SANDBOX_HUBBLE_RELAY_MEM_REQUEST:-128Mi}" \
+    --set hubble.relay.resources.limits.memory="${SANDBOX_HUBBLE_RELAY_MEM_LIMIT:-256Mi}" \
     --set kubeProxyReplacement=true \
     --set k8sServiceHost="127.0.0.1" \
     --set k8sServicePort="${SANDBOX_APISERVER_PORT}" \
@@ -721,6 +733,10 @@ build_images() {
   for tag in "${image_tags[@]}"; do
     echo "  Importing ${tag}..."
     "${container_cli}" save "${tag}" | sudo "${k3s}" ctr images import -
+    # Pin against kubelet image GC: these Never-policy images have no registry
+    # to re-pull from, so an eviction would strand the next launch. See
+    # pin_k3s_image in lib/platform.sh.
+    pin_k3s_image "${tag}"
     echo "  Imported ${tag}"
   done
   echo "  All images imported into k3s containerd."
@@ -782,6 +798,17 @@ build_images_macos() {
     run_with_retries 3 5 "build of ${tag}" -- \
       "${nerdctl[@]}" build \
         -t "${tag}" -f "${docker_dir}/${dockerfile}" "$@" "${docker_dir}"
+    # Pin against kubelet image GC inside the VM — same rationale as the Linux
+    # path (pin_k3s_image in lib/platform.sh), but done here because the build
+    # lands directly in the VM's containerd. Use 'k3s ctr' (nerdctl has no image
+    # label subcommand). Invoke the k3s binary by absolute path rather than
+    # relying on sudo's secure_path to include /usr/local/bin — same PATH-under-
+    # sudo hardening as k3s_bin() on the host (PR #72). Best-effort: never fail
+    # the build.
+    limactl shell "${LIMA_VM_NAME:-sandbox-vm}" -- \
+      sudo /usr/local/bin/k3s ctr -n k8s.io images label "${tag}" \
+      io.cri-containerd.pinned=pinned >/dev/null 2>&1 \
+      || echo "  WARN: could not pin ${tag} against kubelet image GC" >&2
     echo "  Built ${tag}"
   }
 

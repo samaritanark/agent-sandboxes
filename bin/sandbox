@@ -443,6 +443,39 @@ print_session_banner() {
 }
 
 ###############################################################################
+# teardown_partial_session — tear down a session whose launch failed partway.
+#
+# Wraps cmd_stop for the launch failure paths. Two reasons it exists rather than
+# an inline `cmd_stop ... || true`:
+#
+#   1. Credential integrity. cmd_stop's revocation reminders (infra token,
+#      kubeconfig) and its Hubble-export warning are written to stderr by warn().
+#      A failed launch has already created those Tier-3 secrets, and the pod may
+#      have run long enough to read them, so the operator MUST see the reminders.
+#      cmd_stop's routine progress lines go to stdout; we drop only those.
+#
+#   2. Success integrity. cmd_stop runs with errexit suspended (via `|| true`)
+#      and echoes "Pod deleted." unconditionally, so a delete that failed still
+#      looks clean. We re-check that the pod is actually gone before the caller
+#      is allowed to tell the operator it was torn down.
+#
+# Returns 0 if the pod is gone after teardown, 1 if it lingers (secrets deleted
+# but pod still Running is the worst state — the caller must not claim success).
+###############################################################################
+teardown_partial_session() {
+  local session_id="$1"
+  local pod_name="$2"
+  cmd_stop "${session_id}" >/dev/null || true
+  if kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null; then
+    warn "Teardown did not remove pod ${pod_name}; it may still be Running with"
+    warn "its secrets deleted. Run 'sandbox stop ${session_id}' and verify no"
+    warn "leftover secrets remain in namespace ${SANDBOX_NAMESPACE}."
+    return 1
+  fi
+  return 0
+}
+
+###############################################################################
 # cmd_run — main session launch
 ###############################################################################
 cmd_run() {
@@ -1384,11 +1417,33 @@ cmd_run() {
   echo "==> Applying pod..."
   echo "${pod_yaml}" | kubectl apply -f - 2>&1
 
+  # Adopt the session's credential Secrets to the pod (ownerReference) as soon as
+  # it has a UID — before the readiness wait — so Kubernetes GC reaps them if the
+  # pod is later evicted, a path that bypasses cmd_stop (PR #92 finding F3). No-op
+  # when the session created no such secrets.
+  local pod_uid_for_adopt
+  pod_uid_for_adopt="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+    -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+  adopt_session_secrets "${session_id}" "${pod_name}" "${pod_uid_for_adopt}"
+
   ###########################################################################
   # Step 10: Wait for pod Running
   ###########################################################################
   echo "==> Waiting for pod to become Ready..."
-  wait_for_pod "${pod_name}"
+  # Run in a subshell so wait_for_pod's exit-on-failure is caught here and the
+  # partial session is torn down, rather than aborting the CLI and orphaning the
+  # pod/policy/secrets created above. A pod that fails to start (ErrImageNeverPull
+  # after an image-GC eviction, crash-loop, timeout) otherwise lingers in
+  # Pending/Running/Error and forces a later manual 'sandbox stop'. cmd_stop
+  # deletes the pod regardless of phase. Mirrors the dependency-failure handling
+  # below and in lib/dependency.sh.
+  if ! ( wait_for_pod "${pod_name}" ); then
+    echo "==> Pod failed to become Ready; tearing down session ${session_id}." >&2
+    if teardown_partial_session "${session_id}" "${pod_name}"; then
+      die "Session pod ${pod_name} failed to start; torn down. See the describe output above."
+    fi
+    die "Session pod ${pod_name} failed to start and teardown left it behind. Run 'sandbox stop ${session_id}' and check for leftover secrets."
+  fi
 
   ###########################################################################
   # Step 10b: Bring up profile-declared dependencies (Phase 5)
@@ -1402,7 +1457,7 @@ cmd_run() {
     echo "==> Verifying per-session network identity..."
     if ! ( assert_session_identity_distinct "${pod_name}" ); then
       echo "==> Identity assertion failed; tearing down session ${session_id}." >&2
-      cmd_stop "${session_id}" >/dev/null 2>&1 || true
+      teardown_partial_session "${session_id}" "${pod_name}" || true
       die "Per-session network identity could not be verified; aborted."
     fi
 
@@ -1417,7 +1472,7 @@ cmd_run() {
     if ! bring_up_dependencies "${session_id}" "${opt_tier}" "${pod_name}" \
          "${owner_uid}" "${log_dir}"; then
       echo "==> Dependency startup failed; tearing down session ${session_id}." >&2
-      cmd_stop "${session_id}" >/dev/null 2>&1 || true
+      teardown_partial_session "${session_id}" "${pod_name}" || true
       die "One or more dependencies failed to start; aborted."
     fi
 
@@ -1878,7 +1933,15 @@ recreate_session_pod() {
   echo "==> Applying pod..."
   echo "${pod_yaml}" | kubectl apply -f - >/dev/null
   echo "==> Waiting for pod to become Ready..."
-  wait_for_pod "${pod_name}"
+  # Subshell + teardown on failure: a recreated pod that fails to start must not
+  # be left orphaned in Pending/Running/Error (see the cmd_run launch path).
+  if ! ( wait_for_pod "${pod_name}" ); then
+    echo "==> Recreated pod failed to become Ready; tearing down ${session_id}." >&2
+    if teardown_partial_session "${session_id}" "${pod_name}"; then
+      die "Session pod ${pod_name} failed to start; torn down. See the describe output above."
+    fi
+    die "Session pod ${pod_name} failed to start and teardown left it behind. Run 'sandbox stop ${session_id}' and check for leftover secrets."
+  fi
 }
 
 ###############################################################################
@@ -2386,6 +2449,9 @@ cmd_rebuild() {
     local k3s
     k3s="$(k3s_bin)"
     "${container_cli}" save "${tag}" | sudo "${k3s}" ctr images import -
+    # Re-pin against kubelet image GC: a fresh import resets the label, and these
+    # Never-policy images cannot be re-pulled once evicted. See lib/platform.sh.
+    pin_k3s_image "${tag}"
   }
 
   # _record_build <tag> — append version info to image-builds.log

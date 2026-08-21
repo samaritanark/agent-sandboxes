@@ -33,6 +33,41 @@ k3s_bin() {
   return 1
 }
 
+# pin_k3s_image — mark an imported image as "pinned" in k3s' containerd so the
+# kubelet's image garbage collector never evicts it.
+#
+# The sandbox agent images are built locally and referenced with
+# imagePullPolicy: Never; they have no backing registry. When the node crosses
+# the kubelet's imageGCHighThresholdPercent (default 85%) the kubelet reclaims
+# images not currently held by a running container, oldest first — and between
+# sessions the sandbox images qualify. Once evicted they cannot be re-pulled, so
+# the next launch fails with ErrImageNeverPull until 'sandbox rebuild'. This bit
+# the operator repeatedly (multiple times/day on a node sitting near the
+# threshold).
+#
+# The containerd label io.cri-containerd.pinned=pinned surfaces through the CRI
+# as pinned=true, and the kubelet excludes pinned images from GC — a surgical fix
+# that protects exactly the un-pullable local images while leaving the
+# registry-backed dependency catalogue images GC-eligible so disk can still be
+# reclaimed under pressure. The label lives in containerd's metadata, so it
+# survives k3s/containerd restarts; a re-import (rebuild) resets it, which is why
+# every import path re-applies it.
+#
+# Best-effort by design: a failure here only reverts to the old behaviour, so it
+# must never abort a build/import. Runs on Linux (including inside the Lima VM);
+# a no-op when k3s is absent.
+pin_k3s_image() {
+  local tag="$1"
+  command -v k3s &>/dev/null || return 0
+  local k3s
+  k3s="$(k3s_bin)" || return 0
+  if ! sudo "${k3s}" ctr -n k8s.io images label "${tag}" \
+       io.cri-containerd.pinned=pinned >/dev/null 2>&1; then
+    echo "  WARN: could not pin ${tag} against kubelet image GC — it may be" >&2
+    echo "        reclaimed under disk pressure and need a rebuild." >&2
+  fi
+}
+
 # detect_platform — returns "linux" or "macos"
 detect_platform() {
   local uname_out

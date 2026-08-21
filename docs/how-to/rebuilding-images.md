@@ -59,12 +59,20 @@ docker build --build-arg BASE_IMAGE=sandbox:opencode \
   -t docker.io/library/sandbox:opencode-infra -f docker/Dockerfile.infra docker/
 ```
 
-On Linux, import each image into k3s's containerd after building:
+On Linux, import each image into k3s's containerd after building, then pin it so
+the kubelet's image garbage collector never reclaims it (these images have no
+backing registry and cannot be re-pulled — an evicted image fails the next
+launch with `ErrImageNeverPull`). `setup.sh` and `sandbox rebuild` do both steps
+for you; do the same by hand:
 
 ```bash
 docker save docker.io/library/sandbox:claude | sudo k3s ctr images import -
 # or with podman:
 podman save docker.io/library/sandbox:claude | sudo k3s ctr images import -
+
+# Pin against kubelet image GC (re-run after every re-import — import resets it):
+sudo k3s ctr -n k8s.io images label docker.io/library/sandbox:claude \
+  io.cri-containerd.pinned=pinned
 ```
 
 </details>
