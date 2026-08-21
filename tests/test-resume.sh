@@ -374,14 +374,16 @@ test_audit_record_end_reason() {
   esac
 }
 
-# N3: cmd_stop must revoke the session credential Secrets BEFORE the slow
-# best-effort capture (workspace diff, transcript, Hubble export) and the pod
-# delete. Teardown is now reachable at moments the operator didn't choose (a
-# signalled disconnect) where the process may be killed again mid-run; if that
-# happens partway, the revocation must already be done rather than queued behind
-# the capture. Run the REAL cmd_stop with recording stubs and assert the order.
-test_cmd_stop_revokes_before_capture() {
-  info "Testing cmd_stop deletes the credential Secrets before capture + pod delete (N3)..."
+# N7 (corrects N3): cmd_stop must delete the POD — the containment action that
+# stops an adversarial agent's execution — BEFORE the credential-Secret deletes
+# (namespace bookkeeping; the agent already holds the projected token) and the
+# slow best-effort capture (workspace diff, transcript, Hubble export). Teardown
+# is now reachable at moments the operator didn't choose (a signalled disconnect)
+# where the process may be killed again mid-run; if that happens partway, the
+# agent must already be stopped rather than left live behind the capture. Run the
+# REAL cmd_stop with recording stubs and assert the order.
+test_cmd_stop_deletes_pod_before_capture() {
+  info "Testing cmd_stop deletes the pod (containment) before the Secret deletes + capture (N7)..."
   # Earlier tests globally redefine cmd_stop (and other helpers) with stubs; this
   # test drives the REAL cmd_stop, so restore the genuine definitions first.
   # bin/sandbox is source-guarded, so this only redefines functions.
@@ -437,9 +439,12 @@ test_cmd_stop_revokes_before_capture() {
 
   cmd_stop "${sid}" >/dev/null 2>&1
 
-  # Every SECRET marker must precede every CAPTURE marker and the PODDELETE.
-  local last_secret first_capture pod_delete
-  last_secret="$(grep -n '^SECRET:'  "${order}" | tail -1 | cut -d: -f1)"
+  # Containment first (N7): the PODDELETE must precede every SECRET marker and
+  # every CAPTURE marker. Deleting the pod stops an adversarial agent's execution;
+  # the Secret deletes are namespace bookkeeping and the capture steps are slow
+  # best-effort work, so both come after execution is already gone.
+  local first_secret first_capture pod_delete
+  first_secret="$(grep -n '^SECRET:'  "${order}" | head -1 | cut -d: -f1)"
   first_capture="$(grep -n '^CAPTURE:' "${order}" | head -1 | cut -d: -f1)"
   pod_delete="$(grep -n '^PODDELETE'  "${order}" | head -1 | cut -d: -f1)"
 
@@ -453,16 +458,20 @@ test_cmd_stop_revokes_before_capture() {
   [[ "${n_capture}" -ge 1 && -n "${pod_delete}" ]] \
     || fail "capture/pod-delete markers missing: $(tr '\n' ' ' < "${order}")"
 
-  [[ "${last_secret}" -lt "${first_capture}" ]] \
-    && pass "all credential Secrets revoked before any capture step" \
-    || fail "a capture step ran before a credential deletion: $(tr '\n' ' ' < "${order}")"
-  [[ "${last_secret}" -lt "${pod_delete}" ]] \
-    && pass "all credential Secrets revoked before the pod delete" \
-    || fail "the pod delete ran before a credential deletion: $(tr '\n' ' ' < "${order}")"
+  [[ "${pod_delete}" -lt "${first_secret}" ]] \
+    && pass "pod deleted before any credential Secret deletion" \
+    || fail "a credential deletion ran before the pod delete: $(tr '\n' ' ' < "${order}")"
+  [[ "${pod_delete}" -lt "${first_capture}" ]] \
+    && pass "pod deleted before any capture step" \
+    || fail "a capture step ran before the pod delete: $(tr '\n' ' ' < "${order}")"
 }
 
 main() {
   info "Running ${TEST_NAME} tests..."
+  # NOTE: this suite is ORDER-DEPENDENT. Earlier tests globally stub cmd_stop and
+  # its teardown helpers; test_cmd_stop_deletes_pod_before_capture re-sources
+  # bin/sandbox mid-suite (source-guarded, so only function defs are restored) to
+  # drive the REAL cmd_stop. Keep that test after the stubbing ones.
   test_blocker_allows_simple_sessions
   test_blocker_guides_the_rest
   test_guide_command_reconstructs_run
@@ -472,7 +481,7 @@ main() {
   test_adopt_session_secrets_ownerrefs
   test_prestop_breadcrumb_persists
   test_audit_record_end_reason
-  test_cmd_stop_revokes_before_capture
+  test_cmd_stop_deletes_pod_before_capture
   echo "All ${TEST_NAME} tests passed."
 }
 
