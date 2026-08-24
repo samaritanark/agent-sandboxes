@@ -1333,6 +1333,18 @@ cmd_run() {
   fi
   export SESSION_KUBE_API_CIDR SESSION_KUBE_API_PORT SESSION_KUBE_API_CONTEXTS SESSION_KUBE_HOST_ENTITY
 
+  # Record whether this session was handed issuer-side infra credentials, so
+  # cmd_stop's revoke reminders can key off the session RECORD rather than off
+  # live Secret existence — which the pod-delete ownerReference GC races (PR #93
+  # P1). The record is operator-side, out of the sandboxed agent's reach, and
+  # correct on the eviction-remediation path where the Secrets may already be
+  # gone before cmd_stop ever runs.
+  SESSION_INFRA_TOKEN=""
+  [[ "${#opt_infra_token_pairs[@]}" -gt 0 ]] && SESSION_INFRA_TOKEN="1"
+  SESSION_INFRA_KUBECONFIG=""
+  [[ "${#opt_infra_kubeconfigs[@]}" -gt 0 ]] && SESSION_INFRA_KUBECONFIG="1"
+  export SESSION_INFRA_TOKEN SESSION_INFRA_KUBECONFIG
+
   audit_write_session_json \
     "${log_dir}" \
     "${session_id}" \
@@ -1809,8 +1821,15 @@ cmd_stop() {
   local -a repos=()
   local agent=""
   local agent_session_id=""
+  # Whether the session was handed issuer-side infra credentials, read from the
+  # record so the revoke reminders below don't depend on live Secret existence
+  # (which the pod-delete GC races — PR #93 P1). Absent in pre-P1 session.json →
+  # false; the existence-before-delete capture below covers that upgrade window.
+  local had_infra_token="false" had_infra_kubeconfig="false"
   if [[ -f "${session_json}" ]]; then
     tier="$(jq -r '.tier // "1"' "${session_json}" 2>/dev/null || echo "1")"
+    had_infra_token="$(jq -r 'if .infra_token then "true" else "false" end' "${session_json}" 2>/dev/null || echo "false")"
+    had_infra_kubeconfig="$(jq -r 'if .infra_kubeconfig then "true" else "false" end' "${session_json}" 2>/dev/null || echo "false")"
     # Read `.repos` (array, new schema); fall back to `[.repo]` for old
     # session.json files written before the multi-repo refactor.
     read_into_array repos < <(jq -r '
@@ -1861,6 +1880,26 @@ cmd_stop() {
     fi
   fi
 
+  # Capture whether the credential Secrets still exist BEFORE the pod delete (PR
+  # #93 P1). adopt_session_secrets put a pod ownerReference on the infra-token
+  # and kubeconfig Secrets, so the delete below triggers cascading GC of them; a
+  # `kubectl get secret` probe AFTER the delete races that GC, and a revoke
+  # reminder that fires nondeterministically is worse than one that never fires.
+  # Read existence here, ahead of the delete, where the answer is race-free. The
+  # reminders fire on (record OR this) so they hold both for pre-P1 session.json
+  # (no recorded flag, Secret still live here) and for the eviction path (flag
+  # recorded, Secret possibly already gone). These booleans also gate the
+  # idempotent Secret deletes further down.
+  local infra_token_secret_present="false" kc_secret_present="false"
+  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "infra-token-${session_id}" \
+       &>/dev/null 2>&1; then
+    infra_token_secret_present="true"
+  fi
+  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "kubeconfig-${session_id}" \
+       &>/dev/null 2>&1; then
+    kc_secret_present="true"
+  fi
+
   # Delete pod — the containment action (see N7 note above). First, so a
   # killed-again teardown still stops the agent: once the DELETE reaches the API
   # server, termination proceeds server-side regardless of whether this CLI is
@@ -1878,9 +1917,28 @@ cmd_stop() {
   # exit code, so suspending errexit here costs nothing and lets the idempotent
   # revocation/CNP/dependency/audit steps always run.
   if kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null 2>&1; then
-    kubectl delete pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
-      --ignore-not-found=true --grace-period=10 2>&1 || true
-    echo "  Pod deleted."
+    # Capture the exit status instead of discarding it with `|| true` (PR #93
+    # P2). `--ignore-not-found=true` already makes the NotFound race G1 is built
+    # on exit 0, so a non-zero rc here is a GENUINE failure — an RBAC denial, an
+    # unavailable API server, a rejecting admission webhook, a stuck finalizer —
+    # in which case containment did NOT happen. "Pod deleted." must not print in
+    # that case, and the audit record must not read as a clean teardown: record
+    # end_reason=teardown-incomplete so this reuses the F3 machinery and
+    # 'sandbox list' reflects reality. The `|| _del_rc=$?` keeps errexit
+    # suspended exactly as `|| true` did, so the idempotent credential/CNP/audit
+    # steps still all run (the N7-guard property G1's test pins).
+    local _del_rc=0 _del_out=""
+    _del_out="$(kubectl delete pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+      --ignore-not-found=true --grace-period=10 2>&1)" || _del_rc=$?
+    if [[ "${_del_rc}" -eq 0 ]]; then
+      echo "  Pod deleted."
+    else
+      warn "Pod delete FAILED (rc=${_del_rc}) — containment may be INCOMPLETE; the pod could still be running with its mounted credentials. Investigate before trusting this session as stopped.${_del_out:+ kubectl: ${_del_out}}"
+      # Overwrite any eviction/Failed reason captured above: an incomplete
+      # teardown is the more important fact for the audit record and cmd_list.
+      end_reason="teardown-incomplete"
+      end_detail="pod delete failed (rc=${_del_rc})${_del_out:+: ${_del_out}}"
+    fi
   else
     warn "Pod ${pod_name} not found (already stopped)."
   fi
@@ -1891,20 +1949,26 @@ cmd_stop() {
   # a live agent with a usable token. The rotate/revoke reminders still print
   # because issuer-side revocation is manual.
 
-  # Delete infra token secret if present (Tier 3)
+  # Delete infra token secret (Tier 3). Idempotent bookkeeping gated on the
+  # existence captured before the pod delete; the object may itself already be
+  # GC'd via the ownerReference. The revoke REMINDER is driven off the session
+  # record OR that pre-delete existence — never off a post-delete probe — so a
+  # GC race never suppresses it (PR #93 P1).
   local infra_secret_name="infra-token-${session_id}"
-  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${infra_secret_name}" \
-       &>/dev/null 2>&1; then
+  if [[ "${infra_token_secret_present}" == "true" ]]; then
     kubectl delete secret -n "${SANDBOX_NAMESPACE}" "${infra_secret_name}" \
       --ignore-not-found=true 2>&1 || true
+  fi
+  if [[ "${had_infra_token}" == "true" || "${infra_token_secret_present}" == "true" ]]; then
     warn "REMINDER: Revoke infra token used in this session."
   fi
 
-  # Delete kubeconfig secret if present (Tier 3 --infra-kubeconfig)
-  local kc_secret_name="kubeconfig-${session_id}"
-  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${kc_secret_name}" \
-       &>/dev/null 2>&1; then
+  # Delete kubeconfig secret (Tier 3 --infra-kubeconfig). Same idempotent
+  # bookkeeping + record-OR-existence reminder as the infra token above.
+  if [[ "${kc_secret_present}" == "true" ]]; then
     delete_kubeconfig_secret "${session_id}"
+  fi
+  if [[ "${had_infra_kubeconfig}" == "true" || "${kc_secret_present}" == "true" ]]; then
     warn "REMINDER: kubeconfig credentials used in this session may still be"
     warn "         valid on the target cluster. Rotate or let them expire."
   fi

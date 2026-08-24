@@ -532,6 +532,123 @@ test_cmd_stop_revokes_even_if_pod_delete_fails() {
     || fail "a failing pod delete aborted cmd_stop before revocation (rc=${rc}, saw ${n_secret}/4 secrets): $(tr '\n' ' ' < "${order}")"
 }
 
+# PR #93 P1: the issuer-side revoke reminders must NOT depend on the credential
+# Secret still existing at stop time. adopt_session_secrets puts a pod
+# ownerReference on those Secrets, so the (now-first) pod delete triggers
+# cascading GC of them — a `kubectl get secret` probe afterward races that GC and
+# a reminder gated on it fires nondeterministically. cmd_stop now keys the
+# reminder off the session RECORD (infra_token/infra_kubeconfig booleans) OR the
+# existence captured before the pod delete. Here we simulate GC having already
+# won: every `get secret` returns NotFound, yet the record says the session had
+# both credentials, so BOTH reminders must still reach stderr.
+test_cmd_stop_reminds_even_if_secret_gc_won() {
+  info "Testing revoke reminders fire off the record when GC already deleted the Secret (P1)..."
+  # shellcheck disable=SC1090
+  source "${SANDBOX_ROOT}/bin/sandbox" >/dev/null 2>&1
+  SANDBOX_NAMESPACE="sandbox"
+  SANDBOX_LOGS_DIR="${TEST_DIR}/logs-p1"
+  local sid="ses-p1"
+  local sdir="${SANDBOX_LOGS_DIR}/${sid}"
+  mkdir -p "${sdir}"
+  printf '%s\n' '{"agent":"claude","tier":3,"repos":[],"infra_token":true,"infra_kubeconfig":true}' \
+    > "${sdir}/session.json"
+
+  resolve_pod_name() { echo "sandbox-${1}"; }
+  # Pod present (delete succeeds); ALL `get secret` probes return NotFound to
+  # model ownerReference GC having already reaped the Secrets by stop time.
+  kubectl() {
+    case "$1 $2" in
+      "get secret")   return 1 ;;
+      "delete secret") return 0 ;;
+      "get pod")
+        case "$*" in
+          *jsonpath*phase*) echo "Running" ;;
+          *jsonpath*)       echo "" ;;
+          *)                return 0 ;;
+        esac ;;
+      "delete pod")                 return 0 ;;
+      "delete ciliumnetworkpolicy") return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  delete_kubeconfig_secret()      { :; }
+  delete_opencode_apikey_secret() { :; }
+  delete_session_secrets()        { :; }
+  teardown_workspace_sync()  { :; }; capture_workspace_diff()   { :; }
+  sync_agent_home_back()     { :; }; host_agent_home()          { echo "/h/$1"; }
+  audit_capture_transcript() { :; }; export_hubble_flows()      { :; }
+  teardown_dependencies()          { :; }; audit_update_end_time() { :; }
+  audit_record_end_reason()        { :; }; audit_record_dependencies_down() { :; }
+
+  local err="${TEST_DIR}/p1-err"
+  cmd_stop "${sid}" >/dev/null 2>"${err}"
+
+  grep -q "REMINDER: Revoke infra token" "${err}" \
+    && pass "infra-token revoke reminder fires despite the Secret being GC'd" \
+    || fail "infra-token reminder suppressed by GC race: $(tr '\n' ' ' < "${err}")"
+  grep -q "REMINDER: kubeconfig credentials" "${err}" \
+    && pass "kubeconfig rotate reminder fires despite the Secret being GC'd" \
+    || fail "kubeconfig reminder suppressed by GC race: $(tr '\n' ' ' < "${err}")"
+}
+
+# PR #93 P2: `--ignore-not-found` already makes the NotFound race exit 0, so a
+# non-zero pod-delete rc is a GENUINE failure (RBAC denial, API down, stuck
+# finalizer) where containment did NOT happen. cmd_stop must NOT print
+# "Pod deleted." in that case and must record end_reason=teardown-incomplete so
+# the audit record and cmd_list don't read as a clean stop.
+test_cmd_stop_flags_failed_pod_delete() {
+  info "Testing a failed pod delete suppresses 'Pod deleted.' and records teardown-incomplete (P2)..."
+  # shellcheck disable=SC1090
+  source "${SANDBOX_ROOT}/bin/sandbox" >/dev/null 2>&1
+  SANDBOX_NAMESPACE="sandbox"
+  SANDBOX_LOGS_DIR="${TEST_DIR}/logs-p2"
+  local sid="ses-p2"
+  local sdir="${SANDBOX_LOGS_DIR}/${sid}"
+  mkdir -p "${sdir}"
+  printf '%s\n' '{"agent":"claude","tier":3,"repos":[]}' > "${sdir}/session.json"
+
+  local reasonf="${TEST_DIR}/p2-reason"
+  : > "${reasonf}"
+
+  resolve_pod_name() { echo "sandbox-${1}"; }
+  kubectl() {
+    case "$1 $2" in
+      "get secret")   return 1 ;;
+      "get pod")
+        case "$*" in
+          *jsonpath*phase*) echo "Running" ;;
+          *jsonpath*)       echo "" ;;
+          *)                return 0 ;;
+        esac ;;
+      # The delete FAILS with a forbidden-style error on stdout (captured into
+      # the warning) — a genuine failure, not the ignored NotFound race.
+      "delete pod")                 echo 'Error from server (Forbidden): pods "x" is forbidden'; return 1 ;;
+      "delete ciliumnetworkpolicy") return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  delete_kubeconfig_secret()      { :; }
+  delete_opencode_apikey_secret() { :; }
+  delete_session_secrets()        { :; }
+  teardown_workspace_sync()  { :; }; capture_workspace_diff()   { :; }
+  sync_agent_home_back()     { :; }; host_agent_home()          { echo "/h/$1"; }
+  audit_capture_transcript() { :; }; export_hubble_flows()      { :; }
+  teardown_dependencies()          { :; }; audit_update_end_time() { :; }
+  audit_record_dependencies_down() { :; }
+  # Capture the reason cmd_stop stamps.
+  audit_record_end_reason() { printf '%s' "${2:-}" > "${reasonf}"; }
+
+  local out="${TEST_DIR}/p2-out"
+  cmd_stop "${sid}" >"${out}" 2>/dev/null
+
+  grep -q "Pod deleted." "${out}" \
+    && fail "'Pod deleted.' printed after a failed delete: $(tr '\n' ' ' < "${out}")" \
+    || pass "'Pod deleted.' suppressed when the delete failed"
+  [[ "$(cat "${reasonf}")" == "teardown-incomplete" ]] \
+    && pass "failed delete records end_reason=teardown-incomplete" \
+    || fail "end_reason not set to teardown-incomplete (got '$(cat "${reasonf}")')"
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   # NOTE: this suite is ORDER-DEPENDENT. Earlier tests globally stub cmd_stop and
@@ -549,6 +666,8 @@ main() {
   test_audit_record_end_reason
   test_cmd_stop_deletes_pod_before_capture
   test_cmd_stop_revokes_even_if_pod_delete_fails
+  test_cmd_stop_reminds_even_if_secret_gc_won
+  test_cmd_stop_flags_failed_pod_delete
   echo "All ${TEST_NAME} tests passed."
 }
 
