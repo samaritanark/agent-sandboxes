@@ -707,6 +707,71 @@ test_override_ledger() {
     "$(jq '[.events[]? | select(.type=="override")] | length' "${clean_dir}/session.json")"
 }
 
+# PR #93 P1: session.json records whether the session was handed infra
+# credentials, so cmd_stop's revoke reminders key off the record (race-free)
+# rather than off live Secret existence (which the pod-delete GC races).
+test_session_json_infra_fields() {
+  info "Testing session.json records infra_token / infra_kubeconfig booleans (P1)..."
+
+  # Present case: both env flags set → both fields true.
+  local id1="ses-20260401-150000-inf1"
+  local d1="${TEST_LOG_DIR}/${id1}"
+  mkdir -p "${d1}"
+  SESSION_INFRA_TOKEN="1" SESSION_INFRA_KUBECONFIG="1" \
+    audit_write_session_json "${d1}" "${id1}" "claude" "3" "testuser" \
+      "" "" "sandbox-claude-inf1" "2026-04-01T15:00:00Z" "api.anthropic.com"
+  eq "infra_token recorded true when the flag is set" "true" \
+    "$(jq -c '.infra_token' "${d1}/session.json")"
+  eq "infra_kubeconfig recorded true when the flag is set" "true" \
+    "$(jq -c '.infra_kubeconfig' "${d1}/session.json")"
+
+  # Absent case: env flags empty/unset → both fields false (not null/absent, so
+  # cmd_stop's `if .infra_token` reads a real boolean).
+  local id2="ses-20260401-150100-inf2"
+  local d2="${TEST_LOG_DIR}/${id2}"
+  mkdir -p "${d2}"
+  SESSION_INFRA_TOKEN="" SESSION_INFRA_KUBECONFIG="" \
+    audit_write_session_json "${d2}" "${id2}" "claude" "1" "testuser" \
+      "" "" "sandbox-claude-inf2" "2026-04-01T15:01:00Z" "claude.ai"
+  eq "infra_token false when the flag is empty" "false" \
+    "$(jq -c '.infra_token' "${d2}/session.json")"
+  eq "infra_kubeconfig false when the flag is empty" "false" \
+    "$(jq -c '.infra_kubeconfig' "${d2}/session.json")"
+}
+
+# PR #93 P4: the audit writers run from cmd_stop under `cmd_stop … || true`
+# (errexit suspended), so an unchecked `mv tmp session.json` after a FAILED jq
+# would overwrite the record with an empty temp file — destroying the audit
+# trail. The mv is now guarded on jq succeeding. Feed a malformed session.json
+# (jq can't parse it) and assert the writers leave it intact rather than blanking
+# it.
+test_write_preserves_json_on_jq_failure() {
+  info "Testing a failed jq does not truncate session.json (P4)..."
+
+  local id="ses-20260401-150200-p4"
+  local d="${TEST_LOG_DIR}/${id}"
+  mkdir -p "${d}"
+  local sj="${d}/session.json"
+  # Deliberately invalid JSON so every jq filter below fails to parse.
+  local sentinel='THIS IS NOT JSON { broken'
+  printf '%s' "${sentinel}" > "${sj}"
+
+  audit_update_end_time "${d}" "2026-04-01T15:02:00Z"
+  [[ -s "${sj}" && "$(cat "${sj}")" == "${sentinel}" ]] \
+    && pass "audit_update_end_time leaves a bad session.json intact (not truncated)" \
+    || fail "audit_update_end_time truncated/overwrote session.json on jq failure: '$(cat "${sj}")'"
+
+  audit_record_end_reason "${d}" "evicted" "node low on ephemeral-storage"
+  [[ -s "${sj}" && "$(cat "${sj}")" == "${sentinel}" ]] \
+    && pass "audit_record_end_reason leaves a bad session.json intact (not truncated)" \
+    || fail "audit_record_end_reason truncated/overwrote session.json on jq failure: '$(cat "${sj}")'"
+
+  audit_log_event "${d}" "test" "an event"
+  [[ -s "${sj}" && "$(cat "${sj}")" == "${sentinel}" ]] \
+    && pass "audit_log_event leaves a bad session.json intact (not truncated)" \
+    || fail "audit_log_event truncated/overwrote session.json on jq failure: '$(cat "${sj}")'"
+}
+
 main() {
   echo "=== ${TEST_NAME} ==="
   echo ""
@@ -729,6 +794,8 @@ main() {
   test_capture_transcript_claude_pinned
   test_dependency_records
   test_override_ledger
+  test_session_json_infra_fields
+  test_write_preserves_json_on_jq_failure
 
   echo ""
   echo "All audit tests passed."

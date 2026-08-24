@@ -405,8 +405,10 @@ install_cilium_helm() {
   # is the kubelet's first OOM/eviction victim under memory pressure, which lets
   # an in-sandbox agent silence its own egress audit by driving the node toward
   # OOM. A modest request (well inside the "hubble" share of HOST_RESERVE in
-  # lib/resources.sh) makes it no longer the first victim on either the memory
-  # or the disk axis. See PR #79 finding 4 / issue #80 and PR #92 finding F3.
+  # lib/resources.sh) lifts it out of first-victim position on the MEMORY axis.
+  # It does not reorder disk-pressure eviction: the kubelet does not rank pods by
+  # QoS class for ephemeral-storage, and hubble-relay carries no ephemeral-
+  # storage request. See PR #79 finding 4 / issue #80 and PR #92 finding F3.
   helm --kubeconfig "${SANDBOX_KUBECONFIG}" upgrade --install cilium cilium/cilium \
     "${cilium_version_args[@]+"${cilium_version_args[@]}"}" \
     --namespace kube-system \

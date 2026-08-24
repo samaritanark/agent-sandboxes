@@ -476,6 +476,78 @@ teardown_partial_session() {
 }
 
 ###############################################################################
+# Teardown-on-signal trap — shared by the two interactive attach sites
+# (cmd_run, cmd_resume). While the operator is ATTACHED, a killed CLI process (a
+# closed terminal or dropped ssh → SIGHUP, `kill` → SIGTERM, Ctrl-C → SIGINT, a
+# laptop suspend) would otherwise skip teardown, leaving a NON-keep-alive pod
+# running with its infra token and kubeconfig Secrets live (PR #93 findings F1,
+# N1, N2). Trap those signals for the duration of the attach and run teardown
+# from the handler.
+#
+# The handler runs in the caller's frame (dynamic scope), so it reads the
+# caller's locals: opt_keep_alive, session_id, log_dir, and the
+# _session_torn_down one-shot flag. Every attach site MUST declare
+# `local _session_torn_down="false"` before arming, and gate its own post-attach
+# teardown on that flag so cmd_stop runs exactly once. The handler ALSO defaults
+# each of those reads (N8) so a future site that forgets the contract degrades to
+# a functional teardown instead of aborting on an unbound var under `set -u`.
+#
+# Guards:
+#   - keep-alive is exempt: its whole contract is "leave the pod running after
+#     disconnect"; PRINCIPLES.md documents that its credentials rely on a later
+#     `sandbox stop`.
+#   - the handler disarms first (one-shot) and sets _session_torn_down.
+#   - CRITICAL (N1): the terminal this handler exists to cope with is often
+#     already GONE (closed terminal / dropped ssh), so writes to the inherited
+#     stderr return EIO. Under `set -e` an UNGUARDED failed echo would abort the
+#     handler BEFORE cmd_stop — orphaning the pod with live Secrets, i.e. the
+#     exact F1 bug in F1's own headline scenario. So every terminal write here is
+#     `|| true`-guarded, a durable breadcrumb is written to the session log
+#     independently of terminal state, and `cmd_stop ... || true` disables
+#     errexit for everything cmd_stop does (so its writes to a dead terminal are
+#     harmless and every teardown step still runs).
+# Scope: covers the attach only, NOT pre-attach setup (readiness wait, dependency
+# bring-up run in subshells where an armed trap would fire in both child and
+# parent) nor an untrappable SIGKILL/OOM/power loss — those still need a manual
+# `sandbox stop` (documented in PRINCIPLES.md). Not trapping EXIT: it fires on
+# normal completion too and would double-teardown or tear down a keep-alive pod.
+###############################################################################
+_teardown_on_signal() {
+  trap - INT TERM HUP
+  # Read the four caller locals through dynamic scope, but DEFAULT each (PR #93
+  # N8): every current attach site declares them (see contract above), yet under
+  # `set -u` a future site that forgets even one would abort the handler on an
+  # unbound variable BEFORE cmd_stop — the same silent-orphan failure mode as N1.
+  # Defaulting here degrades a contract slip to a still-functional teardown.
+  local _keep_alive="${opt_keep_alive:-false}"
+  local _torn="${_session_torn_down:-false}"
+  local _sid="${session_id:-}"
+  local _ld="${log_dir:-}"
+  [[ "${_keep_alive}" == "true" ]] && return 0
+  [[ "${_torn}" == "true" ]] && return 0
+  _session_torn_down="true"
+  # Durable record of the signalled teardown, independent of terminal state.
+  # Skipped when no log_dir is in scope (N8 degraded path).
+  if [[ -n "${_ld}" ]]; then
+    echo "Session ${_sid:-unknown} interrupted by signal; running teardown." \
+      >>"${_ld}/teardown-on-signal.log" 2>/dev/null || true
+  fi
+  # Best-effort terminal notice — GUARDED (see CRITICAL above): a dead pty write
+  # returns EIO and must not abort the handler before teardown. The message must
+  # match what actually happens: with no session_id in scope (N8 degraded path)
+  # there is nothing to tear down, so say so honestly rather than claim a
+  # revocation that won't run.
+  if [[ -n "${_sid}" ]]; then
+    echo "==> Session ${_sid} interrupted; running teardown so credentials are revoked." >&2 || true
+    cmd_stop "${_sid}" || true
+  else
+    echo "==> Session interrupted but no session id is in scope; cannot run teardown — revoke any session credentials manually." >&2 || true
+  fi
+}
+_arm_teardown_trap() { trap '_teardown_on_signal' INT TERM HUP; }
+_disarm_teardown_trap() { trap - INT TERM HUP; }
+
+###############################################################################
 # cmd_run — main session launch
 ###############################################################################
 cmd_run() {
@@ -1261,6 +1333,18 @@ cmd_run() {
   fi
   export SESSION_KUBE_API_CIDR SESSION_KUBE_API_PORT SESSION_KUBE_API_CONTEXTS SESSION_KUBE_HOST_ENTITY
 
+  # Record whether this session was handed issuer-side infra credentials, so
+  # cmd_stop's revoke reminders can key off the session RECORD rather than off
+  # live Secret existence — which the pod-delete ownerReference GC races (PR #93
+  # P1). The record is operator-side, out of the sandboxed agent's reach, and
+  # correct on the eviction-remediation path where the Secrets may already be
+  # gone before cmd_stop ever runs.
+  SESSION_INFRA_TOKEN=""
+  [[ "${#opt_infra_token_pairs[@]}" -gt 0 ]] && SESSION_INFRA_TOKEN="1"
+  SESSION_INFRA_KUBECONFIG=""
+  [[ "${#opt_infra_kubeconfigs[@]}" -gt 0 ]] && SESSION_INFRA_KUBECONFIG="1"
+  export SESSION_INFRA_TOKEN SESSION_INFRA_KUBECONFIG
+
   audit_write_session_json \
     "${log_dir}" \
     "${session_id}" \
@@ -1453,8 +1537,10 @@ cmd_run() {
 
   # Adopt the session's credential Secrets to the pod (ownerReference) as soon as
   # it has a UID — before the readiness wait — so Kubernetes GC reaps them if the
-  # pod is later evicted, a path that bypasses cmd_stop (PR #92 finding F3). No-op
-  # when the session created no such secrets.
+  # pod OBJECT is later deleted without cmd_stop running (a manual delete, a
+  # namespace teardown, or the sweep of an Evicted pod). An eviction alone leaves
+  # the pod object behind and does NOT trigger GC (PR #92 finding F3; see
+  # adopt_session_secrets). No-op when the session created no such secrets.
   local pod_uid_for_adopt
   pod_uid_for_adopt="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
     -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
@@ -1491,8 +1577,10 @@ cmd_run() {
     echo "==> Verifying per-session network identity..."
     if ! ( assert_session_identity_distinct "${pod_name}" ); then
       echo "==> Identity assertion failed; tearing down session ${session_id}." >&2
-      teardown_partial_session "${session_id}" "${pod_name}" || true
-      die "Per-session network identity could not be verified; aborted."
+      if teardown_partial_session "${session_id}" "${pod_name}"; then
+        die "Per-session network identity could not be verified; session torn down."
+      fi
+      die "Per-session network identity could not be verified, and teardown left the pod behind. Run 'sandbox stop ${session_id}' and check for leftover secrets."
     fi
 
     # The session pod owns the dependency objects: Kubernetes GC reaps them if
@@ -1506,8 +1594,10 @@ cmd_run() {
     if ! bring_up_dependencies "${session_id}" "${opt_tier}" "${pod_name}" \
          "${owner_uid}" "${log_dir}"; then
       echo "==> Dependency startup failed; tearing down session ${session_id}." >&2
-      teardown_partial_session "${session_id}" "${pod_name}" || true
-      die "One or more dependencies failed to start; aborted."
+      if teardown_partial_session "${session_id}" "${pod_name}"; then
+        die "One or more dependencies failed to start; session torn down."
+      fi
+      die "One or more dependencies failed to start, and teardown left the pod behind. Run 'sandbox stop ${session_id}' and check for leftover secrets."
     fi
 
     # Record the resolved dependencies (versions, egress allowlists, up-times)
@@ -1566,8 +1656,19 @@ cmd_run() {
     [[ "${#_mcp_args[@]}" -gt 0 ]] && agent_cmd+=("${_mcp_args[@]}")
   fi
 
+  # Teardown-on-signal covers the attach so a killed CLI still revokes credentials
+  # (see _teardown_on_signal above; PR #93 findings F1/N1). Every attach site
+  # declares this one-shot flag, arms before the attach, and disarms after; Step
+  # 12 below skips its own teardown when the handler already ran.
+  local _session_torn_down="false"
+  _arm_teardown_trap
+
   echo "==> Attaching to session (Ctrl-D or 'exit' to end)..."
   kubectl exec -n "${SANDBOX_NAMESPACE}" -it "${pod_name}" -c agent -- "${agent_cmd[@]}" || true
+
+  # Attach returned — normally, or because a trapped signal already tore the
+  # session down. Disarm so neither Step 12 nor a late signal re-enters cmd_stop.
+  _disarm_teardown_trap
 
   ###########################################################################
   # Step 12: Disconnect — tear down by default; --keep-alive preserves the pod
@@ -1578,8 +1679,9 @@ cmd_run() {
     echo "    Resume:  sandbox resume ${session_id}"
     echo "    Stop:    sandbox stop ${session_id}"
     echo "    Logs:    ${log_dir}"
-  else
+  elif [[ "${_session_torn_down}" != "true" ]]; then
     echo "==> Disconnected — tearing down session to free cluster resources..."
+    _session_torn_down="true"
     cmd_stop "${session_id}"
     echo ""
     echo "    Conversation history preserved in ~/.sandbox/agent-home/${opt_agent}/"
@@ -1719,8 +1821,15 @@ cmd_stop() {
   local -a repos=()
   local agent=""
   local agent_session_id=""
+  # Whether the session was handed issuer-side infra credentials, read from the
+  # record so the revoke reminders below don't depend on live Secret existence
+  # (which the pod-delete GC races — PR #93 P1). Absent in pre-P1 session.json →
+  # false; the existence-before-delete capture below covers that upgrade window.
+  local had_infra_token="false" had_infra_kubeconfig="false"
   if [[ -f "${session_json}" ]]; then
     tier="$(jq -r '.tier // "1"' "${session_json}" 2>/dev/null || echo "1")"
+    had_infra_token="$(jq -r 'if .infra_token then "true" else "false" end' "${session_json}" 2>/dev/null || echo "false")"
+    had_infra_kubeconfig="$(jq -r 'if .infra_kubeconfig then "true" else "false" end' "${session_json}" 2>/dev/null || echo "false")"
     # Read `.repos` (array, new schema); fall back to `[.repo]` for old
     # session.json files written before the multi-repo refactor.
     read_into_array repos < <(jq -r '
@@ -1732,65 +1841,134 @@ cmd_stop() {
     agent_session_id="$(jq -r '.agent_session_id // ""' "${session_json}" 2>/dev/null || echo "")"
   fi
 
-  # Workspace diff (Tier 2/3)
-  if [[ "${tier}" -ge 2 ]] && [[ "${#repos[@]}" -gt 0 ]]; then
-    # macOS: flush the agent's final edits from the VM-local copy back to the
-    # host repos and tear down the Mutagen sessions FIRST, so the diff below
-    # (which reads the host paths) reflects the completed work. No-op elsewhere.
-    teardown_workspace_sync "${session_id}"
-    echo "==> Capturing workspace diff..."
-    capture_workspace_diff "${log_dir}" "${repos[@]}"
-  fi
+  # Remove the agent's EXECUTION FIRST — before the Secret-object deletes and the
+  # slow best-effort capture (workspace diff, transcript, Hubble export) (PR #93
+  # findings N3/N7). Teardown is now reachable at moments the operator did not
+  # choose (a signalled disconnect, an eviction remediation) and under conditions
+  # where the process may be killed AGAIN mid-run (a second Ctrl-C, an OOM, power
+  # loss). What actually contains an adversarial agent is deleting its POD: the
+  # infra token and kubeconfig were projected into the pod and read long ago, so
+  # deleting the Secret API objects is namespace bookkeeping that does NOT take the
+  # mounted credential away from a still-running agent — only removing the pod
+  # stops it using them. So the pod delete (and the F3 end-reason read that must
+  # precede it) goes first; if a second kill lands mid-teardown it lands after
+  # execution is already gone, not with a live agent still holding a usable token.
+  # Round-2 ordered the Secret deletes first (N3); that had containment backwards
+  # (N7), so the round-3 fix is a further reorder, not a revert. Issuer-side
+  # revocation of the token itself stays manual — the reminders below still print.
 
-  # Capture the agent conversation transcript into the session log directory.
-  # On macOS the agent-home the pod wrote to is VM-local; sync it back to the
-  # host staging dir first so the capture (which reads the host path) and the
-  # durable token backup are current. No-op on Linux/WSL.
-  if [[ -n "${agent}" ]]; then
-    sync_agent_home_back "${agent}"
-    echo "==> Capturing conversation transcript..."
-    audit_capture_transcript "${log_dir}" "${agent}" \
-      "$(host_agent_home "${agent}")" "${agent_session_id}"
-  fi
-
-  # Export Hubble flows
-  echo "==> Exporting Hubble flows..."
-  export_hubble_flows "${session_id}" "${log_dir}" \
-    || warn "Could not export Hubble flows (is hubble CLI available?)"
-
-  # Delete pod
+  # Capture HOW the session ended BEFORE deleting the pod (PR #93 finding F3). A
+  # node-pressure eviction leaves the pod object in Failed/Evicted state; without
+  # this, once cmd_stop deletes it the remediated session.json is
+  # byte-indistinguishable from a clean teardown and cmd_list shows it as
+  # 'running' forever. Read phase/reason/message here; stamp it at end-time below.
+  local end_reason="" end_detail=""
   if kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null 2>&1; then
-    kubectl delete pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" --grace-period=10 2>&1
-    echo "  Pod deleted."
+    local pod_phase pod_reason pod_message
+    pod_phase="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+      -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    pod_reason="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+      -o jsonpath='{.status.reason}' 2>/dev/null || true)"
+    pod_message="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+      -o jsonpath='{.status.message}' 2>/dev/null || true)"
+    if [[ "${pod_phase}" == "Failed" ]]; then
+      # "Evicted" is the kubelet's reason for node-pressure eviction; keep any
+      # other Failed reason verbatim so the record stays honest.
+      end_reason="$([[ "${pod_reason}" == "Evicted" ]] && echo "evicted" || echo "failed")"
+      end_detail="${pod_reason}${pod_message:+: ${pod_message}}"
+      warn "Session pod ended abnormally (phase=${pod_phase}${pod_reason:+, reason=${pod_reason}}) — teardown did not run at eviction time."
+    fi
+  fi
+
+  # Capture whether the credential Secrets still exist BEFORE the pod delete (PR
+  # #93 P1). adopt_session_secrets put a pod ownerReference on the infra-token
+  # and kubeconfig Secrets, so the delete below triggers cascading GC of them; a
+  # `kubectl get secret` probe AFTER the delete races that GC, and a revoke
+  # reminder that fires nondeterministically is worse than one that never fires.
+  # Read existence here, ahead of the delete, where the answer is race-free. The
+  # reminders fire on (record OR this) so they hold both for pre-P1 session.json
+  # (no recorded flag, Secret still live here) and for the eviction path (flag
+  # recorded, Secret possibly already gone). These booleans also gate the
+  # idempotent Secret deletes further down.
+  local infra_token_secret_present="false" kc_secret_present="false"
+  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "infra-token-${session_id}" \
+       &>/dev/null 2>&1; then
+    infra_token_secret_present="true"
+  fi
+  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "kubeconfig-${session_id}" \
+       &>/dev/null 2>&1; then
+    kc_secret_present="true"
+  fi
+
+  # Delete pod — the containment action (see N7 note above). First, so a
+  # killed-again teardown still stops the agent: once the DELETE reaches the API
+  # server, termination proceeds server-side regardless of whether this CLI is
+  # killed next. `--grace-period=10` leaves a bounded shutdown tail in which an
+  # agent that ignores SIGTERM keeps running with its mounted token, but its
+  # egress stays policed (the CNP is removed last, below) and the kubelet SIGKILLs
+  # at grace end no matter what — so this is a bounded tail on already-guaranteed
+  # termination, not an escape. GUARDED with `|| true` + `--ignore-not-found`
+  # (PR #93 N7 follow-up): this is the FIRST step now and the ONLY delete in
+  # cmd_stop that could exit non-zero (a TOCTOU NotFound race — realistic in the
+  # eviction-remediation case where the kubelet/GC is also acting on the pod — or
+  # a transient API error). Unguarded, under `set -e` on the direct `sandbox stop`
+  # path it would abort teardown BEFORE the credential-Secret deletes it now
+  # precedes, leaving them live. Containment is the DELETE being issued, not its
+  # exit code, so suspending errexit here costs nothing and lets the idempotent
+  # revocation/CNP/dependency/audit steps always run.
+  if kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null 2>&1; then
+    # Capture the exit status instead of discarding it with `|| true` (PR #93
+    # P2). `--ignore-not-found=true` already makes the NotFound race G1 is built
+    # on exit 0, so a non-zero rc here is a GENUINE failure — an RBAC denial, an
+    # unavailable API server, a rejecting admission webhook, a stuck finalizer —
+    # in which case containment did NOT happen. "Pod deleted." must not print in
+    # that case, and the audit record must not read as a clean teardown: record
+    # end_reason=teardown-incomplete so this reuses the F3 machinery and
+    # 'sandbox list' reflects reality. The `|| _del_rc=$?` keeps errexit
+    # suspended exactly as `|| true` did, so the idempotent credential/CNP/audit
+    # steps still all run (the N7-guard property G1's test pins).
+    local _del_rc=0 _del_out=""
+    _del_out="$(kubectl delete pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+      --ignore-not-found=true --grace-period=10 2>&1)" || _del_rc=$?
+    if [[ "${_del_rc}" -eq 0 ]]; then
+      echo "  Pod deleted."
+    else
+      warn "Pod delete FAILED (rc=${_del_rc}) — containment may be INCOMPLETE; the pod could still be running with its mounted credentials. Investigate before trusting this session as stopped.${_del_out:+ kubectl: ${_del_out}}"
+      # Overwrite any eviction/Failed reason captured above: an incomplete
+      # teardown is the more important fact for the audit record and cmd_list.
+      end_reason="teardown-incomplete"
+      end_detail="pod delete failed (rc=${_del_rc})${_del_out:+: ${_del_out}}"
+    fi
   else
     warn "Pod ${pod_name} not found (already stopped)."
   fi
 
-  # Delete network policy
-  kubectl delete ciliumnetworkpolicy -n "${SANDBOX_NAMESPACE}" \
-    "policy-${session_id}" --ignore-not-found=true 2>&1 || true
+  # Delete the session credential Secret objects. This is namespace bookkeeping
+  # (PRINCIPLES.md rule 2: no secret material persists in the cluster after a
+  # session) — the pod that mounted them is already gone above, so it cannot leave
+  # a live agent with a usable token. The rotate/revoke reminders still print
+  # because issuer-side revocation is manual.
 
-  # Phase 5: reap per-session dependency objects (pods, Services, CNPs) and the
-  # MCP ConfigMap. Deleting the session pod above already triggers Kubernetes GC
-  # via ownerReferences; this label-keyed sweep is the backstop covering the
-  # window before an ownerRef was set and the case where the pod never existed.
-  # No-op when the session declared no dependencies.
-  teardown_dependencies "${session_id}"
-
-  # Delete infra token secret if present (Tier 3)
+  # Delete infra token secret (Tier 3). Idempotent bookkeeping gated on the
+  # existence captured before the pod delete; the object may itself already be
+  # GC'd via the ownerReference. The revoke REMINDER is driven off the session
+  # record OR that pre-delete existence — never off a post-delete probe — so a
+  # GC race never suppresses it (PR #93 P1).
   local infra_secret_name="infra-token-${session_id}"
-  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${infra_secret_name}" \
-       &>/dev/null 2>&1; then
+  if [[ "${infra_token_secret_present}" == "true" ]]; then
     kubectl delete secret -n "${SANDBOX_NAMESPACE}" "${infra_secret_name}" \
       --ignore-not-found=true 2>&1 || true
+  fi
+  if [[ "${had_infra_token}" == "true" || "${infra_token_secret_present}" == "true" ]]; then
     warn "REMINDER: Revoke infra token used in this session."
   fi
 
-  # Delete kubeconfig secret if present (Tier 3 --infra-kubeconfig)
-  local kc_secret_name="kubeconfig-${session_id}"
-  if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${kc_secret_name}" \
-       &>/dev/null 2>&1; then
+  # Delete kubeconfig secret (Tier 3 --infra-kubeconfig). Same idempotent
+  # bookkeeping + record-OR-existence reminder as the infra token above.
+  if [[ "${kc_secret_present}" == "true" ]]; then
     delete_kubeconfig_secret "${session_id}"
+  fi
+  if [[ "${had_infra_kubeconfig}" == "true" || "${kc_secret_present}" == "true" ]]; then
     warn "REMINDER: kubeconfig credentials used in this session may still be"
     warn "         valid on the target cluster. Rotate or let them expire."
   fi
@@ -1802,11 +1980,65 @@ cmd_stop() {
   # when the session didn't use any. PRINCIPLES.md rule 2.
   delete_session_secrets "${session_id}"
 
+  # Workspace diff (Tier 2/3)
+  if [[ "${tier}" -ge 2 ]] && [[ "${#repos[@]}" -gt 0 ]]; then
+    # macOS: flush the agent's final edits from the VM-local copy back to the
+    # host repos and tear down the Mutagen sessions FIRST, so the diff below
+    # (which reads the host paths) reflects the completed work. No-op elsewhere.
+    # The pod is already gone (above); its workspace is hostPath/VM-local-backed,
+    # so the edits survive its deletion and — with no agent still writing — this
+    # flush captures a stable final state.
+    teardown_workspace_sync "${session_id}"
+    echo "==> Capturing workspace diff..."
+    capture_workspace_diff "${log_dir}" "${repos[@]}"
+  fi
+
+  # Capture the agent conversation transcript into the session log directory.
+  # On macOS the agent-home the pod wrote to is VM-local; sync it back to the
+  # host staging dir first so the capture (which reads the host path) and the
+  # durable token backup are current. No-op on Linux/WSL. Survives the pod delete
+  # above (hostPath-backed).
+  if [[ -n "${agent}" ]]; then
+    sync_agent_home_back "${agent}"
+    echo "==> Capturing conversation transcript..."
+    audit_capture_transcript "${log_dir}" "${agent}" \
+      "$(host_agent_home "${agent}")" "${agent_session_id}"
+  fi
+
+  # Export Hubble flows. Runs AFTER the pod delete so containment is never gated
+  # on this step (it shells into the Cilium DaemonSet and can block). The flows
+  # are historical records in Cilium's ring buffer, tagged with the pod's
+  # sandbox-session label at flow time and read back by that label here; deleting
+  # the pod does not erase them. NOTE (PR #93 N7, UNVERIFIED): that the label
+  # filter still matches once the pod's Cilium endpoint is gone is inferred from
+  # ring-buffer records being immutable, not confirmed on the pinned Cilium tag —
+  # the one live check gating this reorder. If it ever regresses, the flows are
+  # still in the buffer; only this label query would need widening, not the order.
+  echo "==> Exporting Hubble flows..."
+  export_hubble_flows "${session_id}" "${log_dir}" \
+    || warn "Could not export Hubble flows (is hubble CLI available?)"
+
+  # Delete network policy (after the pod, never before — deleting it opens egress,
+  # which must not happen while the pod could still be alive).
+  kubectl delete ciliumnetworkpolicy -n "${SANDBOX_NAMESPACE}" \
+    "policy-${session_id}" --ignore-not-found=true 2>&1 || true
+
+  # Phase 5: reap per-session dependency objects (pods, Services, CNPs) and the
+  # MCP ConfigMap. Deleting the session pod above already triggers Kubernetes GC
+  # via ownerReferences; this label-keyed sweep is the backstop covering the
+  # window before an ownerRef was set and the case where the pod never existed.
+  # No-op when the session declared no dependencies.
+  teardown_dependencies "${session_id}"
+
   # Mark session ended
   if [[ -d "${log_dir}" ]]; then
     local end_time
     end_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     audit_update_end_time "${log_dir}" "${end_time}"
+    # Record an abnormal ending (eviction/Failed) captured above so the
+    # remediated session is distinguishable from a clean teardown (F3). No-op on
+    # the normal path (empty reason).
+    audit_record_end_reason "${log_dir}" "${end_reason}" "${end_detail}"
     # Stamp the dependency down-times alongside the session end (§2.6). No-op
     # when the session declared no dependencies.
     audit_record_dependencies_down "${log_dir}" "${end_time}"
@@ -2072,15 +2304,22 @@ cmd_resume() {
     agent_cmd+=("${resume_flag}" "${agent_session_id}")
   fi
 
+  # Same teardown-on-signal coverage as cmd_run: a resumed non-keep-alive session
+  # whose CLI is signalled mid-attach must still revoke credentials, and
+  # PRINCIPLES.md's guarantee is unqualified across resume too (PR #93 finding N2).
+  local _session_torn_down="false"
+  _arm_teardown_trap
   kubectl exec -n "${SANDBOX_NAMESPACE}" -it "${pod_name}" -c agent -- "${agent_cmd[@]}" || true
+  _disarm_teardown_trap
 
   echo ""
   if [[ "${opt_keep_alive}" == "true" ]]; then
     echo "==> Disconnected from session ${session_id} (pod kept alive)."
     echo "    Resume:  sandbox resume ${session_id}"
     echo "    Stop:    sandbox stop ${session_id}"
-  else
+  elif [[ "${_session_torn_down}" != "true" ]]; then
     echo "==> Disconnected — tearing down session to free cluster resources..."
+    _session_torn_down="true"
     cmd_stop "${session_id}"
     echo ""
     echo "    Conversation history preserved in ~/.sandbox/agent-home/${agent}/"

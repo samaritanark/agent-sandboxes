@@ -46,10 +46,18 @@ audit_flush_overrides() {
   ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   for entry in "${SESSION_OVERRIDES[@]}"; do
     tmp="$(mktemp)"
-    jq --arg ts "${ts}" --argjson o "${entry}" \
+    # Guard the mv on jq succeeding (PR #93 P4): several of these audit writers
+    # run from cmd_stop under `cmd_stop … || true` (the signal-teardown path),
+    # which suspends errexit — so a failed jq (malformed session.json, full disk,
+    # interrupted write) would otherwise let `mv` overwrite the record with an
+    # empty temp file, destroying the very audit trail this teardown is writing.
+    if jq --arg ts "${ts}" --argjson o "${entry}" \
       '.events += [ $o + {time: $ts, type: "override"} ]' \
-      "${session_json}" > "${tmp}"
-    mv "${tmp}" "${session_json}"
+      "${session_json}" > "${tmp}"; then
+      mv "${tmp}" "${session_json}"
+    else
+      rm -f "${tmp}"
+    fi
   done
 }
 
@@ -113,6 +121,11 @@ audit_write_session_json() {
   #     gates build_cilium_policy's per-cluster reserved:host grant.
   #     Persisted so resume/hot-reload rebuild the identical policy shape
   #     without re-probing.
+  #   SESSION_INFRA_TOKEN / SESSION_INFRA_KUBECONFIG — non-empty when the
+  #     session was handed an infra token / kubeconfig. Persisted as booleans
+  #     so cmd_stop's issuer-side revoke reminders key off the record rather
+  #     than off live Secret existence, which the pod-delete GC races (PR #93
+  #     P1). Empty (→ false) for Tier 1/2.
   jq -n \
     --arg id "${session_id}" \
     --arg agent "${agent}" \
@@ -131,6 +144,8 @@ audit_write_session_json() {
     --arg kube_api_port "${SESSION_KUBE_API_PORT:-}" \
     --arg kube_api_contexts "${SESSION_KUBE_API_CONTEXTS:-}" \
     --arg kube_host_entity "${SESSION_KUBE_HOST_ENTITY:-}" \
+    --arg infra_token "${SESSION_INFRA_TOKEN:-}" \
+    --arg infra_kubeconfig "${SESSION_INFRA_KUBECONFIG:-}" \
     '{
       id: $id,
       agent: $agent,
@@ -149,6 +164,8 @@ audit_write_session_json() {
       kube_api_port: $kube_api_port,
       kube_api_contexts: $kube_api_contexts,
       kube_host_entity: $kube_host_entity,
+      infra_token: ($infra_token != ""),
+      infra_kubeconfig: ($infra_kubeconfig != ""),
       allowed_domains: $domains,
       retention_days: $retention_days
     }' > "${log_dir}/session.json"
@@ -168,10 +185,45 @@ audit_update_end_time() {
 
   local tmp
   tmp="$(mktemp)"
-  jq --arg end_time "${end_time}" \
+  # Guard the mv on jq succeeding — reachable from cmd_stop with errexit
+  # suspended, where an unchecked mv of a failed jq's empty temp file truncates
+  # session.json to zero bytes (PR #93 P4).
+  if jq --arg end_time "${end_time}" \
     '.end_time = $end_time' \
-    "${session_json}" > "${tmp}"
-  mv "${tmp}" "${session_json}"
+    "${session_json}" > "${tmp}"; then
+    mv "${tmp}" "${session_json}"
+  else
+    rm -f "${tmp}"
+  fi
+}
+
+# audit_record_end_reason — record HOW a session ended into session.json, so a
+# remediated eviction is not byte-indistinguishable from a clean teardown (PR #93
+# finding F3). `reason` is a short machine token ("evicted"), `detail` the
+# kubelet's human message. Operator-side, out of the sandboxed agent's reach.
+# No-op when reason is empty (the normal, clean-teardown path leaves the field
+# absent so its presence alone flags an abnormal ending).
+audit_record_end_reason() {
+  local log_dir="$1"
+  local reason="$2"
+  local detail="${3:-}"
+  local session_json="${log_dir}/session.json"
+
+  [[ -n "${reason}" ]] || return 0
+  [[ -f "${session_json}" ]] || return 0
+
+  local tmp
+  tmp="$(mktemp)"
+  # Guard the mv on jq succeeding (PR #93 P4): this runs from cmd_stop on the
+  # errexit-suspended signal-teardown path, so an unchecked mv of a failed jq's
+  # empty temp file would erase the very end-reason record F3 added.
+  if jq --arg reason "${reason}" --arg detail "${detail}" \
+    '.end_reason = $reason | .end_detail = $detail' \
+    "${session_json}" > "${tmp}"; then
+    mv "${tmp}" "${session_json}"
+  else
+    rm -f "${tmp}"
+  fi
 }
 
 # audit_record_agent_session_id — store the agent's pinned conversation ID
@@ -187,10 +239,15 @@ audit_record_agent_session_id() {
 
   local tmp
   tmp="$(mktemp)"
-  jq --arg id "${agent_session_id}" \
+  # Guard the mv on jq succeeding so a failed jq never truncates session.json
+  # (PR #93 P4; consistent with the other audit writers).
+  if jq --arg id "${agent_session_id}" \
     '.agent_session_id = $id' \
-    "${session_json}" > "${tmp}"
-  mv "${tmp}" "${session_json}"
+    "${session_json}" > "${tmp}"; then
+    mv "${tmp}" "${session_json}"
+  else
+    rm -f "${tmp}"
+  fi
 }
 
 # audit_record_dependencies — store the resolved per-session dependency records
@@ -212,9 +269,14 @@ audit_record_dependencies() {
 
   local tmp
   tmp="$(mktemp)"
-  jq --argjson deps "${deps_json}" '.dependencies = $deps' \
-    "${session_json}" > "${tmp}"
-  mv "${tmp}" "${session_json}"
+  # Guard the mv on jq succeeding so a failed jq never truncates session.json
+  # (PR #93 P4; consistent with the other audit writers).
+  if jq --argjson deps "${deps_json}" '.dependencies = $deps' \
+    "${session_json}" > "${tmp}"; then
+    mv "${tmp}" "${session_json}"
+  else
+    rm -f "${tmp}"
+  fi
 }
 
 # audit_record_dependencies_down — stamp a down-timestamp on every recorded
@@ -228,12 +290,18 @@ audit_record_dependencies_down() {
 
   local tmp
   tmp="$(mktemp)"
-  jq --arg dt "${down_time}" \
+  # Guard the mv on jq succeeding (PR #93 P4): this too runs from cmd_stop on
+  # the errexit-suspended signal-teardown path, so a failed jq must not be
+  # allowed to overwrite session.json with an empty temp file.
+  if jq --arg dt "${down_time}" \
     'if (.dependencies | type) == "array"
        then .dependencies |= map(.down_time = $dt)
        else . end' \
-    "${session_json}" > "${tmp}"
-  mv "${tmp}" "${session_json}"
+    "${session_json}" > "${tmp}"; then
+    mv "${tmp}" "${session_json}"
+  else
+    rm -f "${tmp}"
+  fi
 }
 
 # audit_log_event — append a structured event line to session.json events array
@@ -252,13 +320,18 @@ audit_log_event() {
 
   local tmp
   tmp="$(mktemp)"
-  jq \
+  # Guard the mv on jq succeeding so a failed jq never truncates session.json
+  # (PR #93 P4; consistent with the other audit writers).
+  if jq \
     --arg ts "${timestamp}" \
     --arg type "${event_type}" \
     --arg msg "${message}" \
     '.events += [{"time": $ts, "type": $type, "message": $msg}]' \
-    "${session_json}" > "${tmp}"
-  mv "${tmp}" "${session_json}"
+    "${session_json}" > "${tmp}"; then
+    mv "${tmp}" "${session_json}"
+  else
+    rm -f "${tmp}"
+  fi
 }
 
 # audit_capture_transcript — copy the agent's conversation transcript(s) for

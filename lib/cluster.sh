@@ -387,12 +387,15 @@ create_kubeconfig_secret() {
 }
 
 # adopt_session_secrets — set an ownerReference on each of the session's
-# credential Secrets so Kubernetes garbage-collects them whenever the session
-# pod is deleted BY ANY PATH, including a kubelet eviction that bypasses
-# cmd_stop entirely (PR #92 finding F3). Without this, a disk- or memory-
-# pressure eviction of the pod leaves infra-token-*/kubeconfig-* live in the
-# namespace with no revocation and no teardown — an anti-forensics primitive an
-# in-sandbox agent can trigger by filling its own ephemeral storage.
+# credential Secrets so Kubernetes garbage-collects them when the session pod
+# OBJECT is deleted without cmd_stop having run: a manual `kubectl delete pod`,
+# a namespace teardown, or the eventual sweep of an Evicted pod. Owner-reference
+# GC fires on DELETION of the owner, not on it terminating — a node-pressure
+# eviction leaves the pod object behind in Failed/Evicted state, so it does NOT
+# trigger this cascade. An evicted --keep-alive session's Secrets therefore stay
+# live in the namespace until `sandbox stop` deletes the (Evicted) pod and the
+# Secrets (see PRINCIPLES.md). This is a backstop for pod-deletion paths cmd_stop
+# never runs on, not a revocation guarantee under eviction (PR #92 finding F3).
 #
 # The Secrets are created before the pod exists (they must be mountable at pod
 # creation), so the owner UID is unknown at creation time; we patch it in here
@@ -406,7 +409,31 @@ adopt_session_secrets() {
   local session_id="$1"
   local owner_name="$2"
   local owner_uid="$3"
-  [[ -z "${owner_name}" || -z "${owner_uid}" ]] && return 0
+
+  local secret
+  local -a session_secrets=(
+    "infra-token-${session_id}"
+    "kubeconfig-${session_id}"
+    "opencode-apikey-${session_id}"
+    "$(session_secrets_name "${session_id}")"
+  )
+
+  # No pod UID (lookup failed, or the pod vanished before we read it): we cannot
+  # set an ownerReference. Don't skip silently — but stay quiet for the common
+  # tier-1 case with no Secrets. Warn only when a credential Secret actually
+  # exists, so its operator learns it now rests entirely on `sandbox stop` for
+  # revocation, with no GC backstop (R6).
+  if [[ -z "${owner_name}" || -z "${owner_uid}" ]]; then
+    for secret in "${session_secrets[@]}"; do
+      if kubectl get secret -n "${SANDBOX_NAMESPACE}" "${secret}" &>/dev/null; then
+        warn "Could not resolve pod UID for session ${session_id}; its credential" \
+             "Secrets were not adopted for garbage collection and now rely on" \
+             "'sandbox stop' for revocation."
+        break
+      fi
+    done
+    return 0
+  fi
 
   local patch
   patch="$(cat <<EOF
@@ -414,17 +441,13 @@ adopt_session_secrets() {
 EOF
 )"
 
-  local secret
-  for secret in \
-    "infra-token-${session_id}" \
-    "kubeconfig-${session_id}" \
-    "opencode-apikey-${session_id}" \
-    "$(session_secrets_name "${session_id}")"; do
+  for secret in "${session_secrets[@]}"; do
     kubectl get secret -n "${SANDBOX_NAMESPACE}" "${secret}" &>/dev/null || continue
     kubectl patch secret -n "${SANDBOX_NAMESPACE}" "${secret}" \
       --type=merge -p "${patch}" >/dev/null 2>&1 \
       || warn "Could not set pod ownerReference on secret ${secret}; it will be" \
-              "reaped by cmd_stop but not by GC if the pod is evicted."
+              "reaped by 'sandbox stop' but not garbage-collected if the pod" \
+              "object is later deleted without it."
   done
 }
 
@@ -458,7 +481,27 @@ export_hubble_flows() {
     flow_count="$(wc -l < "${log_dir}/flows.json" | tr -d ' ')"
     echo "  Exported ${flow_count} flow records."
   else
-    echo "  No flows captured (empty result)."
+    # An empty result here is AMBIGUOUS and must NOT be silently recorded as
+    # "no egress" (PR #93 N7 follow-up). cmd_stop now runs this export AFTER the
+    # session pod — and its Cilium endpoint — is deleted, so a genuinely quiet
+    # session and a session whose flows are no longer matched by the
+    # `--label sandbox-session=` filter once the endpoint is gone produce the
+    # SAME empty output. Treating that as "clean" would let a lost egress record
+    # read as a quiet one. So instead of silently dropping the file, leave an
+    # operator-side marker (this log dir is host-side, out of the agent's reach)
+    # recording that the export ran and returned nothing, and why that is
+    # ambiguous. The pending live check on the pinned Cilium tag (see the Hubble
+    # NOTE in cmd_stop) settles which case it is; until then, empty is UNVERIFIED,
+    # not clean.
+    echo "  No flow records returned — AMBIGUOUS (export runs post-endpoint-deletion; see flows.empty.note)."
     rm -f "${log_dir}/flows.json"
+    printf '%s\n' \
+      "Hubble flow export for session ${session_id} returned 0 records." \
+      "This export runs AFTER the session pod's Cilium endpoint is deleted (PR #93 N7)." \
+      "An empty result is AMBIGUOUS: it may mean the session made no egress, OR that" \
+      "hubble's --label filter no longer matched the ring-buffer flows once the" \
+      "endpoint was gone. Pending the live Cilium-tag check, do NOT read this as" \
+      "'no egress'. The flows, if any, remain in Cilium's ring buffer until it rolls." \
+      > "${log_dir}/flows.empty.note"
   fi
 }

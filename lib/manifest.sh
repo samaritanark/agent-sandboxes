@@ -174,7 +174,8 @@ ${host_aliases_block}
     # agent-home writes land as a file the operator owns. Group stays the baked
     # 'agent' group (gid 1000): /home/agent is group-writable (docker/
     # Dockerfile.base) and fsGroup 1000 chowns emptyDir volumes to it, so the
-    # baked $HOME and ephemeral volumes stay writable whatever the uid is.
+    # baked \$HOME and ephemeral volumes stay writable whatever the uid is
+    # (escaped: this heredoc expands at render time — see the preStop note below).
     runAsUser: ${pod_uid}
     runAsGroup: 1000
     fsGroup: 1000
@@ -200,22 +201,33 @@ ${host_aliases_block}
       command: ["sleep", "infinity"]
       # preStop runs on any pod termination, including a kubelet eviction that
       # never reaches cmd_stop (PR #92 finding F3). It cannot run the host-side
-      # audit (Hubble export lives on the operator's machine), but it drops a
-      # breadcrumb into the host-mounted agent-home and fsyncs, so a later
-      # 'sandbox stop'/'resume' can distinguish an eviction from a clean teardown
-      # and the agent's own on-disk state is flushed before SIGKILL. The grace
-      # window comes from terminationGracePeriodSeconds above. Dollar signs are
-      # escaped so the shell runs them in-pod, not at manifest-render time; the
-      # hook always exits 0 so it can never block termination. HOME defaults to
-      # /home/agent when the agent-home volume is not mounted (breadcrumb is then
-      # ephemeral, which is harmless).
+      # audit (Hubble export lives on the operator's machine), but it fsyncs the
+      # agent's own on-disk state before SIGKILL and drops a breadcrumb into the
+      # host-mounted agent-home. The destination is agent_config_mount (the
+      # hostPath mount, e.g. /home/agent/.claude), NOT the home dir /home/agent
+      # itself (avoid writing a bare-dollar HOME here: this heredoc expands at
+      # render time, so it would leak the operator's host home path into the
+      # shipped YAML). The agent-home volume is mounted at the config dir, so a
+      # breadcrumb written to /home/agent lands in the ephemeral container layer
+      # and dies with the pod (this was the F3 breadcrumb's original bug). The agent-home hostPath
+      # is per-AGENT and appended to across sessions, so each line is tagged with
+      # session=<id> pod=<name> (rendered here) to disambiguate which eviction it
+      # marks (PR #93 finding F4). The breadcrumb is a best-effort HINT only — it
+      # lives in a directory the sandboxed agent can write, so an operator
+      # triaging an eviction must corroborate it against operator-side state (a
+      # session.json with no end_time whose pod is absent/Failed, or the
+      # end_reason cmd_stop now records), never trust it as a record. The
+      # authoritative signal is operator-side; this is only a nudge. The grace window comes from
+      # terminationGracePeriodSeconds above. Dollar signs are escaped so the
+      # shell runs them in-pod, not at manifest-render time; the hook always
+      # exits 0 so it can never block termination.
       lifecycle:
         preStop:
           exec:
             command:
               - /bin/sh
               - -c
-              - 'ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown); printf "%s pod terminating; if this was an eviction, host-side teardown/audit did not run via cmd_stop\n" "\$ts" >> "\${HOME:-/home/agent}/.sandbox-termination" 2>/dev/null || true; sync 2>/dev/null || true; exit 0'
+              - 'ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown); printf "%s session=${session_id} pod=${pod_name} pod terminating; if this was an eviction, host-side teardown/audit did not run via cmd_stop\n" "\$ts" >> "${agent_config_mount}/.sandbox-termination" 2>/dev/null || true; sync 2>/dev/null || true; exit 0'
       resources:
         limits:
           cpu: "${POD_CPU_LIMIT}"

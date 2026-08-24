@@ -9,8 +9,15 @@ dist/
 
 # Per-user / per-session state from agent CLIs that may drop files into
 # the working tree. None of these are project content; keep them out of
-# the repo whether or not the tool was used here.
-.claude/
+# the repo whether or not the tool was used here. Exception: .claude/skills/
+# holds shared, version-controlled project skills (e.g. sandbox-security-
+# review), so track those while keeping local state (settings.local.json,
+# session files) ignored. `!.claude/` re-includes the directory so git
+# descends into it (overriding a global core.excludesFile `.claude/`);
+# `.claude/*` then re-ignores its contents; `!.claude/skills/` keeps skills.
+!.claude/
+.claude/*
+!.claude/skills/
 .codex/
 .opencode/
 
