@@ -333,6 +333,43 @@ test_config_add_masked_path() {
 }
 
 ###############################################################################
+# path_has_tracked_content — backs the `sandbox mask add` git-tracked warning.
+# Masking overlays the working-tree path only; committed content survives in
+# the mounted .git and the agent can recover it, so mask add warns when a
+# target is tracked. Must be true for a tracked file OR a directory with any
+# tracked content, false for untracked/gitignored paths and outside a repo.
+###############################################################################
+test_path_has_tracked_content() {
+  info "Testing path_has_tracked_content (mask add tracked-file warning)..."
+  local repo="${TEST_DIR}/trackcheck"
+  mkdir -p "${repo}/committed/deep" "${repo}/local"
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email t@e.st
+  git -C "${repo}" config user.name t
+  printf 'x\n' > "${repo}/tracked.env"
+  printf 'y\n' > "${repo}/committed/deep/secret.yaml"
+  git -C "${repo}" add tracked.env committed/deep/secret.yaml
+  git -C "${repo}" commit -q -m init
+  # Untracked working-copy files (never committed).
+  printf 'z\n' > "${repo}/local/.env"
+  printf 'w\n' > "${repo}/untracked.txt"
+
+  path_has_tracked_content "${repo}" "tracked.env" \
+    && pass "tracked file detected" || fail "tracked.env should be tracked"
+  path_has_tracked_content "${repo}" "committed" \
+    && pass "dir with tracked content detected" || fail "committed/ has tracked content"
+  path_has_tracked_content "${repo}" "committed/deep/secret.yaml" \
+    && pass "deep tracked file detected" || fail "nested tracked file should be tracked"
+
+  path_has_tracked_content "${repo}" "untracked.txt" \
+    && fail "untracked file should not be tracked" || pass "untracked file not tracked"
+  path_has_tracked_content "${repo}" "local" \
+    && fail "dir with only untracked content should not match" || pass "untracked dir not tracked"
+  path_has_tracked_content "${repo}" "does/not/exist" \
+    && fail "absent path should not be tracked" || pass "absent path not tracked"
+}
+
+###############################################################################
 # Repo-root ignore file: writer/reader for the `sandbox exceptions` store —
 # betterleaks-native `relpath:rule:line` fingerprints with own-line comments.
 # Scanner-free.
@@ -1967,6 +2004,7 @@ main() {
 
   test_is_path_masked
   test_config_add_masked_path
+  test_path_has_tracked_content
   test_exceptions_accept_list
   test_fingerprint_resolver
   test_manifest_mount
