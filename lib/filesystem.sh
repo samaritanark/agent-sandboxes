@@ -823,6 +823,21 @@ _leakscan_finding_accepted() {
     ls-files --error-unmatch -- "${relpath}" >/dev/null 2>&1
 }
 
+# path_has_tracked_content <repo> <relpath> — return 0 iff <relpath> (a file OR
+# a directory prefix) has any git-tracked content in the repo's index. Used to
+# warn when a `sandbox mask add` target is committed: masking mounts an empty
+# overlay over the working-tree path only, so committed content stays readable
+# from the mounted .git (git show/cat-file/worktree). The mask is a
+# working-tree-visibility control, not a history scrub. fsmonitor/hooks are
+# disabled so an untrusted repo config can't exec anything on this read. Mirrors
+# the tracked-file gate in _leakscan_finding_accepted (kept separate so the
+# secret-gate path is undisturbed and this can span a directory).
+path_has_tracked_content() {
+  local repo="$1" relpath="$2"
+  [[ -n "$(git -C "${repo}" -c core.fsmonitor= -c core.hooksPath=/dev/null \
+    ls-files -- "${relpath}" 2>/dev/null | head -n1)" ]]
+}
+
 # vetted_accepted_fingerprints <repo> [accept_unvetted] — the repo-root
 # ignore-file fingerprints (`relpath:rule:line`) to honor for a repo at launch,
 # or NOTHING unless the repo is currently vetted (a signed attestation verifies

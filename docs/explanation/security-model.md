@@ -60,6 +60,18 @@ sandbox mask list --repo ~/repos/app
 overlays exactly like the built-in set (and excluded from the macOS
 workspace sync). Re-running `sandbox run` then passes the gate.
 
+**A mask hides the working copy, not git history.** The overlay covers the
+working-tree path only, and the repo is mounted into the sandbox *including*
+`.git`. So if a masked path was ever committed, the content still lives in the
+object store, and the agent — which the model treats as adversarial — can
+recover it (`git show <rev>:<path>`, `git cat-file`, or a `git worktree` / fresh
+checkout elsewhere in the writable workspace, none of which the overlay covers).
+`mask add` warns when the target is git-tracked for exactly this reason. Masking
+is the right tool for **untracked** working-copy secrets — a local `.env`, a
+`kubeconfig`, `.kube/`, an `*-openrc.sh` you never committed. For a secret that
+is already committed, masking is not a containment boundary: rotate it, or scrub
+it from history, and treat the exposure as real.
+
 ## Encrypted-at-rest exemption
 
 Some committed files legitimately contain secret-shaped values that are

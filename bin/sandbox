@@ -3752,6 +3752,17 @@ cmd_mask() {
         fi
         config_add_masked_path "${config_file}" "${stored}"
         echo "Masked '${stored}' in $(basename "${repo}") (${config_file/#${HOME}/\~})."
+        # Masking mounts an empty overlay over the working-tree path only. If the
+        # path is committed, the content survives in the mounted .git and the
+        # agent can recover it (git show/cat-file/worktree). Say so plainly —
+        # non-fatal (hiding the working copy is still worth doing), but the
+        # operator must not mistake this for hiding a committed secret.
+        if path_has_tracked_content "${repo}" "${bare}"; then
+          warn "'${bare}' is tracked in git; masking hides the working copy only."
+          echo "      The agent can still recover it from the mounted .git history" >&2
+          echo "      (git show / git worktree). To keep a committed secret from the" >&2
+          echo "      agent, rotate it or scrub it from history — do not rely on the mask." >&2
+        fi
       done
       ;;
     list)
