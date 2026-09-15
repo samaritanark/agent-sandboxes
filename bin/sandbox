@@ -3751,6 +3751,20 @@ cmd_mask() {
           warn "Path does not exist in repo (masking as a file anyway): ${bare}"
         fi
         config_add_masked_path "${config_file}" "${stored}"
+        # Masking mounts an empty overlay over the working-tree path only. If the
+        # path is in git (tracked, or committed and since removed / on another
+        # branch), the content survives in the mounted .git and the agent can
+        # recover it (git show/cat-file/worktree). Emit the caveat BEFORE the
+        # success line and on the same stderr stream, so a stdout-only reader or
+        # a wrapper that captures the two streams separately can't take the
+        # confirmation without the warning. Non-fatal (hiding the working copy is
+        # still worth doing), but the operator must not mistake this for hiding a
+        # committed secret.
+        if path_has_tracked_content "${repo}" "${bare}"; then
+          warn "'${bare}' is in git; masking hides the working copy only."
+          warn "The agent can still recover it from the mounted .git history (git show / git worktree)."
+          warn "To keep a committed secret from the agent, rotate it or scrub it from history — do not rely on the mask."
+        fi
         echo "Masked '${stored}' in $(basename "${repo}") (${config_file/#${HOME}/\~})."
       done
       ;;

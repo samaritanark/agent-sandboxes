@@ -333,6 +333,69 @@ test_config_add_masked_path() {
 }
 
 ###############################################################################
+# path_has_tracked_content — backs the `sandbox mask add` git-tracked warning.
+# Masking overlays the working-tree path only; content in git survives in the
+# mounted .git and the agent can recover it, so mask add warns when a target is
+# recoverable from git. Must be true for a tracked file OR a directory with
+# tracked content, AND for content that is history-only (committed then removed,
+# or on another branch); false for never-tracked paths and outside a repo.
+###############################################################################
+test_path_has_tracked_content() {
+  info "Testing path_has_tracked_content (mask add git-recoverable warning)..."
+  local repo="${TEST_DIR}/trackcheck"
+  mkdir -p "${repo}/committed/deep" "${repo}/local"
+  # Pin the fixture's git identity/config so the assertions do not depend on the
+  # runner's global git config (HOME/GIT_CONFIG_GLOBAL). path_has_tracked_content
+  # overrides core.fsmonitor itself, but keep the fixture self-contained.
+  HOME="${repo}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git -C "${repo}" init -q
+  git -C "${repo}" config user.email t@e.st
+  git -C "${repo}" config user.name t
+  printf 'x\n' > "${repo}/tracked.env"
+  printf 'y\n' > "${repo}/committed/deep/secret.yaml"
+  # A file whose name begins with a pathspec-magic char (F3): must be compared
+  # literally, not parsed as pathspec magic (which silently matches nothing).
+  printf 'c\n' > "${repo}/:weird.env"
+  git -C "${repo}" add tracked.env committed/deep/secret.yaml ':(literal):weird.env'
+  git -C "${repo}" commit -q -m init
+  # History-only shapes (F2): committed then removed from the tree; on a branch
+  # only. Gone from the index, still recoverable from the mounted .git.
+  printf 'r\n' > "${repo}/removed.env"
+  git -C "${repo}" add removed.env && git -C "${repo}" commit -q -m add-removed
+  git -C "${repo}" rm -q removed.env && git -C "${repo}" commit -q -m rm-removed
+  git -C "${repo}" checkout -q -b feature
+  printf 'b\n' > "${repo}/onlybranch.env"
+  git -C "${repo}" add onlybranch.env && git -C "${repo}" commit -q -m branch
+  git -C "${repo}" checkout -q -
+  # Untracked working-copy files (never committed).
+  printf 'z\n' > "${repo}/local/.env"
+  printf 'w\n' > "${repo}/untracked.txt"
+
+  path_has_tracked_content "${repo}" "tracked.env" \
+    && pass "tracked file detected" || fail "tracked.env should be tracked"
+  path_has_tracked_content "${repo}" "committed" \
+    && pass "dir with tracked content detected" || fail "committed/ has tracked content"
+  path_has_tracked_content "${repo}" "committed/deep/secret.yaml" \
+    && pass "deep tracked file detected" || fail "nested tracked file should be tracked"
+  path_has_tracked_content "${repo}" ":weird.env" \
+    && pass "pathspec-magic filename compared literally" \
+    || fail ":weird.env is tracked but the leading colon was parsed as magic"
+  path_has_tracked_content "${repo}" "removed.env" \
+    && pass "removed-from-tree content detected via history" \
+    || fail "removed.env is recoverable from history but was missed"
+  path_has_tracked_content "${repo}" "onlybranch.env" \
+    && pass "branch-only content detected via history" \
+    || fail "onlybranch.env is recoverable from another branch but was missed"
+
+  path_has_tracked_content "${repo}" "untracked.txt" \
+    && fail "untracked file should not be tracked" || pass "untracked file not tracked"
+  path_has_tracked_content "${repo}" "local" \
+    && fail "dir with only untracked content should not match" || pass "untracked dir not tracked"
+  path_has_tracked_content "${repo}" "does/not/exist" \
+    && fail "absent path should not be tracked" || pass "absent path not tracked"
+}
+
+###############################################################################
 # Repo-root ignore file: writer/reader for the `sandbox exceptions` store —
 # betterleaks-native `relpath:rule:line` fingerprints with own-line comments.
 # Scanner-free.
@@ -1967,6 +2030,7 @@ main() {
 
   test_is_path_masked
   test_config_add_masked_path
+  test_path_has_tracked_content
   test_exceptions_accept_list
   test_fingerprint_resolver
   test_manifest_mount

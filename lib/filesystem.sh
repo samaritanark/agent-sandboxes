@@ -823,6 +823,42 @@ _leakscan_finding_accepted() {
     ls-files --error-unmatch -- "${relpath}" >/dev/null 2>&1
 }
 
+# path_has_tracked_content <repo> <relpath> — return 0 when <relpath> (a file OR
+# a directory prefix) is recoverable from git: present in the current index, OR
+# committed on any ref and since removed / living only on another branch. Used
+# to warn when a `sandbox mask add` target is in git: masking mounts an empty
+# overlay over the working-tree path only, so the content stays readable from
+# the mounted .git (git show/cat-file/worktree). The mask is a working-tree-
+# visibility control, not a history scrub.
+#
+# The path is passed with `:(literal)` pathspec magic so it is compared as a
+# plain path, not a glob: this fixes the false negative on a target whose name
+# begins with a pathspec-magic char (e.g. a leading `:`), and aligns the match
+# with the mask mount's own literal path semantics (is_path_masked). The index
+# check alone was index-scoped while the risk is history-scoped, so it misses a
+# removed-then-committed or branch-only path — exactly the shape where the mask
+# protects least; the `git log --all` fallback covers both. --all walks
+# reachable refs only, so a stash- or reflog-only commit is out of scope (a much
+# smaller gap than index-only was). The history walk runs only when the index
+# check misses, so masking an in-tree file (the common case) never pays for it;
+# for a never-tracked path it walks full history, acceptable for an interactive,
+# infrequent command. fsmonitor/hooks are disabled so an untrusted repo config
+# can't exec anything on these reads.
+#
+# Fails OPEN: any git error (unreadable/locked .git, a safe.directory refusal on
+# another UID's repo) reads as "not recoverable" and suppresses the advisory
+# warning rather than blocking the mask. That is the right bias for advisory
+# output but means a true result is authoritative while a false one is not.
+path_has_tracked_content() {
+  local repo="$1" relpath="$2"
+  # (1) Current index — a tracked file or a directory prefix with tracked content.
+  [[ -n "$(git -C "${repo}" -c core.fsmonitor= -c core.hooksPath=/dev/null \
+    ls-files -- ":(literal)${relpath}" 2>/dev/null | head -n1)" ]] && return 0
+  # (2) History on any ref — removed-from-tree or branch-only content.
+  [[ -n "$(git -C "${repo}" -c core.fsmonitor= -c core.hooksPath=/dev/null \
+    log --all -1 --format=%H -- ":(literal)${relpath}" 2>/dev/null)" ]]
+}
+
 # vetted_accepted_fingerprints <repo> [accept_unvetted] — the repo-root
 # ignore-file fingerprints (`relpath:rule:line`) to honor for a repo at launch,
 # or NOTHING unless the repo is currently vetted (a signed attestation verifies
