@@ -399,16 +399,32 @@ install_cilium_helm() {
   # paths produce identical results for runc pods; gVisor pods only work
   # via the TC path.
   #
-  # hubble.relay.resources.requests: give hubble-relay a memory request so it
-  # runs Burstable rather than BestEffort. hubble-relay aggregates the egress
-  # flow log that is this platform's network audit channel; left BestEffort it
-  # is the kubelet's first OOM/eviction victim under memory pressure, which lets
-  # an in-sandbox agent silence its own egress audit by driving the node toward
-  # OOM. A modest request (well inside the "hubble" share of HOST_RESERVE in
-  # lib/resources.sh) lifts it out of first-victim position on the MEMORY axis.
-  # It does not reorder disk-pressure eviction: the kubelet does not rank pods by
-  # QoS class for ephemeral-storage, and hubble-relay carries no ephemeral-
-  # storage request. See PR #79 finding 4 / issue #80 and PR #92 finding F3.
+  # hubble.relay.resources.requests: give hubble-relay memory AND
+  # ephemeral-storage requests so it runs Burstable rather than BestEffort on
+  # both resource axes. hubble-relay aggregates the egress flow log that is this
+  # platform's network audit channel; left BestEffort an in-sandbox agent could
+  # silence its own egress audit by driving the node toward resource pressure
+  # and getting the relay reclaimed before the offending pod.
+  #
+  # MEMORY axis: the protection here is the kernel OOM killer, NOT kubelet
+  # memory-eviction. k3s does not run memory eviction at all: at the pinned tag
+  # it sets EvictionHard={imagefs.available<5%,nodefs.available<5%}
+  # unconditionally (pkg/daemons/agent/agent.go:192-195, v1.36.3+k3s1) and our
+  # install adds only nodefs/imagefs eviction-soft thresholds, so no
+  # memory.available threshold exists and the kubelet never memory-evicts. Under
+  # memory pressure the kernel OOM killer chooses the victim by oom_score_adj,
+  # which derives from QoS class and the memory request: a Burstable pod that
+  # carries a request scores lower (is killed later) than a BestEffort one. The
+  # request (well inside the "hubble" share of HOST_RESERVE in lib/resources.sh)
+  # lifts the relay out of first-OOM-victim position — it is not a kubelet
+  # eviction ranking.
+  #
+  # DISK axis: under disk pressure the kubelet DOES rank eviction by
+  # ephemeral-storage usage relative to the request (pods over their request are
+  # evicted first). An explicit ephemeral-storage request on the low-usage relay
+  # lifts it out of first-victim position the same way the memory request does on
+  # the OOM axis. See PR #79 finding 4 / issues #80, #95, #96 and PR #92 finding
+  # F3.
   helm --kubeconfig "${SANDBOX_KUBECONFIG}" upgrade --install cilium cilium/cilium \
     "${cilium_version_args[@]+"${cilium_version_args[@]}"}" \
     --namespace kube-system \
@@ -419,6 +435,7 @@ install_cilium_helm() {
     --set hubble.relay.resources.requests.cpu="${SANDBOX_HUBBLE_RELAY_CPU_REQUEST:-50m}" \
     --set hubble.relay.resources.requests.memory="${SANDBOX_HUBBLE_RELAY_MEM_REQUEST:-128Mi}" \
     --set hubble.relay.resources.limits.memory="${SANDBOX_HUBBLE_RELAY_MEM_LIMIT:-256Mi}" \
+    --set hubble.relay.resources.requests.ephemeral-storage="${SANDBOX_HUBBLE_RELAY_EPHEMERAL_REQUEST:-256Mi}" \
     --set kubeProxyReplacement=true \
     --set k8sServiceHost="127.0.0.1" \
     --set k8sServicePort="${SANDBOX_APISERVER_PORT}" \
