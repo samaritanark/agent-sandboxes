@@ -66,7 +66,8 @@ working-tree path only, and the repo is mounted into the sandbox *including*
 object store, and the agent — which the model treats as adversarial — can
 recover it (`git show <rev>:<path>`, `git cat-file`, or a `git worktree` / fresh
 checkout elsewhere in the writable workspace, none of which the overlay covers).
-`mask add` warns when the target is git-tracked for exactly this reason. Masking
+`mask add` warns when the target is in git — tracked, or committed and since
+removed, or living only on another branch — for exactly this reason. Masking
 is the right tool for **untracked** working-copy secrets — a local `.env`, a
 `kubeconfig`, `.kube/`, an `*-openrc.sh` you never committed. For a secret that
 is already committed, masking is not a containment boundary: rotate it, or scrub
