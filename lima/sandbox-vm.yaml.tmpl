@@ -163,6 +163,7 @@ provision:
         --set hubble.relay.resources.requests.cpu=50m \
         --set hubble.relay.resources.requests.memory=128Mi \
         --set hubble.relay.resources.limits.memory=256Mi \
+        --set hubble.relay.resources.requests.ephemeral-storage=256Mi \
         --set kubeProxyReplacement=true \
         --set k8sServiceHost="127.0.0.1" \
         --set k8sServicePort="__APISERVER_PORT__" \
