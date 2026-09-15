@@ -1690,6 +1690,109 @@ cmd_run() {
 }
 
 ###############################################################################
+# Evicted / abnormally-ended session detector (issue #94 Item 1, warn-only)
+#
+# A node-pressure eviction (or a teardown that never completed) leaves a session
+# whose session.json was never stamped with an end_time. Its pod's
+# ownerReference GC only fires when the pod is DELETED, not when it is evicted or
+# crashes (see cmd_stop / invariant 4), so any session-scoped credential Secrets
+# stay live until an operator runs `sandbox stop`. Nothing else surfaces that the
+# session ended abnormally. These helpers detect that state and remind the
+# operator; they take NO destructive action (auto-reap is deferred — issue #94).
+###############################################################################
+
+# _teardown_reminder_reason — pure predicate (no kubectl/stat), so it is unit
+# testable. Echoes a short reason string when a session ended WITHOUT a recorded
+# teardown and may still own live credentials; echoes nothing when there is
+# nothing to remind about. Args: end_time  pod_phase  age_seconds  grace_seconds.
+# pod_phase is a kubelet phase (Running/Pending/Failed/Succeeded/Unknown) or the
+# literal "absent" when the pod object is gone.
+_teardown_reminder_reason() {
+  local end_time="$1" pod_phase="$2" age="$3" grace="$4"
+  # A recorded end_time means cmd_stop ran: a clean stop, or an abnormal end it
+  # already captured (end_reason) and whose Secrets it already revoked. Nothing
+  # to nag about either way.
+  [[ -n "${end_time}" && "${end_time}" != "null" ]] && return 0
+  case "${pod_phase}" in
+    Failed)
+      # Evicted/OOMed/crashed. The pod object lingers in Failed (that is exactly
+      # why GC never cascaded), so its Secrets are still live. A pod only reaches
+      # Failed after it has run, so this is unambiguous — flag it regardless of
+      # age.
+      echo "pod Failed (evicted/crashed), credentials not revoked"
+      ;;
+    absent)
+      # The pod is gone but the session was never stamped ended — a teardown that
+      # did not finish. But session.json is written BEFORE the pod is created, so
+      # a session still launching also reads as absent+no-end_time; suppress
+      # inside the launch grace window to avoid flagging in-flight runs.
+      [[ "${age}" =~ ^[0-9]+$ ]] && [[ "${age}" -lt "${grace}" ]] && return 0
+      echo "pod gone with no recorded teardown"
+      ;;
+    *)
+      # Running/Pending/Succeeded/Unknown: a healthy, launching, or detached
+      # --keep-alive session. Not a teardown gap — never flag it.
+      :
+      ;;
+  esac
+  return 0
+}
+
+# _session_json_age_seconds — seconds since session.json was last written, used
+# only to suppress the launch-window race above. Fails safe: on any stat error
+# it returns 0 (treated as "fresh", so an absent pod is NOT flagged).
+_session_json_age_seconds() {
+  local f="$1" mtime now
+  now="$(date +%s 2>/dev/null || echo 0)"
+  if is_macos; then
+    mtime="$(stat -f %m "${f}" 2>/dev/null || echo "${now}")"
+  else
+    mtime="$(stat -c %Y "${f}" 2>/dev/null || echo "${now}")"
+  fi
+  [[ "${mtime}" =~ ^[0-9]+$ ]] || mtime="${now}"
+  echo $(( now - mtime ))
+}
+
+# warn_untorndown_sessions — after the session table, remind the operator (on
+# stderr) about each session that ended without teardown and may still own live
+# credentials. Warn-only: takes no action. Best-effort — never fail cmd_list over
+# it, and stay quiet when the cluster is unreachable.
+warn_untorndown_sessions() {
+  [[ -d "${SANDBOX_LOGS_DIR}" ]] || return 0
+  # Reachability guard: an "absent" pod is only evidence of a torn-down session
+  # if the cluster is actually reachable. When it is NOT, every `kubectl get pod`
+  # fails and every un-stamped session would read as absent — a misleading "pod
+  # gone, run sandbox stop" storm. cmd_list already prints "(could not reach
+  # cluster)" in that case, and a real gap re-surfaces on the next reachable
+  # list, so stay silent rather than cry wolf.
+  kubectl get pods -n "${SANDBOX_NAMESPACE}" &>/dev/null 2>&1 || return 0
+  local grace="${SANDBOX_TEARDOWN_REMINDER_GRACE:-120}"
+  local session_dir sid session_json end_time pod_name pod_phase age reason
+  for session_dir in "${SANDBOX_LOGS_DIR}"/ses-*/; do
+    [[ -d "${session_dir}" ]] || continue
+    session_json="${session_dir}/session.json"
+    [[ -f "${session_json}" ]] || continue
+    end_time="$(jq -r '.end_time // ""' "${session_json}" 2>/dev/null || echo "")"
+    # Fast path: a stamped session is settled — skip before touching the cluster.
+    [[ -n "${end_time}" && "${end_time}" != "null" ]] && continue
+    pod_name="$(jq -r '.pod_name // ""' "${session_json}" 2>/dev/null || echo "")"
+    [[ -n "${pod_name}" ]] || continue
+    if kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null 2>&1; then
+      pod_phase="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+        -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")"
+    else
+      pod_phase="absent"
+    fi
+    age="$(_session_json_age_seconds "${session_json}")"
+    sid="$(basename "${session_dir}")"
+    reason="$(_teardown_reminder_reason "${end_time}" "${pod_phase}" "${age}" "${grace}")"
+    [[ -n "${reason}" ]] && \
+      warn "session ${sid} ended without teardown (${reason}); run 'sandbox stop ${sid}' to revoke its credentials."
+  done
+  return 0
+}
+
+###############################################################################
 # cmd_list — list sessions
 ###############################################################################
 cmd_list() {
@@ -1732,6 +1835,10 @@ cmd_list() {
   else
     echo "  (log directory does not exist: ${SANDBOX_LOGS_DIR})"
   fi
+
+  # Surface any session that ended without teardown and may still own live
+  # credential Secrets (issue #94 Item 1). Warn-only, on stderr.
+  warn_untorndown_sessions
 }
 
 ###############################################################################
