@@ -319,24 +319,49 @@ install_gvisor_linux() {
   [[ -n "${gvisor_release}" ]] || gvisor_release="latest"
   echo "  gVisor release: ${gvisor_release}"
 
-  local runsc_url="https://storage.googleapis.com/gvisor/releases/release/${gvisor_release}/${arch}/runsc"
-  local shim_url="https://storage.googleapis.com/gvisor/releases/release/${gvisor_release}/${arch}/containerd-shim-runsc-v1"
+  # As of the 2026-09 releases gVisor no longer publishes standalone `runsc` /
+  # `containerd-shim-runsc-v1` objects — the release directory now ships a single
+  # bundled `gvisor.tar.bz2` (see gvisor.dev/issue/13718). That bundle carries
+  # runsc, the containerd shim, AND a `gvisor-bin/` directory of sidecar
+  # binaries (the sentry, gofers, prewarmer, ...) that modern runsc expects to
+  # find *next to its own binary*. runsc still has an embedded fallback for the
+  # sidecars, but it is deprecated and stops working after 2026-10, so we install
+  # the sidecar directory alongside runsc rather than rely on it.
+  local bundle_url="https://storage.googleapis.com/gvisor/releases/release/${gvisor_release}/${arch}/gvisor.tar.bz2"
 
-  # Download both binaries into a temp dir so sha512sum -c can find them by
-  # their bare filename (the checksum file contains e.g. "<hash>  runsc", and
-  # sha512sum looks for that name relative to the working directory).
+  # Download the bundle + its manifest into a temp dir so `sha512sum -c` finds
+  # the file the manifest names (it contains "<hash>  gvisor.tar.bz2", resolved
+  # relative to the working directory).
   local tmp_dir
   tmp_dir="$(mktemp -d)"
 
-  curl -fsSL "${runsc_url}"        -o "${tmp_dir}/runsc"
-  curl -fsSL "${runsc_url}.sha512" -o "${tmp_dir}/runsc.sha512"
-  (cd "${tmp_dir}" && sha512sum -c runsc.sha512)
-  sudo install -m 755 "${tmp_dir}/runsc" /usr/local/bin/runsc
+  curl -fsSL "${bundle_url}"        -o "${tmp_dir}/gvisor.tar.bz2"
+  curl -fsSL "${bundle_url}.sha512" -o "${tmp_dir}/gvisor.tar.bz2.sha512"
+  (cd "${tmp_dir}" && sha512sum -c gvisor.tar.bz2.sha512)
+  tar -xjf "${tmp_dir}/gvisor.tar.bz2" -C "${tmp_dir}"
 
-  curl -fsSL "${shim_url}"        -o "${tmp_dir}/containerd-shim-runsc-v1"
-  curl -fsSL "${shim_url}.sha512" -o "${tmp_dir}/containerd-shim-runsc-v1.sha512"
-  (cd "${tmp_dir}" && sha512sum -c containerd-shim-runsc-v1.sha512)
+  sudo install -m 755 "${tmp_dir}/runsc"                    /usr/local/bin/runsc
   sudo install -m 755 "${tmp_dir}/containerd-shim-runsc-v1" /usr/local/bin/containerd-shim-runsc-v1
+
+  # Install the sidecar directory next to runsc. runsc exec's these (notably the
+  # sentry) as root under containerd, so they MUST be root-owned and not
+  # group/other-writable — otherwise an unprivileged host process could swap the
+  # sentry and gain root + a silent gVisor bypass on every later sandbox. The
+  # tarball was extracted as the invoking (non-root) user above, so we do NOT
+  # use `cp -a`/`--preserve=ownership` (it would carry that uid onto the copy);
+  # instead force root:root and strip go-w explicitly.
+  #
+  # Stage into a sibling temp dir and rename it into place so a concurrent runsc
+  # never sees a partially-written gvisor-bin/. Note the rm-then-mv leaves a brief
+  # window where the directory is absent; on the `sandbox upgrade` path k3s is
+  # restarted immediately after, so no sandbox is mid-launch through it.
+  sudo rm -rf /usr/local/bin/.gvisor-bin.new
+  sudo cp -R --preserve=mode "${tmp_dir}/gvisor-bin" /usr/local/bin/.gvisor-bin.new
+  sudo chown -R root:root /usr/local/bin/.gvisor-bin.new
+  sudo chmod -R go-w /usr/local/bin/.gvisor-bin.new
+  sudo chmod 755 /usr/local/bin/.gvisor-bin.new
+  sudo rm -rf /usr/local/bin/gvisor-bin
+  sudo mv /usr/local/bin/.gvisor-bin.new /usr/local/bin/gvisor-bin
 
   rm -rf "${tmp_dir}"
   echo "  gVisor installed: $(runsc --version)"

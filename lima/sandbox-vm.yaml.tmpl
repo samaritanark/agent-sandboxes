@@ -108,9 +108,15 @@ provision:
       # (x86_64 / aarch64) — do NOT rename the architecture. An earlier
       # `aarch64`->`arm64` rewrite produced a 404 on Apple Silicon, which
       # (under `set -e`) aborted provisioning before Cilium ever installed.
-      # Download the binaries and their .sha512 manifests into a working
-      # directory so `sha512sum -c` finds the files the manifests name,
-      # verify, then install. See gvisor.dev/docs/user_guide/install.
+      #
+      # As of the 2026-09 releases the bucket no longer holds standalone runsc /
+      # shim objects; each release dir now ships one bundled `gvisor.tar.bz2`
+      # (gvisor.dev/issue/13718) carrying runsc, the containerd shim, and a
+      # `gvisor-bin/` directory of sidecar binaries that modern runsc expects to
+      # find next to its own binary (the embedded fallback is deprecated and
+      # stops working after 2026-10). Download bundle + manifest into a working
+      # dir so `sha512sum -c` finds the file the manifest names, verify, extract,
+      # then install runsc, the shim, and gvisor-bin/ into /usr/local/bin.
       gvisor_arch="$(uname -m)"
       # Pinned release id (YYYYMMDD.N) from setup/versions.sh; empty == latest.
       gvisor_release="__GVISOR_RELEASE__"; [ -n "${gvisor_release}" ] || gvisor_release="latest"
@@ -119,13 +125,25 @@ provision:
       (
         cd "${gvisor_tmp}"
         curl -fsSL \
-          -O "${gvisor_url}/runsc" \
-          -O "${gvisor_url}/runsc.sha512" \
-          -O "${gvisor_url}/containerd-shim-runsc-v1" \
-          -O "${gvisor_url}/containerd-shim-runsc-v1.sha512"
-        sha512sum -c runsc.sha512 containerd-shim-runsc-v1.sha512
+          -O "${gvisor_url}/gvisor.tar.bz2" \
+          -O "${gvisor_url}/gvisor.tar.bz2.sha512"
+        sha512sum -c gvisor.tar.bz2.sha512
+        tar -xjf gvisor.tar.bz2
         chmod +x runsc containerd-shim-runsc-v1
-        mv runsc containerd-shim-runsc-v1 /usr/local/bin/
+        install -m 755 runsc containerd-shim-runsc-v1 /usr/local/bin/
+        # Install gvisor-bin/ next to runsc. runsc exec's these (the sentry) as
+        # root, so force root:root and strip go-w rather than trust the tarball's
+        # stored owners. Provisioning runs as root here (mode: system), but the
+        # explicit chown/chmod keeps this correct regardless of upstream metadata.
+        # Stage + rename so runsc never sees a partial dir; the rm-then-mv leaves
+        # a brief absent window, closed by the k3s restart that follows.
+        rm -rf /usr/local/bin/.gvisor-bin.new
+        cp -R --preserve=mode gvisor-bin /usr/local/bin/.gvisor-bin.new
+        chown -R root:root /usr/local/bin/.gvisor-bin.new
+        chmod -R go-w /usr/local/bin/.gvisor-bin.new
+        chmod 755 /usr/local/bin/.gvisor-bin.new
+        rm -rf /usr/local/bin/gvisor-bin
+        mv /usr/local/bin/.gvisor-bin.new /usr/local/bin/gvisor-bin
       )
       rm -rf "${gvisor_tmp}"
 
