@@ -343,11 +343,22 @@ install_gvisor_linux() {
   sudo install -m 755 "${tmp_dir}/runsc"                    /usr/local/bin/runsc
   sudo install -m 755 "${tmp_dir}/containerd-shim-runsc-v1" /usr/local/bin/containerd-shim-runsc-v1
 
-  # Install the sidecar directory next to runsc. Replace any prior copy wholesale
-  # (an upgrade must not leave a stale sentry behind) via a temp dir + atomic
-  # rename so a concurrent runsc never sees a half-populated gvisor-bin/.
+  # Install the sidecar directory next to runsc. runsc exec's these (notably the
+  # sentry) as root under containerd, so they MUST be root-owned and not
+  # group/other-writable — otherwise an unprivileged host process could swap the
+  # sentry and gain root + a silent gVisor bypass on every later sandbox. The
+  # tarball was extracted as the invoking (non-root) user above, so we do NOT
+  # use `cp -a`/`--preserve=ownership` (it would carry that uid onto the copy);
+  # instead force root:root and strip go-w explicitly.
+  #
+  # Stage into a sibling temp dir and rename it into place so a concurrent runsc
+  # never sees a partially-written gvisor-bin/. Note the rm-then-mv leaves a brief
+  # window where the directory is absent; on the `sandbox upgrade` path k3s is
+  # restarted immediately after, so no sandbox is mid-launch through it.
   sudo rm -rf /usr/local/bin/.gvisor-bin.new
-  sudo cp -a "${tmp_dir}/gvisor-bin" /usr/local/bin/.gvisor-bin.new
+  sudo cp -R --preserve=mode "${tmp_dir}/gvisor-bin" /usr/local/bin/.gvisor-bin.new
+  sudo chown -R root:root /usr/local/bin/.gvisor-bin.new
+  sudo chmod -R go-w /usr/local/bin/.gvisor-bin.new
   sudo chmod 755 /usr/local/bin/.gvisor-bin.new
   sudo rm -rf /usr/local/bin/gvisor-bin
   sudo mv /usr/local/bin/.gvisor-bin.new /usr/local/bin/gvisor-bin

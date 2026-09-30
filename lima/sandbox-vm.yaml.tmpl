@@ -131,10 +131,16 @@ provision:
         tar -xjf gvisor.tar.bz2
         chmod +x runsc containerd-shim-runsc-v1
         install -m 755 runsc containerd-shim-runsc-v1 /usr/local/bin/
-        # Install gvisor-bin/ next to runsc, replacing any prior copy wholesale
-        # via an atomic rename so runsc never sees a half-populated directory.
+        # Install gvisor-bin/ next to runsc. runsc exec's these (the sentry) as
+        # root, so force root:root and strip go-w rather than trust the tarball's
+        # stored owners. Provisioning runs as root here (mode: system), but the
+        # explicit chown/chmod keeps this correct regardless of upstream metadata.
+        # Stage + rename so runsc never sees a partial dir; the rm-then-mv leaves
+        # a brief absent window, closed by the k3s restart that follows.
         rm -rf /usr/local/bin/.gvisor-bin.new
-        cp -a gvisor-bin /usr/local/bin/.gvisor-bin.new
+        cp -R --preserve=mode gvisor-bin /usr/local/bin/.gvisor-bin.new
+        chown -R root:root /usr/local/bin/.gvisor-bin.new
+        chmod -R go-w /usr/local/bin/.gvisor-bin.new
         chmod 755 /usr/local/bin/.gvisor-bin.new
         rm -rf /usr/local/bin/gvisor-bin
         mv /usr/local/bin/.gvisor-bin.new /usr/local/bin/gvisor-bin
