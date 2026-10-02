@@ -144,18 +144,24 @@ the audit record when the path is abnormal. Blast-radius and eviction *tuning*
 are in scope here (they are NOT mere DoS) **when getting them wrong disables a
 security control or widens which sessions are affected.** Size eviction/GC
 settings against **k3s's compiled-in defaults, not vanilla kubelet's** — they
-differ: k3s *appears* to override `EvictionHard` (to
-`imagefs.available<5%,nodefs.available<5%`, which would drop the vanilla
-`memory.available<100Mi` threshold entirely) and to set a 10%
-`EvictionMinimumReclaim` (vanilla defaults to 0). Both are **inferred from
-secondary sources, not confirmed against k3s docs at the pinned tag** — treat
-them as leads to check, not facts to cite, and don't build a finding on the
-*absence* of memory eviction without confirming it. The 5-minute
-`evictionPressureTransitionPeriod`, by contrast, is the **vanilla upstream
-default**, not a k3s override — don't cite it as a k3s difference. Confirm each
-against the kubelet args on a real node at the pinned tag (one `ps`/node-args
-check settles all three); a misattributed mechanism is itself an invariant-6
-claim, and so is stating an inference as fact.
+differ, and this is now **confirmed at the pinned tag** (v1.36.3+k3s1,
+`pkg/daemons/agent/agent.go:192-199`, applied unconditionally in
+`defaultKubeletConfig`): k3s overrides `EvictionHard` to
+`imagefs.available<5%,nodefs.available<5%`, which **drops the vanilla
+`memory.available<100Mi` threshold entirely**, and sets
+`EvictionMinimumReclaim` to `imagefs.available:10%,nodefs.available:10%`
+(vanilla defaults to 0). Consequence: **k3s runs no kubelet memory eviction** —
+under memory pressure the *kernel OOM killer* selects the victim by
+`oom_score_adj` (derived from QoS class and requests), not a kubelet
+memory-eviction ranking. So a memory request still protects a pod, but by
+lowering its OOM score, not by reordering an eviction that never fires; a
+comment that credits "kubelet memory eviction" is an invariant-6 mechanism
+error (this is exactly N5/N6, issue #95). The 5-minute
+`evictionPressureTransitionPeriod` is the **vanilla upstream default**, not a
+k3s override — don't cite it as a k3s difference. When code changes these
+thresholds, re-confirm against the pinned tag's source (and, for a real
+deployment, the kubelet args on the node); a misattributed mechanism is itself
+an invariant-6 claim, and so is stating an inference as fact.
 
 ## What to report vs. skip (this repo's rules, overriding the generic ones)
 
@@ -288,7 +294,18 @@ instance.
   asserting a compiled-in default (k3s eviction thresholds) as verified when it
   was only inferred from secondary sources; future readers cite the parenthetical,
   not the caveat two sentences later. State inferences as inferences until checked
-  at the pinned tag. (Invariant 6.)
+  at the pinned tag. (Invariant 6.) *(The specific k3s-eviction inference is now
+  confirmed at v1.36.3+k3s1 — see the eviction-tuning paragraph above — but the
+  lesson stands for the next compiled-in default.)*
+- **A protection credited to the wrong mechanism** — `setup/common.sh` said the
+  hubble-relay memory request lifts it out of "the kubelet's first OOM/eviction
+  victim" position *under memory pressure*, but k3s runs no kubelet memory
+  eviction (confirmed above); the request works via the kernel OOM killer's
+  `oom_score_adj`. The control holds, but a reader auditing "does kubelet
+  memory-eviction rank this correctly?" checks a mechanism that never fires. When
+  a comment names the *mechanism* of a control, verify that mechanism is the one
+  actually in force at the pinned tag — a right-conclusion / wrong-reason claim is
+  still an invariant-6 defect (issue #95, N5/N6). (Invariant 6.)
 - **Ordering in a re-entrant teardown — the FIRST step must be the CONTAINMENT
   action, not the credential-object deletes.** Once teardown can fire at moments
   the operator didn't choose (a signalled disconnect) where the process may be
