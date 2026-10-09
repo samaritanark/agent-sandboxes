@@ -24,8 +24,8 @@ The uninstaller removes, in order:
 
 1. Active pods, CiliumNetworkPolicies, and secrets from the cluster
 2. The `sandbox` namespace, ServiceAccount, and `gvisor` RuntimeClass
-3. Container images (`sandbox:*`) from k3s containerd (and from Docker or
-   Podman if a legacy install left copies there)
+3. Container images (`sandbox:*`) from k3s containerd (and from Docker if a
+   legacy install left copies there)
 4. **Linux**: k3s (and Cilium), gVisor binaries, runsc config,
    `sandbox-masquerade.service`, and the nerdctl/buildkit image builder
    (`buildkit.service` + `/etc/buildkit`; the binaries under `/usr/local/bin`

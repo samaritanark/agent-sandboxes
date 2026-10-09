@@ -411,6 +411,16 @@ EOF
 # This is the host-side twin of the in-VM provisioning the Lima template does on
 # macOS (lima/sandbox-vm.yaml.tmpl); keep the two in step.
 #
+# SECURITY INVARIANT — this build plane is HOST-ONLY and must stay that way.
+# buildkitd runs as root with write access, via its containerd worker, to the
+# very image store k3s launches pods from. It is safe only because the contained
+# (adversarial) agent cannot reach it: the k3s containerd socket and buildkitd's
+# unix socket are NOT mounted into any sandbox pod, pods have no host namespaces,
+# and buildkitd exposes no TCP listener. Do NOT regress any of those — mounting
+# /run/k3s/containerd/containerd.sock or /run/buildkit/* into a pod, giving a pod
+# hostNetwork, or adding a `[grpc] address = "tcp://…"` to buildkitd.toml would
+# each turn this into a cross-session image-poisoning / host-pivot primitive.
+#
 # Idempotent: skips the download when nerdctl + buildkitd are already present,
 # but always (re)writes buildkitd.toml and restarts the service so the
 # containerd-worker wiring is corrected if it ever drifted.
