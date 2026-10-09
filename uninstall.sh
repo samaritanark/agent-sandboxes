@@ -105,6 +105,7 @@ remove_sandbox_masquerade_service() {
       try sudo rm -f "${svc_path}"
     fi
     try sudo systemctl daemon-reload
+    unmark_installed masquerade
     ok "sandbox-masquerade.service removed."
   else
     skip "sandbox-masquerade.service not present."
@@ -159,14 +160,33 @@ remove_firewalld_trusted_cidrs() {
   command -v firewall-cmd &>/dev/null || { skip "firewalld not present."; return 0; }
   systemctl is-active --quiet firewalld 2>/dev/null || { skip "firewalld not active."; return 0; }
 
-  local pod_cidr svc_cidr
-  pod_cidr="$(_recover_cidr_from_k3s_unit --cluster-cidr)"
-  svc_cidr="$(_recover_cidr_from_k3s_unit --service-cidr)"
-  pod_cidr="${pod_cidr:-${SANDBOX_POD_CIDR:-100.64.0.0/10}}"
-  svc_cidr="${svc_cidr:-${SANDBOX_SERVICE_CIDR:-10.43.0.0/16}}"
+  # Prefer the exact CIDRs setup recorded adding (configure_firewalld writes
+  # them into the firewalld-cidrs marker's detail line), so we remove only what
+  # we actually added and leave any the operator trusted independently. Fall
+  # back to the k3s-unit recovery for hosts set up before the marker existed.
+  local -a cidrs=()
+  local marker="${SANDBOX_MARKER_DIR}/firewalld-cidrs"
+  local from_marker=false
+  if [[ -f "${marker}" ]]; then
+    local detail
+    detail="$(sed -n 's/^detail=//p' "${marker}" 2>/dev/null | head -1)"
+    if [[ -n "${detail}" ]]; then
+      # shellcheck disable=SC2206
+      cidrs=(${detail})
+      from_marker=true
+    fi
+  fi
+  if [[ "${from_marker}" != "true" ]]; then
+    local pod_cidr svc_cidr
+    pod_cidr="$(_recover_cidr_from_k3s_unit --cluster-cidr)"
+    svc_cidr="$(_recover_cidr_from_k3s_unit --service-cidr)"
+    pod_cidr="${pod_cidr:-${SANDBOX_POD_CIDR:-100.64.0.0/10}}"
+    svc_cidr="${svc_cidr:-${SANDBOX_SERVICE_CIDR:-10.43.0.0/16}}"
+    cidrs=("${pod_cidr}" "${svc_cidr}")
+  fi
 
   local changed=0 cidr
-  for cidr in "${pod_cidr}" "${svc_cidr}"; do
+  for cidr in "${cidrs[@]}"; do
     if sudo firewall-cmd --permanent --zone=trusted --query-source="${cidr}" &>/dev/null; then
       info "Removing ${cidr} from firewalld trusted zone..."
       try sudo firewall-cmd --permanent --zone=trusted --remove-source="${cidr}"
@@ -180,6 +200,7 @@ remove_firewalld_trusted_cidrs() {
     try sudo firewall-cmd --reload
     ok "firewalld trusted CIDRs removed."
   fi
+  unmark_installed firewalld-cidrs
 }
 
 # sweep_cilium_host_artifacts — belt-and-suspenders pass for anything
@@ -288,6 +309,31 @@ sweep_cilium_host_artifacts() {
 PLATFORM="$(uname -s)"
 
 # ---------------------------------------------------------------------------
+# Install ownership (Linux host components)
+#
+# These gate the destructive host teardown so uninstall removes ONLY what setup
+# installed. A k3s/gVisor/buildkit the operator had before — or that setup
+# deliberately reused rather than installed — is left in place. See the
+# install-ownership markers in setup/common.sh.
+# ---------------------------------------------------------------------------
+OWN_K3S=false
+OWN_GVISOR=false
+if [[ "${PLATFORM}" == "Linux" ]]; then
+  # k3s: a signature match on the unit is safe to treat as ours because setup
+  # never rewrites a foreign k3s unit (it reuses an adopted cluster as-is).
+  if installed_by_sandbox k3s || k3s_unit_looks_like_ours; then
+    OWN_K3S=true
+  fi
+  # gVisor binaries: marker ONLY. We do not fall back to the runsc.toml
+  # signature here — setup writes that same runsc.toml even when it reused a
+  # foreign runsc binary, so the signature cannot tell "we installed the binary"
+  # from "we reused someone else's". Erring toward leaving binaries in place.
+  if installed_by_sandbox gvisor; then
+    OWN_GVISOR=true
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Flags
 # ---------------------------------------------------------------------------
 
@@ -330,7 +376,12 @@ It does NOT remove:
   - This repository directory
   - Homebrew (macOS)
   - Lima itself (macOS, unless Lima was installed solely for this sandbox)
-  - Helm (unless you omit --keep-kubetools and confirm removal)
+  - Helm (only when the sandbox installed it, and you omit --keep-kubetools and
+    confirm removal)
+  - Any k3s, gVisor or nerdctl/buildkit the sandbox did NOT install. Only
+    components setup installed itself are torn down (tracked by markers under
+    /var/lib/sandbox/install-markers). A pre-existing k3s is left running; a
+    builder whose config setup repointed at k3s has its original config restored.
 EOF
       exit 0
       ;;
@@ -354,13 +405,27 @@ echo "This will remove:"
 echo "  • All active sandbox pods, network policies, and secrets"
 echo "  • Kubernetes namespace '${SANDBOX_NAMESPACE}', ServiceAccount, RuntimeClass"
 if [[ "${PLATFORM}" == "Linux" ]]; then
-  echo "  • Cilium datapath state (cilium-dbg cleanup + host-level sweep)"
   echo "  • sandbox-masquerade.service and its iptables MASQUERADE rule"
-  echo "  • k3s (via k3s-uninstall.sh) — removes Cilium pods and cluster state"
-  echo "  • gVisor binaries (/usr/local/bin/runsc, containerd-shim-runsc-v1)"
-  echo "  • /etc/containerd/runsc.toml"
-  echo "  • Leftover cilium_* / lxc* interfaces, pinned BPF maps,"
-  echo "    /run/cilium/, and CILIUM_* iptables chains"
+  echo "  • firewalld trusted-zone CIDRs the sandbox added"
+  if [[ "${OWN_K3S}" == "true" ]]; then
+    echo "  • k3s (via k3s-uninstall.sh) — removes Cilium pods and cluster state"
+    echo "  • Cilium datapath state (cilium-dbg cleanup + host-level sweep)"
+  else
+    echo "  • (k3s/Cilium left in place — not installed by the sandbox)"
+  fi
+  if [[ "${OWN_GVISOR}" == "true" ]]; then
+    echo "  • gVisor binaries (/usr/local/bin/runsc, containerd-shim-runsc-v1, gvisor-bin/)"
+  else
+    echo "  • (gVisor binaries left in place — not installed by the sandbox)"
+  fi
+  echo "  • /etc/containerd/runsc.toml (restored to your original if you had one)"
+  if installed_by_sandbox nerdctl-buildkit; then
+    echo "  • buildkit.service + /etc/buildkit (nerdctl/buildkitd binaries left in place)"
+  elif installed_by_sandbox nerdctl-buildkit-config; then
+    echo "  • /etc/buildkit/buildkitd.toml restored to your original (your buildkit kept)"
+  else
+    echo "  • (nerdctl/buildkit left in place — not installed by the sandbox)"
+  fi
 elif [[ "${PLATFORM}" == "Darwin" ]]; then
   echo "  • Lima VM '${LIMA_VM_NAME}' (stops and deletes the VM)"
 fi
@@ -484,10 +549,12 @@ fi
 
 step "Cleaning up Cilium datapath state..."
 
-if [[ "${kubectl_available}" == "true" ]]; then
-  run_cilium_dbg_cleanup
-else
+if [[ "${kubectl_available}" != "true" ]]; then
   skip "Cluster unreachable — skipping cilium-dbg cleanup; host sweep still runs."
+elif [[ "${PLATFORM}" == "Linux" ]] && [[ "${OWN_K3S}" != "true" ]]; then
+  skip "k3s was not installed by the sandbox — leaving the Cilium datapath untouched."
+else
+  run_cilium_dbg_cleanup
 fi
 
 if [[ "${PLATFORM}" == "Linux" ]]; then
@@ -550,39 +617,127 @@ fi
 if [[ "${PLATFORM}" == "Linux" ]]; then
   step "Uninstalling k3s (Linux)..."
 
-  if [[ -x "/usr/local/bin/k3s-uninstall.sh" ]]; then
+  if [[ ! -x "/usr/local/bin/k3s-uninstall.sh" ]]; then
+    skip "k3s-uninstall.sh not found — k3s may not have been installed by setup.sh."
+  elif [[ "${OWN_K3S}" != "true" ]]; then
+    skip "k3s present but not installed by the sandbox — NOT running k3s-uninstall.sh."
+    warn "Leaving k3s and its cluster in place. Remove it yourself with" \
+         "/usr/local/bin/k3s-uninstall.sh if you want it gone."
+  else
     info "Running k3s-uninstall.sh (removes k3s, Cilium, all cluster data)..."
     sudo /usr/local/bin/k3s-uninstall.sh
+    unmark_installed k3s
     ok "k3s uninstalled."
-  else
-    skip "k3s-uninstall.sh not found — k3s may not have been installed by setup.sh."
   fi
 
   step "Removing gVisor binaries..."
-  for bin in /usr/local/bin/runsc /usr/local/bin/containerd-shim-runsc-v1; do
-    if [[ -f "${bin}" ]]; then
-      sudo rm -f "${bin}"
-      ok "Removed: ${bin}"
+  if [[ "${OWN_GVISOR}" == "true" ]]; then
+    for bin in /usr/local/bin/runsc /usr/local/bin/containerd-shim-runsc-v1; do
+      if [[ -e "${bin}" ]]; then
+        sudo rm -f "${bin}"
+        ok "Removed: ${bin}"
+      else
+        skip "Not found: ${bin}"
+      fi
+    done
+    # The sidecar directory runsc exec's (sentry, gofers, ...) — installed next
+    # to runsc by install_gvisor_linux.
+    if [[ -d /usr/local/bin/gvisor-bin ]]; then
+      sudo rm -rf /usr/local/bin/gvisor-bin
+      ok "Removed: /usr/local/bin/gvisor-bin"
     else
-      skip "Not found: ${bin}"
+      skip "Not found: /usr/local/bin/gvisor-bin"
     fi
-  done
+    unmark_installed gvisor
+  else
+    skip "gVisor binaries not installed by the sandbox — leaving runsc in place."
+  fi
 
-  info "Removing gVisor runsc config..."
-  if [[ -f /etc/containerd/runsc.toml ]]; then
+  # runsc config: restore the operator's stashed original if there was one, else
+  # remove the file we wrote. Keyed off the gvisor-runsc-config marker so we
+  # never delete a runsc.toml the sandbox did not author.
+  info "Restoring/removing gVisor runsc config..."
+  if restore_preexisting gvisor-runsc-config /etc/containerd/runsc.toml; then
+    unmark_installed gvisor-runsc-config
+    ok "Restored your pre-existing /etc/containerd/runsc.toml"
+  elif installed_by_sandbox gvisor-runsc-config; then
     sudo rm -f /etc/containerd/runsc.toml
+    unmark_installed gvisor-runsc-config
     ok "Removed: /etc/containerd/runsc.toml"
   else
-    skip "Not found: /etc/containerd/runsc.toml"
+    skip "/etc/containerd/runsc.toml not written by the sandbox — leaving it."
+  fi
+
+  step "Removing nerdctl + buildkit (host image builder)..."
+  # Backfill the full-ownership marker for a builder an older sandbox installed
+  # (its buildkitd.toml carries our k3s wiring and there is no config-only
+  # marker, which would mark a foreign builder we only reconfigured). A stashed
+  # .orig config is also proof we displaced someone's builder, so never promote
+  # to full ownership when one exists.
+  if ! installed_by_sandbox nerdctl-buildkit \
+     && ! installed_by_sandbox nerdctl-buildkit-config \
+     && [[ ! -e "${SANDBOX_MARKER_DIR}/nerdctl-buildkit.orig" ]] \
+     && buildkit_config_looks_like_ours; then
+    mark_installed nerdctl-buildkit "backfilled from buildkitd.toml signature"
+  fi
+
+  if installed_by_sandbox nerdctl-buildkit; then
+    # We installed the builder outright: stop+disable the service, remove the
+    # unit file (nerdctl-full extracts it into /usr/local/lib/systemd/system)
+    # and the buildkit config. The nerdctl/buildkitd binaries under
+    # /usr/local/bin are left in place — inert without the service and k3s, and
+    # cheap to leave for a future reinstall.
+    if systemctl list-unit-files 2>/dev/null | grep -q '^buildkit\.service'; then
+      info "Stopping and disabling buildkit.service..."
+      try sudo systemctl stop buildkit.service
+      try sudo systemctl disable buildkit.service
+      ok "buildkit.service stopped and disabled."
+    else
+      skip "buildkit.service not present."
+    fi
+    for f in /usr/local/lib/systemd/system/buildkit.service /etc/buildkit; do
+      if [[ -e "${f}" ]]; then
+        sudo rm -rf "${f}"
+        ok "Removed: ${f}"
+      else
+        skip "Not found: ${f}"
+      fi
+    done
+    unmark_installed nerdctl-buildkit
+    try sudo systemctl daemon-reload
+  elif installed_by_sandbox nerdctl-buildkit-config \
+       || [[ -e "${SANDBOX_MARKER_DIR}/nerdctl-buildkit.orig" ]]; then
+    # A builder the operator already had, whose buildkitd.toml we repointed at
+    # k3s (the .orig fallback also catches an install interrupted before its
+    # config-only marker was written). Restore their original config (or drop
+    # ours if they had none) and leave their service and binaries completely
+    # alone.
+    info "Restoring your pre-existing buildkit config; leaving the builder in place..."
+    if restore_preexisting nerdctl-buildkit /etc/buildkit/buildkitd.toml; then
+      ok "Restored your /etc/buildkit/buildkitd.toml"
+    elif [[ -f /etc/buildkit/buildkitd.toml ]]; then
+      sudo rm -f /etc/buildkit/buildkitd.toml
+      ok "Removed the buildkitd.toml the sandbox wrote (you had none before)."
+    fi
+    unmark_installed nerdctl-buildkit-config
+    # Reload the operator's own buildkit so it picks the restored config back up.
+    try sudo systemctl restart buildkit.service
+  else
+    skip "nerdctl/buildkit not installed or reconfigured by the sandbox — leaving it."
   fi
 
   # k3s-uninstall.sh removes /var/lib/rancher/k3s/agent/etc/containerd/,
   # so the containerd config template is gone with it. Nothing extra to do.
 
   # Belt-and-suspenders pass for anything cilium-dbg cleanup (Step 2) didn't
-  # get, or for the case where it didn't run at all. Always runs — idempotent
-  # and fast even on a clean host.
-  sweep_cilium_host_artifacts
+  # get, or for the case where it didn't run at all. Idempotent and fast even on
+  # a clean host — but gated on k3s ownership so it never tears down a Cilium
+  # datapath belonging to a cluster the sandbox did not install.
+  if [[ "${OWN_K3S}" == "true" ]]; then
+    sweep_cilium_host_artifacts
+  else
+    skip "Skipping Cilium host sweep — k3s/Cilium were not installed by the sandbox."
+  fi
 
 elif [[ "${PLATFORM}" == "Darwin" ]]; then
   step "Removing Lima VM '${LIMA_VM_NAME}'..."
@@ -677,18 +832,47 @@ fi
 # ---------------------------------------------------------------------------
 
 if [[ "${OPT_KEEP_KUBETOOLS}" == "false" ]] && command -v helm &>/dev/null; then
-  # Only offer to remove Helm if it was installed by setup (i.e. from the
-  # official get-helm-3 script which places it at /usr/local/bin/helm).
-  if [[ "${PLATFORM}" == "Linux" ]] && [[ "$(command -v helm)" == "/usr/local/bin/helm" ]]; then
+  # Only offer to remove Helm if the sandbox installed it. get-helm-3 lands it
+  # at /usr/local/bin/helm; an operator's pre-existing helm is left untouched
+  # (and was never marked, so we never touch it). Marker-gated rather than
+  # path-guessed, so a helm the operator happened to keep at /usr/local/bin is
+  # safe.
+  if [[ "${PLATFORM}" == "Linux" ]] && installed_by_sandbox helm \
+     && [[ "$(command -v helm)" == "/usr/local/bin/helm" ]]; then
     echo ""
     if [[ "${OPT_YES}" == "false" ]]; then
       if confirm "  Remove Helm from /usr/local/bin/helm (installed by setup.sh)?"; then
         sudo rm -f /usr/local/bin/helm
+        unmark_installed helm
         ok "Helm removed."
       else
         skip "Keeping Helm."
       fi
+    else
+      # Non-interactive: leave a helm the sandbox installed in place rather than
+      # removing a shared tool without a prompt. Say so.
+      skip "Keeping Helm (sandbox-installed; remove with 'sudo rm /usr/local/bin/helm')."
     fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 7: Remove the install-marker directory (Linux)
+#
+# Every owned component unmarks itself as it is removed, so by now the dir holds
+# only markers for things we deliberately left (e.g. a foreign builder's
+# config-only marker is gone after restore; an adopted k3s was never marked).
+# Remove the dir when empty; leave it (and warn) if anything remains so we never
+# silently drop state that still describes something on the host.
+# ---------------------------------------------------------------------------
+if [[ "${PLATFORM}" == "Linux" ]] && [[ -d "${SANDBOX_MARKER_DIR}" ]]; then
+  if [[ -z "$(sudo ls -A "${SANDBOX_MARKER_DIR}" 2>/dev/null)" ]]; then
+    try sudo rmdir "${SANDBOX_MARKER_DIR}"
+    # Also remove the parent /var/lib/sandbox if we left it empty.
+    try sudo rmdir "$(dirname "${SANDBOX_MARKER_DIR}")" 2>/dev/null
+    ok "Install markers cleaned up."
+  else
+    warn "Install markers remain in ${SANDBOX_MARKER_DIR} (components left in place) — leaving them."
   fi
 fi
 

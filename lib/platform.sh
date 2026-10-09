@@ -33,6 +33,23 @@ k3s_bin() {
   return 1
 }
 
+# nerdctl_bin — absolute path to the nerdctl binary, for invocations under
+# `sudo`. Same PATH-under-sudo hardening as k3s_bin (and for the same reason):
+# sudo's secure_path may omit /usr/local/bin — seen on RHEL/Alma — so a bare
+# `sudo nerdctl` would fail "command not found" even though the nerdctl-full
+# tarball installs it in /usr/local/bin. A caller's own PATH usually DOES include
+# /usr/local/bin, so a `command -v nerdctl` guard would pass while the later
+# `sudo nerdctl` fails; resolving the absolute path here avoids that divergence.
+# Callers must assign the result before use (`n="$(nerdctl_bin)"`).
+nerdctl_bin() {
+  local p
+  for p in /usr/local/bin/nerdctl /usr/bin/nerdctl; do
+    [[ -x "${p}" ]] && { printf '%s\n' "${p}"; return 0; }
+  done
+  echo "ERROR: nerdctl binary not found at /usr/local/bin/nerdctl or /usr/bin/nerdctl." >&2
+  return 1
+}
+
 # pin_k3s_image — mark an imported image as "pinned" in k3s' containerd so the
 # kubelet's image garbage collector never evicts it.
 #

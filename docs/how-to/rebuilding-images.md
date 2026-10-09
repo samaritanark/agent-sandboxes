@@ -2,13 +2,14 @@
 
 [← Documentation](../index.md)
 
-`./setup.sh` builds and imports every image for you. You only need
+`./setup.sh` builds every image for you (via nerdctl + buildkit, straight into
+k3s's containerd — no host Docker/Podman required). You only need
 this when an agent CLI ships a new release (Claude Code, for
 example, must be updated each time Anthropic releases a new model)
 or you've changed something in `docker/`.
 
 `sandbox rebuild` is the supported one-shot path — it rebuilds the
-selected image(s) and re-imports into k3s containerd:
+selected image(s) directly into k3s containerd:
 
 ```bash
 # Pull the latest Claude Code release into a fresh sandbox:claude image.
@@ -34,45 +35,49 @@ cadence your organization sets.
 <details>
 <summary><b>Manual build (advanced — only when sandbox rebuild can't be used)</b></summary>
 
-Both `docker` and `podman` work. Always tag with the fully-qualified
-`docker.io/library/` prefix — podman defaults to `localhost/...`,
-which k3s' containerd will not match.
+On Linux, build with `nerdctl` pointed at k3s's own containerd (the `k8s.io`
+namespace), so each image lands directly where k3s reads it — no separate import
+step. `sandbox install` sets up nerdctl + buildkit for you. Always tag with the
+fully-qualified `docker.io/library/` prefix (the images are referenced that way
+and k3s' containerd will not match a bare `localhost/...`).
 
 ```bash
+# All commands go through k3s's containerd:
+nerdctl="sudo nerdctl --address /run/k3s/containerd/containerd.sock --namespace k8s.io"
+
 # Build base (required for all others)
-docker build -t docker.io/library/sandbox:base -f docker/Dockerfile.base docker/
+$nerdctl build -t docker.io/library/sandbox:base -f docker/Dockerfile.base docker/
 
 # Build agent images
-docker build -t docker.io/library/sandbox:claude   -f docker/Dockerfile.claude   docker/
-docker build -t docker.io/library/sandbox:codex    -f docker/Dockerfile.codex    docker/
-docker build -t docker.io/library/sandbox:opencode -f docker/Dockerfile.opencode docker/
+$nerdctl build -t docker.io/library/sandbox:claude   -f docker/Dockerfile.claude   docker/
+$nerdctl build -t docker.io/library/sandbox:codex    -f docker/Dockerfile.codex    docker/
+$nerdctl build -t docker.io/library/sandbox:opencode -f docker/Dockerfile.opencode docker/
 
 # Shell image — used by tests/test-gvisor.sh, not by normal agent sessions
-docker build -t docker.io/library/sandbox:shell -f docker/Dockerfile.shell docker/
+$nerdctl build -t docker.io/library/sandbox:shell -f docker/Dockerfile.shell docker/
 
 # Build infra variants (Tier 3)
-docker build --build-arg BASE_IMAGE=sandbox:claude \
+$nerdctl build --build-arg BASE_IMAGE=sandbox:claude \
   -t docker.io/library/sandbox:claude-infra -f docker/Dockerfile.infra docker/
-docker build --build-arg BASE_IMAGE=sandbox:codex \
+$nerdctl build --build-arg BASE_IMAGE=sandbox:codex \
   -t docker.io/library/sandbox:codex-infra -f docker/Dockerfile.infra docker/
-docker build --build-arg BASE_IMAGE=sandbox:opencode \
+$nerdctl build --build-arg BASE_IMAGE=sandbox:opencode \
   -t docker.io/library/sandbox:opencode-infra -f docker/Dockerfile.infra docker/
 ```
 
-On Linux, import each image into k3s's containerd after building, then pin it so
-the kubelet's image garbage collector never reclaims it (these images have no
-backing registry and cannot be re-pulled — an evicted image fails the next
-launch with `ErrImageNeverPull`). `setup.sh` and `sandbox rebuild` do both steps
-for you; do the same by hand:
+Because the build writes straight into k3s's containerd there is no `save | ctr
+import` step. You do still need to pin each image so the kubelet's image garbage
+collector never reclaims it (these images have no backing registry and cannot be
+re-pulled — an evicted image fails the next launch with `ErrImageNeverPull`).
+`setup.sh` and `sandbox rebuild` pin for you; by hand:
 
 ```bash
-docker save docker.io/library/sandbox:claude | sudo k3s ctr images import -
-# or with podman:
-podman save docker.io/library/sandbox:claude | sudo k3s ctr images import -
-
-# Pin against kubelet image GC (re-run after every re-import — import resets it):
+# Pin against kubelet image GC (re-run after every rebuild — a rebuild resets it):
 sudo k3s ctr -n k8s.io images label docker.io/library/sandbox:claude \
   io.cri-containerd.pinned=pinned
 ```
+
+> On macOS the build runs inside the Lima VM — run the equivalent `nerdctl`
+> commands there via `limactl shell sandbox-vm`, or just use `sandbox rebuild`.
 
 </details>

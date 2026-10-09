@@ -20,6 +20,10 @@ setup_linux() {
   install_cilium_helm
   install_masquerade_service
   configure_containerd_gvisor
+  # Host image builder (nerdctl + buildkit). Last, because its buildkit
+  # containerd worker points at k3s's containerd socket, which exists only once
+  # k3s is installed and running (above).
+  install_nerdctl_buildkit_linux
 }
 
 # configure_firewalld — trust the pod and service CIDRs on hosts running
@@ -45,6 +49,9 @@ configure_firewalld() {
 
   echo "  firewalld is active — trusting pod/service CIDRs for the Cilium datapath..."
   local changed=0 cidr
+  # Record only the CIDRs we actually add, so uninstall removes exactly those
+  # and leaves any that the operator had already trusted for their own reasons.
+  local added=""
   for cidr in "${SANDBOX_POD_CIDR}" "${SANDBOX_SERVICE_CIDR}"; do
     if sudo firewall-cmd --permanent --zone=trusted --query-source="${cidr}" &>/dev/null; then
       echo "    ${cidr} already trusted."
@@ -52,12 +59,32 @@ configure_firewalld() {
       sudo firewall-cmd --permanent --zone=trusted --add-source="${cidr}" >/dev/null
       echo "    Trusted ${cidr}."
       changed=1
+      added="${added}${added:+ }${cidr}"
     fi
   done
 
   if [[ "${changed}" -eq 1 ]]; then
     echo "  Reloading firewalld to apply trusted CIDRs..."
     sudo firewall-cmd --reload >/dev/null
+  fi
+  # Persist the CIDRs we added, MERGED with any an earlier run already recorded,
+  # so the marker is the running union of everything the sandbox has trusted.
+  # uninstall must remove them all — including a CIDR added on a first run but
+  # not re-added on a later one (because it was still trusted then). Only touch
+  # the marker when this run added something; a no-op run on an already-trusted
+  # host leaves the existing marker intact.
+  if [[ -n "${added}" ]]; then
+    local prior="" merged="" c
+    if [[ -f "${SANDBOX_MARKER_DIR}/firewalld-cidrs" ]]; then
+      prior="$(sed -n 's/^detail=//p' "${SANDBOX_MARKER_DIR}/firewalld-cidrs" 2>/dev/null | head -1)"
+    fi
+    for c in ${prior} ${added}; do
+      case " ${merged} " in
+        *" ${c} "*) ;;                              # already in the union
+        *) merged="${merged}${merged:+ }${c}" ;;
+      esac
+    done
+    mark_installed firewalld-cidrs "${merged}"
   fi
 }
 
@@ -251,6 +278,37 @@ upgrade_k3s_linux() {
 
 install_k3s_linux() {
   if command -v k3s &>/dev/null; then
+    # A k3s is already here. If the sandbox did not install it, do NOT adopt it
+    # silently: setup installs Cilium as the CNI, a gvisor RuntimeClass and
+    # containerd runtime, and restarts k3s — which would disrupt an existing
+    # cluster — and `sandbox uninstall` runs k3s-uninstall.sh, which would then
+    # destroy it. Refuse by default; let the operator opt in explicitly.
+    if ! installed_by_sandbox k3s; then
+      if k3s_unit_looks_like_ours; then
+        # Set up by an older sandbox (pre-markers). Backfill and reuse as before.
+        mark_installed k3s "backfilled from k3s.service ExecStart signature"
+      elif [[ "${SANDBOX_ADOPT_EXISTING_K3S:-}" == "1" ]]; then
+        echo "  WARNING: adopting a pre-existing k3s (SANDBOX_ADOPT_EXISTING_K3S=1)." >&2
+        echo "           setup will install Cilium, a gvisor RuntimeClass and the" >&2
+        echo "           gVisor containerd runtime into it and restart it." >&2
+        echo "           'sandbox uninstall' will NOT remove this k3s — it only" >&2
+        echo "           removes a k3s it installed itself." >&2
+        # Deliberately NOT marked: we did not install it, so we never remove it.
+      else
+        echo "ERROR: k3s is already installed on this host and the sandbox did not" >&2
+        echo "       install it." >&2
+        echo "       The sandbox needs a dedicated k3s: it installs Cilium as the" >&2
+        echo "       CNI, a gvisor RuntimeClass and containerd runtime, and restarts" >&2
+        echo "       k3s. Doing that to an existing cluster would disrupt it, and" >&2
+        echo "       'sandbox uninstall' would later destroy it via k3s-uninstall.sh." >&2
+        echo "" >&2
+        echo "       Use a host without k3s, or — if this k3s is disposable and you" >&2
+        echo "       accept those changes — re-run with SANDBOX_ADOPT_EXISTING_K3S=1." >&2
+        echo "       (Even then, uninstall will not remove a k3s it did not install.)" >&2
+        exit 1
+      fi
+    fi
+
     echo "  k3s already installed: $(k3s --version | head -1)"
     if ! systemctl is-active --quiet k3s; then
       echo "  Starting k3s..."
@@ -303,6 +361,11 @@ install_k3s_linux() {
 
   copy_k3s_kubeconfig
 
+  # We installed this k3s — record it so uninstall knows it owns the teardown
+  # (k3s-uninstall.sh + the Cilium datapath sweep). A pre-existing k3s that
+  # reached the reuse branch above is never marked here.
+  mark_installed k3s
+
   echo "  k3s installed and running on API server port ${SANDBOX_APISERVER_PORT}."
 }
 
@@ -341,6 +404,7 @@ EOF
   # Apply the rule immediately (in case we just rebooted or this is a fresh install)
   sudo systemctl start sandbox-masquerade.service
 
+  mark_installed masquerade
   echo "  sandbox-masquerade.service installed and enabled."
 }
 
@@ -371,6 +435,11 @@ configure_containerd_gvisor() {
   # packets from gVisor's netstack flow through the pod's veth normally and
   # Cilium's port/entity-based egress policy governs them correctly.
   sudo mkdir -p /etc/containerd
+  # If the operator already had a /etc/containerd/runsc.toml (e.g. their own
+  # gVisor), stash it so uninstall restores it instead of deleting ours over it.
+  # backup_preexisting is a no-op once we already authored the file (its marker
+  # exists), so re-running setup never overwrites that stashed original.
+  backup_preexisting gvisor-runsc-config /etc/containerd/runsc.toml || true
   sudo tee /etc/containerd/runsc.toml > /dev/null << 'EOF'
 [runsc_config]
   debug = "false"
@@ -378,6 +447,10 @@ configure_containerd_gvisor() {
   strace = "false"
   net-raw = "false"
 EOF
+  # Record that the sandbox authored this runsc.toml (true even when we reused a
+  # foreign runsc binary — we still own the config file). uninstall restores the
+  # stashed original if there was one, else removes the file we wrote.
+  mark_installed gvisor-runsc-config
 
   echo "  Restarting k3s to apply containerd config..."
   sudo systemctl restart k3s
@@ -395,4 +468,145 @@ EOF
   done
 
   echo "  containerd configured for gVisor."
+}
+
+# install_nerdctl_buildkit_linux — install the host image builder: nerdctl +
+# buildkit (from the nerdctl-full release, which bundles buildkitd/buildctl and
+# their systemd units), with buildkit's containerd worker pointed at k3s's own
+# containerd and the k8s.io namespace. A `nerdctl build` then lands its result
+# directly in the image store k3s reads from (imagePullPolicy: Never) — so no
+# host Docker/Podman is needed and there is no `save | ctr import` round-trip.
+#
+# This is the host-side twin of the in-VM provisioning the Lima template does on
+# macOS (lima/sandbox-vm.yaml.tmpl); keep the two in step.
+#
+# SECURITY INVARIANT — this build plane is HOST-ONLY and must stay that way.
+# buildkitd runs as root with write access, via its containerd worker, to the
+# very image store k3s launches pods from. It is safe only because the contained
+# (adversarial) agent cannot reach it: the k3s containerd socket and buildkitd's
+# unix socket are NOT mounted into any sandbox pod, pods have no host namespaces,
+# and buildkitd exposes no TCP listener. Do NOT regress any of those — mounting
+# /run/k3s/containerd/containerd.sock or /run/buildkit/* into a pod, giving a pod
+# hostNetwork, or adding a `[grpc] address = "tcp://…"` to buildkitd.toml would
+# each turn this into a cross-session image-poisoning / host-pivot primitive.
+#
+# Idempotent: skips the download when nerdctl + buildkitd are already present,
+# but always (re)writes buildkitd.toml and restarts the service so the
+# containerd-worker wiring is corrected if it ever drifted.
+#
+# Non-destructive to a builder the operator already had: if nerdctl/buildkit are
+# present but the sandbox did not install them, their buildkitd.toml is stashed
+# before we repoint it at k3s, and `sandbox uninstall` restores it and leaves
+# their binaries + service alone. See the install-ownership markers in
+# setup/common.sh.
+install_nerdctl_buildkit_linux() {
+  echo "==> Installing nerdctl + buildkit (host image builder)..."
+
+  # buildkitd's containerd worker points here; k3s is already up (installed
+  # above), so the socket exists on the first build.
+  local k3s_sock="/run/k3s/containerd/containerd.sock"
+
+  local have_builder=false
+  if command -v nerdctl &>/dev/null && command -v buildkitd &>/dev/null; then
+    have_builder=true
+  fi
+
+  # Foreign-builder guard. If nerdctl/buildkit are already present but the
+  # sandbox did not install them, the build plane still needs buildkit's
+  # containerd worker repointed at k3s — but we do that NON-destructively: stash
+  # the operator's buildkitd.toml first (uninstall restores it) and claim
+  # ownership of the CONFIG only, never of their binaries or service. A builder
+  # an OLDER sandbox installed is recognised by its config signature and
+  # reclaimed in full.
+  local config_only=false
+  if [[ "${have_builder}" == "true" ]] && ! installed_by_sandbox nerdctl-buildkit; then
+    if installed_by_sandbox nerdctl-buildkit-config; then
+      # Already known to be a foreign builder we reconfigured once before — keep
+      # it config-only. (Do NOT re-run backup_preexisting; the operator's
+      # original config is already stashed from the first run.)
+      config_only=true
+    elif buildkit_config_looks_like_ours; then
+      # buildkitd.toml carries our k3s wiring and there is no config-only marker,
+      # so this is a builder an OLDER sandbox installed outright — reclaim it.
+      mark_installed nerdctl-buildkit "backfilled from buildkitd.toml signature"
+    else
+      echo "  WARNING: nerdctl/buildkit are already installed and the sandbox did" >&2
+      echo "           not install them. Backing up /etc/buildkit/buildkitd.toml and" >&2
+      echo "           repointing buildkit's containerd worker at k3s for the build" >&2
+      echo "           plane. 'sandbox uninstall' restores your config and leaves the" >&2
+      echo "           nerdctl/buildkitd binaries and service in place." >&2
+      backup_preexisting nerdctl-buildkit /etc/buildkit/buildkitd.toml || true
+      config_only=true
+    fi
+  fi
+
+  # (Re)write the buildkit config every run: OCI worker off, containerd worker
+  # on and aimed at k3s's containerd + the k8s.io namespace. Identical wiring to
+  # the macOS VM.
+  sudo mkdir -p /etc/buildkit
+  sudo tee /etc/buildkit/buildkitd.toml > /dev/null <<EOF
+[worker.oci]
+  enabled = false
+[worker.containerd]
+  enabled = true
+  address = "${k3s_sock}"
+  namespace = "k8s.io"
+EOF
+  if [[ "${config_only}" == "true" ]]; then
+    # We own only the config change, not the binaries or service.
+    mark_installed nerdctl-buildkit-config "displaced pre-existing buildkit config"
+  fi
+
+  if [[ "${have_builder}" == "true" ]]; then
+    echo "  nerdctl + buildkit already installed: $(nerdctl --version 2>/dev/null | head -1)"
+    sudo systemctl daemon-reload
+    sudo systemctl enable buildkit >/dev/null 2>&1 || true
+    sudo systemctl restart buildkit   # pick up any buildkitd.toml change
+    # Claim full ownership only when this builder is ours — never for a foreign
+    # one we merely reconfigured (config_only).
+    if [[ "${config_only}" == "false" ]]; then
+      mark_installed nerdctl-buildkit
+    fi
+    return 0
+  fi
+
+  # nerdctl release assets use Go-style arch names (amd64/arm64) — the opposite
+  # of gVisor's x86_64/aarch64 (install_gvisor_linux), hence the rename.
+  local nerdctl_arch
+  nerdctl_arch="$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
+
+  # Pinned by setup/versions.sh; empty == follow releases/latest.
+  local nerdctl_ver="${SANDBOX_NERDCTL_VERSION:-}"
+  if [[ -z "${nerdctl_ver}" ]]; then
+    nerdctl_ver="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+      https://github.com/containerd/nerdctl/releases/latest \
+      | sed -E 's#.*/tag/v##')"
+  fi
+  echo "  nerdctl version: ${nerdctl_ver:-(latest)}"
+
+  # nerdctl-full extracts into /usr/local: bin/ (nerdctl, buildkitd, buildctl,
+  # ...) and lib/systemd/system/buildkit.service. It also ships a bundled
+  # containerd + containerd.service which we deliberately do NOT enable — k3s
+  # runs its own containerd; only buildkit.service is started below.
+  local tmp
+  tmp="$(mktemp -d)"
+  if ! curl -fsSL \
+      "https://github.com/containerd/nerdctl/releases/download/v${nerdctl_ver}/nerdctl-full-${nerdctl_ver}-linux-${nerdctl_arch}.tar.gz" \
+      -o "${tmp}/nerdctl-full.tar.gz"; then
+    rm -rf "${tmp}"
+    echo "ERROR: failed to download nerdctl-full ${nerdctl_ver} (${nerdctl_arch})." >&2
+    echo "       The image build needs nerdctl + buildkit; re-run 'sandbox install'" >&2
+    echo "       once the download can succeed." >&2
+    exit 1
+  fi
+  sudo tar -C /usr/local -xzf "${tmp}/nerdctl-full.tar.gz"
+  rm -rf "${tmp}"
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now buildkit
+
+  # We installed the binaries + service — record full ownership so uninstall
+  # removes the service, unit file and config (binaries left in place, as before).
+  mark_installed nerdctl-buildkit
+  echo "  nerdctl + buildkit installed: $(nerdctl --version 2>/dev/null | head -1)"
 }
