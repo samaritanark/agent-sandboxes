@@ -700,15 +700,19 @@ build_images() {
 # an infra image can `FROM` a just-built agent image. Mirrors build_images_macos,
 # minus the Lima VM indirection.
 build_images_linux() {
-  if ! command -v nerdctl &>/dev/null; then
-    echo "ERROR: nerdctl not found — the image builder is not installed." >&2
-    echo "       Run 'sandbox install' (it installs nerdctl + buildkit on Linux)." >&2
+  # Absolute nerdctl path for the sudo invocations below: sudo's secure_path may
+  # omit /usr/local/bin (RHEL/Alma), so a bare `sudo nerdctl` would fail even
+  # though nerdctl is installed there. See nerdctl_bin / k3s_bin in lib/platform.sh.
+  local nerdctl_path
+  if ! nerdctl_path="$(nerdctl_bin)"; then
+    echo "       The image builder is not installed; run 'sandbox install'" >&2
+    echo "       (it installs nerdctl + buildkit on Linux)." >&2
     exit 1
   fi
 
   local docker_dir="${SANDBOX_ROOT}/docker"
   local -a nerdctl=(
-    sudo nerdctl --address /run/k3s/containerd/containerd.sock --namespace k8s.io
+    sudo "${nerdctl_path}" --address /run/k3s/containerd/containerd.sock --namespace k8s.io
   )
 
   tls_intercept_check
