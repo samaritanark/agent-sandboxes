@@ -680,6 +680,11 @@ build_images() {
   local platform
   platform="$(uname -s)"
 
+  # Reset each call. Set to 1 below if the build is skipped so the setup
+  # entrypoint can surface it loudly and exit non-zero (images are what pods
+  # actually run — a skipped build means no session can start).
+  SANDBOX_IMAGE_BUILD_SKIPPED=0
+
   echo "==> Building sandbox container images..."
 
   if [[ "${platform}" == "Darwin" ]]; then
@@ -696,6 +701,7 @@ build_images() {
   else
     echo "  WARN: neither docker nor podman found — skipping image build." >&2
     echo "        Install Docker or Podman and re-run 'sandbox setup' or './setup.sh'." >&2
+    SANDBOX_IMAGE_BUILD_SKIPPED=1
     return 0
   fi
   echo "  Using: ${container_cli}"
@@ -751,6 +757,7 @@ build_images() {
   if ! command -v k3s &>/dev/null; then
     echo "  WARN: k3s not found — skipping containerd import." >&2
     echo "        Images are in Docker; re-run after k3s is installed." >&2
+    SANDBOX_IMAGE_BUILD_SKIPPED=1
     return 0
   fi
 
