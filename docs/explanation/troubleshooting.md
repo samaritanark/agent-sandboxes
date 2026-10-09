@@ -7,6 +7,20 @@ issues. For runtime failures, the patterns below cover the common
 cases. See [Diagnostic subcommands](../reference/cli.md#diagnostic-subcommands)
 for the full toolkit.
 
+**`⚠ Cross-session messaging is off: its socket directory could not be set up:
+'/tmp' is world-writable without the sticky bit ...`** printed once at agent
+startup. **Expected inside the sandbox, and harmless — nothing is broken.**
+Cross-session messaging lets multiple agent sessions on one machine talk to each
+other; a sandbox runs **one agent per pod**, so there is no peer to reach and the
+feature does not apply. The pod's `/tmp` is a per-session `emptyDir` that
+Kubernetes makes world-writable without the sticky bit (the pod's `fsGroup` owns
+it `root:1000`, mode `2777`), and the agent CLI declines to place its messaging
+socket in such a directory — the safe choice. The session is otherwise
+unaffected and **no action is needed**; `/status` inside the agent will show the
+inbox as `unavailable` with this reason. This is deliberate: the sandbox does
+**not** make the socket usable, because enabling cross-session messaging inside a
+pod would widen what a compromised agent could reach.
+
 **Agent CLI can't reach `api.anthropic.com` / `api.openai.com`**
 (`ECONNREFUSED` or `ETIMEDOUT` shortly after the agent banner appears).
 First time you ran the agent? Step through OAuth — the agent prints a
