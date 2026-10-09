@@ -12,34 +12,7 @@ guide instead (it uses a dedicated WSL2 distro), then rejoin at step 4 here.
 > proxies](../how-to/tls-intercept-proxies.md). `./setup.sh` also runs a TLS
 > probe up front and aborts with a pointer there if it detects interception.
 
-## 1. Install prerequisites
-
-k3s + Cilium + gVisor on Linux; a Lima VM on macOS (Homebrew + Lima are
-installed automatically if missing).
-
-```bash
-./setup.sh
-
-# If your host network uses 100.64.0.0/10 (CGNAT), pick a non-overlapping pod CIDR:
-./setup.sh --pod-cidr 172.16.128.0/17
-
-# If your host network overlaps the default service CIDR (10.43.0.0/16):
-./setup.sh --service-cidr 172.16.0.0/20
-
-# If you already run another local Kubernetes endpoint on 6443 (e.g. Ansible
-# or kubectl tooling pointed at a cluster on OpenStack), move the sandbox
-# cluster's API server off 6443 so the two don't collide:
-./setup.sh --apiserver-port 7443
-```
-
-See [Cluster CIDRs](../explanation/architecture.md#cluster-cidrs) and [API
-server port](../explanation/architecture.md#api-server-port) for the reasoning.
-
-Once the CLI is on your PATH (step 2), `sandbox install` is the exact equivalent
-of `./setup.sh` (same flags), and `sandbox uninstall` tears everything back
-down. `./setup.sh` still works — use whichever you prefer.
-
-## 2. Put the CLI on PATH
+## 1. Put the CLI on PATH
 
 Add `bin/` to PATH and load completions for this shell. To make it permanent,
 add both lines to your `~/.bashrc` or `~/.zshrc`.
@@ -49,11 +22,38 @@ export PATH="$(pwd)/bin:$PATH"
 source bin/completions/sandbox.bash   # or sandbox.zsh
 ```
 
+## 2. Install prerequisites
+
+k3s + Cilium + gVisor on Linux; a Lima VM on macOS (Homebrew + Lima are
+installed automatically if missing).
+
+```bash
+sandbox install
+
+# If your host network uses 100.64.0.0/10 (CGNAT), pick a non-overlapping pod CIDR:
+sandbox install --pod-cidr 172.16.128.0/17
+
+# If your host network overlaps the default service CIDR (10.43.0.0/16):
+sandbox install --service-cidr 172.16.0.0/20
+
+# If you already run another local Kubernetes endpoint on 6443 (e.g. Ansible
+# or kubectl tooling pointed at a cluster on OpenStack), move the sandbox
+# cluster's API server off 6443 so the two don't collide:
+sandbox install --apiserver-port 7443
+```
+
+See [Cluster CIDRs](../explanation/architecture.md#cluster-cidrs) and [API
+server port](../explanation/architecture.md#api-server-port) for the reasoning.
+
+`sandbox install` is a thin wrapper over `./setup.sh` (same flags); `sandbox
+uninstall` tears everything back down (equivalent to `./uninstall.sh`). Both
+`./setup.sh` and `./uninstall.sh` still work directly — use whichever you prefer.
+
 ## 3. Smoke-test the install
 
 Cluster, Cilium, gVisor, and namespace should all be green (and an **Infra
 versions** section shows what's installed vs pinned). If any are missing, re-run
-`./setup.sh` (or `sandbox install`) before continuing.
+`sandbox install` (or `./setup.sh`) before continuing.
 
 ```bash
 sandbox status

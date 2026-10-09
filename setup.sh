@@ -172,6 +172,34 @@ main() {
   # .version.
   stamp_version_if_git
 
+  # Images are what pods actually run (imagePullPolicy: Never). If the build was
+  # skipped — most often because no container runtime was installed — the rest
+  # of the cluster is up but no session can start, and that must not masquerade
+  # as a clean install. Surface it loudly on stderr and exit non-zero so both
+  # scripts and operators notice here, rather than at a baffling 'sandbox run'.
+  if [[ "${SANDBOX_IMAGE_BUILD_SKIPPED:-0}" == "1" ]]; then
+    {
+      echo ""
+      echo "!!! ==================================================================="
+      echo "!!! SETUP INCOMPLETE — container images were NOT built"
+      echo "!!! ==================================================================="
+      echo "!!!"
+      echo "!!! The cluster (k3s, Cilium, gVisor) is installed, but no agent images"
+      echo "!!! were built or imported. Agent pods use imagePullPolicy: Never, so"
+      echo "!!! 'sandbox run' will fail with ErrImageNeverPull until images exist."
+      echo "!!!"
+      echo "!!! Most common cause: no container runtime (Docker or Podman) was found."
+      echo "!!! Install one, then build the images:"
+      echo "!!!"
+      echo "!!!     sandbox rebuild --agent all"
+      echo "!!!     # or re-run the installer once a runtime is present:"
+      echo "!!!     sandbox install"
+      echo "!!!"
+      echo "!!! ==================================================================="
+    } >&2
+    exit 1
+  fi
+
   echo ""
   echo "=== Setup complete ==="
   echo ""

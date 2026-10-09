@@ -771,6 +771,39 @@ cmd_run() {
     die "Tier ${opt_tier} requires --repo <PATH>."
   fi
 
+  # Fail fast if the image this session needs was never built/imported. These
+  # images use imagePullPolicy: Never (no backing registry — see lib/manifest.sh
+  # and Step 6), so a missing one otherwise surfaces only as a cryptic
+  # ErrImageNeverPull after the pod is created and torn down. The classic cause
+  # is an install that ran with no container runtime, where build_images skips
+  # the build with only a warning. Checked here in Step 1 — before session.json,
+  # the agent-home staging, any Secret, or the pod — so a miss aborts with zero
+  # side effects to clean up. Best-effort: k3s_image_present returns 2 when it
+  # cannot tell (no passwordless sudo, VM down), and we proceed rather than block
+  # on uncertainty. opt_agent/opt_tier are final by now (parsed + profile-
+  # resolved above), so this tag matches the one Step 6 builds for the manifest.
+  local _preflight_image
+  if [[ "${opt_tier}" -eq 3 ]]; then
+    _preflight_image="docker.io/library/sandbox:${opt_agent}-infra"
+  else
+    _preflight_image="docker.io/library/sandbox:${opt_agent}"
+  fi
+  local _img_status=0
+  k3s_image_present "${_preflight_image}" || _img_status=$?
+  if [[ "${_img_status}" -eq 1 ]]; then
+    echo "ERROR: image '${_preflight_image}' is not present in the cluster." >&2
+    echo "  Agent pods use imagePullPolicy: Never, so this image must be built" >&2
+    echo "  and imported locally before a session can start. The usual cause is" >&2
+    echo "  an install that ran without Docker or Podman (the image build is" >&2
+    echo "  skipped with only a warning). Install a container runtime, then:" >&2
+    echo "" >&2
+    echo "    sandbox rebuild --agent all   # rebuild + import all images" >&2
+    echo "    # or re-run the full install once a runtime is present:" >&2
+    echo "    sandbox install" >&2
+    echo "" >&2
+    die "No runnable image for agent '${opt_agent}' (tier ${opt_tier})."
+  fi
+
   local _r
   for _r in "${opt_repos[@]+"${opt_repos[@]}"}"; do
     validate_repo_path "${_r}"
@@ -2582,6 +2615,39 @@ cmd_status() {
     echo "  Running sessions: ${pod_count}"
   else
     echo "  Status: not found (run 'sandbox setup')"
+  fi
+  echo ""
+
+  # Sandbox images — the locally-built, imagePullPolicy: Never images that pods
+  # run. A clean cluster with these missing (e.g. an install that ran without a
+  # container runtime) still shows green everywhere above but fails at
+  # 'sandbox run'; this row is the early warning for that gap.
+  echo "Sandbox images:"
+  local _img_list _img_rc=0
+  _img_list="$(k3s_images_list)" || _img_rc=$?
+  if [[ "${_img_rc}" -ne 0 ]]; then
+    echo "  ${C_YELLOW}(could not query containerd — needs passwordless sudo on Linux, or the VM is stopped)${C_RESET}"
+  else
+    local _expected _present_n=0 _missing=()
+    while IFS= read -r _expected; do
+      [[ -z "${_expected}" ]] && continue
+      if printf '%s\n' "${_img_list}" | grep -Fxq "${_expected}"; then
+        _present_n=$((_present_n + 1))
+      else
+        _missing+=("${_expected#docker.io/library/}")
+      fi
+    done <<EOF
+$(sandbox_expected_images)
+EOF
+    local _expected_n
+    _expected_n="$(sandbox_expected_images | wc -l | tr -d ' ')"
+    if [[ "${#_missing[@]}" -eq 0 ]]; then
+      echo "  Status: $(c_ok "${_present_n}/${_expected_n} present")"
+    else
+      echo "  Status: ${C_RED}${_present_n}/${_expected_n} present${C_RESET}"
+      echo "  Missing: ${_missing[*]}"
+      echo "  Fix: run 'sandbox rebuild --agent all' (needs Docker or Podman)."
+    fi
   fi
 }
 
