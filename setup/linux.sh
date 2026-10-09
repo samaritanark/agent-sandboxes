@@ -67,12 +67,24 @@ configure_firewalld() {
     echo "  Reloading firewalld to apply trusted CIDRs..."
     sudo firewall-cmd --reload >/dev/null
   fi
-  # Persist the list of CIDRs we added (append across re-runs is unnecessary:
-  # a re-run only adds what is still missing, so the newest marker is the set we
-  # are responsible for). Only write when we added something, so a no-op run on
-  # an already-trusted host leaves any earlier marker intact.
+  # Persist the CIDRs we added, MERGED with any an earlier run already recorded,
+  # so the marker is the running union of everything the sandbox has trusted.
+  # uninstall must remove them all — including a CIDR added on a first run but
+  # not re-added on a later one (because it was still trusted then). Only touch
+  # the marker when this run added something; a no-op run on an already-trusted
+  # host leaves the existing marker intact.
   if [[ -n "${added}" ]]; then
-    mark_installed firewalld-cidrs "${added}"
+    local prior="" merged="" c
+    if [[ -f "${SANDBOX_MARKER_DIR}/firewalld-cidrs" ]]; then
+      prior="$(sed -n 's/^detail=//p' "${SANDBOX_MARKER_DIR}/firewalld-cidrs" 2>/dev/null | head -1)"
+    fi
+    for c in ${prior} ${added}; do
+      case " ${merged} " in
+        *" ${c} "*) ;;                              # already in the union
+        *) merged="${merged}${merged:+ }${c}" ;;
+      esac
+    done
+    mark_installed firewalld-cidrs "${merged}"
   fi
 }
 

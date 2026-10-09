@@ -32,13 +32,20 @@ SANDBOX_SERVICE_CIDR="10.43.0.0/16"
 source "${SANDBOX_ROOT}/setup/linux.sh"
 
 # The install-ownership marker helpers live in common.sh, which this test does
-# not source. configure_firewalld records the CIDRs it adds and the uninstall
-# helper clears that marker, so stub both as no-ops and point the marker dir at
-# a throwaway location (empty by default, so the uninstall helper exercises its
-# k3s-unit fallback except where a case plants a marker explicitly).
+# not source. Provide minimal stand-ins that actually write/remove the marker
+# (mirroring common.sh's detail= format) so the firewalld-cidrs merge is
+# observable, and point the marker dir at a throwaway location. The marker is
+# cleared before the uninstall cases so they still exercise the k3s-unit
+# fallback except where a case plants a marker explicitly.
 export SANDBOX_MARKER_DIR="$(mktemp -d)"
-mark_installed()   { :; }
-unmark_installed() { :; }
+mark_installed() {
+  mkdir -p "${SANDBOX_MARKER_DIR}"
+  {
+    echo "installed-by=test"
+    if [[ -n "${2:-}" ]]; then echo "detail=$2"; fi
+  } > "${SANDBOX_MARKER_DIR}/$1"
+}
+unmark_installed() { rm -f "${SANDBOX_MARKER_DIR}/$1"; }
 
 # --- Shim harness --------------------------------------------------------
 # A throwaway bin dir prepended to PATH. Each shim logs its argv to CALLS so
@@ -117,6 +124,20 @@ if ! grep -q -- "--add-source" "${CALLS}"; then \
 if ! grep -q -- "--reload" "${CALLS}"; then \
   pass "active/trusted: no needless reload"; \
   else fail "trusted re-run should not reload, saw:"$'\n'"$(calls)"; fi
+
+# --- Case 4b: the CIDR marker merges across runs (union, not overwrite) ---
+# A CIDR an earlier run recorded must survive a later run that only had to add
+# a different subset, so uninstall removes the whole union.
+printf 'installed-by=test\ndetail=203.0.113.0/24\n' > "${SANDBOX_MARKER_DIR}/firewalld-cidrs"
+FWD_ACTIVE=1 FWD_TRUSTED=0 run_case configure_firewalld
+merged="$(sed -n 's/^detail=//p' "${SANDBOX_MARKER_DIR}/firewalld-cidrs")"
+if [[ "${merged}" == *"203.0.113.0/24"* ]] \
+   && [[ "${merged}" == *"100.64.0.0/10"* ]] \
+   && [[ "${merged}" == *"10.43.0.0/16"* ]]; then \
+  pass "firewalld marker merges prior + newly-added CIDRs"; \
+  else fail "expected union of prior and new CIDRs, got: '${merged}'"; fi
+# Clear it so the fallback cases below exercise the k3s-unit recovery path.
+rm -f "${SANDBOX_MARKER_DIR}/firewalld-cidrs"
 
 # --- Uninstall side: remove_firewalld_trusted_cidrs ----------------------
 # uninstall.sh runs its main body at source time, so we can't source it whole.
