@@ -673,9 +673,11 @@ SANDBOX_IMAGE_TAGS
 }
 
 # build_images — build all sandbox container images so pods can start with
-# imagePullPolicy: Never. On Linux the images are built with the host's Docker
-# (or Podman) and imported into k3s's containerd. On macOS the cluster lives in
-# a Lima VM, so the build runs inside the VM — see build_images_macos.
+# imagePullPolicy: Never. Both platforms build with nerdctl + buildkit, wired to
+# k3s's own containerd (the k8s.io namespace), so each build lands directly where
+# k3s reads images — no host Docker/Podman and no save|import round-trip. On
+# Linux the builder runs on the host (see build_images_linux); on macOS the
+# cluster lives in a Lima VM, so the build runs inside it (build_images_macos).
 build_images() {
   local platform
   platform="$(uname -s)"
@@ -687,27 +689,30 @@ build_images() {
     return
   fi
 
-  # Prefer docker; fall back to podman (CLI-compatible for build/save)
-  local container_cli=""
-  if command -v docker &>/dev/null; then
-    container_cli="docker"
-  elif command -v podman &>/dev/null; then
-    container_cli="podman"
-  else
-    echo "  WARN: neither docker nor podman found — skipping image build." >&2
-    echo "        Install Docker or Podman and re-run 'sandbox setup' or './setup.sh'." >&2
-    return 0
+  build_images_linux
+}
+
+# build_images_linux — build the agent images on a Linux host, landing them
+# directly in k3s's containerd via nerdctl + buildkit (installed by
+# setup/linux.sh install_nerdctl_buildkit_linux). buildkit's containerd worker
+# targets k3s's own socket and the k8s.io namespace, so each build is written
+# where k3s reads images (imagePullPolicy: Never) with no save|import step, and
+# an infra image can `FROM` a just-built agent image. Mirrors build_images_macos,
+# minus the Lima VM indirection.
+build_images_linux() {
+  if ! command -v nerdctl &>/dev/null; then
+    echo "ERROR: nerdctl not found — the image builder is not installed." >&2
+    echo "       Run 'sandbox install' (it installs nerdctl + buildkit on Linux)." >&2
+    exit 1
   fi
-  echo "  Using: ${container_cli}"
 
   local docker_dir="${SANDBOX_ROOT}/docker"
+  local -a nerdctl=(
+    sudo nerdctl --address /run/k3s/containerd/containerd.sock --namespace k8s.io
+  )
 
   tls_intercept_check
   stage_extra_ca_certs
-
-  # Build in dependency order: base must come first; agent images depend on
-  # base; infra variants depend on their respective agent images.
-  local -a image_tags=()
 
   _build_image() {
     local tag="$1"
@@ -720,15 +725,19 @@ build_images() {
     fi
 
     echo "  Building ${tag}..."
-    # --quiet dropped intentionally: BuildKit's default progress output
-    # surfaces the real apt-get/curl error when a step fails, which is the
-    # information we need to act on. 3 attempts with a 5s pause absorbs
-    # the common transient-corp-proxy case without masking real failures.
+    # --quiet dropped intentionally: buildkit's default progress output surfaces
+    # the real apt-get/curl error when a step fails, which is the information we
+    # need to act on. 3 attempts with a 5s pause absorbs the common transient-
+    # corp-proxy case without masking real failures.
     run_with_retries 3 5 "build of ${tag}" -- \
-      "${container_cli}" build \
+      "${nerdctl[@]}" build \
         -t "${tag}" -f "${docker_dir}/${dockerfile}" "$@" "${docker_dir}"
+    # Pin against kubelet image GC — the build landed straight in k3s's
+    # containerd, so pin it here (these Never-policy images have no registry to
+    # re-pull from, so an eviction would strand the next launch). pin_k3s_image
+    # is best-effort and never fails the build. See lib/platform.sh.
+    pin_k3s_image "${tag}"
     echo "  Built ${tag}"
-    image_tags+=("${tag}")
   }
 
   _build_image "docker.io/library/sandbox:base"     "Dockerfile.base"
@@ -739,36 +748,16 @@ build_images() {
   _build_image "docker.io/library/sandbox:grok"     "Dockerfile.grok"
   _build_image "docker.io/library/sandbox:shell"    "Dockerfile.shell"
 
-  # Tier 3 infra variants — one per agent
-  _build_image "docker.io/library/sandbox:claude-infra"   "Dockerfile.infra" --build-arg "BASE_IMAGE=docker.io/library/sandbox:claude"
-  _build_image "docker.io/library/sandbox:codex-infra"    "Dockerfile.infra" --build-arg "BASE_IMAGE=docker.io/library/sandbox:codex"
-  _build_image "docker.io/library/sandbox:opencode-infra" "Dockerfile.infra" --build-arg "BASE_IMAGE=docker.io/library/sandbox:opencode"
-  _build_image "docker.io/library/sandbox:copilot-infra"  "Dockerfile.infra" --build-arg "BASE_IMAGE=docker.io/library/sandbox:copilot"
-  _build_image "docker.io/library/sandbox:grok-infra"     "Dockerfile.infra" --build-arg "BASE_IMAGE=docker.io/library/sandbox:grok"
+  # Tier 3 infra variants — one per agent. BASE_IMAGE uses the short reference
+  # (sandbox:claude); containerd normalizes it to docker.io/library/sandbox:claude
+  # and resolves it from the local image store the prior build just populated.
+  _build_image "docker.io/library/sandbox:claude-infra"   "Dockerfile.infra" --build-arg "BASE_IMAGE=sandbox:claude"
+  _build_image "docker.io/library/sandbox:codex-infra"    "Dockerfile.infra" --build-arg "BASE_IMAGE=sandbox:codex"
+  _build_image "docker.io/library/sandbox:opencode-infra" "Dockerfile.infra" --build-arg "BASE_IMAGE=sandbox:opencode"
+  _build_image "docker.io/library/sandbox:copilot-infra"  "Dockerfile.infra" --build-arg "BASE_IMAGE=sandbox:copilot"
+  _build_image "docker.io/library/sandbox:grok-infra"     "Dockerfile.infra" --build-arg "BASE_IMAGE=sandbox:grok"
 
-  # k3s uses its own containerd instance; Docker-built images are not visible
-  # to it until explicitly imported.
-  if ! command -v k3s &>/dev/null; then
-    echo "  WARN: k3s not found — skipping containerd import." >&2
-    echo "        Images are in Docker; re-run after k3s is installed." >&2
-    return 0
-  fi
-
-  echo "  Importing images into k3s containerd..."
-  local k3s
-  k3s="$(k3s_bin)"
-  for tag in "${image_tags[@]}"; do
-    echo "  Importing ${tag}..."
-    "${container_cli}" save "${tag}" | sudo "${k3s}" ctr images import -
-    # Pin against kubelet image GC: these Never-policy images have no registry
-    # to re-pull from, so an eviction would strand the next launch. See
-    # pin_k3s_image in lib/platform.sh.
-    pin_k3s_image "${tag}"
-    echo "  Imported ${tag}"
-  done
-  echo "  All images imported into k3s containerd."
-
-  echo "  Image build complete."
+  echo "  Image build complete (images are in k3s containerd)."
 }
 
 # build_images_macos — build the agent images inside the Lima VM.

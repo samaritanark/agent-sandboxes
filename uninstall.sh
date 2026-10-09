@@ -359,6 +359,7 @@ if [[ "${PLATFORM}" == "Linux" ]]; then
   echo "  • k3s (via k3s-uninstall.sh) — removes Cilium pods and cluster state"
   echo "  • gVisor binaries (/usr/local/bin/runsc, containerd-shim-runsc-v1)"
   echo "  • /etc/containerd/runsc.toml"
+  echo "  • buildkit.service + /etc/buildkit (nerdctl/buildkitd binaries left in place)"
   echo "  • Leftover cilium_* / lxc* interfaces, pinned BPF maps,"
   echo "    /run/cilium/, and CILIUM_* iptables chains"
 elif [[ "${PLATFORM}" == "Darwin" ]]; then
@@ -575,6 +576,29 @@ if [[ "${PLATFORM}" == "Linux" ]]; then
   else
     skip "Not found: /etc/containerd/runsc.toml"
   fi
+
+  step "Removing nerdctl + buildkit (host image builder)..."
+  if systemctl list-unit-files 2>/dev/null | grep -q '^buildkit\.service'; then
+    info "Stopping and disabling buildkit.service..."
+    try sudo systemctl stop buildkit.service
+    try sudo systemctl disable buildkit.service
+    ok "buildkit.service stopped and disabled."
+  else
+    skip "buildkit.service not present."
+  fi
+  # Remove the unit file (nerdctl-full extracts it into
+  # /usr/local/lib/systemd/system) and the buildkit config. The nerdctl/buildkitd
+  # binaries under /usr/local/bin are left in place — inert without the service
+  # and k3s, and cheap to leave for a future reinstall.
+  for f in /usr/local/lib/systemd/system/buildkit.service /etc/buildkit; do
+    if [[ -e "${f}" ]]; then
+      sudo rm -rf "${f}"
+      ok "Removed: ${f}"
+    else
+      skip "Not found: ${f}"
+    fi
+  done
+  try sudo systemctl daemon-reload
 
   # k3s-uninstall.sh removes /var/lib/rancher/k3s/agent/etc/containerd/,
   # so the containerd config template is gone with it. Nothing extra to do.

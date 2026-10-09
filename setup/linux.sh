@@ -20,6 +20,10 @@ setup_linux() {
   install_cilium_helm
   install_masquerade_service
   configure_containerd_gvisor
+  # Host image builder (nerdctl + buildkit). Last, because its buildkit
+  # containerd worker points at k3s's containerd socket, which exists only once
+  # k3s is installed and running (above).
+  install_nerdctl_buildkit_linux
 }
 
 # configure_firewalld — trust the pod and service CIDRs on hosts running
@@ -395,4 +399,83 @@ EOF
   done
 
   echo "  containerd configured for gVisor."
+}
+
+# install_nerdctl_buildkit_linux — install the host image builder: nerdctl +
+# buildkit (from the nerdctl-full release, which bundles buildkitd/buildctl and
+# their systemd units), with buildkit's containerd worker pointed at k3s's own
+# containerd and the k8s.io namespace. A `nerdctl build` then lands its result
+# directly in the image store k3s reads from (imagePullPolicy: Never) — so no
+# host Docker/Podman is needed and there is no `save | ctr import` round-trip.
+#
+# This is the host-side twin of the in-VM provisioning the Lima template does on
+# macOS (lima/sandbox-vm.yaml.tmpl); keep the two in step.
+#
+# Idempotent: skips the download when nerdctl + buildkitd are already present,
+# but always (re)writes buildkitd.toml and restarts the service so the
+# containerd-worker wiring is corrected if it ever drifted.
+install_nerdctl_buildkit_linux() {
+  echo "==> Installing nerdctl + buildkit (host image builder)..."
+
+  # buildkitd's containerd worker points here; k3s is already up (installed
+  # above), so the socket exists on the first build.
+  local k3s_sock="/run/k3s/containerd/containerd.sock"
+
+  # (Re)write the buildkit config every run: OCI worker off, containerd worker
+  # on and aimed at k3s's containerd + the k8s.io namespace. Identical wiring to
+  # the macOS VM.
+  sudo mkdir -p /etc/buildkit
+  sudo tee /etc/buildkit/buildkitd.toml > /dev/null <<EOF
+[worker.oci]
+  enabled = false
+[worker.containerd]
+  enabled = true
+  address = "${k3s_sock}"
+  namespace = "k8s.io"
+EOF
+
+  if command -v nerdctl &>/dev/null && command -v buildkitd &>/dev/null; then
+    echo "  nerdctl + buildkit already installed: $(nerdctl --version 2>/dev/null | head -1)"
+    sudo systemctl daemon-reload
+    sudo systemctl enable buildkit >/dev/null 2>&1 || true
+    sudo systemctl restart buildkit   # pick up any buildkitd.toml change
+    return 0
+  fi
+
+  # nerdctl release assets use Go-style arch names (amd64/arm64) — the opposite
+  # of gVisor's x86_64/aarch64 (install_gvisor_linux), hence the rename.
+  local nerdctl_arch
+  nerdctl_arch="$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
+
+  # Pinned by setup/versions.sh; empty == follow releases/latest.
+  local nerdctl_ver="${SANDBOX_NERDCTL_VERSION:-}"
+  if [[ -z "${nerdctl_ver}" ]]; then
+    nerdctl_ver="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+      https://github.com/containerd/nerdctl/releases/latest \
+      | sed -E 's#.*/tag/v##')"
+  fi
+  echo "  nerdctl version: ${nerdctl_ver:-(latest)}"
+
+  # nerdctl-full extracts into /usr/local: bin/ (nerdctl, buildkitd, buildctl,
+  # ...) and lib/systemd/system/buildkit.service. It also ships a bundled
+  # containerd + containerd.service which we deliberately do NOT enable — k3s
+  # runs its own containerd; only buildkit.service is started below.
+  local tmp
+  tmp="$(mktemp -d)"
+  if ! curl -fsSL \
+      "https://github.com/containerd/nerdctl/releases/download/v${nerdctl_ver}/nerdctl-full-${nerdctl_ver}-linux-${nerdctl_arch}.tar.gz" \
+      -o "${tmp}/nerdctl-full.tar.gz"; then
+    rm -rf "${tmp}"
+    echo "ERROR: failed to download nerdctl-full ${nerdctl_ver} (${nerdctl_arch})." >&2
+    echo "       The image build needs nerdctl + buildkit; re-run 'sandbox install'" >&2
+    echo "       once the download can succeed." >&2
+    exit 1
+  fi
+  sudo tar -C /usr/local -xzf "${tmp}/nerdctl-full.tar.gz"
+  rm -rf "${tmp}"
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now buildkit
+
+  echo "  nerdctl + buildkit installed: $(nerdctl --version 2>/dev/null | head -1)"
 }
