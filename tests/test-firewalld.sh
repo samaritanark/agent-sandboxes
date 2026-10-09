@@ -31,6 +31,15 @@ SANDBOX_SERVICE_CIDR="10.43.0.0/16"
 # shellcheck disable=SC1090
 source "${SANDBOX_ROOT}/setup/linux.sh"
 
+# The install-ownership marker helpers live in common.sh, which this test does
+# not source. configure_firewalld records the CIDRs it adds and the uninstall
+# helper clears that marker, so stub both as no-ops and point the marker dir at
+# a throwaway location (empty by default, so the uninstall helper exercises its
+# k3s-unit fallback except where a case plants a marker explicitly).
+export SANDBOX_MARKER_DIR="$(mktemp -d)"
+mark_installed()   { :; }
+unmark_installed() { :; }
+
 # --- Shim harness --------------------------------------------------------
 # A throwaway bin dir prepended to PATH. Each shim logs its argv to CALLS so
 # assertions can inspect exactly what the function invoked. Behaviour of the
@@ -127,7 +136,7 @@ eval "$(awk '
 ' "${SANDBOX_ROOT}/uninstall.sh")"
 
 FAKE_UNIT="$(mktemp)"
-trap 'rm -rf "${SHIMBIN}" "${CALLS}" "${FAKE_UNIT}"' EXIT
+trap 'rm -rf "${SHIMBIN}" "${CALLS}" "${FAKE_UNIT}" "${SANDBOX_MARKER_DIR}"' EXIT
 
 # --- Case 5: custom-CIDR install — recover from the k3s unit, not defaults --
 # The unit records the non-default CIDRs setup baked into INSTALL_K3S_EXEC.
@@ -166,5 +175,23 @@ FWD_ACTIVE=0 run_case remove_firewalld_trusted_cidrs
 if ! grep -q -- "--remove-source" "${CALLS}"; then \
   pass "inactive firewalld uninstall: no --remove-source"; \
   else fail "inactive firewalld should not modify rules, saw:"$'\n'"$(calls)"; fi
+
+# --- Case 8: marker present — remove exactly the CIDRs setup recorded -------
+# configure_firewalld records the CIDRs it actually added into the
+# firewalld-cidrs marker; the uninstall helper then removes exactly those and
+# ignores the k3s-unit values, so a CIDR the operator trusted on their own is
+# left alone.
+printf 'installed-by=ai-agent-sandboxes\ndetail=192.0.2.0/24 198.51.100.0/24\n' \
+  > "${SANDBOX_MARKER_DIR}/firewalld-cidrs"
+K3S_SERVICE_UNIT="${FAKE_UNIT}"   # still the custom 10.99/10.200 unit from Case 5
+FWD_ACTIVE=1 FWD_TRUSTED=1 run_case remove_firewalld_trusted_cidrs
+if grep -q -- "--remove-source=192.0.2.0/24" "${CALLS}" \
+   && grep -q -- "--remove-source=198.51.100.0/24" "${CALLS}"; then \
+  pass "marker present: removes exactly the recorded CIDRs"; \
+  else fail "expected recorded CIDRs removed, saw:"$'\n'"$(calls)"; fi
+if ! grep -q -- "10.99.0.0/16" "${CALLS}"; then \
+  pass "marker present: k3s-unit CIDRs ignored"; \
+  else fail "should ignore k3s-unit CIDRs when marker present, saw:"$'\n'"$(calls)"; fi
+rm -f "${SANDBOX_MARKER_DIR}/firewalld-cidrs"
 
 echo "All firewalld tests passed."

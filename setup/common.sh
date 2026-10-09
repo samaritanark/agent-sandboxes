@@ -11,6 +11,115 @@ SANDBOX_ROOT="${SANDBOX_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # ~/.kube/config (which may point to other clusters) is never consulted.
 SANDBOX_KUBECONFIG="${SANDBOX_KUBECONFIG:-${HOME}/.sandbox/kubeconfig}"
 
+# ---------------------------------------------------------------------------
+# Install-ownership markers
+#
+# setup drops a marker for each HOST component it actually installs (k3s,
+# gVisor, nerdctl/buildkit, Helm, the masquerade service, firewalld CIDRs).
+# uninstall removes a component ONLY when its marker is present, so a tool the
+# operator had installed before — their own k3s, their own buildkit — is never
+# clobbered by `sandbox uninstall`. On the install side each installer refuses
+# (k3s) or reuses without overwriting (gVisor) a pre-existing, unmarked install
+# of the same thing, and for the one shared config file it MUST rewrite
+# (buildkitd.toml) it stashes the operator's original and restores it on
+# uninstall. Net effect: setup never trashes something it did not install, and
+# uninstall never removes something it did not install.
+#
+# Markers live under a root-owned directory (every component here is a
+# root-owned host install). The macOS path installs everything inside the Lima
+# VM and never uses these — removing the VM takes it all with it.
+#
+# For hosts set up by an OLDER sandbox (before markers existed) each installer
+# and the uninstaller backfill the marker from a content signature of the
+# config/unit setup wrote (see *_looks_like_ours below), so an upgrade-then-
+# uninstall still recognises and cleans up its own artifacts.
+# ---------------------------------------------------------------------------
+SANDBOX_MARKER_DIR="${SANDBOX_MARKER_DIR:-/var/lib/sandbox/install-markers}"
+
+# mark_installed <component> [detail] — record that setup installed <component>.
+mark_installed() {
+  local component="$1" detail="${2:-}"
+  sudo mkdir -p "${SANDBOX_MARKER_DIR}"
+  {
+    echo "installed-by=ai-agent-sandboxes"
+    echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [[ -n "${detail}" ]]; then echo "detail=${detail}"; fi
+  } | sudo tee "${SANDBOX_MARKER_DIR}/${component}" > /dev/null
+}
+
+# installed_by_sandbox <component> — true iff setup recorded installing it.
+installed_by_sandbox() {
+  [[ -f "${SANDBOX_MARKER_DIR}/$1" ]]
+}
+
+# unmark_installed <component> — drop a component's marker (after removal).
+unmark_installed() {
+  sudo rm -f "${SANDBOX_MARKER_DIR}/$1"
+}
+
+# backup_preexisting <component> <path> — if <path> exists and we do NOT already
+# own <component>, stash a copy under the marker dir as <component>.orig so
+# uninstall can restore the operator's original. Returns 0 when a backup was
+# made, 1 otherwise (already ours, or nothing there). Used for the shared config
+# files an installer must rewrite (buildkitd.toml, runsc.toml).
+backup_preexisting() {
+  local component="$1" path="$2"
+  installed_by_sandbox "${component}" && return 1
+  [[ -e "${path}" ]] || return 1
+  sudo mkdir -p "${SANDBOX_MARKER_DIR}"
+  sudo cp -a "${path}" "${SANDBOX_MARKER_DIR}/${component}.orig"
+}
+
+# restore_preexisting <component> <path> — if a .orig backup exists, copy it back
+# to <path> (overwriting whatever setup wrote) and drop the backup. Returns 0
+# when a restore happened, 1 when there was no backup (caller then deletes its
+# own file).
+restore_preexisting() {
+  local component="$1" path="$2"
+  local bak="${SANDBOX_MARKER_DIR}/${component}.orig"
+  [[ -e "${bak}" ]] || return 1
+  sudo mkdir -p "$(dirname "${path}")"
+  sudo cp -a "${bak}" "${path}"
+  sudo rm -rf "${bak}"
+}
+
+# Canonical k3s systemd unit (also referenced by uninstall.sh under its own
+# name). setup always passes a distinctive flag set via INSTALL_K3S_EXEC, so the
+# ExecStart line is a reliable signature of a sandbox-installed k3s.
+SANDBOX_K3S_SERVICE_UNIT="${SANDBOX_K3S_SERVICE_UNIT:-/etc/systemd/system/k3s.service}"
+
+# k3s_unit_looks_like_ours — true when the installed k3s unit carries the flag
+# combination only setup passes (Flannel off + traefik disabled). Used to
+# backfill the k3s marker on hosts set up before markers existed.
+k3s_unit_looks_like_ours() {
+  [[ -f "${SANDBOX_K3S_SERVICE_UNIT}" ]] || return 1
+  grep -q -- '--flannel-backend=none' "${SANDBOX_K3S_SERVICE_UNIT}" 2>/dev/null \
+    && grep -q -- '--disable=traefik' "${SANDBOX_K3S_SERVICE_UNIT}" 2>/dev/null
+}
+
+# Config paths the signature detectors read. Overridable only so the helpers
+# are unit-testable without touching the real /etc; the installers always write
+# the literal paths (these default to them).
+SANDBOX_BUILDKIT_CONFIG="${SANDBOX_BUILDKIT_CONFIG:-/etc/buildkit/buildkitd.toml}"
+SANDBOX_RUNSC_CONFIG="${SANDBOX_RUNSC_CONFIG:-/etc/containerd/runsc.toml}"
+
+# buildkit_config_looks_like_ours — true when buildkitd.toml is the
+# k3s-containerd-worker config setup writes (as opposed to an operator's own
+# buildkit config). Backfills the nerdctl-buildkit marker for older installs.
+buildkit_config_looks_like_ours() {
+  [[ -f "${SANDBOX_BUILDKIT_CONFIG}" ]] || return 1
+  grep -q 'namespace = "k8s.io"' "${SANDBOX_BUILDKIT_CONFIG}" 2>/dev/null \
+    && grep -q '/run/k3s/containerd/containerd.sock' "${SANDBOX_BUILDKIT_CONFIG}" 2>/dev/null
+}
+
+# gvisor_config_looks_like_ours — true when runsc.toml is the runsc options file
+# setup writes. Backfills the gvisor marker for older installs so uninstall
+# still cleans up our binaries.
+gvisor_config_looks_like_ours() {
+  [[ -f "${SANDBOX_RUNSC_CONFIG}" ]] || return 1
+  grep -q 'debug-log = "/tmp/runsc-%ID%.log"' "${SANDBOX_RUNSC_CONFIG}" 2>/dev/null
+}
+
 # Network interface detection + Cilium-for-VPN device wiring.
 # shellcheck source=../lib/network.sh
 source "${SANDBOX_ROOT}/lib/network.sh"
@@ -311,6 +420,24 @@ setup_common() {
 install_gvisor_linux() {
   echo "==> Installing gVisor..."
 
+  # If runsc is already on the host and the sandbox did not install it, reuse
+  # the operator's binary rather than overwriting it — reusing is harmless,
+  # whereas overwriting could swap out a version they depend on (e.g. for a
+  # Docker/containerd runtime of their own). We do NOT mark it, so uninstall
+  # leaves their gVisor untouched. A gVisor that an OLDER sandbox installed is
+  # recognised by its runsc.toml signature and falls through to a clean
+  # (re)install + marker backfill below.
+  if command -v runsc &>/dev/null \
+     && ! installed_by_sandbox gvisor \
+     && ! gvisor_config_looks_like_ours; then
+    echo "  WARNING: runsc is already installed ($(runsc --version 2>/dev/null | head -1))" >&2
+    echo "           and the sandbox did not install it — reusing it as-is." >&2
+    echo "           The sandbox pins gVisor ${SANDBOX_GVISOR_RELEASE:-latest}; a" >&2
+    echo "           different version may behave differently. 'sandbox uninstall'" >&2
+    echo "           will leave this gVisor in place." >&2
+    return 0
+  fi
+
   local arch
   arch="$(uname -m)"
 
@@ -364,6 +491,11 @@ install_gvisor_linux() {
   sudo mv /usr/local/bin/.gvisor-bin.new /usr/local/bin/gvisor-bin
 
   rm -rf "${tmp_dir}"
+
+  # We installed these binaries (/usr/local/bin/runsc,
+  # containerd-shim-runsc-v1, gvisor-bin/) — record it so uninstall removes
+  # them, and only them.
+  mark_installed gvisor
   echo "  gVisor installed: $(runsc --version)"
 }
 
@@ -376,6 +508,20 @@ install_cilium_helm() {
     # DESIRED_VERSION pins get-helm-3; unset/empty == latest.
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 \
       | DESIRED_VERSION="${SANDBOX_HELM_VERSION:-}" bash
+    # Record that WE put Helm on the host (get-helm-3 lands it at
+    # /usr/local/bin/helm). An operator's pre-existing helm is found by the
+    # command -v guard above and left untouched — and unmarked, so uninstall
+    # never removes it.
+    mark_installed helm
+  fi
+
+  # If the sandbox does not own the k3s this is being installed into (operator
+  # opted in with SANDBOX_ADOPT_EXISTING_K3S=1), a `helm upgrade --install cilium`
+  # could overwrite a Cilium release they already run. Warn before we do.
+  if is_linux && ! installed_by_sandbox k3s; then
+    echo "  WARNING: installing Cilium into a k3s the sandbox does not own — this" >&2
+    echo "           will create or upgrade the 'cilium' release in kube-system with" >&2
+    echo "           sandbox values, overwriting any existing Cilium configuration." >&2
   fi
 
   helm repo add cilium https://helm.cilium.io/ 2>/dev/null || true
