@@ -2137,6 +2137,13 @@ _resume_guide_command() {
 # resume can never relaunch a workspace that a fresh 'sandbox run' would refuse.
 recreate_session_pod() {
   local session_id="$1"
+  # Launch-gate waivers, threaded from cmd_resume's --i-accept-* flags (default
+  # false = fail closed). The operator re-asserts them at resume time against the
+  # freshly re-scanned workspace, so a secret the agent added since launch is
+  # still surfaced and consciously re-accepted — not silently inherited.
+  local accept_unmasked_secrets="${2:-false}"
+  local accept_unvetted_repo="${3:-false}"
+  local accept_vetting_drift="${4:-false}"
   local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
   local sj="${log_dir}/session.json"
   local pod_name
@@ -2164,10 +2171,13 @@ recreate_session_pod() {
   # workspace is not carried in session.json — for a Tier 2 repo it is the live
   # host directory, which the previous session's agent could have modified — so
   # resume must NOT relaunch a workspace that a fresh 'sandbox run' would refuse
-  # (masking type check, repo vetting, unmasked-secret scan). These fail closed
-  # and mirror cmd_run's Step 2 exactly, with every override hardcoded false:
-  # resume carries no --i-accept-* waivers, so anything needing one is refused
-  # here and the operator relaunches via 'sandbox run' with the flag they intend.
+  # (masking type check, repo vetting, unmasked-secret scan). These mirror
+  # cmd_run's Step 2 exactly: the gates re-scan the live workspace and fail
+  # closed, and the operator's --i-accept-* waivers (threaded in above; default
+  # false) are honored the same way they are on 'sandbox run' — so a session
+  # launched with a waiver can be resumed, while an un-waived gate still refuses.
+  # Honoring them here against the FRESH scan means any secret the agent added
+  # since launch is surfaced and must be re-accepted, not silently inherited.
   if [[ "${tier}" -ge 2 ]] && [[ "${#repos[@]}" -gt 0 ]]; then
     echo "==> Re-checking workspace gates before recreate..."
     local _r
@@ -2175,13 +2185,30 @@ recreate_session_pod() {
       workspace_prescan "${_r}"
     done
     check_masking_paths "${repos[@]}"
-    vetting_gate_repos "$(resolve_vetting_posture)" "false" "false" "${repos[@]}"
+    vetting_gate_repos "$(resolve_vetting_posture)" "${accept_unvetted_repo}" "${accept_vetting_drift}" "${repos[@]}"
     local _endpoint _endpoint_trusted="false"
     _endpoint="$(resolve_inference_endpoint "${agent}")"
     if [[ -n "${_endpoint}" ]] && inference_endpoint_is_trusted "${_endpoint}"; then
       _endpoint_trusted="true"
     fi
-    secret_gate_repos "false" "${_endpoint_trusted}" "false" "${repos[@]}"
+    # Mirror cmd_run: accepting an unvetted repo also lets the secret gate honor
+    # that repo's exception list, subject to the overlay forbid knob.
+    local _accept_unvetted_eff="${accept_unvetted_repo}"
+    [[ "${_accept_unvetted_eff}" == "true" && "$(vetting_forbid_unvetted_override)" == "true" ]] && _accept_unvetted_eff="false"
+    secret_gate_repos "${accept_unmasked_secrets}" "${_endpoint_trusted}" "${_accept_unvetted_eff}" "${repos[@]}"
+    # Audit parity with cmd_run's launch-time recording (bin/sandbox Step 4): log
+    # what THIS re-gate of the (possibly agent-modified) live workspace found —
+    # the vetting and secret-scan summaries the gates stashed — then flush any
+    # waiver they recorded. So the session log shows the resume actually re-gated
+    # the workspace and names every waiver it received, not just the launch's.
+    # session.json already exists for a resumed session, so these append cleanly.
+    if [[ -n "${SESSION_VETTING_SUMMARY:-}" ]]; then
+      audit_log_event "${log_dir}" "vetting" "${SESSION_VETTING_SUMMARY}"
+    fi
+    if [[ -n "${SESSION_SECRET_SUMMARY:-}" ]]; then
+      audit_log_event "${log_dir}" "secret-scan" "${SESSION_SECRET_SUMMARY}"
+    fi
+    audit_flush_overrides "${log_dir}"
   fi
 
   echo "==> Recreating pod for ${session_id} (${agent}, tier ${tier})..."
@@ -2218,18 +2245,32 @@ recreate_session_pod() {
 ###############################################################################
 cmd_resume() {
   local opt_keep_alive="false"
+  local opt_accept_unmasked_secrets="false"
+  local opt_accept_unvetted_repo="false"
+  local opt_accept_vetting_drift="false"
   local session_id=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --keep-alive) opt_keep_alive="true" ;;
+      --i-accept-unmasked-secrets) opt_accept_unmasked_secrets="true" ;;
+      --i-accept-unvetted-repo)    opt_accept_unvetted_repo="true" ;;
+      --i-accept-vetting-drift)    opt_accept_vetting_drift="true" ;;
       --help|-h)
         echo "Usage: sandbox resume <SESSION_ID> [--keep-alive]"
+        echo "                      [--i-accept-unmasked-secrets] [--i-accept-unvetted-repo]"
+        echo "                      [--i-accept-vetting-drift]"
         echo ""
         echo "Reconnects to a session. If its pod is still running, re-attaches."
         echo "If the pod was torn down, recreates it from the recorded session"
         echo "state when possible (Linux, tier 1/2, no profile, non-opencode);"
         echo "otherwise prints the 'sandbox run' command to relaunch an equivalent."
+        echo ""
+        echo "Recreating a Tier 2/3 pod re-runs the workspace gates against the LIVE"
+        echo "repo (the agent may have changed it since launch). The --i-accept-*"
+        echo "flags waive a gate exactly as on 'sandbox run' — so a session launched"
+        echo "with a waiver can be resumed — while the default still fails closed."
+        echo "Each waiver used is recorded in the session's audit log."
         exit 0 ;;
       -*)           die "Unknown option: $1" ;;
       *)
@@ -2276,7 +2317,8 @@ cmd_resume() {
       exit 1
     fi
     ensure_cluster_ready
-    recreate_session_pod "${session_id}"
+    recreate_session_pod "${session_id}" \
+      "${opt_accept_unmasked_secrets}" "${opt_accept_unvetted_repo}" "${opt_accept_vetting_drift}"
   else
     local pod_phase
     pod_phase="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
