@@ -173,13 +173,20 @@ pin_k3s_image() {
 # down on macOS — so callers can treat "can't tell" distinctly from "not there".
 k3s_images_list() {
   if is_macos; then
+    # -n (no prompt) and an absolute k3s path, matching build_images_macos and
+    # the #72 PATH-under-sudo convention: a VM configured with
+    # passwordlessSudo: false must fail silently here rather than block on a
+    # prompt, and secure_path may not include /usr/local/bin.
     limactl shell "${LIMA_VM_NAME}" -- \
-      sudo k3s ctr -n k8s.io images ls -q 2>/dev/null || return 1
+      sudo -n /usr/local/bin/k3s ctr -n k8s.io images ls -q 2>/dev/null || return 1
   else
     command -v k3s &>/dev/null || return 1
     local k3s
     k3s="$(k3s_bin)" || return 1
-    sudo -n true 2>/dev/null || return 1
+    # No separate `sudo -n true` probe: the `ctr` call below already fails
+    # without prompting when sudo needs a password, so both "no passwordless
+    # sudo" and "ctr failed" map to the same return 1 (→ undeterminable). The
+    # probe only added a redundant auth-failure log line per status/run call.
     sudo -n "${k3s}" ctr -n k8s.io images ls -q 2>/dev/null || return 1
   fi
 }
@@ -192,7 +199,10 @@ k3s_images_list() {
 k3s_image_present() {
   local tag="$1" list
   list="$(k3s_images_list)" || return 2
-  printf '%s\n' "${list}" | grep -Fxq "${tag}"
+  # Here-string, not `printf | grep -q`: under `pipefail` grep exits on the
+  # first match and printf takes SIGPIPE, so a *present* image would propagate
+  # 141 and break the 0/1/2 contract. A here-string has no pipe to signal.
+  grep -Fxq -- "${tag}" <<<"${list}"
 }
 
 # sandbox_expected_images — echo the image tags a full install builds, one per

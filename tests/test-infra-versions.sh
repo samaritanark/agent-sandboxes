@@ -127,6 +127,19 @@ test_image_list_no_drift() {
   # The specific regression: copilot images must be in the canonical set.
   contains "canonical includes sandbox:copilot"       "${canonical}" "sandbox:copilot"
   contains "canonical includes sandbox:copilot-infra"  "${canonical}" "sandbox:copilot-infra"
+
+  # lib/platform.sh's sandbox_expected_images (used by the run preflight and
+  # `sandbox status`) must name the same image set as the canonical build list.
+  # It derives from VALID_AGENTS independently, so without this guard the two
+  # could drift (e.g. a new agent added to one but not the other), making status
+  # miscount or the preflight check the wrong tag. Compare as bare sandbox:<tag>
+  # names: sandbox_expected_images prefixes docker.io/library/, which we strip.
+  local expected
+  expected="$(cd "${SANDBOX_ROOT}"
+    source lib/agents.sh >/dev/null 2>&1
+    source lib/platform.sh >/dev/null 2>&1
+    sandbox_expected_images | sed -E 's#^docker.io/library/##' | sort -u)"
+  eq "sandbox_expected_images matches canonical tag list" "${canonical}" "${expected}"
 }
 
 test_uninstall_derives_list() {

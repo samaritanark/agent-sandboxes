@@ -2811,7 +2811,10 @@ cmd_status() {
     local _expected _present_n=0 _missing=()
     while IFS= read -r _expected; do
       [[ -z "${_expected}" ]] && continue
-      if printf '%s\n' "${_img_list}" | grep -Fxq "${_expected}"; then
+      # Here-string, not `printf | grep -q`: under `pipefail` a matching grep
+      # exits early, printf takes SIGPIPE → 141, and a *present* image would be
+      # miscounted as missing (red status + a needless rebuild prompt).
+      if grep -Fxq -- "${_expected}" <<<"${_img_list}"; then
         _present_n=$((_present_n + 1))
       else
         _missing+=("${_expected#docker.io/library/}")
