@@ -69,6 +69,22 @@ hostPath, securityContext change, volume, or symlink-reachable write must not
 give the agent a path onto the host or into another pod. Check mount *paths* and
 `readOnly`, not just that a mount exists.
 
+   Containment also fails if **documentation, `sandbox install`, or any tooling
+   tells the operator to run something that later executes agent-writable content
+   on the host.** The agent writes the workspace and agent-home trees, and on
+   tier 2/3 a `--repo` checkout syncs to the host — so any setup instruction that
+   adds a shell-rc `PATH` entry, `source`s a file, or invokes a binary by a path
+   that resolves against the *shell's* starting directory (a relative path,
+   `$(pwd)`, or `./bin` captured verbatim into `~/.bashrc`/`~/.zshrc`) lets the
+   agent drop a file in that tree and gain host code execution — or a `bin/sudo`
+   shim that captures the operator's password — the next time the operator opens
+   a shell there. Setup steps must resolve to **absolute paths fixed at the moment
+   the line is written**, pointing only at operator-controlled locations. Review
+   operator-facing setup instructions in docs/README as attack surface, not just
+   prose — this is a containment finding even though it lives in Markdown, and it
+   is distinct from invariant 6's *false claims*: the instruction can be perfectly
+   truthful and still be an exploit primitive.
+
 **2. Egress cannot be evaded or self-widened.** Default-deny via Cilium
 `policyEnforcementMode: always` + per-session policy. The allowlist is a
 containment boundary, so **widening it is operator authority only** — never
@@ -161,6 +177,11 @@ claim, and so is stating an inference as fact.
 
 **DO report** (the generic skill wrongly suppresses these):
 - Security-assurance falsehoods in **any** file, Markdown included (invariant 6).
+- **Insecure operator setup instructions** — docs/README/`sandbox install` steps
+  that resolve an agent-writable or start-dir-relative path at shell startup
+  (shell-rc `PATH`/`source` of `$(pwd)` or `bin/…`), handing the agent host code
+  execution (invariant 1). Docs are in scope for dangerous *recipes*, not only
+  false claims — do **not** wave a doc hunk through as "non-code."
 - **Audit / anti-forensics** gaps the in-sandbox agent can trigger — silencing,
   starving, evicting, or forging the flow log or audit record (invariant 3).
 - **Eviction / lifecycle blast-radius** that defeats containment, revocation, or
@@ -185,6 +206,16 @@ a static read. So:
 - **Reason from platform semantics.** k8s GC/eviction/QoS, Cilium policy
   identity, gVisor's syscall surface. When a claim rides on a compiled-in default,
   check it at the **pinned version** (`setup/versions.sh`).
+- **Check changed shell for exit-code traps that silently flip a control.** A
+  pipeline whose head keeps writing after the tail exits — `printf … | grep -q`,
+  `… | head` — returns **141** under `set -o pipefail` (the head takes SIGPIPE),
+  so a *match* reads as failure. When that status gates a security/containment or
+  operator-trust decision (an image-presence preflight, a `status` present/missing
+  count, a gate's pass/fail), the control silently inverts — a *present* item
+  reported absent, or vice-versa. Prefer a here-string (`grep -q … <<<"$x"`) where
+  no pipe is needed, and verify the exit code in the **match** case, not just the
+  no-match case. Extend the same suspicion to any `$(…)`/inline command
+  substitution whose failure `set -e` won't catch.
 - **Trace every exit path**, not the happy path — that is where revocation and
   audit gaps live.
 - **Follow claims and prescribed remediations into UNCHANGED code — do not stop
@@ -255,6 +286,24 @@ instance.
   authority. (Invariants 2, 5.)
 - **Sudo/PATH and cross-platform gaps** — a control that silently no-ops on one
   platform (macOS/lima vs Linux/WSL) or under a restricted `sudo secure_path`.
+  (Recurred on PR #113: a new `k3s_images_list` used bare `sudo k3s` on the macOS
+  branch — no `-n`, no absolute path — so it would prompt under `passwordlessSudo:
+  false` and miss `secure_path`, against the repo's own #72 convention.)
+- **Insecure setup recipe in docs — shell-rc PATH/source of a start-dir-relative
+  path** — the README/tutorial told the operator to add `export
+  PATH="$(pwd)/bin:$PATH"` and `source bin/completions/…` to `~/.bashrc`; both
+  resolve against whatever directory the shell *starts* in, not the sandbox
+  checkout, so an agent that writes `<repo>/bin/…` in a tier 2/3 workspace gains
+  host code execution (and a password-stealing `bin/sudo` shim) the moment the
+  operator opens a shell there. Setup instructions must emit absolute, write-time-
+  fixed paths. Docs are in scope for dangerous recipes, not only false claims; the
+  PR's own review run missed this by treating the docs hunk as non-code. (Invariant 1.)
+- **`printf | grep -q` under `pipefail` returns 141 for a present item** — the
+  head takes SIGPIPE when grep exits on the first match, so an image-presence
+  preflight and the `sandbox status` present/missing count read a *present* image
+  as absent (false red + a needless rebuild prompt), and the documented tri-state
+  contract breaks. Use a here-string; audit changed pipelines whose exit code
+  gates a control. (Method: verify behavior.)
 - **Credential survival via a killed CLI, not just eviction** — teardown that runs
   only on normal exit / pod-eviction leaves a non-`--keep-alive` session's pod and
   Secrets live when the `sandbox` process itself is signalled or killed (closed
