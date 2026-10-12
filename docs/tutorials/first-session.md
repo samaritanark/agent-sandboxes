@@ -41,12 +41,22 @@ down. `./setup.sh` still works — use whichever you prefer.
 
 ## 2. Put the CLI on PATH
 
-Add `bin/` to PATH and load completions for this shell. To make it permanent,
-add both lines to your `~/.bashrc` or `~/.zshrc`.
+Add `bin/` to PATH and load completions for this shell:
 
 ```bash
 export PATH="$(pwd)/bin:$PATH"
 source bin/completions/sandbox.bash   # or sandbox.zsh
+```
+
+To make it permanent, append *absolute* paths to your `~/.bashrc` or `~/.zshrc`
+rather than copying the lines above. A shell rc runs on every new shell and
+re-evaluates `$(pwd)` and the relative `source` path against whatever directory
+that shell starts in - which may be a repo a sandbox session can write to, not
+this checkout. Expanding the path once, now, pins it to this directory:
+
+```bash
+printf 'export PATH="%s/bin:$PATH"\n' "$(pwd)" >> ~/.bashrc
+printf 'source %s/bin/completions/sandbox.bash\n' "$(pwd)" >> ~/.bashrc
 ```
 
 ## 3. Smoke-test the install

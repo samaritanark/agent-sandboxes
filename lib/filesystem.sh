@@ -80,6 +80,25 @@ validate_repo_path() {
     echo "ERROR: Cannot use \$HOME as workspace root." >&2
     exit 1
   fi
+
+  # Refuse the agent-sandboxes checkout itself (and anything under it). A Tier
+  # 2/3 workspace is mounted read-write and is agent-writable (directly on
+  # Linux/WSL, via Mutagen sync on macOS), so using the tooling's own checkout
+  # as the workspace would let the in-sandbox agent rewrite bin/sandbox, lib/,
+  # and .claude/skills/** — the code and review harness that run it next. Same
+  # guard class as the credential dirs above: it protects against an accidental
+  # --repo choice, not a hostile operator.
+  if [[ -n "${SANDBOX_ROOT:-}" ]]; then
+    local real_root
+    real_root="$(realpath "${SANDBOX_ROOT}" 2>/dev/null || echo "${SANDBOX_ROOT}")"
+    if [[ "${real_repo}" == "${real_root}" ]] || \
+       [[ "${real_repo}" == "${real_root}/"* ]]; then
+      echo "ERROR: Cannot use the agent-sandboxes checkout as a workspace: ${repo}" >&2
+      echo "  Mounting the sandbox tooling into a pod would give the in-sandbox" >&2
+      echo "  agent write access to the code that runs it. Use a separate repo." >&2
+      exit 1
+    fi
+  fi
 }
 
 # workspace_prescan — scan workspace for sensitive files before session
