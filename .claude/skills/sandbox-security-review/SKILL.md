@@ -97,10 +97,12 @@ still pass the blocked-destinations check?
 Hubble flow export is the network audit record; the session audit log records
 what happened. The agent must not be able to **silence, starve, evict, OOM, or
 forge** either one. Specifically:
-   - Any component on the audit path (hubble-relay, cilium, the export step)
-     must not be the first eviction/OOM victim the agent can trigger — check QoS
-     class and resource requests on **both the memory and the ephemeral-storage
-     axes** (they rank differently; QoS does not rank disk).
+   - Any component on the audit path (the **Cilium agent**, which carries
+     Hubble, and the `kubectl exec ds/cilium -- hubble observe` export step —
+     NOT hubble-relay, which this platform does not use) must not be the first
+     eviction/OOM victim the agent can trigger — check QoS class and resource
+     requests on **both the memory and the ephemeral-storage axes** (they rank
+     differently; QoS does not rank disk).
    - Any forensic/state artifact written to an **agent-writable location**
      (workspace, agent-home) is **not evidence** — the agent can forge or delete
      it. A trustworthy signal must derive from **operator-side state the agent
@@ -279,9 +281,14 @@ instance.
   fire on eviction; the doc/comment said it did. (Invariants 4, 6.)
 - **Audit breadcrumb written to an ephemeral or agent-writable path** — lost on
   pod death, and forgeable by the agent, so it isn't evidence. (Invariant 3.)
-- **Audit channel as first eviction/OOM victim** — hubble-relay BestEffort (no
-  resource requests) let the agent starve the egress log; disk-axis ranking is
-  separate from memory-axis. (Invariant 3.)
+- **Audit path mis-identified, then hardened** — a comment/skill named
+  hubble-relay as the egress-log channel and added resource requests to protect
+  it, but the audit reads the Cilium AGENT's Hubble directly
+  (`kubectl exec ds/cilium -- hubble observe`, lib/cluster.sh); relay was never
+  on the path and has since been removed. Trace the actual exporter before
+  crediting any component with carrying the audit — and when you do check a real
+  audit component, QoS/requests rank on the memory and ephemeral-storage axes
+  separately (QoS does not rank disk). (Invariant 3.)
 - **Eviction tuning sized against vanilla kubelet, not k3s** — wrong thresholds /
   minimum-reclaim widened the blast radius across sessions. (Invariant 7.)
 - **Teardown swallowing revocation reminders / asserting false success** — a
@@ -346,10 +353,10 @@ instance.
   at the pinned tag. (Invariant 6.) *(The specific k3s-eviction inference is now
   confirmed at v1.36.3+k3s1 — see the eviction-tuning paragraph above — but the
   lesson stands for the next compiled-in default.)*
-- **A protection credited to the wrong mechanism** — `setup/common.sh` said the
-  hubble-relay memory request lifts it out of "the kubelet's first OOM/eviction
-  victim" position *under memory pressure*, but k3s runs no kubelet memory
-  eviction (confirmed above); the request works via the kernel OOM killer's
+- **A protection credited to the wrong mechanism** — a comment said a pod's
+  memory request lifts it out of "the kubelet's first OOM/eviction victim"
+  position *under memory pressure*, but k3s runs no kubelet memory eviction
+  (confirmed above); the request works via the kernel OOM killer's
   `oom_score_adj`. The control holds, but a reader auditing "does kubelet
   memory-eviction rank this correctly?" checks a mechanism that never fires. When
   a comment names the *mechanism* of a control, verify that mechanism is the one

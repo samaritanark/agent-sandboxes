@@ -613,43 +613,21 @@ install_cilium_helm() {
   # paths produce identical results for runc pods; gVisor pods only work
   # via the TC path.
   #
-  # hubble.relay.resources.requests: give hubble-relay memory AND
-  # ephemeral-storage requests so it runs Burstable rather than BestEffort on
-  # both resource axes. hubble-relay aggregates the egress flow log that is this
-  # platform's network audit channel; left BestEffort an in-sandbox agent could
-  # silence its own egress audit by driving the node toward resource pressure
-  # and getting the relay reclaimed before the offending pod.
-  #
-  # MEMORY axis: the protection here is the kernel OOM killer, NOT kubelet
-  # memory-eviction. k3s does not run memory eviction at all: at the pinned tag
-  # it sets EvictionHard={imagefs.available<5%,nodefs.available<5%}
-  # unconditionally (pkg/daemons/agent/agent.go:192-195, v1.36.3+k3s1) and our
-  # install adds only nodefs/imagefs eviction-soft thresholds, so no
-  # memory.available threshold exists and the kubelet never memory-evicts. Under
-  # memory pressure the kernel OOM killer chooses the victim by oom_score_adj,
-  # which derives from QoS class and the memory request: a Burstable pod that
-  # carries a request scores lower (is killed later) than a BestEffort one. The
-  # request (well inside the "hubble" share of HOST_RESERVE in lib/resources.sh)
-  # lifts the relay out of first-OOM-victim position — it is not a kubelet
-  # eviction ranking.
-  #
-  # DISK axis: under disk pressure the kubelet DOES rank eviction by
-  # ephemeral-storage usage relative to the request (pods over their request are
-  # evicted first). An explicit ephemeral-storage request on the low-usage relay
-  # lifts it out of first-victim position the same way the memory request does on
-  # the OOM axis. See PR #79 finding 4 / issues #80, #95, #96 and PR #92 finding
-  # F3.
+  # hubble.relay is DISABLED. This is a single-node cluster, so the Cilium
+  # agent's own Hubble already observes every flow, and the egress audit reads it
+  # directly (`kubectl -n kube-system exec ds/cilium -- hubble observe`, see
+  # export_hubble_flows in lib/cluster.sh). Hubble Relay only aggregates flows
+  # across multiple agents behind one endpoint — nothing in this repo ever dials
+  # it (:4245 is never forwarded or port-forwarded), so it was pure overhead and
+  # carried no audit traffic. hubble.enabled stays TRUE: that is the agent-side
+  # Hubble the audit depends on; only the relay deployment is dropped.
   helm --kubeconfig "${SANDBOX_KUBECONFIG}" upgrade --install cilium cilium/cilium \
     "${cilium_version_args[@]+"${cilium_version_args[@]}"}" \
     --namespace kube-system \
     --set operator.replicas=1 \
-    --set hubble.relay.enabled=true \
+    --set hubble.relay.enabled=false \
     --set hubble.enabled=true \
     --set hubble.metrics.enableOpenMetrics=false \
-    --set hubble.relay.resources.requests.cpu="${SANDBOX_HUBBLE_RELAY_CPU_REQUEST:-50m}" \
-    --set hubble.relay.resources.requests.memory="${SANDBOX_HUBBLE_RELAY_MEM_REQUEST:-128Mi}" \
-    --set hubble.relay.resources.limits.memory="${SANDBOX_HUBBLE_RELAY_MEM_LIMIT:-256Mi}" \
-    --set hubble.relay.resources.requests.ephemeral-storage="${SANDBOX_HUBBLE_RELAY_EPHEMERAL_REQUEST:-256Mi}" \
     --set kubeProxyReplacement=true \
     --set k8sServiceHost="127.0.0.1" \
     --set k8sServicePort="${SANDBOX_APISERVER_PORT}" \
