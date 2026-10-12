@@ -3217,6 +3217,20 @@ _upgrade_infra_phase() {
     return 0
   fi
 
+  # Operator-managed gVisor guard. When setup only REUSED the operator's own
+  # gVisor (recorded as gvisor-foreign, never gvisor), install_gvisor_linux
+  # deliberately no-ops to avoid overwriting their binary — so 'upgrade --gvisor'
+  # would restart k3s and record the target version while the old gVisor keeps
+  # running every pod. Refuse up front (before any work — matters for --all, so
+  # we don't leave k3s/Cilium upgraded-but-unrecorded) instead of reporting a
+  # phantom upgrade. Marker dir default mirrors SANDBOX_MARKER_DIR (setup/common.sh).
+  if ${do_gvisor}; then
+    local marker_dir="${SANDBOX_MARKER_DIR:-/var/lib/sandbox/install-markers}"
+    if [[ -f "${marker_dir}/gvisor-foreign" && ! -f "${marker_dir}/gvisor" ]]; then
+      die "gVisor here is operator-managed — the sandbox reused your existing runsc and did not install it, so 'upgrade --gvisor' cannot move it. Upgrade it yourself, or 'sudo rm ${marker_dir}/gvisor-foreign' and re-run to install the pinned ${tgt_gvisor}."
+    fi
+  fi
+
   # Running-session guard: an upgrade restarts k3s and can blip the Cilium
   # datapath, which kills live agent sessions. Refuse unless forced.
   local pod_count

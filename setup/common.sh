@@ -427,14 +427,29 @@ install_gvisor_linux() {
   # leaves their gVisor untouched. A gVisor that an OLDER sandbox installed is
   # recognised by its runsc.toml signature and falls through to a clean
   # (re)install + marker backfill below.
-  # If a prior run already recorded that we deliberately reused an operator's
-  # foreign runsc, keep reusing it. Without this, the runsc.toml signature WE
-  # write in configure_containerd_gvisor would read, on a second setup run, as
-  # proof that we installed the binary (gvisor_config_looks_like_ours) — so the
-  # reuse branch below would be skipped and we would overwrite their runsc.
+  # If a prior run recorded a deliberate reuse of the operator's foreign runsc
+  # (the gvisor-foreign marker), keep reusing it. This early-out is also what
+  # stops F3: the runsc.toml signature WE write in configure_containerd_gvisor
+  # would otherwise read, on a second setup run, as proof that we installed the
+  # binary (gvisor_config_looks_like_ours) and overwrite their runsc.
+  #   BUT re-validate ownership EVERY run before trusting the marker — the
+  # operator may have replaced their gVisor since (an apt upgrade from the gVisor
+  # repo, or the guide's `wget` + `sudo mv`, can land a differently-owned
+  # binary), and a user-writable root-executed binary is exactly what the check
+  # exists to catch. If it is gone or no longer safe, drop the stale marker and
+  # fall through to the pinned, root-owned install.
   if installed_by_sandbox gvisor-foreign && ! installed_by_sandbox gvisor; then
-    echo "  Reusing the operator's pre-existing gVisor (recorded on an earlier run)." >&2
-    return 0
+    local foreign_runsc
+    foreign_runsc="$(command -v runsc 2>/dev/null || true)"
+    if [[ -n "${foreign_runsc}" ]] && _gvisor_reuse_is_safe "${foreign_runsc}"; then
+      echo "  Reusing the operator's pre-existing gVisor (recorded on an earlier run)." >&2
+      return 0
+    fi
+    echo "  WARNING: the previously-reused operator gVisor is gone or no longer" >&2
+    echo "           root-owned/safe (runsc, its shim, or gvisor-bin/) — installing" >&2
+    echo "           the pinned, root-owned gVisor instead." >&2
+    unmark_installed gvisor-foreign
+    # fall through to the pinned install below
   fi
 
   if command -v runsc &>/dev/null \
@@ -442,14 +457,15 @@ install_gvisor_linux() {
      && ! gvisor_config_looks_like_ours; then
     local existing_runsc
     existing_runsc="$(command -v runsc)"
-    # Only reuse a foreign runsc that is root-owned and not group/other-writable.
-    # runsc runs as root under containerd (its binary path is resolved via PATH;
-    # see config/containerd-config.toml.tmpl, which sets no explicit path), so a
-    # user-writable runsc on PATH is a root-escalation + silent gVisor-bypass
-    # primitive for any host process the operator (or agent-influenced tooling)
-    # runs. The common gVisor install guide `sudo mv`s a user-downloaded binary
-    # into /usr/local/bin, which leaves it user-owned — so this is a real case.
-    if _safe_root_binary "${existing_runsc}"; then
+    # Only reuse a foreign gVisor whose runsc, containerd shim, and gvisor-bin/
+    # sidecars are all root-owned and not group/other-writable. All three run as
+    # root under containerd (runsc's binary path is resolved via PATH; see
+    # config/containerd-config.toml.tmpl, which sets no explicit path), so a
+    # user-writable one is a root-escalation + silent gVisor-bypass primitive for
+    # any host process the operator (or agent-influenced tooling) runs. The
+    # common gVisor install guide `sudo mv`s a user-downloaded binary into
+    # /usr/local/bin, which leaves it user-owned — so this is a real case.
+    if _gvisor_reuse_is_safe "${existing_runsc}"; then
       echo "  WARNING: runsc is already installed ($(runsc --version 2>/dev/null | head -1))" >&2
       echo "           and the sandbox did not install it — reusing it as-is." >&2
       echo "           The sandbox pins gVisor ${SANDBOX_GVISOR_RELEASE:-latest}; a" >&2
@@ -458,10 +474,10 @@ install_gvisor_linux() {
       mark_installed gvisor-foreign "reused operator runsc at ${existing_runsc}"
       return 0
     fi
-    echo "  WARNING: existing runsc (${existing_runsc}) is not root-owned or is" >&2
-    echo "           group/other-writable — reusing it would be a root-escalation /" >&2
-    echo "           gVisor-bypass risk. Installing the pinned, root-owned gVisor" >&2
-    echo "           over it instead." >&2
+    echo "  WARNING: existing runsc (${existing_runsc}), its shim, or gvisor-bin/ is" >&2
+    echo "           not root-owned or is group/other-writable — reusing it would be" >&2
+    echo "           a root-escalation / gVisor-bypass risk. Installing the pinned," >&2
+    echo "           root-owned gVisor over it instead." >&2
     # fall through to the pinned install below
   fi
 
