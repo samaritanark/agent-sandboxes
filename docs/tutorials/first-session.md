@@ -55,8 +55,15 @@ that shell starts in - which may be a repo a sandbox session can write to, not
 this checkout. Expanding the path once, now, pins it to this directory:
 
 ```bash
-printf 'export PATH="%s/bin:$PATH"\n' "$(pwd)" >> ~/.bashrc
-printf 'source %s/bin/completions/sandbox.bash\n' "$(pwd)" >> ~/.bashrc
+# bash (~/.bashrc). %q quotes the path, so a checkout path with spaces is safe.
+printf 'export PATH=%q/bin:"$PATH"\n' "$(pwd)" >> ~/.bashrc
+printf 'source %q/bin/completions/sandbox.bash\n' "$(pwd)" >> ~/.bashrc
+```
+
+```bash
+# zsh (~/.zshrc) — the default macOS shell, which never reads ~/.bashrc.
+printf 'export PATH=%q/bin:"$PATH"\n' "$(pwd)" >> ~/.zshrc
+printf 'source %q/bin/completions/sandbox.zsh\n' "$(pwd)" >> ~/.zshrc
 ```
 
 ## 3. Smoke-test the install
