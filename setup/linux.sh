@@ -508,7 +508,20 @@ install_nerdctl_buildkit_linux() {
 
   local have_builder=false
   if command -v nerdctl &>/dev/null && command -v buildkitd &>/dev/null; then
-    have_builder=true
+    # Only reuse a pre-existing builder whose nerdctl and buildkitd are
+    # root-owned and not group/other-writable — both are run as root (nerdctl
+    # under sudo, buildkitd as a root service with write access to k3s's image
+    # store), so a user-writable copy is a root-escalation primitive. A builder
+    # that fails this bar is not adopted; the pinned, root-owned build plane is
+    # installed instead.
+    if _safe_root_binary "$(command -v nerdctl)" \
+       && _safe_root_binary "$(command -v buildkitd)"; then
+      have_builder=true
+    else
+      echo "  WARNING: an existing nerdctl/buildkitd is not root-owned or is" >&2
+      echo "           group/other-writable; not reusing it. Installing the pinned" >&2
+      echo "           build plane instead." >&2
+    fi
   fi
 
   # Foreign-builder guard. If nerdctl/buildkit are already present but the
@@ -588,18 +601,30 @@ EOF
   # ...) and lib/systemd/system/buildkit.service. It also ships a bundled
   # containerd + containerd.service which we deliberately do NOT enable — k3s
   # runs its own containerd; only buildkit.service is started below.
-  local tmp
+  local tmp asset base_url
+  asset="nerdctl-full-${nerdctl_ver}-linux-${nerdctl_arch}.tar.gz"
+  base_url="https://github.com/containerd/nerdctl/releases/download/v${nerdctl_ver}"
   tmp="$(mktemp -d)"
-  if ! curl -fsSL \
-      "https://github.com/containerd/nerdctl/releases/download/v${nerdctl_ver}/nerdctl-full-${nerdctl_ver}-linux-${nerdctl_arch}.tar.gz" \
-      -o "${tmp}/nerdctl-full.tar.gz"; then
+  if ! curl -fsSL "${base_url}/${asset}"     -o "${tmp}/${asset}" \
+     || ! curl -fsSL "${base_url}/SHA256SUMS" -o "${tmp}/SHA256SUMS"; then
     rm -rf "${tmp}"
-    echo "ERROR: failed to download nerdctl-full ${nerdctl_ver} (${nerdctl_arch})." >&2
+    echo "ERROR: failed to download nerdctl-full ${nerdctl_ver} (${nerdctl_arch}) or its checksums." >&2
     echo "       The image build needs nerdctl + buildkit; re-run 'sandbox install'" >&2
     echo "       once the download can succeed." >&2
     exit 1
   fi
-  sudo tar -C /usr/local -xzf "${tmp}/nerdctl-full.tar.gz"
+  # Verify the tarball against the release's SHA256SUMS before extracting it as
+  # root into /usr/local — the same integrity bar the sandbox already applies to
+  # the gVisor bundle (sha512) and betterleaks (sha256). HTTPS alone is not
+  # enough: the sandbox explicitly supports TLS-intercepting proxies
+  # (tls_intercept_check). sha256_verify reads the "<hash>␠␠<file>" line on stdin
+  # and resolves the filename relative to the working dir, hence the subshell cd.
+  if ! ( cd "${tmp}" && grep " ${asset}\$" SHA256SUMS | sha256_verify ); then
+    rm -rf "${tmp}"
+    echo "ERROR: ${asset} failed SHA256 verification; refusing to install." >&2
+    exit 1
+  fi
+  sudo tar -C /usr/local -xzf "${tmp}/${asset}"
   rm -rf "${tmp}"
 
   sudo systemctl daemon-reload

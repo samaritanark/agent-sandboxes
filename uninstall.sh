@@ -416,7 +416,7 @@ if [[ "${PLATFORM}" == "Linux" ]]; then
   if [[ "${OWN_GVISOR}" == "true" ]]; then
     echo "  • gVisor binaries (/usr/local/bin/runsc, containerd-shim-runsc-v1, gvisor-bin/)"
   else
-    echo "  • (gVisor binaries left in place — not installed by the sandbox)"
+    echo "  • (gVisor binaries left in place — not tracked by an install marker)"
   fi
   echo "  • /etc/containerd/runsc.toml (restored to your original if you had one)"
   if installed_by_sandbox nerdctl-buildkit; then
@@ -666,6 +666,13 @@ if [[ "${PLATFORM}" == "Linux" ]]; then
     ok "Removed: /etc/containerd/runsc.toml"
   else
     skip "/etc/containerd/runsc.toml not written by the sandbox — leaving it."
+  fi
+
+  # If setup recorded that it reused the operator's own runsc (gvisor-foreign),
+  # drop that bookkeeping marker so a future reinstall starts clean. The runsc
+  # binary itself is theirs and is deliberately left untouched.
+  if installed_by_sandbox gvisor-foreign; then
+    unmark_installed gvisor-foreign
   fi
 
   step "Removing nerdctl + buildkit (host image builder)..."

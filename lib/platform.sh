@@ -42,12 +42,51 @@ k3s_bin() {
 # `sudo nerdctl` fails; resolving the absolute path here avoids that divergence.
 # Callers must assign the result before use (`n="$(nerdctl_bin)"`).
 nerdctl_bin() {
-  local p
+  local p found_unsafe=false
   for p in /usr/local/bin/nerdctl /usr/bin/nerdctl; do
-    [[ -x "${p}" ]] && { printf '%s\n' "${p}"; return 0; }
+    [[ -x "${p}" ]] || continue
+    # nerdctl is invoked under sudo (as root). If an unprivileged host process
+    # can replace it, it gains root on the next image build — so refuse to run a
+    # nerdctl that is not root-owned / not group-or-other-writable (see
+    # _safe_root_binary). Skip an unsafe candidate and try the next location.
+    if ! _safe_root_binary "${p}"; then
+      found_unsafe=true
+      continue
+    fi
+    printf '%s\n' "${p}"; return 0
   done
-  echo "ERROR: nerdctl binary not found at /usr/local/bin/nerdctl or /usr/bin/nerdctl." >&2
+  if [[ "${found_unsafe}" == "true" ]]; then
+    echo "ERROR: an existing nerdctl is not root-owned or is group/other-writable;" >&2
+    echo "       refusing to run it as root. Reinstall with 'sandbox install'." >&2
+  else
+    echo "ERROR: nerdctl binary not found at /usr/local/bin/nerdctl or /usr/bin/nerdctl." >&2
+  fi
   return 1
+}
+
+# _safe_root_binary <path> — true only when <path> is a regular file (not a
+# symlink) owned by root and not group/other-writable, AND its parent directory
+# is likewise. runsc, the runsc shim and nerdctl/buildkitd all execute as root
+# (runsc/shim under containerd; nerdctl/buildkitd under sudo), so an unprivileged
+# host process that can replace one gains root on the next sandbox launch/build
+# — and, for runsc, a silent gVisor bypass. Setup refuses to adopt a pre-existing
+# binary that fails this bar. Handles GNU (stat -c) and BSD/macOS (stat -f);
+# called only from Linux paths today, but kept portable since this file is also
+# sourced on macOS.
+_safe_root_binary() {
+  local p="$1" d uid mode
+  [[ -n "${p}" && -f "${p}" && ! -L "${p}" ]] || return 1
+  for d in "${p}" "$(dirname -- "${p}")"; do
+    if uid="$(stat -c '%u' "${d}" 2>/dev/null)"; then
+      mode="$(stat -c '%a' "${d}" 2>/dev/null)"
+    elif uid="$(stat -f '%u' "${d}" 2>/dev/null)"; then
+      mode="$(stat -f '%Lp' "${d}" 2>/dev/null)"
+    else
+      return 1
+    fi
+    [[ "${uid}" == "0" ]] || return 1
+    (( (8#${mode} & 8#022) == 0 )) || return 1
+  done
 }
 
 # pin_k3s_image — mark an imported image as "pinned" in k3s' containerd so the

@@ -427,15 +427,42 @@ install_gvisor_linux() {
   # leaves their gVisor untouched. A gVisor that an OLDER sandbox installed is
   # recognised by its runsc.toml signature and falls through to a clean
   # (re)install + marker backfill below.
+  # If a prior run already recorded that we deliberately reused an operator's
+  # foreign runsc, keep reusing it. Without this, the runsc.toml signature WE
+  # write in configure_containerd_gvisor would read, on a second setup run, as
+  # proof that we installed the binary (gvisor_config_looks_like_ours) — so the
+  # reuse branch below would be skipped and we would overwrite their runsc.
+  if installed_by_sandbox gvisor-foreign && ! installed_by_sandbox gvisor; then
+    echo "  Reusing the operator's pre-existing gVisor (recorded on an earlier run)." >&2
+    return 0
+  fi
+
   if command -v runsc &>/dev/null \
      && ! installed_by_sandbox gvisor \
      && ! gvisor_config_looks_like_ours; then
-    echo "  WARNING: runsc is already installed ($(runsc --version 2>/dev/null | head -1))" >&2
-    echo "           and the sandbox did not install it — reusing it as-is." >&2
-    echo "           The sandbox pins gVisor ${SANDBOX_GVISOR_RELEASE:-latest}; a" >&2
-    echo "           different version may behave differently. 'sandbox uninstall'" >&2
-    echo "           will leave this gVisor in place." >&2
-    return 0
+    local existing_runsc
+    existing_runsc="$(command -v runsc)"
+    # Only reuse a foreign runsc that is root-owned and not group/other-writable.
+    # runsc runs as root under containerd (its binary path is resolved via PATH;
+    # see config/containerd-config.toml.tmpl, which sets no explicit path), so a
+    # user-writable runsc on PATH is a root-escalation + silent gVisor-bypass
+    # primitive for any host process the operator (or agent-influenced tooling)
+    # runs. The common gVisor install guide `sudo mv`s a user-downloaded binary
+    # into /usr/local/bin, which leaves it user-owned — so this is a real case.
+    if _safe_root_binary "${existing_runsc}"; then
+      echo "  WARNING: runsc is already installed ($(runsc --version 2>/dev/null | head -1))" >&2
+      echo "           and the sandbox did not install it — reusing it as-is." >&2
+      echo "           The sandbox pins gVisor ${SANDBOX_GVISOR_RELEASE:-latest}; a" >&2
+      echo "           different version may behave differently. 'sandbox uninstall'" >&2
+      echo "           will leave this gVisor in place." >&2
+      mark_installed gvisor-foreign "reused operator runsc at ${existing_runsc}"
+      return 0
+    fi
+    echo "  WARNING: existing runsc (${existing_runsc}) is not root-owned or is" >&2
+    echo "           group/other-writable — reusing it would be a root-escalation /" >&2
+    echo "           gVisor-bypass risk. Installing the pinned, root-owned gVisor" >&2
+    echo "           over it instead." >&2
+    # fall through to the pinned install below
   fi
 
   local arch
@@ -861,9 +888,12 @@ build_images_linux() {
   # runc), both in the nerdctl-full dir. sudo's secure_path can omit that dir
   # (RHEL/Alma: /sbin:/bin:/usr/sbin:/usr/bin), so run nerdctl with that dir on
   # PATH — resolving nerdctl by absolute path alone is not enough, since nerdctl
-  # would then fail to exec buildctl ("no buildkit host is available").
+  # would then fail to exec buildctl ("no buildkit host is available"). Use a
+  # FIXED PATH rather than appending the caller's ${PATH}: nerdctl runs as root,
+  # so inheriting the engineer's PATH would let root resolve a helper by name
+  # from a user-writable directory (the PATH-under-sudo class from #72/#92).
   local -a nerdctl=(
-    sudo env "PATH=$(dirname "${nerdctl_path}"):${PATH}"
+    sudo env "PATH=$(dirname "${nerdctl_path}"):/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
     "${nerdctl_path}" --address /run/k3s/containerd/containerd.sock --namespace k8s.io
   )
 
