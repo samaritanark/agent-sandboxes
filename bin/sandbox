@@ -2710,16 +2710,6 @@ cmd_rebuild() {
     *) die "Invalid --agent: ${opt_agent} (must be claude, codex, opencode, copilot, grok, shell, base, or all)" ;;
   esac
 
-  # Container builder — match setup/common.sh preference order.
-  local container_cli=""
-  if command -v docker &>/dev/null; then
-    container_cli="docker"
-  elif command -v podman &>/dev/null; then
-    container_cli="podman"
-  else
-    die "Neither docker nor podman found. Install one and retry."
-  fi
-
   local platform
   platform="$(detect_platform)"
   if [[ "${platform}" == "macos" ]]; then
@@ -2728,12 +2718,33 @@ cmd_rebuild() {
     exit 1
   fi
 
+  # Linux: build with nerdctl + buildkit straight into k3s's containerd (set up
+  # by 'sandbox install' — see setup/linux.sh install_nerdctl_buildkit_linux).
+  # No host Docker/Podman and no save|import round-trip.
+  # Absolute nerdctl path for the sudo invocations below: sudo's secure_path may
+  # omit /usr/local/bin (RHEL/Alma), so a bare `sudo nerdctl` would fail even
+  # though nerdctl is installed there. See nerdctl_bin / k3s_bin in lib/platform.sh.
+  local nerdctl_path
+  nerdctl_path="$(nerdctl_bin 2>/dev/null)" \
+    || die "nerdctl not found — run 'sandbox install' (it installs nerdctl + buildkit on Linux)."
+  # `nerdctl build` shells out to its co-located buildctl (and `nerdctl run` to
+  # runc); sudo's secure_path can omit that dir (RHEL/Alma), so run nerdctl with
+  # that dir on PATH — an absolute nerdctl path alone is not enough, since nerdctl
+  # would then fail to exec buildctl ("no buildkit host is available"). Use a
+  # FIXED PATH rather than appending the caller's ${PATH}: nerdctl runs as root,
+  # so inheriting the engineer's PATH would let root resolve a helper by name
+  # from a user-writable directory (the PATH-under-sudo class from #72/#92).
+  local -a nerdctl=(
+    sudo env "PATH=$(dirname "${nerdctl_path}"):/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
+    "${nerdctl_path}" --address /run/k3s/containerd/containerd.sock --namespace k8s.io
+  )
+
   local docker_dir="${SANDBOX_ROOT}/docker"
   mkdir -p "${SANDBOX_LOGS_DIR}"
   local build_log="${SANDBOX_LOGS_DIR}/image-builds.log"
 
   echo "==> Rebuilding sandbox image(s): ${opt_agent}"
-  echo "    Builder:  ${container_cli}"
+  echo "    Builder:  nerdctl + buildkit (into k3s containerd)"
   echo "    No-cache: ${opt_no_cache}"
   echo "    Tier 3:   ${opt_tier3}"
   echo ""
@@ -2749,26 +2760,13 @@ cmd_rebuild() {
       die "Dockerfile not found: ${docker_dir}/${dockerfile}"
     fi
     echo "==> Building ${tag} (${dockerfile})"
-    "${container_cli}" build "${common_flags[@]}" \
+    "${nerdctl[@]}" build "${common_flags[@]}" \
       -t "${tag}" -f "${docker_dir}/${dockerfile}" "$@" "${docker_dir}"
-    _import_to_k3s "${tag}"
-    _record_build "${tag}"
-  }
-
-  _import_to_k3s() {
-    local tag="$1"
-    if [[ "${platform}" != "linux" ]]; then return 0; fi
-    if ! command -v k3s &>/dev/null; then
-      warn "k3s not found — skipping containerd import for ${tag}"
-      return 0
-    fi
-    echo "    Importing ${tag} into k3s containerd..."
-    local k3s
-    k3s="$(k3s_bin)"
-    "${container_cli}" save "${tag}" | sudo "${k3s}" ctr images import -
-    # Re-pin against kubelet image GC: a fresh import resets the label, and these
-    # Never-policy images cannot be re-pulled once evicted. See lib/platform.sh.
+    # Re-pin against kubelet image GC: a fresh build resets the label, and these
+    # Never-policy images cannot be re-pulled once evicted. The build landed
+    # directly in k3s's containerd. Best-effort. See pin_k3s_image in lib/platform.sh.
     pin_k3s_image "${tag}"
+    _record_build "${tag}"
   }
 
   # _record_build <tag> — append version info to image-builds.log
@@ -2787,7 +2785,9 @@ cmd_rebuild() {
 
     local agent_ver="(unknown)"
     if [[ -n "${version_cmd}" ]]; then
-      agent_ver="$("${container_cli}" run --rm --entrypoint sh "${tag}" \
+      # --net none: this throwaway container only runs a --version command, so
+      # skip CNI setup entirely. Graceful: any failure records "(unknown)".
+      agent_ver="$("${nerdctl[@]}" run --rm --net none --entrypoint sh "${tag}" \
                    -c "${version_cmd}" 2>/dev/null | head -1 || echo '(unknown)')"
     fi
     local ts
@@ -3257,6 +3257,20 @@ _upgrade_infra_phase() {
   if ${dry_run}; then
     echo "(dry run — no changes made)"
     return 0
+  fi
+
+  # Operator-managed gVisor guard. When setup only REUSED the operator's own
+  # gVisor (recorded as gvisor-foreign, never gvisor), install_gvisor_linux
+  # deliberately no-ops to avoid overwriting their binary — so 'upgrade --gvisor'
+  # would restart k3s and record the target version while the old gVisor keeps
+  # running every pod. Refuse up front (before any work — matters for --all, so
+  # we don't leave k3s/Cilium upgraded-but-unrecorded) instead of reporting a
+  # phantom upgrade. Marker dir default mirrors SANDBOX_MARKER_DIR (setup/common.sh).
+  if ${do_gvisor}; then
+    local marker_dir="${SANDBOX_MARKER_DIR:-/var/lib/sandbox/install-markers}"
+    if [[ -f "${marker_dir}/gvisor-foreign" && ! -f "${marker_dir}/gvisor" ]]; then
+      die "gVisor here is operator-managed — the sandbox reused your existing runsc and did not install it, so 'upgrade --gvisor' cannot move it. Upgrade it yourself, or 'sudo rm ${marker_dir}/gvisor-foreign' and re-run to install the pinned ${tgt_gvisor}."
+    fi
   fi
 
   # Running-session guard: an upgrade restarts k3s and can blip the Cilium

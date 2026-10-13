@@ -33,6 +33,101 @@ k3s_bin() {
   return 1
 }
 
+# nerdctl_bin — absolute path to the nerdctl binary, for invocations under
+# `sudo`. Same PATH-under-sudo hardening as k3s_bin (and for the same reason):
+# sudo's secure_path may omit /usr/local/bin — seen on RHEL/Alma — so a bare
+# `sudo nerdctl` would fail "command not found" even though the nerdctl-full
+# tarball installs it in /usr/local/bin. A caller's own PATH usually DOES include
+# /usr/local/bin, so a `command -v nerdctl` guard would pass while the later
+# `sudo nerdctl` fails; resolving the absolute path here avoids that divergence.
+# Callers must assign the result before use (`n="$(nerdctl_bin)"`).
+nerdctl_bin() {
+  local p found_unsafe=false
+  for p in /usr/local/bin/nerdctl /usr/bin/nerdctl; do
+    [[ -x "${p}" ]] || continue
+    # nerdctl is invoked under sudo (as root). If an unprivileged host process
+    # can replace it, it gains root on the next image build — so refuse to run a
+    # nerdctl that is not root-owned / not group-or-other-writable (see
+    # _safe_root_binary). Skip an unsafe candidate and try the next location.
+    if ! _safe_root_binary "${p}"; then
+      found_unsafe=true
+      continue
+    fi
+    printf '%s\n' "${p}"; return 0
+  done
+  if [[ "${found_unsafe}" == "true" ]]; then
+    echo "ERROR: nerdctl (or its directory) is not root-owned or is group/other-" >&2
+    echo "       writable; refusing to run it as root. If /usr/local/bin was made" >&2
+    echo "       group-writable, restore it ('sudo chmod go-w /usr/local/bin') —" >&2
+    echo "       reinstalling writes the same files there and would fail the same" >&2
+    echo "       way. Otherwise reinstall with 'sandbox install'." >&2
+  else
+    echo "ERROR: nerdctl binary not found at /usr/local/bin/nerdctl or /usr/bin/nerdctl." >&2
+  fi
+  return 1
+}
+
+# _safe_root_binary <path> — true only when <path> is a regular file (not a
+# symlink) owned by root and not group/other-writable, AND its parent directory
+# is likewise. runsc, the runsc shim and nerdctl/buildkitd all execute as root
+# (runsc/shim under containerd; nerdctl/buildkitd under sudo), so an unprivileged
+# host process that can replace one gains root on the next sandbox launch/build
+# — and, for runsc, a silent gVisor bypass. Setup refuses to adopt a pre-existing
+# binary that fails this bar. Handles GNU (stat -c) and BSD/macOS (stat -f);
+# called only from Linux paths today, but kept portable since this file is also
+# sourced on macOS.
+# _safe_root_path <path> — true when <path> itself is owned by root (uid 0) and
+# not group- or other-writable. No file-type or symlink check (callers add
+# those). Handles GNU (stat -c) and BSD/macOS (stat -f).
+_safe_root_path() {
+  local p="$1" uid mode
+  if uid="$(stat -c '%u' "${p}" 2>/dev/null)"; then
+    mode="$(stat -c '%a' "${p}" 2>/dev/null)"
+  elif uid="$(stat -f '%u' "${p}" 2>/dev/null)"; then
+    mode="$(stat -f '%Lp' "${p}" 2>/dev/null)"
+  else
+    return 1
+  fi
+  [[ "${uid}" == "0" ]] || return 1
+  (( (8#${mode} & 8#022) == 0 ))
+}
+
+_safe_root_binary() {
+  local p="$1"
+  [[ -n "${p}" && -f "${p}" && ! -L "${p}" ]] || return 1
+  _safe_root_path "${p}" && _safe_root_path "$(dirname -- "${p}")"
+}
+
+# _safe_root_dir <dir> — like _safe_root_binary but for a directory and ALL of
+# its contents: the directory and every entry under it must be root-owned and
+# not group/other-writable. Used for the gvisor-bin/ sidecar tree, which runsc
+# exec's as root. A symlink entry's own ownership is checked (not its target),
+# which is what we want.
+_safe_root_dir() {
+  local d="$1" entry
+  [[ -n "${d}" && -d "${d}" && ! -L "${d}" ]] || return 1
+  _safe_root_path "${d}" || return 1
+  while IFS= read -r -d '' entry; do
+    _safe_root_path "${entry}" || return 1
+  done < <(find "${d}" -mindepth 1 -print0 2>/dev/null)
+}
+
+# _gvisor_reuse_is_safe <runsc_path> — true only when a foreign gVisor is safe
+# to run as root: runsc, its containerd shim (if resolvable on PATH), and the
+# gvisor-bin/ sidecar dir next to runsc (if present) are all root-owned and not
+# group/other-writable. All three are exec'd as root under containerd, so any
+# user-writable one is a root-escalation + gVisor-bypass primitive. Setup only
+# adopts — and keeps adopting — a foreign gVisor that passes this bar.
+_gvisor_reuse_is_safe() {
+  local runsc="$1" shim bindir
+  _safe_root_binary "${runsc}" || return 1
+  shim="$(command -v containerd-shim-runsc-v1 2>/dev/null || true)"
+  [[ -n "${shim}" ]] && { _safe_root_binary "${shim}" || return 1; }
+  bindir="$(dirname -- "${runsc}")/gvisor-bin"
+  [[ -d "${bindir}" ]] && { _safe_root_dir "${bindir}" || return 1; }
+  return 0
+}
+
 # pin_k3s_image — mark an imported image as "pinned" in k3s' containerd so the
 # kubelet's image garbage collector never evicts it.
 #
