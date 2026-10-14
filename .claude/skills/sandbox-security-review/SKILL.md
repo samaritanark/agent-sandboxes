@@ -100,9 +100,19 @@ forge** either one. Specifically:
    - Any component on the audit path (the **Cilium agent**, which carries
      Hubble, and the `kubectl exec ds/cilium -- hubble observe` export step —
      NOT hubble-relay, which this platform does not use) must not be the first
-     eviction/OOM victim the agent can trigger — check QoS class and resource
-     requests on **both the memory and the ephemeral-storage axes** (they rank
-     differently; QoS does not rank disk).
+     eviction/OOM victim the agent can trigger. **Check the control that
+     actually applies to each component — it is not always QoS/requests.** The
+     Cilium agent installs with `resources: {}` (so BestEffort by QoS), and what
+     keeps it alive is the chart's **`system-node-critical` priority class**: the
+     kubelet refuses to evict a critical pod, and a node-critical pod's
+     `oom_score_adj` is pinned to -997 *before* QoS is consulted. So for the
+     agent, confirm no change overrides `priorityClassName` or sets
+     `enableCriticalPriorityClass=false` (`tests/test-cilium-install-audit.sh`
+     guards both install paths); reading its QoS/requests would show BestEffort
+     and conclude wrongly. For any OTHER audit component (one with no critical
+     priority class — e.g. a pod this repo adds and relies on), check QoS class
+     and resource requests on **both the memory and the ephemeral-storage axes**
+     (they rank differently; QoS does not rank disk).
    - Any forensic/state artifact written to an **agent-writable location**
      (workspace, agent-home) is **not evidence** — the agent can forge or delete
      it. A trustworthy signal must derive from **operator-side state the agent
@@ -285,7 +295,9 @@ instance.
   hubble-relay as the egress-log channel and added resource requests to protect
   it, but the audit reads the Cilium AGENT's Hubble directly
   (`kubectl exec ds/cilium -- hubble observe`, lib/cluster.sh); relay was never
-  on the path and has since been removed. Trace the actual exporter before
+  on the path and is disabled in the install as of #103 (pre-#103 hosts keep the
+  relay Deployment until setup re-runs, so a live host may still show it). Trace
+  the actual exporter before
   crediting any component with carrying the audit — and when you do check a real
   audit component, QoS/requests rank on the memory and ephemeral-storage axes
   separately (QoS does not rank disk). (Invariant 3.)
