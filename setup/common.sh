@@ -613,26 +613,21 @@ install_cilium_helm() {
   # paths produce identical results for runc pods; gVisor pods only work
   # via the TC path.
   #
-  # hubble.relay.resources.requests: give hubble-relay a memory request so it
-  # runs Burstable rather than BestEffort. hubble-relay aggregates the egress
-  # flow log that is this platform's network audit channel; left BestEffort it
-  # is the kubelet's first OOM/eviction victim under memory pressure, which lets
-  # an in-sandbox agent silence its own egress audit by driving the node toward
-  # OOM. A modest request (well inside the "hubble" share of HOST_RESERVE in
-  # lib/resources.sh) lifts it out of first-victim position on the MEMORY axis.
-  # It does not reorder disk-pressure eviction: the kubelet does not rank pods by
-  # QoS class for ephemeral-storage, and hubble-relay carries no ephemeral-
-  # storage request. See PR #79 finding 4 / issue #80 and PR #92 finding F3.
+  # hubble.relay is DISABLED. This is a single-node cluster, so the Cilium
+  # agent's own Hubble already observes every flow, and the egress audit reads it
+  # directly (`kubectl -n kube-system exec ds/cilium -- hubble observe`, see
+  # export_hubble_flows in lib/cluster.sh). Hubble Relay only aggregates flows
+  # across multiple agents behind one endpoint — nothing in this repo ever dials
+  # it (:4245 is never forwarded or port-forwarded), so it was pure overhead and
+  # carried no audit traffic. hubble.enabled stays TRUE: that is the agent-side
+  # Hubble the audit depends on; only the relay deployment is dropped.
   helm --kubeconfig "${SANDBOX_KUBECONFIG}" upgrade --install cilium cilium/cilium \
     "${cilium_version_args[@]+"${cilium_version_args[@]}"}" \
     --namespace kube-system \
     --set operator.replicas=1 \
-    --set hubble.relay.enabled=true \
+    --set hubble.relay.enabled=false \
     --set hubble.enabled=true \
     --set hubble.metrics.enableOpenMetrics=false \
-    --set hubble.relay.resources.requests.cpu="${SANDBOX_HUBBLE_RELAY_CPU_REQUEST:-50m}" \
-    --set hubble.relay.resources.requests.memory="${SANDBOX_HUBBLE_RELAY_MEM_REQUEST:-128Mi}" \
-    --set hubble.relay.resources.limits.memory="${SANDBOX_HUBBLE_RELAY_MEM_LIMIT:-256Mi}" \
     --set kubeProxyReplacement=true \
     --set k8sServiceHost="127.0.0.1" \
     --set k8sServicePort="${SANDBOX_APISERVER_PORT}" \

@@ -52,14 +52,10 @@ portForwards:
   - guestPort: __APISERVER_PORT__
     hostPort: __APISERVER_PORT__
     hostIP: "127.0.0.1"
-  # Hubble relay
-  - guestPort: 4245
-    hostPort: 4245
-    hostIP: "127.0.0.1"
 
 # No `networks:` block — Lima's default user-mode networking covers the
-# VM's needs: outbound internet for provisioning, plus the host port-forwards
-# declared above for kubectl and Hubble. The `lima: shared` mode would add a
+# VM's needs: outbound internet for provisioning, plus the host port-forward
+# declared above for kubectl. The `lima: shared` mode would add a
 # host<->VM direct-IP interface that nothing here uses, and it requires the
 # sudo-installed socket_vmnet helper on macOS.
 
@@ -175,12 +171,9 @@ provision:
       helm install cilium cilium/cilium ${cilium_version_flag} \
         --namespace kube-system \
         --set operator.replicas=1 \
-        --set hubble.relay.enabled=true \
+        --set hubble.relay.enabled=false \
         --set hubble.enabled=true \
         --set hubble.metrics.enableOpenMetrics=false \
-        --set hubble.relay.resources.requests.cpu=50m \
-        --set hubble.relay.resources.requests.memory=128Mi \
-        --set hubble.relay.resources.limits.memory=256Mi \
         --set kubeProxyReplacement=true \
         --set k8sServiceHost="127.0.0.1" \
         --set k8sServicePort="__APISERVER_PORT__" \
