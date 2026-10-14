@@ -69,8 +69,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN node --version && npm --version
 
 # --- uv (Python package manager) ---
-# Pin to a specific version for reproducibility
-ARG UV_VERSION=0.4.18
+# Pin to a specific version for reproducibility. uv now installs pre-commit
+# from PyPI at build time (below), so keep it current rather than years stale.
+# Tracked by Renovate via the annotation (see renovate.json5 customManagers).
+# renovate: datasource=github-tags depName=astral-sh/uv
+ARG UV_VERSION=0.12.21
 # uv release assets are keyed by `uname -m` (x86_64 / aarch64).
 RUN arch="$(uname -m)" \
   && curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${arch}-unknown-linux-gnu.tar.gz" \
@@ -123,14 +126,29 @@ RUN curl -fsSL https://taskfile.dev/install.sh \
   && task --version
 
 # --- pre-commit ---
-# Installed system-wide (root layer) so the binary is on PATH for the agent
-# user without a per-user install. --break-system-packages is required on
-# Ubuntu 24.04's PEP-668 externally-managed Python; this is a container, so
-# there is no host Python environment to protect. NOTE: pre-commit fetches its
-# hook repos over the network on first run, so a session must allowlist those
-# hosts (GitHub, PyPI, ...) for `pre-commit run` to install hooks — baking in
-# the tool does not widen the per-session egress policy.
-RUN python3 -m pip install --no-cache-dir --break-system-packages pre-commit \
+# Installed via `uv tool` into a world-readable tool dir (/opt/uv-tools) with
+# its launcher symlinked onto the system PATH (/usr/local/bin), so the binary
+# is on PATH for the agent user (uid 1000) without a per-user install. The tool
+# dir must live outside root's home: uv's default (/root/.local/share/uv/tools,
+# mode 0700) is not traversable by the agent user, which would leave the
+# /usr/local/bin symlink dangling. Installing into system site-packages via pip
+# is no longer viable — a recent virtualenv release (a pre-commit dependency)
+# requires packaging>=26.3, and pip refuses to upgrade the apt-provided
+# `packaging` because dpkg-installed packages have no RECORD file. `uv tool`
+# sidesteps this entirely by giving pre-commit its own isolated environment.
+# NOTE: pre-commit fetches its hook repos over the network on first run, so a
+# session must allowlist those hosts (GitHub, PyPI, ...) for `pre-commit run`
+# to install hooks — baking in the tool does not widen the per-session egress
+# policy.
+# SSL_CERT_FILE points uv at the system CA bundle (built by update-ca-certificates
+# from the operator CAs copied in at the top of this file), so this PyPI fetch
+# succeeds behind a corporate TLS-intercepting proxy — uv otherwise uses its own
+# bundled roots and ignores the system store, failing the build for exactly the
+# operators the CA mechanism exists for. UV_NO_CACHE keeps uv's download cache
+# out of the image layer (the pip install this replaced used --no-cache-dir).
+RUN SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt UV_NO_CACHE=1 \
+    UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin \
+      uv tool install pre-commit \
   && pre-commit --version
 
 # --- Create non-root agent user ---
