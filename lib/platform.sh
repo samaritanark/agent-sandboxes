@@ -185,8 +185,11 @@ k3s_images_list() {
     k3s="$(k3s_bin)" || return 1
     # No separate `sudo -n true` probe: the `ctr` call below already fails
     # without prompting when sudo needs a password, so both "no passwordless
-    # sudo" and "ctr failed" map to the same return 1 (→ undeterminable). The
-    # probe only added a redundant auth-failure log line per status/run call.
+    # sudo" and "ctr failed" map to the same return 1 (→ undeterminable).
+    # Dropping the probe saves one COMMAND log line per status/run on
+    # passwordless hosts; a host that needs a password still records one
+    # authentication failure per call (now from `ctr`), which no `sudo -n`
+    # form avoids.
     sudo -n "${k3s}" ctr -n k8s.io images ls -q 2>/dev/null || return 1
   fi
 }
