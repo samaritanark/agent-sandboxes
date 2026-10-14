@@ -21,6 +21,7 @@ TEST_NAME="test-workspace-mount"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 source "${SANDBOX_ROOT}/lib/platform.sh"
+source "${SANDBOX_ROOT}/lib/filesystem.sh"
 
 eq() {
   local label="$1" expected="$2" actual="$3"
@@ -69,11 +70,139 @@ test_vm_base_is_overridable() {
       "$(resolve_workspace_mount ses-1 /Users/dev/repos/myproj)" )
 }
 
+# A throwaway git work tree, so validate_repo_path clears its "must be a git
+# repo" gate and reaches the path checks we care about here.
+_mk_git_repo() {
+  local d; d="$(mktemp -d /tmp/test-vrp-XXXXXX)"
+  git -C "${d}" init -q
+  echo "${d}"
+}
+
+# Run validate_repo_path in a subshell (it exits on refusal) with SANDBOX_ROOT
+# pinned to ${1}; capture stderr in _VRP_OUT and the exit code in _VRP_RC
+# without tripping the script's own errexit.
+_run_vrp() {
+  local root="$1" repo="$2"
+  _VRP_RC=0
+  _VRP_OUT="$( ( export SANDBOX_ROOT="${root}"; validate_repo_path "${repo}" ) 2>&1 )" \
+    || _VRP_RC=$?
+}
+
+test_vrp_accepts_plain_repo() {
+  info "Testing validate_repo_path accepts an ordinary git repo..."
+  local root repo; root="$(_mk_git_repo)"; repo="$(_mk_git_repo)"
+  _run_vrp "${root}" "${repo}"
+  if [[ "${_VRP_RC}" -eq 0 ]]; then
+    pass "ordinary repo accepted"
+  else
+    fail "ordinary repo rejected (rc=${_VRP_RC}): ${_VRP_OUT}"
+  fi
+  rm -rf "${root}" "${repo}"
+}
+
+test_vrp_refuses_sandbox_checkout() {
+  info "Testing validate_repo_path refuses the sandbox checkout itself..."
+  local root; root="$(_mk_git_repo)"
+  _run_vrp "${root}" "${root}"
+  if [[ "${_VRP_RC}" -ne 0 ]] && [[ "${_VRP_OUT}" == *"overlaps agent-sandboxes tooling or state"* ]]; then
+    pass "checkout root refused with the right message"
+  else
+    fail "checkout root not refused (rc=${_VRP_RC}): ${_VRP_OUT}"
+  fi
+  rm -rf "${root}"
+}
+
+test_vrp_refuses_path_under_checkout() {
+  info "Testing validate_repo_path refuses a path UNDER the checkout..."
+  local root; root="$(_mk_git_repo)"
+  mkdir -p "${root}/subdir"   # inside the work tree, so the git-repo gate passes
+  _run_vrp "${root}" "${root}/subdir"
+  if [[ "${_VRP_RC}" -ne 0 ]] && [[ "${_VRP_OUT}" == *"overlaps agent-sandboxes tooling or state"* ]]; then
+    pass "subdir of checkout refused"
+  else
+    fail "subdir of checkout not refused (rc=${_VRP_RC}): ${_VRP_OUT}"
+  fi
+  rm -rf "${root}"
+}
+
+test_vrp_refuses_containing_repo() {
+  info "Testing validate_repo_path refuses a repo that CONTAINS the checkout..."
+  # Workspace is a git repo; the checkout (SANDBOX_ROOT) is a git repo nested
+  # inside it — the monorepo / vendored-checkout layout. Mounting the parent
+  # read-write would still hand the agent the tooling under it.
+  local parent; parent="$(_mk_git_repo)"
+  local root="${parent}/vendor/agent-sandboxes"
+  mkdir -p "${root}"; git -C "${root}" init -q
+  _run_vrp "${root}" "${parent}"
+  if [[ "${_VRP_RC}" -ne 0 ]] && [[ "${_VRP_OUT}" == *"overlaps agent-sandboxes tooling or state"* ]]; then
+    pass "containing repo refused"
+  else
+    fail "containing repo not refused (rc=${_VRP_RC}): ${_VRP_OUT}"
+  fi
+  rm -rf "${parent}"
+}
+
+test_vrp_refuses_sandbox_state_dir() {
+  info "Testing validate_repo_path refuses the .sandbox state dir (config + overlays)..."
+  # Point --repo at a git-tracked \$HOME/.sandbox/overlays/<name>: an overlay can
+  # ship a vetting_trust_root, so agent write access there is a gate bypass.
+  local root home; root="$(_mk_git_repo)"; home="$(mktemp -d /tmp/test-vrp-home-XXXXXX)"
+  local overlay="${home}/.sandbox/overlays/team"
+  mkdir -p "${overlay}"; git -C "${overlay}" init -q
+  _VRP_RC=0
+  _VRP_OUT="$( ( export SANDBOX_ROOT="${root}" HOME="${home}"
+                 validate_repo_path "${overlay}" ) 2>&1 )" || _VRP_RC=$?
+  if [[ "${_VRP_RC}" -ne 0 ]] && [[ "${_VRP_OUT}" == *"overlaps agent-sandboxes tooling or state"* ]]; then
+    pass "overlay clone under .sandbox refused"
+  else
+    fail "overlay clone under .sandbox not refused (rc=${_VRP_RC}): ${_VRP_OUT}"
+  fi
+  rm -rf "${root}" "${home}"
+}
+
+test_vrp_accepts_name_prefix_sibling() {
+  info "Testing validate_repo_path still accepts a name-prefix sibling repo..."
+  # …/agent-sandboxes-fork sits next to the checkout …/agent-sandboxes; the
+  # trailing "/" in the overlap match must keep it from being a false positive.
+  local base; base="$(mktemp -d /tmp/test-vrp-XXXXXX)"
+  local root="${base}/agent-sandboxes" sib="${base}/agent-sandboxes-fork"
+  mkdir -p "${root}" "${sib}"; git -C "${root}" init -q; git -C "${sib}" init -q
+  _run_vrp "${root}" "${sib}"
+  if [[ "${_VRP_RC}" -eq 0 ]]; then
+    pass "name-prefix sibling accepted"
+  else
+    fail "name-prefix sibling wrongly refused (rc=${_VRP_RC}): ${_VRP_OUT}"
+  fi
+  rm -rf "${base}"
+}
+
+test_vrp_refuses_home() {
+  info "Testing validate_repo_path still refuses \$HOME exactly..."
+  local root home; root="$(_mk_git_repo)"; home="$(_mk_git_repo)"
+  # Override HOME so the exact-HOME branch is exercised deterministically.
+  _VRP_RC=0
+  _VRP_OUT="$( ( export SANDBOX_ROOT="${root}" HOME="${home}"
+                 validate_repo_path "${home}" ) 2>&1 )" || _VRP_RC=$?
+  if [[ "${_VRP_RC}" -ne 0 ]] && [[ "${_VRP_OUT}" == *"\$HOME"* ]]; then
+    pass "\$HOME refused"
+  else
+    fail "\$HOME not refused (rc=${_VRP_RC}): ${_VRP_OUT}"
+  fi
+  rm -rf "${root}" "${home}"
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   test_macos_uses_vm_local_per_session
   test_linux_mounts_repo_directly
   test_vm_base_is_overridable
+  test_vrp_accepts_plain_repo
+  test_vrp_refuses_sandbox_checkout
+  test_vrp_refuses_path_under_checkout
+  test_vrp_refuses_containing_repo
+  test_vrp_refuses_sandbox_state_dir
+  test_vrp_accepts_name_prefix_sibling
+  test_vrp_refuses_home
   echo "All ${TEST_NAME} tests passed."
 }
 

@@ -80,6 +80,45 @@ validate_repo_path() {
     echo "ERROR: Cannot use \$HOME as workspace root." >&2
     exit 1
   fi
+
+  # Refuse any workspace that OVERLAPS the agent-sandboxes tooling or its
+  # per-user state. A Tier 2/3 workspace is mounted read-write and is
+  # agent-writable (directly on Linux/WSL, via Mutagen sync on macOS), so an
+  # overlap would let the in-sandbox agent rewrite the code, config, or trust
+  # state that runs the NEXT session:
+  #   * SANDBOX_ROOT — the checkout: bin/sandbox, lib/, .claude/skills/**.
+  #   * ~/.sandbox   — per-user state: config.yaml, vetting/allowed_signers,
+  #                    and the managed overlay clones under overlays/ (an overlay
+  #                    can ship a vetting_trust_root, so writing it is a vetting
+  #                    gate bypass).
+  #   * the resolved overlay path — in case LINK_OVERLAYS_DIR relocates it
+  #                    outside ~/.sandbox.
+  # Overlap is checked in BOTH directions: the workspace being the protected
+  # path or under it, AND the protected path being UNDER the workspace (a
+  # containing monorepo / vendored or submoduled checkout). The trailing "/" in
+  # the prefix match keeps a name-prefix sibling (…/agent-sandboxes-fork next to
+  # …/agent-sandboxes) from being refused. Same guard class as the credential
+  # dirs above: it protects against an accidental --repo choice, not a hostile
+  # operator.
+  local -a protected=()
+  [[ -n "${SANDBOX_ROOT:-}" ]] && protected+=("${SANDBOX_ROOT}")
+  protected+=("${HOME}/.sandbox")
+  if declare -F resolve_overlay_path >/dev/null; then
+    local ov; ov="$(resolve_overlay_path 2>/dev/null || true)"
+    [[ -n "${ov}" ]] && protected+=("${ov}")
+  fi
+  local p real_p
+  for p in "${protected[@]}"; do
+    real_p="$(realpath "${p}" 2>/dev/null || echo "${p}")"
+    if [[ "${real_repo}" == "${real_p}" ]] || \
+       [[ "${real_repo}" == "${real_p}/"* ]] || \
+       [[ "${real_p}" == "${real_repo}/"* ]]; then
+      echo "ERROR: Workspace ${repo} overlaps agent-sandboxes tooling or state: ${p}" >&2
+      echo "  Mounting it into a pod would give the in-sandbox agent write access" >&2
+      echo "  to code or config that runs the next session. Use a separate repo." >&2
+      exit 1
+    fi
+  done
 }
 
 # workspace_prescan — scan workspace for sensitive files before session
