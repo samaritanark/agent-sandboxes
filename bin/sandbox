@@ -1709,6 +1709,11 @@ cmd_run() {
 # literal "absent" when the pod object is gone.
 _teardown_reminder_reason() {
   local end_time="$1" pod_phase="$2" age="$3" grace="$4"
+  # Defense in depth: grace reaches bash arithmetic below, where a non-numeric
+  # value would be evaluated as an expression (and under `set -u` could even
+  # abort cmd_list). Direct callers (tests) land here too, so validate here as
+  # well as at the read site in warn_untorndown_sessions.
+  [[ "${grace}" =~ ^[0-9]+$ ]] || grace=120
   # A recorded end_time means cmd_stop ran: a clean stop, or an abnormal end it
   # already captured (end_reason) and whose Secrets it already revoked. Nothing
   # to nag about either way.
@@ -1730,8 +1735,10 @@ _teardown_reminder_reason() {
       echo "pod gone with no recorded teardown"
       ;;
     *)
-      # Running/Pending/Succeeded/Unknown: a healthy, launching, or detached
-      # --keep-alive session. Not a teardown gap — never flag it.
+      # Running/Pending/Succeeded, or an existing pod whose phase we couldn't
+      # read: a healthy, launching, or detached --keep-alive session. Not a
+      # teardown gap — never flag it. (Unknown is deprecated upstream and is no
+      # longer produced now the per-pod query distinguishes absent from error.)
       :
       ;;
   esac
@@ -1750,7 +1757,13 @@ _session_json_age_seconds() {
     mtime="$(stat -c %Y "${f}" 2>/dev/null || echo "${now}")"
   fi
   [[ "${mtime}" =~ ^[0-9]+$ ]] || mtime="${now}"
-  echo $(( now - mtime ))
+  local age=$(( now - mtime ))
+  # A session.json mtime in the future (clock skew, a restored/copied tree)
+  # yields a negative age, which fails the digits-only guard at the absent-pod
+  # check and would flip "fails safe → fresh" into a spurious "pod gone". Clamp
+  # to 0 (fresh) so the suppression window still applies.
+  (( age < 0 )) && age=0
+  echo "${age}"
 }
 
 # warn_untorndown_sessions — after the session table, remind the operator (on
@@ -1767,7 +1780,12 @@ warn_untorndown_sessions() {
   # list, so stay silent rather than cry wolf.
   kubectl get pods -n "${SANDBOX_NAMESPACE}" &>/dev/null 2>&1 || return 0
   local grace="${SANDBOX_TEARDOWN_REMINDER_GRACE:-120}"
-  local session_dir sid session_json end_time pod_name pod_phase age reason
+  # SANDBOX_TEARDOWN_REMINDER_GRACE (operator env, seconds) is the launch-window
+  # suppression; set it large to effectively disable the reminder. Validate
+  # before it reaches arithmetic in _teardown_reminder_reason — a non-numeric
+  # value must fall back to the default, not abort cmd_list under `set -u`.
+  [[ "${grace}" =~ ^[0-9]+$ ]] || grace=120
+  local session_dir sid session_json end_time pod_name pod_phase phase_out age reason
   for session_dir in "${SANDBOX_LOGS_DIR}"/ses-*/; do
     [[ -d "${session_dir}" ]] || continue
     session_json="${session_dir}/session.json"
@@ -1775,16 +1793,29 @@ warn_untorndown_sessions() {
     end_time="$(jq -r '.end_time // ""' "${session_json}" 2>/dev/null || echo "")"
     # Fast path: a stamped session is settled — skip before touching the cluster.
     [[ -n "${end_time}" && "${end_time}" != "null" ]] && continue
-    pod_name="$(jq -r '.pod_name // ""' "${session_json}" 2>/dev/null || echo "")"
-    [[ -n "${pod_name}" ]] || continue
-    if kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" &>/dev/null 2>&1; then
-      pod_phase="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
-        -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")"
-    else
+    sid="$(basename "${session_dir}")"
+    # Resolve the pod name the SAME way cmd_stop does (resolve_pod_name), so the
+    # oldest records — written before pod_name was added to the schema — are
+    # checked via the sandbox-<id> fallback instead of silently skipped. Those
+    # are the likeliest real orphans.
+    pod_name="$(resolve_pod_name "${sid}")"
+    # One query, three outcomes:
+    #   exit != 0           → an API error on THIS object (RBAC denial, throttle,
+    #                         dropped connection). Say nothing rather than claim
+    #                         the pod is gone and send the operator to 'sandbox
+    #                         stop' a live session on a false alarm.
+    #   exit 0, empty        → not found: genuinely absent / torn down.
+    #   exit 0, "Pod:<phase>" → exists; <phase> is "" if not set yet.
+    if ! phase_out="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+         --ignore-not-found=true -o jsonpath='{.kind}:{.status.phase}' 2>/dev/null)"; then
+      continue
+    fi
+    if [[ -z "${phase_out}" ]]; then
       pod_phase="absent"
+    else
+      pod_phase="${phase_out#Pod:}"
     fi
     age="$(_session_json_age_seconds "${session_json}")"
-    sid="$(basename "${session_dir}")"
     reason="$(_teardown_reminder_reason "${end_time}" "${pod_phase}" "${age}" "${grace}")"
     [[ -n "${reason}" ]] && \
       warn "session ${sid} ended without teardown (${reason}); run 'sandbox stop ${sid}' to revoke its credentials."
