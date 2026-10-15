@@ -144,6 +144,144 @@ validate_repo_path() {
   done
 }
 
+# _git_stat_inode <path> — portable inode number (GNU stat -c / BSD stat -f).
+# Empty on failure.
+_git_stat_inode() {
+  local p="$1" ino
+  if ino="$(stat -c '%i' "${p}" 2>/dev/null)"; then
+    printf '%s' "${ino}"
+  elif ino="$(stat -f '%i' "${p}" 2>/dev/null)"; then
+    printf '%s' "${ino}"
+  fi
+}
+
+# _git_modules_hash <repo> — one SHA-256 over the contents of every submodule
+# repository config, hook, AND commondir file under <repo>/.git/modules, each
+# prefixed by its repo-relative path. These live OUTSIDE the read-only workspace
+# mounts: .git/modules/<name>/config is a submodule's own repo config, read when
+# a top-level `git status` walks into the submodule, so core.fsmonitor (or any
+# other exec setting) planted there runs on the host (F7 route 2). A submodule
+# gitdir also honors its own `commondir`, which can redirect config+hooks to a
+# dir OUTSIDE .git/modules (so the config-only hash would miss it) — hashing the
+# commondir file itself means planting that redirect still changes the hash.
+# "none" when there is no .git/modules tree. Recorded at launch and re-compared
+# on resume/stop/status to catch a change the mounts cannot prevent.
+_git_modules_hash() {
+  local repo="$1"
+  local base="${repo}/.git/modules"
+  [[ -d "${base}" ]] || { printf 'none'; return 0; }
+  local f out=""
+  while IFS= read -r f; do
+    [[ -n "${f}" ]] || continue
+    out+="${f#"${repo}/"}:$(_leakscan_sha256 "${f}")
+"
+  done < <(find "${base}" -type f \( -name config -o -name commondir -o -path '*/hooks/*' \) 2>/dev/null | LC_ALL=C sort)
+  [[ -n "${out}" ]] || { printf 'none'; return 0; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "${out}" | sha256sum | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "${out}" | shasum -a 256 | awk '{print $1}'
+  else
+    printf 'unhashable'
+  fi
+}
+
+# workspace_git_fingerprint <repo> — emit a compact JSON object capturing the
+# launch-time identity of <repo>'s git directory, for the host-exec check to
+# compare against later: the inode of `.git` (so a wholesale replacement —
+# `mv .git .git-old && mkdir .git`, F7 route 4 — is detectable even though the
+# mounts leave `.git` itself writable) and a hash over the submodule configs and
+# hooks (F7 route 2). Recorded in session.json at launch by cmd_run.
+workspace_git_fingerprint() {
+  local repo="$1"
+  local gitpath="${repo}/.git" ino="" mh="none"
+  if [[ -e "${gitpath}" ]]; then
+    ino="$(_git_stat_inode "${gitpath}")"
+    mh="$(_git_modules_hash "${repo}")"
+  fi
+  jq -c -n --arg ino "${ino}" --arg mh "${mh}" '{inode: $ino, modules_hash: $mh}'
+}
+
+# workspace_git_exec_check <repo> [<inode_at_launch>] [<modules_hash_at_launch>]
+#
+# Detect host-code-execution redirects an in-sandbox Tier 2/3 agent can plant
+# inside its WRITABLE workspace that the read-only .git/config + .git/hooks
+# mounts do NOT cover. git reads config and hooks from several places other than
+# those two mounted paths, and each fires on the operator's next routine
+# `git status` / `git commit` — on the HOST, as the operator, outside gVisor and
+# default-deny egress. The mount approach provably cannot close this: the agent
+# needs a writable `.git` to commit, and every route rides on a writable part of
+# it. So detection (here) is the host-side backstop. Routes (confirmed at launch
+# against git 2.52):
+#   1. .git/commondir            — redirects $GIT_COMMON_DIR, so config+hooks are
+#                                   read from an agent-controlled directory. A
+#                                   normal top-level clone never has this file
+#                                   (linked worktrees do, but there .git is a
+#                                   FILE, excluded by the -d guard below).
+#   2. .git/modules/<n>/config   — a submodule's own repo config/hooks, changed
+#                                   since launch (modules_hash drift).
+#   3. a nested .git elsewhere   — a second repo planted in a tracked subdir, or
+#                                   a .git pointer file aimed outside .git/modules.
+#   4. a replaced .git directory — inode differs from the one recorded at launch.
+#
+# Prints one indented line per hit on stdout and returns the hit count (0 =
+# clean). Read-only / warn-safe: it never writes to the workspace.
+workspace_git_exec_check() {
+  local repo="$1" want_ino="${2:-}" want_mh="${3:-}"
+  local bad=0 ino mh p rel
+
+  if [[ -d "${repo}/.git" ]]; then
+    # Route 1: commondir redirect (only meaningful when .git is a real dir).
+    if [[ -e "${repo}/.git/commondir" ]]; then
+      echo "  .git/commondir present - redirects git's config and hooks to another directory"
+      bad=$((bad + 1))
+    fi
+    # Route 4: .git replaced since launch.
+    if [[ -n "${want_ino}" ]]; then
+      ino="$(_git_stat_inode "${repo}/.git")"
+      if [[ -n "${ino}" && "${ino}" != "${want_ino}" ]]; then
+        echo "  .git directory was replaced since launch (inode ${want_ino} -> ${ino})"
+        bad=$((bad + 1))
+      fi
+    else
+      # No launch baseline (a session recorded before this check existed): a
+      # wholesale `.git` replacement cannot be verified, so flag it as unverified
+      # rather than pass silently — mirrors the no-baseline submodule branch below.
+      echo "  .git integrity baseline missing (pre-upgrade session); a .git replacement cannot be verified"
+      bad=$((bad + 1))
+    fi
+  fi
+
+  # Route 2: submodule config/hooks changed since launch.
+  if [[ -n "${want_mh}" && "${want_mh}" != "none" ]]; then
+    mh="$(_git_modules_hash "${repo}")"
+    if [[ "${mh}" != "${want_mh}" ]]; then
+      echo "  .git/modules/* config or hooks changed since launch (submodule repo config is a host-exec vector)"
+      bad=$((bad + 1))
+    fi
+  elif [[ -z "${want_mh}" && -d "${repo}/.git/modules" ]]; then
+    # No launch baseline (a session recorded before this check existed): drift
+    # cannot be proven, so flag the submodule configs as unverified rather than
+    # pass them silently.
+    echo "  .git/modules/* present but no launch baseline to compare (submodule config is an unchecked host-exec vector)"
+    bad=$((bad + 1))
+  fi
+
+  # Route 3: a nested .git anywhere other than the top-level one.
+  while IFS= read -r -d '' p; do
+    rel="${p#"${repo}/"}"
+    if [[ -d "${p}" ]]; then
+      echo "  nested git repository: ${rel} (its config/hooks run when git is invoked from there)"
+      bad=$((bad + 1))
+    elif ! grep -qE '^gitdir: (\.\./)*\.git/modules/' "${p}" 2>/dev/null; then
+      echo "  nested .git pointer outside .git/modules: ${rel}"
+      bad=$((bad + 1))
+    fi
+  done < <(find "${repo}" -mindepth 2 -name .git -not -path "${repo}/.git/*" -print0 2>/dev/null)
+
+  return "${bad}"
+}
+
 # workspace_prescan — scan workspace for sensitive files before session
 workspace_prescan() {
   local workspace="$1"
