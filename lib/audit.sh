@@ -126,6 +126,11 @@ audit_write_session_json() {
   #     so cmd_stop's issuer-side revoke reminders key off the record rather
   #     than off live Secret existence, which the pod-delete GC races (PR #93
   #     P1). Empty (→ false) for Tier 1/2.
+  #   SESSION_REPO_GIT_FINGERPRINTS — JSON object mapping each Tier 2/3 repo
+  #     path to its launch-time git fingerprint ({inode, modules_hash}, from
+  #     workspace_git_fingerprint), so resume/stop/status can detect a git
+  #     host-exec redirect the read-only .git mounts can't prevent (F7 routes
+  #     2 and 4). Empty (→ {}) for Tier 1 / no-repo sessions.
   jq -n \
     --arg id "${session_id}" \
     --arg agent "${agent}" \
@@ -146,6 +151,7 @@ audit_write_session_json() {
     --arg kube_host_entity "${SESSION_KUBE_HOST_ENTITY:-}" \
     --arg infra_token "${SESSION_INFRA_TOKEN:-}" \
     --arg infra_kubeconfig "${SESSION_INFRA_KUBECONFIG:-}" \
+    --arg repo_git_fingerprints "${SESSION_REPO_GIT_FINGERPRINTS:-}" \
     '{
       id: $id,
       agent: $agent,
@@ -166,6 +172,7 @@ audit_write_session_json() {
       kube_host_entity: $kube_host_entity,
       infra_token: ($infra_token != ""),
       infra_kubeconfig: ($infra_kubeconfig != ""),
+      repo_git_fingerprints: (if $repo_git_fingerprints == "" then {} else ($repo_git_fingerprints | fromjson) end),
       allowed_domains: $domains,
       retention_days: $retention_days
     }' > "${log_dir}/session.json"

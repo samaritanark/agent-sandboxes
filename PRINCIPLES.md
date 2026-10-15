@@ -234,15 +234,56 @@ The sandbox enforces three filesystem rules:
    on the hostPath workspace, the agent would otherwise be able to rewrite
    them and get host code execution as the operator the next time they run
    git or open the repo. Each is bind-mounted **read-only** so the agent
-   cannot modify it. The coverage is "when present": a path that exists at
-   launch is protected, but one that is *absent* at launch is not created
-   (a read-only hostPath cannot shadow a missing file, and creating it would
-   write into the operator's repo), so the agent can still introduce a *new*
-   `.gitmodules` / `.vscode/` / `.idea/` / `.devcontainer/` — which matters
-   only on a deliberate operator action (opening the repo in an IDE,
-   reopening in a devcontainer, or running a submodule command). `.git/config`
-   and `.git/hooks/` exist in every real checkout, so the routine git vectors
-   are always covered.
+   cannot modify it.
+
+   These mounts block modification of the *existing* `.git/config` and
+   `.git/hooks/` (and the listed IDE directories) **only** — they are not a
+   complete seal on git host-exec, and must not be read as one. The rest of
+   `.git` stays writable (the agent needs it to commit), and git reads
+   configuration and hooks from several places these mounts do not cover.
+   The following remain **open**, and each fires on the operator's next
+   routine `git status` / `git commit` on the host:
+
+   - **`.git/commondir`** — one line redirects `$GIT_COMMON_DIR`, so config
+     and hooks are then read from an agent-controlled directory inside `.git`.
+   - **`.git/modules/<name>/config`** (and its hooks) — a submodule's own
+     repository config, read when a top-level `git status` walks into the
+     submodule. Any repo with submodules is exposed.
+   - **a nested `.git`** planted in a tracked subdirectory — git discovers it
+     when run from that subdirectory.
+   - **replacing `.git` wholesale** — `.git` itself is not a mount point (only
+     its children are), so the agent can `mv .git .git-old` and create a fresh
+     one with any config and hooks.
+
+   Two residuals compound this. First, the IDE/`.gitmodules` coverage is
+   "when present": a path *absent* at launch is not created (a read-only
+   hostPath cannot shadow a missing file, and creating it would write into the
+   operator's repo), so the agent can still introduce a *new* `.gitmodules` /
+   `.vscode/` / `.idea/` / `.devcontainer/` — which lands whenever the operator
+   opens the repo in an editor that trusts the folder, or runs a submodule
+   command. (VS Code's `task.allowAutomaticTasks` defaults to off, which keeps
+   the main IDE autorun path closed unless the operator enabled it.)
+
+   Because the mount approach cannot close these on its own, a **host-side
+   check** (`workspace_git_exec_check`) is the control: it flags the redirects
+   above — recording each repo's `.git` inode and a hash over its submodule
+   gitdirs' config, hooks, and `commondir` at launch, so a `.git` replacement or
+   a submodule-gitdir change is detectable for any session launched with that
+   baseline (a pre-upgrade session that has none is flagged as unverifiable, not
+   passed) — and runs on `sandbox status` and `sandbox stop` (warn, on the frozen
+   workspace after the pod is torn down), and on `sandbox resume` (refuse to
+   relaunch unless the operator passes `--i-accept-git-exec-vectors`).
+   This is detection, not prevention, and that is a deliberate choice: fully
+   closing the vector would mean isolating the agent from the operator's live
+   `.git` — working against a materialized copy and returning changes as a
+   reviewed diff — and that friction is not worth it for the Tier 2/3
+   live-editing workflow these repos exist to support. So these routes stay
+   open by design, and the host-side check plus the operator's review of what it
+   flags is the accepted mitigation. Note also that because `.git/config`
+   is read-only in the pod, agent git commands that rewrite it (`git remote
+   add`, `git push -u`, `git config`) fail with "Device or resource busy" —
+   expected, not a bug; the agent should set remotes before launch or push to
+   an already-configured upstream.
 
    The built-in set is extensible per-repo: `sandbox mask add --repo
    <PATH> <RELPATH>` records additional paths (including nested ones)

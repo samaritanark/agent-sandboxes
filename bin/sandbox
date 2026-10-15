@@ -1378,6 +1378,23 @@ cmd_run() {
   [[ "${#opt_infra_kubeconfigs[@]}" -gt 0 ]] && SESSION_INFRA_KUBECONFIG="1"
   export SESSION_INFRA_TOKEN SESSION_INFRA_KUBECONFIG
 
+  # Record each repo's launch-time git fingerprint (.git inode + submodule
+  # config/hook hash) so resume/stop/status can later detect a git host-exec
+  # redirect the read-only .git mounts can't prevent (F7 routes 2 and 4; routes
+  # 1 and 3 need no baseline). Captured now, before the agent has run, so it is a
+  # clean reference. Tier 2/3 with repos only; empty (→ {}) otherwise.
+  SESSION_REPO_GIT_FINGERPRINTS=""
+  if [[ "${opt_tier}" -ge 2 ]] && [[ "${#opt_repos[@]}" -gt 0 ]]; then
+    local _fp_json="{}" _r_fp
+    for _r_fp in "${opt_repos[@]}"; do
+      _fp_json="$(jq -c --arg p "${_r_fp}" \
+        --argjson fp "$(workspace_git_fingerprint "${_r_fp}")" \
+        '. + {($p): $fp}' <<<"${_fp_json}")"
+    done
+    SESSION_REPO_GIT_FINGERPRINTS="${_fp_json}"
+  fi
+  export SESSION_REPO_GIT_FINGERPRINTS
+
   audit_write_session_json \
     "${log_dir}" \
     "${session_id}" \
@@ -2162,6 +2179,21 @@ cmd_stop() {
     teardown_workspace_sync "${session_id}"
     echo "==> Capturing workspace diff..."
     capture_workspace_diff "${log_dir}" "${repos[@]}"
+    # Warn (never block teardown) if the agent planted a git host-exec redirect
+    # the read-only .git mounts don't cover (F7). Runs HERE — after the pod delete
+    # (containment) and the macOS sync flush — so it reads the FROZEN final
+    # workspace the operator will next run git against, with no agent still able to
+    # alter it, and never ahead of the containment action. Surfaces the risk right
+    # before the operator returns to the repo on the host.
+    local _gs_r _gs_hits
+    for _gs_r in "${repos[@]}"; do
+      [[ -d "${_gs_r}" ]] || continue
+      if ! _gs_hits="$(_git_exec_check_repo "${session_json}" "${_gs_r}" 2>/dev/null)"; then
+        warn "workspace ${_gs_r} has git host-exec redirect(s) the read-only .git mounts do not cover:"
+        echo "${_gs_hits}" >&2
+        echo "  Inspect before running git in this repo on the host. See PRINCIPLES.md 'Filesystem isolation'." >&2
+      fi
+    done
   fi
 
   # Capture the agent conversation transcript into the session log directory.
@@ -2299,6 +2331,20 @@ _resume_guide_command() {
   echo "${cmd}"
 }
 
+# _git_exec_check_repo <session_json> <repo> — run workspace_git_exec_check for
+# one repo, reading its launch-time fingerprint (inode + submodule-config hash)
+# out of <session_json>'s .repo_git_fingerprints map so routes 2 and 4 can be
+# detected (routes 1 and 3 need no baseline). Echoes each finding and returns the
+# hit count (0 = clean), so callers can branch with `if _git_exec_check_repo ...`.
+_git_exec_check_repo() {
+  local session_json="$1" repo="$2" ino="" mh=""
+  if [[ -f "${session_json}" ]]; then
+    ino="$(jq -r --arg p "${repo}" '.repo_git_fingerprints[$p].inode // ""' "${session_json}" 2>/dev/null || echo "")"
+    mh="$(jq -r --arg p "${repo}" '.repo_git_fingerprints[$p].modules_hash // ""' "${session_json}" 2>/dev/null || echo "")"
+  fi
+  workspace_git_exec_check "${repo}" "${ino}" "${mh}"
+}
+
 # recreate_session_pod <session_id> — rebuild and apply the policy + pod for a
 # torn-down session from the non-secret state in session.json, leaving the pod
 # Running and ready to attach. Only called after _resume_recreate_blocker clears
@@ -2315,6 +2361,7 @@ recreate_session_pod() {
   local accept_unmasked_secrets="${2:-false}"
   local accept_unvetted_repo="${3:-false}"
   local accept_vetting_drift="${4:-false}"
+  local accept_git_exec_vectors="${5:-false}"
   local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
   local sj="${log_dir}/session.json"
   local pod_name
@@ -2353,8 +2400,37 @@ recreate_session_pod() {
     echo "==> Re-checking workspace gates before recreate..."
     local _r
     for _r in "${repos[@]}"; do
+      # F11: resume must apply the SAME path gate a fresh 'sandbox run' does.
+      # cmd_run calls validate_repo_path per repo; recreate did not, so a session
+      # recorded before a tightening of those rules (e.g. the F8 refusal of the
+      # agent-sandboxes checkout as a workspace) would relaunch unchecked. The
+      # other rules were enforced at creation, but re-asserting is cheap and keeps
+      # resume honest about "never relaunch what run would refuse".
+      validate_repo_path "${_r}"
       workspace_prescan "${_r}"
     done
+    # Refuse to relaunch into a workspace the agent booby-trapped with a git
+    # host-exec redirect the read-only .git mounts don't cover (F7). Unlike stop,
+    # resume puts the operator back to work in this repo, so fail closed unless
+    # explicitly waived — mirroring the vetting/secret gates. The waiver is
+    # recorded as an override so the session log names it.
+    local _gv_hits _gv_hit=0 _gvr
+    for _gvr in "${repos[@]}"; do
+      if ! _gv_hits="$(_git_exec_check_repo "${sj}" "${_gvr}")"; then
+        warn "workspace ${_gvr} has git host-exec redirect(s) the read-only .git mounts do not cover:"
+        echo "${_gv_hits}" >&2
+        _gv_hit=1
+      fi
+    done
+    if [[ "${_gv_hit}" -eq 1 ]]; then
+      if [[ "${accept_git_exec_vectors}" == "true" ]]; then
+        record_override "flag:--i-accept-git-exec-vectors" \
+          "git host-exec redirect in workspace" "${repos[@]}"
+        warn "proceeding despite git host-exec redirect(s) (--i-accept-git-exec-vectors)."
+      else
+        die "Refusing to resume: a git host-exec redirect was found in the workspace. Inspect and remove it (see the lines above), or re-run with --i-accept-git-exec-vectors. See PRINCIPLES.md 'Filesystem isolation'."
+      fi
+    fi
     check_masking_paths "${repos[@]}"
     vetting_gate_repos "$(resolve_vetting_posture)" "${accept_unvetted_repo}" "${accept_vetting_drift}" "${repos[@]}"
     local _endpoint _endpoint_trusted="false"
@@ -2419,6 +2495,7 @@ cmd_resume() {
   local opt_accept_unmasked_secrets="false"
   local opt_accept_unvetted_repo="false"
   local opt_accept_vetting_drift="false"
+  local opt_accept_git_exec_vectors="false"
   local session_id=""
 
   while [[ $# -gt 0 ]]; do
@@ -2427,10 +2504,11 @@ cmd_resume() {
       --i-accept-unmasked-secrets) opt_accept_unmasked_secrets="true" ;;
       --i-accept-unvetted-repo)    opt_accept_unvetted_repo="true" ;;
       --i-accept-vetting-drift)    opt_accept_vetting_drift="true" ;;
+      --i-accept-git-exec-vectors) opt_accept_git_exec_vectors="true" ;;
       --help|-h)
         echo "Usage: sandbox resume <SESSION_ID> [--keep-alive]"
         echo "                      [--i-accept-unmasked-secrets] [--i-accept-unvetted-repo]"
-        echo "                      [--i-accept-vetting-drift]"
+        echo "                      [--i-accept-vetting-drift] [--i-accept-git-exec-vectors]"
         echo ""
         echo "Reconnects to a session. If its pod is still running, re-attaches."
         echo "If the pod was torn down, recreates it from the recorded session"
@@ -2441,6 +2519,10 @@ cmd_resume() {
         echo "repo (the agent may have changed it since launch). The --i-accept-*"
         echo "flags waive a gate exactly as on 'sandbox run' — so a session launched"
         echo "with a waiver can be resumed — while the default still fails closed."
+        echo "--i-accept-git-exec-vectors waives the git host-exec check, which"
+        echo "refuses to resume when the agent planted a git config/hooks redirect"
+        echo "(e.g. .git/commondir, a nested .git, a changed submodule config, or a"
+        echo "replaced .git) that would run on the host on your next 'git status'."
         echo "Each waiver used is recorded in the session's audit log."
         exit 0 ;;
       -*)           die "Unknown option: $1" ;;
@@ -2489,7 +2571,8 @@ cmd_resume() {
     fi
     ensure_cluster_ready
     recreate_session_pod "${session_id}" \
-      "${opt_accept_unmasked_secrets}" "${opt_accept_unvetted_repo}" "${opt_accept_vetting_drift}"
+      "${opt_accept_unmasked_secrets}" "${opt_accept_unvetted_repo}" "${opt_accept_vetting_drift}" \
+      "${opt_accept_git_exec_vectors}"
   else
     local pod_phase
     pod_phase="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
@@ -2710,6 +2793,43 @@ infra_version_line() {
     "${label}:" "${pinned:--}" "${installed:--}" "${note}"
 }
 
+# _status_git_exec_scan — warn about git host-exec redirects (F7) in the live
+# workspaces of active (un-ended) Tier 2/3 sessions. Read-only; a section of
+# cmd_status so an operator sees a planted redirect before running git on the
+# host. Enumerates session dirs the same way the teardown reminder does.
+_status_git_exec_scan() {
+  local any=0 session_dir sj end_time tier _r _hits
+  for session_dir in "${SANDBOX_LOGS_DIR}"/ses-*/; do
+    [[ -d "${session_dir}" ]] || continue
+    sj="${session_dir%/}/session.json"
+    [[ -f "${sj}" ]] || continue
+    end_time="$(jq -r '.end_time // ""' "${sj}" 2>/dev/null || echo "")"
+    [[ -n "${end_time}" && "${end_time}" != "null" ]] && continue
+    tier="$(jq -r '.tier // 1' "${sj}" 2>/dev/null || echo 1)"
+    [[ "${tier}" -ge 2 ]] || continue
+    local -a _repos=()
+    read_into_array _repos < <(jq -r '.repos[]? // empty' "${sj}" 2>/dev/null || true)
+    [[ "${#_repos[@]}" -gt 0 ]] || continue
+    for _r in "${_repos[@]}"; do
+      [[ -d "${_r}" ]] || continue
+      if ! _hits="$(_git_exec_check_repo "${sj}" "${_r}" 2>/dev/null)"; then
+        if [[ "${any}" -eq 0 ]]; then
+          echo "Workspace git-exec check:"
+          any=1
+        fi
+        echo "  ${C_YELLOW}$(basename "${session_dir%/}")${C_RESET} ${_r}"
+        echo "${_hits}"
+      fi
+    done
+  done
+  if [[ "${any}" -eq 1 ]]; then
+    echo "  (inspect before running git in these repos on the host; see PRINCIPLES.md)"
+  else
+    echo "Workspace git-exec check: $(c_ok "no redirects in active Tier 2/3 workspaces")"
+  fi
+  echo ""
+}
+
 cmd_status() {
   echo "=== Sandbox Status ==="
   echo ""
@@ -2832,6 +2952,9 @@ EOF
       echo "  Fix: run 'sandbox rebuild --agent all' (needs Docker or Podman)."
     fi
   fi
+  echo ""
+
+  _status_git_exec_scan
 }
 
 ###############################################################################

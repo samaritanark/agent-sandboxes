@@ -118,18 +118,24 @@ test_recreate_reruns_gates_before_apply() {
   resolve_vetting_posture() { echo off; }
   resolve_inference_endpoint() { echo ""; }
   kubectl() { echo apply >> "${applied}"; }
-  # Gate stubs record invocation; all pass for the first case.
+  # Gate stubs record invocation; all pass for the first case. validate_repo_path
+  # (F11) and the git-exec check are new gates: stub them like the rest so this
+  # focused test stays about ordering/refusal, not the gates' own logic.
+  validate_repo_path()  { echo validate >> "${gatelog}"; }
   workspace_prescan()   { echo prescan >> "${gatelog}"; }
   check_masking_paths() { echo masking >> "${gatelog}"; }
   vetting_gate_repos()  { echo vetting >> "${gatelog}"; }
   secret_gate_repos()   { echo secret  >> "${gatelog}"; }
+  _git_exec_check_repo(){ return 0; }   # clean: no git host-exec redirect
 
   # Case A — all gates pass: every gate runs, then the apply happens.
   ( recreate_session_pod "ses-gate-test" ) >/dev/null 2>&1 || true
   local ran; ran="$(tr '\n' ',' < "${gatelog}")"
-  { grep -q prescan "${gatelog}" && grep -q masking "${gatelog}" \
-    && grep -q vetting "${gatelog}" && grep -q secret "${gatelog}"; } \
-    && pass "all four workspace gates run on recreate" || fail "missing gate(s): ${ran}"
+  { grep -q validate "${gatelog}" && grep -q prescan "${gatelog}" \
+    && grep -q masking "${gatelog}" && grep -q vetting "${gatelog}" \
+    && grep -q secret "${gatelog}"; } \
+    && pass "all workspace gates (incl. validate_repo_path, F11) run on recreate" \
+    || fail "missing gate(s): ${ran}"
   [[ -s "${applied}" ]] && pass "apply proceeds once gates pass" || fail "apply did not run when gates passed"
 
   # Case B — a gate refuses: apply must NOT run. The real gates fail closed via
@@ -140,6 +146,20 @@ test_recreate_reruns_gates_before_apply() {
   ( recreate_session_pod "ses-gate-test" ) >/dev/null 2>&1 || true
   [[ ! -s "${applied}" ]] && pass "a gate refusal aborts before any cluster apply" \
     || fail "apply ran despite a gate refusal — resume would relaunch an ungated workspace"
+
+  # Case C — a git host-exec redirect (F7) refuses resume unless waived. Restore
+  # the passing secret gate, and make the git-exec check report a hit.
+  secret_gate_repos()   { echo secret >> "${gatelog}"; }
+  _git_exec_check_repo(){ echo "  .git/commondir present"; return 1; }
+  : > "${applied}"
+  ( recreate_session_pod "ses-gate-test" ) >/dev/null 2>&1 || true
+  [[ ! -s "${applied}" ]] && pass "a git host-exec redirect aborts resume (no --i-accept-git-exec-vectors)" \
+    || fail "apply ran despite a git host-exec redirect — resume would relaunch a booby-trapped repo"
+  # With the waiver (5th arg true), resume proceeds to apply.
+  : > "${applied}"
+  ( recreate_session_pod "ses-gate-test" false false false true ) >/dev/null 2>&1 || true
+  [[ -s "${applied}" ]] && pass "--i-accept-git-exec-vectors lets resume proceed" \
+    || fail "waiver did not let resume proceed past the git-exec check"
 }
 
 # recreate_session_pod must thread cmd_resume's --i-accept-* waiver flags into
@@ -166,6 +186,8 @@ test_recreate_threads_waiver_flags() {
   resolve_inference_endpoint() { echo ""; }
   vetting_forbid_unvetted_override() { echo false; }
   kubectl() { :; }
+  validate_repo_path()  { :; }
+  _git_exec_check_repo(){ return 0; }
   workspace_prescan()   { :; }
   check_masking_paths() { :; }
   # Capture the acceptance args each gate receives; the gates also stash the
@@ -226,6 +248,8 @@ test_recreate_tears_down_on_pod_failure() {
   # `get pod` returns non-zero so teardown_partial_session sees the pod as gone
   # (the happy path); every other kubectl call is a harmless no-op.
   kubectl() { case "$1" in get) return 1 ;; *) return 0 ;; esac; }
+  validate_repo_path()  { :; }
+  _git_exec_check_repo(){ return 0; }
   workspace_prescan()   { :; }
   check_masking_paths() { :; }
   vetting_gate_repos()  { :; }
