@@ -556,6 +556,21 @@ install_nerdctl_buildkit_linux() {
   # (Re)write the buildkit config every run: OCI worker off, containerd worker
   # on and aimed at k3s's containerd + the k8s.io namespace. Identical wiring to
   # the macOS VM.
+  #
+  # GC policy — explicit, because buildkit's defaults evict sandboxes. The
+  # build cache lives in the same containerd (and on the same filesystem) as
+  # every pod's ephemeral storage, and its layers are held by buildkit leases,
+  # so the kubelet's image GC cannot reclaim them under disk pressure — it
+  # evicts the sandbox pod instead. Buildkit's defaults (maxUsedSpace 80%,
+  # minFreeSpace 20% of the disk) let the cache keep growing until free space
+  # sits just above the kubelet's eviction-soft line (nodefs.available<15%,
+  # _k3s_install_exec), leaving a session only a few GB of scratch before it is
+  # evicted mid-task. So: cap the cache outright (maxUsedSpace), and keep
+  # buildkit's free-space floor (minFreeSpace) well above the kubelet's
+  # threshold so the gap between the two is session headroom, not cache.
+  # Buildkit enforces this when a build finishes, so a `sandbox rebuild` trims
+  # its own cache before the next session launches. Fixed values, not env knobs
+  # — this file is written as root and read by a root daemon.
   sudo mkdir -p /etc/buildkit
   sudo tee /etc/buildkit/buildkitd.toml > /dev/null <<EOF
 [worker.oci]
@@ -564,6 +579,10 @@ install_nerdctl_buildkit_linux() {
   enabled = true
   address = "${k3s_sock}"
   namespace = "k8s.io"
+  gc = true
+  reservedSpace = "2GB"
+  maxUsedSpace = "10GB"
+  minFreeSpace = "30%"
 EOF
   if [[ "${config_only}" == "true" ]]; then
     # We own only the config change, not the binaries or service.

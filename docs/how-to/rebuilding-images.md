@@ -32,6 +32,15 @@ Version info for each rebuilt image is appended to
 `~/.sandbox/logs/image-builds.log` — useful for whatever image-refresh
 cadence your organization sets.
 
+The build cache shares a disk with your running sessions, so `sandbox install`
+gives buildkit a GC policy: the cache is capped at about 10 GB and buildkit
+prunes whenever free space drops below 30% of the disk, well above the 15% line
+where the kubelet starts evicting sandboxes. The trim happens when a build
+finishes. If you installed before this policy existed, re-run `sandbox install`
+to pick it up (on macOS it applies to newly provisioned VMs), and in the
+meantime you can clear the cache by hand - on Linux,
+`sudo buildctl --addr unix:///run/buildkit/buildkitd.sock prune`.
+
 <details>
 <summary><b>Manual build (advanced — only when sandbox rebuild can't be used)</b></summary>
 
