@@ -568,9 +568,11 @@ install_nerdctl_buildkit_linux() {
   # evicted mid-task. So: cap the cache outright (maxUsedSpace), and keep
   # buildkit's free-space floor (minFreeSpace) well above the kubelet's
   # threshold so the gap between the two is session headroom, not cache.
-  # Buildkit enforces this when a build finishes, so a `sandbox rebuild` trims
-  # its own cache before the next session launches. Fixed values, not env knobs
-  # — this file is written as root and read by a root daemon.
+  # Buildkit enforces this only around builds (GC runs ~1s after a build, at
+  # most once a minute), so a `sandbox rebuild` trims its own cache within about
+  # a minute of finishing; space sessions use between builds triggers nothing.
+  # Fixed values, not env knobs — this file is written as root and read by a
+  # root daemon.
   sudo mkdir -p /etc/buildkit
   sudo tee /etc/buildkit/buildkitd.toml > /dev/null <<EOF
 [worker.oci]
