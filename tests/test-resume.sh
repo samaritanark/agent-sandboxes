@@ -160,6 +160,17 @@ test_recreate_reruns_gates_before_apply() {
   ( recreate_session_pod "ses-gate-test" false false false true ) >/dev/null 2>&1 || true
   [[ -s "${applied}" ]] && pass "--i-accept-git-exec-vectors lets resume proceed" \
     || fail "waiver did not let resume proceed past the git-exec check"
+
+  # Case D — an unverified result (2: pre-upgrade session, no baseline) warns
+  # but does not refuse, and records the current state as the baseline.
+  _git_exec_check_repo(){ echo "  .git integrity baseline missing"; return 2; }
+  : > "${applied}"
+  ( recreate_session_pod "ses-gate-test" ) >/dev/null 2>&1 || true
+  [[ -s "${applied}" ]] && pass "an unverified git-exec result does not refuse resume" \
+    || fail "resume refused on an unverified (status 2) git-exec result"
+  jq -e --arg p "${TEST_DIR}/repoA" '.repo_git_fingerprints[$p].gitdir_kind' "${sdir}/session.json" >/dev/null 2>&1 \
+    && pass "an unverified resume records a git baseline in session.json" \
+    || fail "no git baseline recorded after an unverified resume"
 }
 
 # recreate_session_pod must thread cmd_resume's --i-accept-* waiver flags into
@@ -737,6 +748,51 @@ test_cmd_stop_flags_failed_pod_delete() {
     || fail "end_reason not set to teardown-incomplete (got '$(cat "${reasonf}")')"
 }
 
+# cmd_stop records each repo's git host-exec result in session.json, and the
+# next 'sandbox run' refuses while the most recent ended session on that repo
+# recorded a redirect (status 1). A later clean session clears it.
+test_git_exec_findings_ledger() {
+  info "Testing the git host-exec findings ledger read by 'sandbox run'..."
+  SANDBOX_LOGS_DIR="${TEST_DIR}/gxlogs"
+  local repo="${TEST_DIR}/gxrepo"
+  mkdir -p "${repo}"; git -C "${repo}" init -q
+  _gx_ses() {
+    mkdir -p "${SANDBOX_LOGS_DIR}/$1"
+    jq -n --arg r "${repo}" --arg t "$2" '{end_time: $t, repos: [$r]}' \
+      > "${SANDBOX_LOGS_DIR}/$1/session.json"
+  }
+  _git_exec_prior_findings "${repo}" >/dev/null \
+    && fail "no sessions yet, but prior findings reported" || pass "no prior sessions -> no prior findings"
+
+  _gx_ses ses-gx1 2026-10-01T00:00:00Z
+  _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx1/session.json" "${repo}" 1 "  .git/commondir present"
+  local out
+  if out="$(_git_exec_prior_findings "${repo}/")"; then
+    pass "a session that ended with a redirect is found (path matched physically)"
+  else
+    fail "prior redirect not found"
+  fi
+  [[ "$(head -1 <<<"${out}")" == "ses-gx1" ]] && pass "names the session" || fail "wrong session: ${out}"
+  case "${out}" in *commondir*) pass "carries the findings" ;; *) fail "findings missing: ${out}" ;; esac
+
+  # A still-running session (no end_time) does not count; a later clean one does.
+  mkdir -p "${SANDBOX_LOGS_DIR}/ses-gx2"
+  jq -n --arg r "${repo}" '{end_time: null, repos: [$r], git_exec_findings: {($r): {status: 0, findings: ""}}}' \
+    > "${SANDBOX_LOGS_DIR}/ses-gx2/session.json"
+  _git_exec_prior_findings "${repo}" >/dev/null && pass "an un-ended session does not clear it" \
+    || fail "an un-ended session cleared the prior finding"
+  _gx_ses ses-gx3 2026-10-02T00:00:00Z
+  _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx3/session.json" "${repo}" 0 ""
+  _git_exec_prior_findings "${repo}" >/dev/null && fail "a later clean session did not clear it" \
+    || pass "a later clean session clears it"
+
+  # An unverified end (2) does not block the next run.
+  _gx_ses ses-gx4 2026-10-03T00:00:00Z
+  _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx4/session.json" "${repo}" 2 "  baseline missing"
+  _git_exec_prior_findings "${repo}" >/dev/null && fail "an unverified end blocked the next run" \
+    || pass "an unverified end does not block the next run"
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   # NOTE: this suite is ORDER-DEPENDENT. Earlier tests globally stub cmd_stop and
@@ -748,6 +804,7 @@ main() {
   test_guide_command_reconstructs_run
   test_recreate_reruns_gates_before_apply
   test_recreate_threads_waiver_flags
+  test_git_exec_findings_ledger
   test_recreate_tears_down_on_pod_failure
   test_teardown_partial_session_integrity
   test_adopt_session_secrets_ownerrefs

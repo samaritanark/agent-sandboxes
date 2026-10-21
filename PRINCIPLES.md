@@ -248,12 +248,18 @@ The sandbox enforces three filesystem rules:
      and hooks are then read from an agent-controlled directory inside `.git`.
    - **`.git/modules/<name>/config`** (and its hooks) — a submodule's own
      repository config, read when a top-level `git status` walks into the
-     submodule. Any repo with submodules is exposed.
-   - **a nested `.git`** planted in a tracked subdirectory — git discovers it
-     when run from that subdirectory.
-   - **replacing `.git` wholesale** — `.git` itself is not a mount point (only
-     its children are), so the agent can `mv .git .git-old` and create a fresh
-     one with any config and hooks.
+     submodule. This includes a repo that had no submodules at launch: the
+     agent can create `.git/modules/` and a gitlink pointing into it.
+   - **a nested repository** in a subdirectory — any directory git accepts
+     as a repository, whether named `.git` or not (a bare-format repo
+     works too), or a `.git` pointer file aimed at one. git uses it when run
+     from that subdirectory, and a gitlink can make a top-level `git status`
+     walk into it.
+   - **replacing or repointing `.git`** — `.git` itself is not a mount point
+     (only its children are), so the agent can `mv .git .git-old` and create
+     a fresh one, or turn `.git` into a pointer file aimed at a directory it
+     controls. Where `.git` is already a pointer (a linked worktree), the
+     agent can rewrite it in place.
 
    Two residuals compound this. First, the IDE/`.gitmodules` coverage is
    "when present": a path *absent* at launch is not created (a read-only
@@ -265,14 +271,33 @@ The sandbox enforces three filesystem rules:
    the main IDE autorun path closed unless the operator enabled it.)
 
    Because the mount approach cannot close these on its own, a **host-side
-   check** (`workspace_git_exec_check`) is the control: it flags the redirects
-   above — recording each repo's `.git` inode and a hash over its submodule
-   gitdirs' config, hooks, and `commondir` at launch, so a `.git` replacement or
-   a submodule-gitdir change is detectable for any session launched with that
-   baseline (a pre-upgrade session that has none is flagged as unverifiable, not
-   passed) — and runs on `sandbox status` and `sandbox stop` (warn, on the frozen
-   workspace after the pod is torn down), and on `sandbox resume` (refuse to
-   relaunch unless the operator passes `--i-accept-git-exec-vectors`).
+   check** (`workspace_git_exec_check`) is the control. At launch it records a
+   fingerprint of each repo: the `.git` inode, whether `.git` is a directory or
+   a pointer, a hash of its config and hooks (or of the pointer text), a hash
+   over the submodule gitdirs' config, hooks, and `commondir`, and a hash over
+   every nested repository and `.git` pointer in the tree. Nested repositories
+   are found by git's own shape rule, not by name. Later checks compare against
+   that fingerprint, and also flag a `.git/commondir` or a nested pointer that
+   resolves outside `.git/modules` with no baseline needed. The result is clean,
+   a redirect found, or unverified (a pre-upgrade session with no fingerprint).
+   An unverified result is never reported as clean.
+
+   The check runs at four points:
+
+   - **`sandbox run`** refuses to launch when a repo already has a redirect, or
+     when the last session on it ended with one.
+   - **`sandbox stop`** warns, on the frozen workspace after the pod is torn
+     down, and records the result in the session log so the next run sees it.
+   - **`sandbox resume`** refuses to relaunch when it finds a redirect. When
+     the result is unverified it warns and records the current state as the
+     session's baseline.
+   - **`sandbox status`** warns for active sessions.
+
+   `--i-accept-git-exec-vectors` waives the refusals on `run` and `resume`, and
+   the waiver is recorded in the audit log. The check compares hashes of what
+   git reads, so a legitimate change made during a session (for example, you
+   running `git config` on the host) shows up as a finding too. That is
+   deliberate: it can't tell your edit from the agent's.
    This is detection, not prevention, and that is a deliberate choice: fully
    closing the vector would mean isolating the agent from the operator's live
    `.git` — working against a materialized copy and returning changes as a

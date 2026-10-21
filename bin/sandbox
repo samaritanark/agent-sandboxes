@@ -270,6 +270,12 @@ OPTIONS:
                                     Does not accept a wholly unvetted repo or
                                     over-cap commit drift — use
                                     --i-accept-unvetted-repo for those.
+  --i-accept-git-exec-vectors       Launch even when a --repo has a git host-exec
+                                    redirect (e.g. .git/commondir, or a nested .git
+                                    pointer outside .git/modules), or when the last
+                                    session on it ended with one ('sandbox stop'
+                                    reported it). Inspect the repo first; the
+                                    acceptance is recorded in the audit log.
   --help                            Show this help
 
 TIERS:
@@ -567,6 +573,7 @@ cmd_run() {
   local opt_accept_unmasked_secrets="false"
   local opt_accept_unvetted_repo="false"
   local opt_accept_vetting_drift="false"
+  local opt_accept_git_exec_vectors="false"
   local opt_base_url=""
   local opt_homedir=""
   local -a opt_allow_domains=()
@@ -606,6 +613,7 @@ cmd_run() {
       --i-accept-unmasked-secrets) opt_accept_unmasked_secrets="true" ;;
       --i-accept-unvetted-repo) opt_accept_unvetted_repo="true" ;;
       --i-accept-vetting-drift) opt_accept_vetting_drift="true" ;;
+      --i-accept-git-exec-vectors) opt_accept_git_exec_vectors="true" ;;
       *)                       die "Unknown option: $1. Run 'sandbox run --help' for usage." ;;
     esac
     shift
@@ -1215,6 +1223,36 @@ cmd_run() {
     for _r in "${opt_repos[@]}"; do
       workspace_prescan "${_r}"
     done
+    # Refuse to launch into a workspace carrying a git host-exec redirect the
+    # read-only .git mounts don't cover (F7), or whose last session ended with
+    # one that 'sandbox stop' recorded: the fingerprint below would otherwise
+    # adopt the booby-trapped state as this session's clean baseline. Checked
+    # against a fingerprint of the current state, so only the baseline-free
+    # rules (commondir, a pointer outside .git/modules) can fire here.
+    local _gx_r _gx_out _gx_rc _gx_hit=0
+    for _gx_r in "${opt_repos[@]}"; do
+      _gx_rc=0
+      _gx_out="$(workspace_git_exec_check "${_gx_r}" "$(workspace_git_fingerprint "${_gx_r}")")" || _gx_rc=$?
+      if [[ "${_gx_rc}" -eq 1 ]]; then
+        warn "workspace ${_gx_r} has git host-exec redirect(s) the read-only .git mounts do not cover:"
+        echo "${_gx_out}" >&2
+        _gx_hit=1
+      fi
+      if _gx_out="$(_git_exec_prior_findings "${_gx_r}")"; then
+        warn "the last session on ${_gx_r} ($(head -1 <<<"${_gx_out}")) ended with git host-exec findings:"
+        tail -n +2 <<<"${_gx_out}" >&2
+        _gx_hit=1
+      fi
+    done
+    if [[ "${_gx_hit}" -eq 1 ]]; then
+      if [[ "${opt_accept_git_exec_vectors}" == "true" ]]; then
+        record_override "flag:--i-accept-git-exec-vectors" \
+          "git host-exec redirect in workspace" "${opt_repos[@]}"
+        warn "proceeding despite git host-exec findings (--i-accept-git-exec-vectors)."
+      else
+        die "Refusing to launch: git host-exec findings in the workspace (see the lines above). Inspect and remove them, then re-run with --i-accept-git-exec-vectors to acknowledge. See PRINCIPLES.md 'Filesystem isolation'."
+      fi
+    fi
     check_masking_paths "${opt_repos[@]}"
     # Gate the launch on whether each workspace has been vetted for agent use.
     # Posture (off/advisory/required) is operator-controlled; advisory only
@@ -1378,11 +1416,12 @@ cmd_run() {
   [[ "${#opt_infra_kubeconfigs[@]}" -gt 0 ]] && SESSION_INFRA_KUBECONFIG="1"
   export SESSION_INFRA_TOKEN SESSION_INFRA_KUBECONFIG
 
-  # Record each repo's launch-time git fingerprint (.git inode + submodule
-  # config/hook hash) so resume/stop/status can later detect a git host-exec
-  # redirect the read-only .git mounts can't prevent (F7 routes 2 and 4; routes
-  # 1 and 3 need no baseline). Captured now, before the agent has run, so it is a
-  # clean reference. Tier 2/3 with repos only; empty (→ {}) otherwise.
+  # Record each repo's launch-time git fingerprint (.git inode/kind/hash,
+  # submodule gitdir hash, nested-repo hash; see workspace_git_fingerprint) so
+  # resume/stop/status can later detect a git host-exec redirect the read-only
+  # .git mounts can't prevent (F7). Captured now, before the agent has run and
+  # after Step 2 refused any redirect already present, so it is a clean
+  # reference. Tier 2/3 with repos only; empty (→ {}) otherwise.
   SESSION_REPO_GIT_FINGERPRINTS=""
   if [[ "${opt_tier}" -ge 2 ]] && [[ "${#opt_repos[@]}" -gt 0 ]]; then
     local _fp_json="{}" _r_fp
@@ -2185,14 +2224,28 @@ cmd_stop() {
     # workspace the operator will next run git against, with no agent still able to
     # alter it, and never ahead of the containment action. Surfaces the risk right
     # before the operator returns to the repo on the host.
-    local _gs_r _gs_hits
+    # The result is recorded in session.json so the next 'sandbox run' on the
+    # repo refuses while a redirect found here is unacknowledged.
+    local _gs_r _gs_hits _gs_rc
     for _gs_r in "${repos[@]}"; do
       [[ -d "${_gs_r}" ]] || continue
-      if ! _gs_hits="$(_git_exec_check_repo "${session_json}" "${_gs_r}" 2>/dev/null)"; then
-        warn "workspace ${_gs_r} has git host-exec redirect(s) the read-only .git mounts do not cover:"
-        echo "${_gs_hits}" >&2
-        echo "  Inspect before running git in this repo on the host. See PRINCIPLES.md 'Filesystem isolation'." >&2
-      fi
+      _gs_rc=0
+      _gs_hits="$(_git_exec_check_repo "${session_json}" "${_gs_r}" 2>/dev/null)" || _gs_rc=$?
+      _git_exec_record_findings "${session_json}" "${_gs_r}" "${_gs_rc}" "${_gs_hits}"
+      case "${_gs_rc}" in
+        0) ;;
+        1)
+          warn "workspace ${_gs_r} has git host-exec redirect(s) the read-only .git mounts do not cover:"
+          echo "${_gs_hits}" >&2
+          echo "  Inspect before running git in this repo on the host. See PRINCIPLES.md 'Filesystem isolation'." >&2
+          echo "  The next 'sandbox run' on this repo will refuse unless --i-accept-git-exec-vectors is passed." >&2
+          ;;
+        *)
+          warn "workspace ${_gs_r}: the git host-exec check could not be fully verified (no launch baseline):"
+          echo "${_gs_hits}" >&2
+          echo "  Inspect before running git in this repo on the host. See PRINCIPLES.md 'Filesystem isolation'." >&2
+          ;;
+      esac
     done
   fi
 
@@ -2332,17 +2385,77 @@ _resume_guide_command() {
 }
 
 # _git_exec_check_repo <session_json> <repo> — run workspace_git_exec_check for
-# one repo, reading its launch-time fingerprint (inode + submodule-config hash)
-# out of <session_json>'s .repo_git_fingerprints map so routes 2 and 4 can be
-# detected (routes 1 and 3 need no baseline). Echoes each finding and returns the
-# hit count (0 = clean), so callers can branch with `if _git_exec_check_repo ...`.
+# one repo against its launch-time fingerprint from <session_json>'s
+# .repo_git_fingerprints map (empty = no baseline). Echoes each finding and
+# returns the check's status: 0 clean, 1 redirect, 2 unverified. Callers capture
+# the status with `|| rc=$?`, not `if !`, so 1 and 2 stay distinguishable.
 _git_exec_check_repo() {
-  local session_json="$1" repo="$2" ino="" mh=""
+  local session_json="$1" repo="$2" fp=""
   if [[ -f "${session_json}" ]]; then
-    ino="$(jq -r --arg p "${repo}" '.repo_git_fingerprints[$p].inode // ""' "${session_json}" 2>/dev/null || echo "")"
-    mh="$(jq -r --arg p "${repo}" '.repo_git_fingerprints[$p].modules_hash // ""' "${session_json}" 2>/dev/null || echo "")"
+    fp="$(jq -c --arg p "${repo}" '.repo_git_fingerprints[$p] // empty' "${session_json}" 2>/dev/null || true)"
   fi
-  workspace_git_exec_check "${repo}" "${ino}" "${mh}"
+  workspace_git_exec_check "${repo}" "${fp}"
+}
+
+# _git_exec_record_findings <session_json> <repo> <status> <findings> — store
+# cmd_stop's end-of-session git host-exec result for <repo> under
+# .git_exec_findings, so the next 'sandbox run' on that repo can refuse while a
+# redirect from this session is unacknowledged. Recorded for every repo,
+# including clean (0), so "the last session's result" is explicit.
+_git_exec_record_findings() {
+  local sj="$1" repo="$2" status="$3" findings="$4" tmp
+  [[ -f "${sj}" ]] || return 0
+  tmp="$(mktemp)"
+  if jq --arg p "${repo}" --argjson s "${status}" --arg f "${findings}" \
+    '.git_exec_findings = ((.git_exec_findings // {}) + {($p): {status: $s, findings: $f}})' \
+    "${sj}" > "${tmp}"; then
+    mv "${tmp}" "${sj}"
+  else
+    rm -f "${tmp}"
+  fi
+}
+
+# _git_exec_record_baseline <session_json> <repo> — (re)capture <repo>'s git
+# fingerprint into <session_json>, for a session that had none (resume of a
+# pre-upgrade session), so later stop/status checks have something to compare.
+_git_exec_record_baseline() {
+  local sj="$1" repo="$2" fp tmp
+  [[ -f "${sj}" ]] || return 0
+  fp="$(workspace_git_fingerprint "${repo}")" || return 0
+  tmp="$(mktemp)"
+  if jq --arg p "${repo}" --argjson fp "${fp}" \
+    '.repo_git_fingerprints = ((.repo_git_fingerprints // {}) + {($p): $fp})' \
+    "${sj}" > "${tmp}"; then
+    mv "${tmp}" "${sj}"
+  else
+    rm -f "${tmp}"
+  fi
+}
+
+# _git_exec_prior_findings <repo> — if the most recently ENDED session that
+# recorded a git host-exec result for <repo> (matched by physical path) ended
+# with a redirect (status 1), print that session's id on the first line and its
+# findings after, and return 0. Return 1 otherwise.
+_git_exec_prior_findings() {
+  local repo="$1" want sj t k best_t="" best_sj="" best_key=""
+  want="$(_git_resolve_dir / "${repo}")"
+  [[ -n "${want}" ]] || want="${repo}"
+  for sj in "${SANDBOX_LOGS_DIR}"/ses-*/session.json; do
+    [[ -f "${sj}" ]] || continue
+    t="$(jq -r '.end_time // ""' "${sj}" 2>/dev/null || true)"
+    [[ -n "${t}" && "${t}" != "null" ]] || continue
+    while IFS= read -r k; do
+      [[ -n "${k}" ]] || continue
+      [[ "${k}" == "${repo}" || "$(_git_resolve_dir / "${k}")" == "${want}" ]] || continue
+      if [[ -z "${best_t}" || "${t}" > "${best_t}" ]]; then
+        best_t="${t}"; best_sj="${sj}"; best_key="${k}"
+      fi
+    done < <(jq -r '(.git_exec_findings // {}) | keys[]' "${sj}" 2>/dev/null || true)
+  done
+  [[ -n "${best_sj}" ]] || return 1
+  [[ "$(jq -r --arg p "${best_key}" '.git_exec_findings[$p].status' "${best_sj}" 2>/dev/null)" == "1" ]] || return 1
+  basename "$(dirname "${best_sj}")"
+  jq -r --arg p "${best_key}" '.git_exec_findings[$p].findings' "${best_sj}"
 }
 
 # recreate_session_pod <session_id> — rebuild and apply the policy + pod for a
@@ -2414,13 +2527,28 @@ recreate_session_pod() {
     # resume puts the operator back to work in this repo, so fail closed unless
     # explicitly waived — mirroring the vetting/secret gates. The waiver is
     # recorded as an override so the session log names it.
-    local _gv_hits _gv_hit=0 _gvr
+    # Only a found redirect (status 1) refuses. An unverified result (2: a
+    # pre-upgrade session with no launch baseline) warns and records the
+    # current state as this session's baseline — once the gate has passed — so
+    # stop/status have something to compare against from here on.
+    local _gv_hits _gv_rc _gv_hit=0 _gvr
+    local -a _gv_unverified=()
     for _gvr in "${repos[@]}"; do
-      if ! _gv_hits="$(_git_exec_check_repo "${sj}" "${_gvr}")"; then
-        warn "workspace ${_gvr} has git host-exec redirect(s) the read-only .git mounts do not cover:"
-        echo "${_gv_hits}" >&2
-        _gv_hit=1
-      fi
+      _gv_rc=0
+      _gv_hits="$(_git_exec_check_repo "${sj}" "${_gvr}")" || _gv_rc=$?
+      case "${_gv_rc}" in
+        0) ;;
+        1)
+          warn "workspace ${_gvr} has git host-exec redirect(s) the read-only .git mounts do not cover:"
+          echo "${_gv_hits}" >&2
+          _gv_hit=1
+          ;;
+        *)
+          warn "workspace ${_gvr}: the git host-exec check could not be fully verified (no launch baseline):"
+          echo "${_gv_hits}" >&2
+          _gv_unverified+=("${_gvr}")
+          ;;
+      esac
     done
     if [[ "${_gv_hit}" -eq 1 ]]; then
       if [[ "${accept_git_exec_vectors}" == "true" ]]; then
@@ -2431,6 +2559,10 @@ recreate_session_pod() {
         die "Refusing to resume: a git host-exec redirect was found in the workspace. Inspect and remove it (see the lines above), or re-run with --i-accept-git-exec-vectors. See PRINCIPLES.md 'Filesystem isolation'."
       fi
     fi
+    for _gvr in "${_gv_unverified[@]+"${_gv_unverified[@]}"}"; do
+      echo "  Recording the current state of ${_gvr} as this session's git baseline." >&2
+      _git_exec_record_baseline "${sj}" "${_gvr}"
+    done
     check_masking_paths "${repos[@]}"
     vetting_gate_repos "$(resolve_vetting_posture)" "${accept_unvetted_repo}" "${accept_vetting_drift}" "${repos[@]}"
     local _endpoint _endpoint_trusted="false"
@@ -2798,7 +2930,7 @@ infra_version_line() {
 # cmd_status so an operator sees a planted redirect before running git on the
 # host. Enumerates session dirs the same way the teardown reminder does.
 _status_git_exec_scan() {
-  local any=0 session_dir sj end_time tier _r _hits
+  local any=0 session_dir sj end_time tier _r _hits _rc
   for session_dir in "${SANDBOX_LOGS_DIR}"/ses-*/; do
     [[ -d "${session_dir}" ]] || continue
     sj="${session_dir%/}/session.json"
@@ -2812,14 +2944,19 @@ _status_git_exec_scan() {
     [[ "${#_repos[@]}" -gt 0 ]] || continue
     for _r in "${_repos[@]}"; do
       [[ -d "${_r}" ]] || continue
-      if ! _hits="$(_git_exec_check_repo "${sj}" "${_r}" 2>/dev/null)"; then
-        if [[ "${any}" -eq 0 ]]; then
-          echo "Workspace git-exec check:"
-          any=1
-        fi
-        echo "  ${C_YELLOW}$(basename "${session_dir%/}")${C_RESET} ${_r}"
-        echo "${_hits}"
+      _rc=0
+      _hits="$(_git_exec_check_repo "${sj}" "${_r}" 2>/dev/null)" || _rc=$?
+      [[ "${_rc}" -eq 0 ]] && continue
+      if [[ "${any}" -eq 0 ]]; then
+        echo "Workspace git-exec check:"
+        any=1
       fi
+      if [[ "${_rc}" -eq 1 ]]; then
+        echo "  ${C_YELLOW}$(basename "${session_dir%/}")${C_RESET} ${_r} (redirect found)"
+      else
+        echo "  ${C_YELLOW}$(basename "${session_dir%/}")${C_RESET} ${_r} (unverified: no launch baseline)"
+      fi
+      echo "${_hits}"
     done
   done
   if [[ "${any}" -eq 1 ]]; then

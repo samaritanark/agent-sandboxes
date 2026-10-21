@@ -155,6 +155,18 @@ _git_stat_inode() {
   fi
 }
 
+# _git_sha256_stdin — SHA-256 of stdin; "unhashable" when no hasher exists.
+_git_sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    cat >/dev/null
+    printf 'unhashable'
+  fi
+}
+
 # _git_modules_hash <repo> — one SHA-256 over the contents of every submodule
 # repository config, hook, AND commondir file under <repo>/.git/modules, each
 # prefixed by its repo-relative path. These live OUTSIDE the read-only workspace
@@ -177,32 +189,161 @@ _git_modules_hash() {
 "
   done < <(find "${base}" -type f \( -name config -o -name commondir -o -path '*/hooks/*' \) 2>/dev/null | LC_ALL=C sort)
   [[ -n "${out}" ]] || { printf 'none'; return 0; }
-  if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "${out}" | sha256sum | awk '{print $1}'
-  elif command -v shasum >/dev/null 2>&1; then
-    printf '%s' "${out}" | shasum -a 256 | awk '{print $1}'
+  printf '%s' "${out}" | _git_sha256_stdin
+}
+
+# _git_dir_exec_digest <gitdir> — one "relpath:sha256" line per exec-bearing
+# file of a single git directory: config, commondir, and everything under hooks/.
+_git_dir_exec_digest() {
+  local d="$1" f
+  while IFS= read -r f; do
+    [[ -n "${f}" ]] || continue
+    printf '%s:%s\n' "${f#"${d}/"}" "$(_leakscan_sha256 "${f}")"
+  done < <(
+    [[ -f "${d}/config" ]] && printf '%s\n' "${d}/config"
+    [[ -f "${d}/commondir" ]] && printf '%s\n' "${d}/commondir"
+    [[ -d "${d}/hooks" ]] && find "${d}/hooks" -type f 2>/dev/null | LC_ALL=C sort
+    true
+  )
+}
+
+# _git_gitdir_state <repo> — print "<kind> <hash>" for <repo>/.git: kind is
+# dir / file / symlink / missing; hash is over config+commondir+hooks for a
+# directory, over the pointer text for a gitfile, over the link target for a
+# symlink, and "none" when missing.
+_git_gitdir_state() {
+  local g="$1/.git"
+  if [[ -L "${g}" ]]; then
+    printf 'symlink %s\n' "$(readlink "${g}" | _git_sha256_stdin)"
+  elif [[ -d "${g}" ]]; then
+    printf 'dir %s\n' "$(_git_dir_exec_digest "${g}" | _git_sha256_stdin)"
+  elif [[ -f "${g}" ]]; then
+    printf 'file %s\n' "$(_git_sha256_stdin < "${g}")"
   else
-    printf 'unhashable'
+    printf 'missing none\n'
   fi
+}
+
+# _git_resolve_dir <base> <path> — physical path of directory <path> (taken
+# relative to <base> unless absolute); prints nothing if it does not resolve.
+_git_resolve_dir() {
+  ( CDPATH='' cd -- "$1" 2>/dev/null && CDPATH='' cd -- "$2" 2>/dev/null && pwd -P )
+}
+
+# _git_pointer_target <path> — resolve a nested `.git` gitfile or symlink to the
+# physical git directory git would use, the same way git does: a gitfile's
+# "gitdir: <path>" is relative to the file's own directory; a symlink is
+# followed. Prints nothing (returns 1) when it does not resolve to a directory.
+_git_pointer_target() {
+  local p="$1" parent line target
+  parent="${p%/*}"
+  if [[ -L "${p}" ]]; then
+    target="$(_git_resolve_dir "${parent}" "$(readlink "${p}")")"
+  else
+    IFS= read -r line 2>/dev/null < "${p}" || [[ -n "${line:-}" ]] || return 1
+    case "${line}" in
+      "gitdir: "*) line="${line#gitdir: }" ;;
+      *) return 1 ;;
+    esac
+    # git trims trailing whitespace (incl. a CR) from the path.
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -n "${line}" ]] || return 1
+    target="$(_git_resolve_dir "${parent}" "${line}")"
+  fi
+  [[ -n "${target}" ]] || return 1
+  printf '%s\n' "${target}"
+}
+
+# _git_is_repo_shaped <dir> — true if git would accept <dir> as a repository,
+# mirroring git's own is_git_directory() test (setup.c): a HEAD, plus objects/
+# and refs/ (or a commondir file that supplies them). A slight superset of git's
+# rule (HEAD's contents are not validated), which errs toward flagging.
+_git_is_repo_shaped() {
+  local d="$1"
+  [[ -f "${d}/HEAD" || -L "${d}/HEAD" ]] || return 1
+  [[ -f "${d}/commondir" ]] && return 0
+  [[ -d "${d}/objects" && -d "${d}/refs" ]]
+}
+
+# _git_nested_entries <repo> — one tab-separated line per nested git entry below
+# <repo>, sorted. The top-level .git is pruned (_git_gitdir_state and
+# _git_modules_hash cover it); nested .git directories are reached through
+# their HEAD, so they appear once, as "dir".
+#   dir<TAB><rel>   a directory git would accept as a repository (any name)
+#   ptr<TAB><rel>   a nested .git gitfile or symlink
+_git_nested_entries() {
+  local repo="$1" p d
+  while IFS= read -r -d '' p; do
+    case "${p##*/}" in
+      HEAD)
+        d="${p%/HEAD}"
+        _git_is_repo_shaped "${d}" || continue
+        if [[ "${d}" == "${repo}" ]]; then
+          printf 'dir\t.\n'
+        else
+          printf 'dir\t%s\n' "${d#"${repo}/"}"
+        fi
+        ;;
+      .git)
+        [[ -d "${p}" && ! -L "${p}" ]] && continue
+        printf 'ptr\t%s\n' "${p#"${repo}/"}"
+        ;;
+    esac
+  done < <(find "${repo}" -path "${repo}/.git" -prune -o \( -name HEAD -o -name .git \) -print0 2>/dev/null) \
+    | LC_ALL=C sort -u
+}
+
+# _git_nested_hash <repo> [<entries>] — one SHA-256 over every nested git entry
+# (from _git_nested_entries, or the precomputed <entries>): each repo-shaped
+# directory's config/commondir/hooks digest and each pointer's text or link
+# target, prefixed by its relative path. "none" when there are none.
+_git_nested_hash() {
+  local repo="$1" entries
+  if [[ $# -ge 2 ]]; then entries="$2"; else entries="$(_git_nested_entries "${repo}")"; fi
+  [[ -n "${entries}" ]] || { printf 'none'; return 0; }
+  local kind rel abs
+  while IFS=$'\t' read -r kind rel; do
+    [[ -n "${kind}" ]] || continue
+    if [[ "${rel}" == "." ]]; then abs="${repo}"; else abs="${repo}/${rel}"; fi
+    if [[ "${kind}" == "dir" ]]; then
+      printf 'dir:%s\n' "${rel}"
+      _git_dir_exec_digest "${abs}"
+    elif [[ -L "${abs}" ]]; then
+      printf 'ptr:%s:%s\n' "${rel}" "$(readlink "${abs}")"
+    else
+      printf 'ptr:%s:%s\n' "${rel}" "$(_leakscan_sha256 "${abs}")"
+    fi
+  done <<<"${entries}" | _git_sha256_stdin
 }
 
 # workspace_git_fingerprint <repo> — emit a compact JSON object capturing the
-# launch-time identity of <repo>'s git directory, for the host-exec check to
-# compare against later: the inode of `.git` (so a wholesale replacement —
-# `mv .git .git-old && mkdir .git`, F7 route 4 — is detectable even though the
-# mounts leave `.git` itself writable) and a hash over the submodule configs and
-# hooks (F7 route 2). Recorded in session.json at launch by cmd_run.
+# launch-time identity of <repo>'s git directories, for the host-exec check to
+# compare against later:
+#   inode        — of `.git`, so a wholesale replacement is detectable even
+#                  though the mounts leave `.git` itself writable (route 4)
+#   gitdir_kind  — dir / file / symlink / missing, so turning `.git` into a
+#                  pointer (or back) is detectable
+#   gitdir_hash  — config+hooks of a `.git` directory, or the pointer text of a
+#                  gitfile, so an in-place pointer rewrite (same inode) is
+#                  detectable
+#   modules_hash — submodule gitdir config/hooks/commondir (route 2)
+#   nested_hash  — every nested repo-shaped dir and `.git` pointer (route 3)
+# Recorded in session.json at launch by cmd_run.
 workspace_git_fingerprint() {
   local repo="$1"
-  local gitpath="${repo}/.git" ino="" mh="none"
-  if [[ -e "${gitpath}" ]]; then
+  local gitpath="${repo}/.git" ino="" mh="none" kind gh nh
+  read -r kind gh < <(_git_gitdir_state "${repo}")
+  if [[ -e "${gitpath}" || -L "${gitpath}" ]]; then
     ino="$(_git_stat_inode "${gitpath}")"
     mh="$(_git_modules_hash "${repo}")"
   fi
-  jq -c -n --arg ino "${ino}" --arg mh "${mh}" '{inode: $ino, modules_hash: $mh}'
+  nh="$(_git_nested_hash "${repo}")"
+  jq -c -n --arg ino "${ino}" --arg mh "${mh}" --arg kind "${kind}" \
+    --arg gh "${gh}" --arg nh "${nh}" \
+    '{inode: $ino, modules_hash: $mh, gitdir_kind: $kind, gitdir_hash: $gh, nested_hash: $nh}'
 }
 
-# workspace_git_exec_check <repo> [<inode_at_launch>] [<modules_hash_at_launch>]
+# workspace_git_exec_check <repo> [<fingerprint_json>]
 #
 # Detect host-code-execution redirects an in-sandbox Tier 2/3 agent can plant
 # inside its WRITABLE workspace that the read-only .git/config + .git/hooks
@@ -211,75 +352,143 @@ workspace_git_fingerprint() {
 # `git status` / `git commit` — on the HOST, as the operator, outside gVisor and
 # default-deny egress. The mount approach provably cannot close this: the agent
 # needs a writable `.git` to commit, and every route rides on a writable part of
-# it. So detection (here) is the host-side backstop. Routes (confirmed at launch
-# against git 2.52):
+# it. So detection (here) is the host-side backstop. <fingerprint_json> is the
+# launch-time workspace_git_fingerprint for <repo> (empty = no baseline).
+# Routes (confirmed against git 2.52):
 #   1. .git/commondir            — redirects $GIT_COMMON_DIR, so config+hooks are
 #                                   read from an agent-controlled directory. A
 #                                   normal top-level clone never has this file
 #                                   (linked worktrees do, but there .git is a
-#                                   FILE, excluded by the -d guard below).
+#                                   FILE, so the check only applies to a dir).
 #   2. .git/modules/<n>/config   — a submodule's own repo config/hooks, changed
-#                                   since launch (modules_hash drift).
-#   3. a nested .git elsewhere   — a second repo planted in a tracked subdir, or
-#                                   a .git pointer file aimed outside .git/modules.
-#   4. a replaced .git directory — inode differs from the one recorded at launch.
+#                                   since launch (modules_hash drift, compared
+#                                   even when the baseline had no submodules).
+#   3. a nested repository       — any directory git would accept as a repo,
+#                                   changed since launch (nested_hash drift), or
+#                                   a nested .git pointer that resolves outside
+#                                   .git/modules.
+#   4. a replaced/repointed .git — inode, kind, or gitdir_hash differs from the
+#                                   launch baseline.
 #
-# Prints one indented line per hit on stdout and returns the hit count (0 =
-# clean). Read-only / warn-safe: it never writes to the workspace.
+# Prints one indented line per finding on stdout. Returns a status, never a
+# count (a count wraps at 256):
+#   0 — clean
+#   1 — a redirect was found (or the workspace changed in a way that can carry one)
+#   2 — no redirect found, but some part could not be verified against a
+#       baseline (a pre-upgrade session, or no fingerprint recorded)
+# Read-only / warn-safe: it never writes to the workspace.
 workspace_git_exec_check() {
-  local repo="$1" want_ino="${2:-}" want_mh="${3:-}"
-  local bad=0 ino mh p rel
-
-  if [[ -d "${repo}/.git" ]]; then
-    # Route 1: commondir redirect (only meaningful when .git is a real dir).
-    if [[ -e "${repo}/.git/commondir" ]]; then
-      echo "  .git/commondir present - redirects git's config and hooks to another directory"
-      bad=$((bad + 1))
-    fi
-    # Route 4: .git replaced since launch.
-    if [[ -n "${want_ino}" ]]; then
-      ino="$(_git_stat_inode "${repo}/.git")"
-      if [[ -n "${ino}" && "${ino}" != "${want_ino}" ]]; then
-        echo "  .git directory was replaced since launch (inode ${want_ino} -> ${ino})"
-        bad=$((bad + 1))
-      fi
-    else
-      # No launch baseline (a session recorded before this check existed): a
-      # wholesale `.git` replacement cannot be verified, so flag it as unverified
-      # rather than pass silently — mirrors the no-baseline submodule branch below.
-      echo "  .git integrity baseline missing (pre-upgrade session); a .git replacement cannot be verified"
-      bad=$((bad + 1))
-    fi
+  local repo="$1" fp="${2:-}"
+  local redirect=0 unverified=0
+  local want_ino="" want_mh="" want_kind="" want_gh="" want_nh="" have_fp=0
+  if [[ -n "${fp}" ]] && jq -e 'type == "object"' >/dev/null 2>&1 <<<"${fp}"; then
+    have_fp=1
+    IFS=$'\x1f' read -r want_ino want_mh want_kind want_gh want_nh < <(jq -r \
+      '[.inode // "", .modules_hash // "", .gitdir_kind // "", .gitdir_hash // "", .nested_hash // ""] | join("\u001f")' \
+      <<<"${fp}")
   fi
 
-  # Route 2: submodule config/hooks changed since launch.
-  if [[ -n "${want_mh}" && "${want_mh}" != "none" ]]; then
+  local kind gh ino mh
+  read -r kind gh < <(_git_gitdir_state "${repo}")
+
+  # Route 1: commondir redirect (only meaningful when .git is a real dir).
+  if [[ "${kind}" == "dir" && -e "${repo}/.git/commondir" ]]; then
+    echo "  .git/commondir present - redirects git's config and hooks to another directory"
+    redirect=1
+  fi
+
+  # Route 4: .git replaced, converted, or repointed since launch.
+  if [[ -n "${want_kind}" ]]; then
+    if [[ "${kind}" != "${want_kind}" ]]; then
+      echo "  .git changed from a ${want_kind} to a ${kind} since launch"
+      redirect=1
+    elif [[ "${gh}" != "${want_gh}" ]]; then
+      case "${kind}" in
+        file|symlink) echo "  .git pointer was rewritten since launch (it now points git at a different directory)" ;;
+        *)            echo "  .git config or hooks changed since launch" ;;
+      esac
+      redirect=1
+    fi
+  elif [[ "${kind}" == "file" || "${kind}" == "symlink" ]]; then
+    # Pre-upgrade baseline (inode only): an in-place pointer rewrite keeps the
+    # inode, so it cannot be verified.
+    echo "  .git is a pointer but the launch baseline has no pointer hash; a rewrite cannot be verified"
+    unverified=1
+  fi
+  if [[ -n "${want_ino}" ]]; then
+    ino="$(_git_stat_inode "${repo}/.git")"
+    if [[ -n "${ino}" && "${ino}" != "${want_ino}" ]]; then
+      echo "  .git was replaced since launch (inode ${want_ino} -> ${ino})"
+      redirect=1
+    fi
+  elif [[ "${kind}" != "missing" && -z "${want_kind}" ]]; then
+    # No launch baseline at all (a session recorded before this check existed):
+    # a wholesale `.git` replacement cannot be verified.
+    echo "  .git integrity baseline missing (pre-upgrade session); a .git replacement cannot be verified"
+    unverified=1
+  fi
+
+  # Route 2: submodule config/hooks changed since launch. Compared whenever a
+  # baseline exists — including "none", so submodule gitdirs planted in a repo
+  # that had none at launch are caught.
+  if [[ -n "${want_mh}" ]]; then
     mh="$(_git_modules_hash "${repo}")"
     if [[ "${mh}" != "${want_mh}" ]]; then
       echo "  .git/modules/* config or hooks changed since launch (submodule repo config is a host-exec vector)"
-      bad=$((bad + 1))
+      redirect=1
     fi
-  elif [[ -z "${want_mh}" && -d "${repo}/.git/modules" ]]; then
-    # No launch baseline (a session recorded before this check existed): drift
-    # cannot be proven, so flag the submodule configs as unverified rather than
-    # pass them silently.
+  elif [[ -d "${repo}/.git/modules" ]]; then
     echo "  .git/modules/* present but no launch baseline to compare (submodule config is an unchecked host-exec vector)"
-    bad=$((bad + 1))
+    unverified=1
   fi
 
-  # Route 3: a nested .git anywhere other than the top-level one.
-  while IFS= read -r -d '' p; do
-    rel="${p#"${repo}/"}"
-    if [[ -d "${p}" ]]; then
-      echo "  nested git repository: ${rel} (its config/hooks run when git is invoked from there)"
-      bad=$((bad + 1))
-    elif ! grep -qE '^gitdir: (\.\./)*\.git/modules/' "${p}" 2>/dev/null; then
-      echo "  nested .git pointer outside .git/modules: ${rel}"
-      bad=$((bad + 1))
+  # Route 3: nested repositories and pointers.
+  local entries modreal="" k rel tgt
+  entries="$(_git_nested_entries "${repo}")"
+  if [[ -d "${repo}/.git/modules" ]]; then
+    modreal="$(_git_resolve_dir "${repo}" ".git/modules")"
+  fi
+  while IFS=$'\t' read -r k rel; do
+    [[ "${k}" == "ptr" ]] || continue
+    if ! tgt="$(_git_pointer_target "${repo}/${rel}")"; then
+      echo "  nested .git pointer does not resolve: ${rel}"
+      unverified=1
+    elif [[ -z "${modreal}" || "${tgt}" != "${modreal}/"* ]]; then
+      echo "  nested .git pointer outside .git/modules: ${rel} -> ${tgt}"
+      redirect=1
     fi
-  done < <(find "${repo}" -mindepth 2 -name .git -not -path "${repo}/.git/*" -print0 2>/dev/null)
+  done <<<"${entries}"
+  local listed=0 n_dirs
+  n_dirs="$(grep -c "^dir"$'\t' <<<"${entries}" || true)"
+  if [[ -n "${want_nh}" ]]; then
+    if [[ "$(_git_nested_hash "${repo}" "${entries}")" != "${want_nh}" ]]; then
+      echo "  nested git repositories or .git pointers changed since launch (their config/hooks run when git is invoked there):"
+      redirect=1
+      listed=1
+    fi
+  elif [[ "${n_dirs}" -gt 0 ]]; then
+    echo "  nested git repositories present but no launch baseline to compare:"
+    unverified=1
+    listed=1
+  fi
+  if [[ "${listed}" -eq 1 ]]; then
+    local shown=0
+    while IFS=$'\t' read -r k rel; do
+      [[ -n "${k}" ]] || continue
+      if [[ "${shown}" -ge 20 ]]; then
+        echo "    ... and more (run: find ${repo} -name HEAD)"
+        break
+      fi
+      echo "    ${k}: ${rel}"
+      shown=$((shown + 1))
+    done <<<"${entries}"
+  fi
 
-  return "${bad}"
+  [[ "${have_fp}" -eq 1 ]] || [[ "${kind}" == "missing" ]] || unverified=1
+
+  if [[ "${redirect}" -eq 1 ]]; then return 1; fi
+  if [[ "${unverified}" -eq 1 ]]; then return 2; fi
+  return 0
 }
 
 # workspace_prescan — scan workspace for sensitive files before session
