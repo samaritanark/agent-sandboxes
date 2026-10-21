@@ -127,10 +127,11 @@ audit_write_session_json() {
   #     than off live Secret existence, which the pod-delete GC races (PR #93
   #     P1). Empty (→ false) for Tier 1/2.
   #   SESSION_REPO_GIT_FINGERPRINTS — JSON object mapping each Tier 2/3 repo
-  #     path to its launch-time git fingerprint ({inode, modules_hash}, from
-  #     workspace_git_fingerprint), so resume/stop/status can detect a git
-  #     host-exec redirect the read-only .git mounts can't prevent (F7 routes
-  #     2 and 4). Empty (→ {}) for Tier 1 / no-repo sessions.
+  #     path to its launch-time git fingerprint ({inode, modules_hash,
+  #     gitdir_kind, gitdir_hash, nested_hash}, from workspace_git_fingerprint),
+  #     so run/resume/stop/status can detect a git host-exec redirect the
+  #     read-only .git mounts can't prevent (F7). Empty (→ {}) for Tier 1 /
+  #     no-repo sessions.
   jq -n \
     --arg id "${session_id}" \
     --arg agent "${agent}" \
