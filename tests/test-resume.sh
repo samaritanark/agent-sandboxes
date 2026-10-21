@@ -166,7 +166,8 @@ test_recreate_reruns_gates_before_apply() {
   _git_exec_check_repo(){ echo "  .git integrity baseline missing"; return 2; }
   # A stop result recorded before this resume is stale once the agent runs
   # again; recreate must drop it.
-  jq --arg p "${TEST_DIR}/repoA" '.git_exec_findings = {($p): {status: 0, findings: ""}}' \
+  jq --arg p "${TEST_DIR}/repoA" '.git_exec_findings = {($p): {status: 0, findings: ""}}
+    | .end_time = "2026-10-01T00:00:00Z" | .end_reason = "evicted" | .end_detail = "low on disk"' \
     "${sdir}/session.json" > "${sdir}/session.json.tmp" && mv "${sdir}/session.json.tmp" "${sdir}/session.json"
   : > "${applied}"
   ( recreate_session_pod "ses-gate-test" ) >/dev/null 2>&1 || true
@@ -178,6 +179,15 @@ test_recreate_reruns_gates_before_apply() {
   jq -e 'has("git_exec_findings") | not' "${sdir}/session.json" >/dev/null \
     && pass "recreate drops the stale stop result" \
     || fail "recreate kept a stop result recorded before the resume"
+  jq -e '.end_time == null and (has("end_reason") | not) and (has("end_detail") | not)' \
+    "${sdir}/session.json" >/dev/null \
+    && pass "recreate reopens the session (end_time/end_reason cleared)" \
+    || fail "recreate left the session marked as ended"
+  jq -e '[.events[]? | select(.type == "resumed"
+          and (.message | contains("2026-10-01T00:00:00Z")) and (.message | contains("evicted")))] | length == 1' \
+    "${sdir}/session.json" >/dev/null \
+    && pass "the previous ending is kept in a resumed event" \
+    || fail "no resumed event recording the previous ending"
 }
 
 # recreate_session_pod must thread cmd_resume's --i-accept-* waiver flags into

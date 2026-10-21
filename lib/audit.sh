@@ -287,6 +287,37 @@ audit_record_dependencies() {
   fi
 }
 
+# audit_reopen_session <log_dir> — mark a stopped session as running again,
+# for 'sandbox resume' recreating its pod. Records a "resumed" event carrying
+# the previous end_time/end_reason (so the earlier ending stays on record),
+# then clears end_time, end_reason, and end_detail. Without this a recreated
+# session keeps its old end_time — so 'sandbox status' and the teardown
+# reminder skip it as ended — and a clean re-stop would keep a stale
+# end_reason (audit_record_end_reason only writes a non-empty one). No-op
+# when the session has not ended.
+audit_reopen_session() {
+  local log_dir="$1"
+  local session_json="${log_dir}/session.json"
+
+  [[ -f "${session_json}" ]] || return 0
+
+  local prev_end prev_reason
+  prev_end="$(jq -r '.end_time // ""' "${session_json}" 2>/dev/null || true)"
+  [[ -n "${prev_end}" && "${prev_end}" != "null" ]] || return 0
+  prev_reason="$(jq -r '.end_reason // ""' "${session_json}" 2>/dev/null || true)"
+  audit_log_event "${log_dir}" "resumed" \
+    "previous end_time=${prev_end}${prev_reason:+ end_reason=${prev_reason}}"
+
+  local tmp
+  tmp="$(mktemp)"
+  if jq '.end_time = null | del(.end_reason, .end_detail)' \
+    "${session_json}" > "${tmp}"; then
+    mv "${tmp}" "${session_json}"
+  else
+    rm -f "${tmp}"
+  fi
+}
+
 # audit_record_dependencies_down — stamp a down-timestamp on every recorded
 # dependency at teardown. No-op when the session declared none.
 audit_record_dependencies_down() {

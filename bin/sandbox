@@ -2663,6 +2663,11 @@ recreate_session_pod() {
     _git_exec_clear_findings "${sj}"
   fi
 
+  # The session is running again: reopen its record so status, list, and the
+  # teardown reminder treat it as active until the next 'sandbox stop' (or the
+  # failed-start teardown below) ends it again.
+  audit_reopen_session "${log_dir}"
+
   echo "==> Recreating pod for ${session_id} (${agent}, tier ${tier})..."
   prepare_agent_home "${agent}"
 
