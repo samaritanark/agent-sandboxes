@@ -164,6 +164,10 @@ test_recreate_reruns_gates_before_apply() {
   # Case D — an unverified result (2: pre-upgrade session, no baseline) warns
   # but does not refuse, and records the current state as the baseline.
   _git_exec_check_repo(){ echo "  .git integrity baseline missing"; return 2; }
+  # A stop result recorded before this resume is stale once the agent runs
+  # again; recreate must drop it.
+  jq --arg p "${TEST_DIR}/repoA" '.git_exec_findings = {($p): {status: 0, findings: ""}}' \
+    "${sdir}/session.json" > "${sdir}/session.json.tmp" && mv "${sdir}/session.json.tmp" "${sdir}/session.json"
   : > "${applied}"
   ( recreate_session_pod "ses-gate-test" ) >/dev/null 2>&1 || true
   [[ -s "${applied}" ]] && pass "an unverified git-exec result does not refuse resume" \
@@ -171,6 +175,9 @@ test_recreate_reruns_gates_before_apply() {
   jq -e --arg p "${TEST_DIR}/repoA" '.repo_git_fingerprints[$p].gitdir_kind' "${sdir}/session.json" >/dev/null 2>&1 \
     && pass "an unverified resume records a git baseline in session.json" \
     || fail "no git baseline recorded after an unverified resume"
+  jq -e 'has("git_exec_findings") | not' "${sdir}/session.json" >/dev/null \
+    && pass "recreate drops the stale stop result" \
+    || fail "recreate kept a stop result recorded before the resume"
 }
 
 # recreate_session_pod must thread cmd_resume's --i-accept-* waiver flags into
@@ -748,49 +755,79 @@ test_cmd_stop_flags_failed_pod_delete() {
     || fail "end_reason not set to teardown-incomplete (got '$(cat "${reasonf}")')"
 }
 
-# cmd_stop records each repo's git host-exec result in session.json, and the
-# next 'sandbox run' refuses while the most recent ended session on that repo
-# recorded a redirect (status 1). A later clean session clears it.
-test_git_exec_findings_ledger() {
-  info "Testing the git host-exec findings ledger read by 'sandbox run'..."
+# 'sandbox run' judges each repo against the most recent earlier session on
+# it: the result 'sandbox stop' recorded, or — when that session was never
+# stopped (eviction, killed CLI) — a comparison against its launch fingerprint.
+test_git_exec_prior_session() {
+  info "Testing the prior-session git host-exec check read by 'sandbox run'..."
   SANDBOX_LOGS_DIR="${TEST_DIR}/gxlogs"
-  local repo="${TEST_DIR}/gxrepo"
+  local repo="${TEST_DIR}/gxrepo" fp out
   mkdir -p "${repo}"; git -C "${repo}" init -q
+  fp="$(workspace_git_fingerprint "${repo}")"
+  # _gx_ses <id> <start_time> [<end_time>] — a session that launched on repo.
   _gx_ses() {
     mkdir -p "${SANDBOX_LOGS_DIR}/$1"
-    jq -n --arg r "${repo}" --arg t "$2" '{end_time: $t, repos: [$r]}' \
+    jq -n --arg r "${repo}" --arg s "$2" --arg e "${3:-}" --argjson fp "${fp}" \
+      '{start_time: $s, end_time: (if $e == "" then null else $e end), repos: [$r], repo_git_fingerprints: {($r): $fp}}' \
       > "${SANDBOX_LOGS_DIR}/$1/session.json"
   }
-  _git_exec_prior_findings "${repo}" >/dev/null \
-    && fail "no sessions yet, but prior findings reported" || pass "no prior sessions -> no prior findings"
+  _prior() { _git_exec_prior_session "$@" >/dev/null; }
 
-  _gx_ses ses-gx1 2026-10-01T00:00:00Z
+  if _prior "${repo}"; then fail "no sessions yet, but a refusal was reported"
+  else pass "no prior sessions -> no refusal"; fi
+
+  # A stopped session that recorded a redirect refuses (path matched physically).
+  _gx_ses ses-gx1 2026-10-01T00:00:00Z 2026-10-01T01:00:00Z
   _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx1/session.json" "${repo}" 1 "  .git/commondir present"
-  local out
-  if out="$(_git_exec_prior_findings "${repo}/")"; then
-    pass "a session that ended with a redirect is found (path matched physically)"
+  if out="$(_git_exec_prior_session "${repo}/")"; then
+    pass "a recorded redirect refuses the next run"
   else
-    fail "prior redirect not found"
+    fail "recorded redirect not found"
   fi
-  [[ "$(head -1 <<<"${out}")" == "ses-gx1" ]] && pass "names the session" || fail "wrong session: ${out}"
+  [[ "$(head -1 <<<"${out}")" == "@@ ses-gx1 recorded" ]] && pass "names the session and kind" \
+    || fail "wrong header: ${out}"
   case "${out}" in *commondir*) pass "carries the findings" ;; *) fail "findings missing: ${out}" ;; esac
 
-  # A still-running session (no end_time) does not count; a later clean one does.
-  mkdir -p "${SANDBOX_LOGS_DIR}/ses-gx2"
-  jq -n --arg r "${repo}" '{end_time: null, repos: [$r], git_exec_findings: {($r): {status: 0, findings: ""}}}' \
-    > "${SANDBOX_LOGS_DIR}/ses-gx2/session.json"
-  _git_exec_prior_findings "${repo}" >/dev/null && pass "an un-ended session does not clear it" \
-    || fail "an un-ended session cleared the prior finding"
-  _gx_ses ses-gx3 2026-10-02T00:00:00Z
-  _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx3/session.json" "${repo}" 0 ""
-  _git_exec_prior_findings "${repo}" >/dev/null && fail "a later clean session did not clear it" \
-    || pass "a later clean session clears it"
+  # A later clean stop clears it; an unverified (2) stop does not block.
+  _gx_ses ses-gx2 2026-10-02T00:00:00Z 2026-10-02T01:00:00Z
+  _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx2/session.json" "${repo}" 0 ""
+  if _prior "${repo}"; then fail "a later clean session did not clear it"
+  else pass "a later clean session clears it"; fi
+  _gx_ses ses-gx3 2026-10-03T00:00:00Z 2026-10-03T01:00:00Z
+  _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx3/session.json" "${repo}" 2 "  baseline missing"
+  if _prior "${repo}"; then fail "an unverified end blocked the next run"
+  else pass "an unverified end does not block the next run"; fi
 
-  # An unverified end (2) does not block the next run.
-  _gx_ses ses-gx4 2026-10-03T00:00:00Z
-  _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx4/session.json" "${repo}" 2 "  baseline missing"
-  _git_exec_prior_findings "${repo}" >/dev/null && fail "an unverified end blocked the next run" \
-    || pass "an unverified end does not block the next run"
+  # A newer session that was never stopped: unchanged repo passes...
+  _gx_ses ses-gx4 2026-10-04T00:00:00Z
+  if _prior "${repo}"; then fail "an unchanged repo after an un-stopped session was refused"
+  else pass "an un-stopped session with an unchanged repo does not refuse"; fi
+  # ...but a change its fingerprint can see refuses, even though the
+  # current-state check alone would pass it.
+  mkdir -p "${repo}/vendor/lib/objects" "${repo}/vendor/lib/refs"
+  printf 'ref: refs/heads/main\n' > "${repo}/vendor/lib/HEAD"
+  local rc=0
+  workspace_git_exec_check "${repo}" "$(workspace_git_fingerprint "${repo}")" >/dev/null || rc=$?
+  [[ "${rc}" -eq 0 ]] && pass "(control) the current-state check alone cannot see it" \
+    || fail "control: current-state check returned ${rc}"
+  if out="$(_git_exec_prior_session "${repo}")"; then
+    pass "an un-stopped session's launch baseline catches the change"
+  else
+    fail "change after an un-stopped session not caught"
+  fi
+  [[ "$(head -1 <<<"${out}")" == "@@ ses-gx4 unstopped" ]] && pass "reported as unstopped" \
+    || fail "wrong header: ${out}"
+
+  # An overlapping session: a NEWER session on the repo stopped clean does not
+  # hide the older un-stopped one, whose baseline the repo still fails.
+  _gx_ses ses-gx5 2026-10-05T00:00:00Z 2026-10-05T01:00:00Z
+  _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx5/session.json" "${repo}" 0 ""
+  if out="$(_git_exec_prior_session "${repo}")"; then
+    pass "an older un-stopped session is still checked after a newer clean stop"
+  else
+    fail "a newer clean stop hid an older un-stopped session"
+  fi
+  case "${out}" in *"@@ ses-gx4 unstopped"*) pass "names the older session" ;; *) fail "wrong output: ${out}" ;; esac
 }
 
 main() {
@@ -804,7 +841,7 @@ main() {
   test_guide_command_reconstructs_run
   test_recreate_reruns_gates_before_apply
   test_recreate_threads_waiver_flags
-  test_git_exec_findings_ledger
+  test_git_exec_prior_session
   test_recreate_tears_down_on_pod_failure
   test_teardown_partial_session_integrity
   test_adopt_session_secrets_ownerrefs

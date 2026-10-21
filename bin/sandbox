@@ -272,9 +272,11 @@ OPTIONS:
                                     --i-accept-unvetted-repo for those.
   --i-accept-git-exec-vectors       Launch even when a --repo has a git host-exec
                                     redirect (e.g. .git/commondir, or a nested .git
-                                    pointer outside .git/modules), or when the last
+                                    pointer outside .git/modules), when the last
                                     session on it ended with one ('sandbox stop'
-                                    reported it). Inspect the repo first; the
+                                    reported it), or when that session was never
+                                    stopped and the repo has changed since it
+                                    launched. Inspect the repo first; the
                                     acceptance is recorded in the audit log.
   --help                            Show this help
 
@@ -1224,11 +1226,13 @@ cmd_run() {
       workspace_prescan "${_r}"
     done
     # Refuse to launch into a workspace carrying a git host-exec redirect the
-    # read-only .git mounts don't cover (F7), or whose last session ended with
-    # one that 'sandbox stop' recorded: the fingerprint below would otherwise
-    # adopt the booby-trapped state as this session's clean baseline. Checked
-    # against a fingerprint of the current state, so only the baseline-free
-    # rules (commondir, a pointer outside .git/modules) can fire here.
+    # read-only .git mounts don't cover (F7): the fingerprint below would
+    # otherwise adopt the booby-trapped state as this session's clean baseline.
+    # Two checks. The current-state check uses a fingerprint of the repo as it
+    # is now, so only the baseline-free rules (commondir, a pointer outside
+    # .git/modules) can fire. The prior-session check covers the rest: it uses
+    # the last session's recorded stop result, or, if that session was never
+    # stopped, compares against its launch fingerprint.
     local _gx_r _gx_out _gx_rc _gx_hit=0
     for _gx_r in "${opt_repos[@]}"; do
       _gx_rc=0
@@ -1237,10 +1241,24 @@ cmd_run() {
         warn "workspace ${_gx_r} has git host-exec redirect(s) the read-only .git mounts do not cover:"
         echo "${_gx_out}" >&2
         _gx_hit=1
+      elif [[ "${_gx_rc}" -ne 0 ]]; then
+        warn "workspace ${_gx_r}: part of the git host-exec check could not be verified:"
+        echo "${_gx_out}" >&2
       fi
-      if _gx_out="$(_git_exec_prior_findings "${_gx_r}")"; then
-        warn "the last session on ${_gx_r} ($(head -1 <<<"${_gx_out}")) ended with git host-exec findings:"
-        tail -n +2 <<<"${_gx_out}" >&2
+      if _gx_out="$(_git_exec_prior_session "${_gx_r}")"; then
+        local _gx_line _gx_sid _gx_kind
+        while IFS= read -r _gx_line; do
+          if [[ "${_gx_line}" == "@@ "* ]]; then
+            read -r _ _gx_sid _gx_kind <<<"${_gx_line}"
+            if [[ "${_gx_kind}" == "recorded" ]]; then
+              warn "the last session on ${_gx_r} (${_gx_sid}) ended with git host-exec findings:"
+            else
+              warn "session ${_gx_sid} on ${_gx_r} was never stopped, and the repo has changed since it launched in a way that can carry a git host-exec redirect:"
+            fi
+          else
+            echo "${_gx_line}" >&2
+          fi
+        done <<<"${_gx_out}"
         _gx_hit=1
       fi
     done
@@ -2432,30 +2450,79 @@ _git_exec_record_baseline() {
   fi
 }
 
-# _git_exec_prior_findings <repo> — if the most recently ENDED session that
-# recorded a git host-exec result for <repo> (matched by physical path) ended
-# with a redirect (status 1), print that session's id on the first line and its
-# findings after, and return 0. Return 1 otherwise.
-_git_exec_prior_findings() {
-  local repo="$1" want sj t k best_t="" best_sj="" best_key=""
+# _git_exec_clear_findings <session_json> — drop the recorded stop results
+# (.git_exec_findings), for a session whose agent is about to run again.
+_git_exec_clear_findings() {
+  local sj="$1" tmp
+  [[ -f "${sj}" ]] || return 0
+  tmp="$(mktemp)"
+  if jq 'del(.git_exec_findings)' "${sj}" > "${tmp}"; then
+    mv "${tmp}" "${sj}"
+  else
+    rm -f "${tmp}"
+  fi
+}
+
+# _git_exec_prior_session <repo> — judge <repo> against the earlier sessions on
+# it (matched by physical path). Returns 0 when any warrants a refusal, printing
+# one "@@ <session_id> <kind>" header per such session followed by its findings;
+# returns 1 otherwise. <kind> is:
+#   recorded  — the newest session on the repo was stopped, and 'sandbox stop'
+#               recorded a redirect (status 1). A newer session supersedes it:
+#               launching one means the operator got past it (clean or waived).
+#   unstopped — a session with no recorded stop result (it ended without
+#               'sandbox stop': an eviction, a killed CLI; it was resumed since
+#               its last stop; or it is still running) whose launch fingerprint
+#               the repo now fails. Every such session is checked, not just the
+#               newest, so an overlapping session on the same repo is covered.
+# The unstopped case matters because nothing recorded how that session ended,
+# and the current-state check in cmd_run cannot see a redirect that needs a
+# baseline to detect.
+_git_exec_prior_session() {
+  local repo="$1" want sj t k st found=1
+  local newest_t="" rec_t="" rec_sj="" rec_key=""
+  local -a unstopped=()
   want="$(_git_resolve_dir / "${repo}")"
   [[ -n "${want}" ]] || want="${repo}"
   for sj in "${SANDBOX_LOGS_DIR}"/ses-*/session.json; do
     [[ -f "${sj}" ]] || continue
-    t="$(jq -r '.end_time // ""' "${sj}" 2>/dev/null || true)"
+    t="$(jq -r '.start_time // ""' "${sj}" 2>/dev/null || true)"
     [[ -n "${t}" && "${t}" != "null" ]] || continue
     while IFS= read -r k; do
       [[ -n "${k}" ]] || continue
       [[ "${k}" == "${repo}" || "$(_git_resolve_dir / "${k}")" == "${want}" ]] || continue
-      if [[ -z "${best_t}" || "${t}" > "${best_t}" ]]; then
-        best_t="${t}"; best_sj="${sj}"; best_key="${k}"
+      [[ -z "${newest_t}" || "${t}" > "${newest_t}" ]] && newest_t="${t}"
+      st="$(jq -r --arg p "${k}" '.git_exec_findings[$p].status // ""' "${sj}" 2>/dev/null || true)"
+      if [[ -n "${st}" ]]; then
+        if [[ -z "${rec_t}" || "${t}" > "${rec_t}" ]]; then
+          rec_t="${t}"; rec_sj="${sj}"; rec_key="${k}"
+        fi
+      else
+        unstopped+=("${sj}"$'\t'"${k}")
       fi
-    done < <(jq -r '(.git_exec_findings // {}) | keys[]' "${sj}" 2>/dev/null || true)
+    done < <(jq -r '((.repo_git_fingerprints // {}) + (.git_exec_findings // {})) | keys[]' "${sj}" 2>/dev/null || true)
   done
-  [[ -n "${best_sj}" ]] || return 1
-  [[ "$(jq -r --arg p "${best_key}" '.git_exec_findings[$p].status' "${best_sj}" 2>/dev/null)" == "1" ]] || return 1
-  basename "$(dirname "${best_sj}")"
-  jq -r --arg p "${best_key}" '.git_exec_findings[$p].findings' "${best_sj}"
+
+  if [[ -n "${rec_sj}" && "${rec_t}" == "${newest_t}" ]] \
+    && [[ "$(jq -r --arg p "${rec_key}" '.git_exec_findings[$p].status' "${rec_sj}" 2>/dev/null)" == "1" ]]; then
+    printf '@@ %s recorded\n' "$(basename "$(dirname "${rec_sj}")")"
+    jq -r --arg p "${rec_key}" '.git_exec_findings[$p].findings' "${rec_sj}"
+    found=0
+  fi
+
+  local e fp out rc
+  for e in "${unstopped[@]+"${unstopped[@]}"}"; do
+    sj="${e%%$'\t'*}"; k="${e#*$'\t'}"
+    fp="$(jq -c --arg p "${k}" '.repo_git_fingerprints[$p] // empty' "${sj}" 2>/dev/null || true)"
+    [[ -n "${fp}" ]] || continue
+    rc=0
+    out="$(workspace_git_exec_check "${repo}" "${fp}")" || rc=$?
+    [[ "${rc}" -eq 1 ]] || continue
+    printf '@@ %s unstopped\n' "$(basename "$(dirname "${sj}")")"
+    printf '%s\n' "${out}"
+    found=0
+  done
+  return "${found}"
 }
 
 # recreate_session_pod <session_id> — rebuild and apply the policy + pod for a
@@ -2588,6 +2655,12 @@ recreate_session_pod() {
       audit_log_event "${log_dir}" "secret-scan" "${SESSION_SECRET_SUMMARY}"
     fi
     audit_flush_overrides "${log_dir}"
+    # The agent is about to run again, so any git host-exec result a previous
+    # 'sandbox stop' recorded no longer describes how this session ends. Drop
+    # it: until a stop records a fresh one, the next 'sandbox run' on these
+    # repos compares against the launch fingerprint instead (see
+    # _git_exec_prior_session).
+    _git_exec_clear_findings "${sj}"
   fi
 
   echo "==> Recreating pod for ${session_id} (${agent}, tier ${tier})..."

@@ -284,8 +284,12 @@ The sandbox enforces three filesystem rules:
 
    The check runs at four points:
 
-   - **`sandbox run`** refuses to launch when a repo already has a redirect, or
-     when the last session on it ended with one.
+   - **`sandbox run`** refuses to launch when a repo has a `.git/commondir` or
+     a nested pointer outside `.git/modules`, or when the last session on it
+     ended with a redirect. For any earlier session on the repo that was never
+     stopped (an eviction, a killed CLI, a resume since its last stop, or one
+     still running), `run` compares the repo against that session's launch
+     fingerprint, and refuses on any redirect it finds.
    - **`sandbox stop`** warns, on the frozen workspace after the pod is torn
      down, and records the result in the session log so the next run sees it.
    - **`sandbox resume`** refuses to relaunch when it finds a redirect. When
@@ -294,7 +298,10 @@ The sandbox enforces three filesystem rules:
    - **`sandbox status`** warns for active sessions.
 
    `--i-accept-git-exec-vectors` waives the refusals on `run` and `resume`, and
-   the waiver is recorded in the audit log. The check compares hashes of what
+   the waiver is recorded in the audit log. A waiver accepts the repo's state
+   for good, not for one launch: the new session's fingerprint takes that state
+   as its baseline, so from then on only a `.git/commondir` or a pointer outside
+   `.git/modules` can flag it again. The check compares hashes of what
    git reads, so a legitimate change made during a session (for example, you
    running `git config` on the host) shows up as a finding too. That is
    deliberate: it can't tell your edit from the agent's.
