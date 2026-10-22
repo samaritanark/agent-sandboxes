@@ -44,7 +44,7 @@ SANDBOX_GVISOR_RELEASE="${SANDBOX_GVISOR_RELEASE:-20260914.0}"
 # DESIRED_VERSION. Constrained to <4 in renovate.json: setup uses the get-helm-3
 # installer and the Cilium chart is validated against helm 3.
 # renovate: datasource=github-releases depName=helm/helm versioning=semver
-SANDBOX_HELM_VERSION="${SANDBOX_HELM_VERSION:-v3.22.0}"
+SANDBOX_HELM_VERSION="${SANDBOX_HELM_VERSION:-v3.22.1}"
 
 # nerdctl — the image builder on BOTH platforms (nerdctl-full release asset,
 # which bundles buildkit). macOS builds inside the Lima VM; Linux installs
