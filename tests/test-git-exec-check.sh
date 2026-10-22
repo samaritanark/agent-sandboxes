@@ -195,10 +195,18 @@ test_route3_nested_git() {
   mkdir -p "${repo}/src"; _gi "${repo}"
   echo c > "${repo}/src/c"; git -C "${repo}" add . && git -C "${repo}" commit -qm c
   fp="$(workspace_git_fingerprint "${repo}")"
-  _gi "${repo}/src"    # src/ becomes its own repo
+  _gi "${repo}/src"    # src/ becomes its own repo (fresh: no host-exec surface)
   run_check "${repo}" "${fp}"
-  eq "new nested .git is a redirect" "1" "${CHECK_RC}"
-  has "names src" "${CHECK_OUT}" "dir: src/.git"
+  # F5: a brand-new nested repo with no exec config and only sample hooks warns
+  # and lets the baseline advance, rather than refusing like a planted redirect.
+  eq "benign new nested repo warns (unverified), not refuses" "2" "${CHECK_RC}"
+  has "names src as a new repo" "${CHECK_OUT}" "src/.git"
+  has "says baseline will advance" "${CHECK_OUT}" "no recognized host-exec config"
+  # But the same new repo carrying an exec config key IS a redirect.
+  git -C "${repo}/src" config core.fsmonitor '/tmp/x'
+  run_check "${repo}" "${fp}"
+  eq "new nested repo with an exec config key is a redirect" "1" "${CHECK_RC}"
+  has "names it as host-exec" "${CHECK_OUT}" "host-exec config or hooks"
 }
 
 test_route3_shape_rule_any_name() {
@@ -208,10 +216,18 @@ test_route3_shape_rule_any_name() {
   mkdir -p "${repo}/half"; printf 'ref: refs/heads/main\n' > "${repo}/half/HEAD"
   run_check "${repo}" "${fp}"
   eq "HEAD alone is not repo-shaped (git ignores it)" "0" "${CHECK_RC}"
+  # A repo-shaped dir is found by shape, not by the name .git. With no config
+  # and no hooks it carries no host-exec surface, so it warns (F5)...
   _shape "${repo}/vendor/lib"
   run_check "${repo}" "${fp}"
-  eq "a repo-shaped dir with no .git name is a redirect" "1" "${CHECK_RC}"
-  has "names vendor/lib" "${CHECK_OUT}" "dir: vendor/lib"
+  eq "a benign repo-shaped dir (any name) warns" "2" "${CHECK_RC}"
+  has "names vendor/lib" "${CHECK_OUT}" "vendor/lib"
+  # ...but one carrying a planted hook is a redirect.
+  mkdir -p "${repo}/vendor/lib/hooks"
+  printf '#!/bin/sh\ntouch /tmp/x\n' > "${repo}/vendor/lib/hooks/pre-commit"
+  run_check "${repo}" "${fp}"
+  eq "a repo-shaped dir with a planted hook is a redirect" "1" "${CHECK_RC}"
+  has "names vendor/lib as host-exec" "${CHECK_OUT}" "vendor/lib"
 }
 
 test_route3_nested_config_drift() {
@@ -233,7 +249,8 @@ test_route3_pointer_resolved_by_path() {
   printf 'gitdir: ../.git/modules/../../elsewhere\n' > "${repo}/src/.git"
   run_check "${repo}" "${fp}"
   eq "pointer that traverses out of .git/modules is a redirect" "1" "${CHECK_RC}"
-  has "names the pointer" "${CHECK_OUT}" "pointer outside .git/modules: src/.git"
+  has "names the pointer" "${CHECK_OUT}" "src/.git"
+  has "says outside .git/modules" "${CHECK_OUT}" "pointer outside .git/modules"
   run_check "${repo}"
   eq "it is a redirect even without a baseline" "1" "${CHECK_RC}"
 }
@@ -286,6 +303,150 @@ test_route4_pointer_rewritten_in_place() {
 }
 
 ###############################################################################
+# Config-steering routes git reads from OUTSIDE the two read-only mounts:
+# core.hooksPath, a symlinked .git/hooks, and config include.path. Each runs on
+# the host on a routine git status/commit, with a plain write to a tracked file.
+###############################################################################
+test_route_hookspath() {
+  info "Testing core.hooksPath to a tracked directory..."
+  local repo="${TEST_DIR}/hp" fp
+  _mkrepo "${repo}"
+  mkdir -p "${repo}/.husky/_"; printf '#!/bin/sh\necho a\n' > "${repo}/.husky/_/pre-commit"
+  git -C "${repo}" config core.hooksPath .husky/_
+  fp="$(workspace_git_fingerprint "${repo}")"
+  run_check "${repo}" "${fp}"
+  eq "repo with hooksPath set at launch passes" "0" "${CHECK_RC}"
+  # Editing the hook the way an agent would is detected, naming the file.
+  printf 'echo PWNED\n' >> "${repo}/.husky/_/pre-commit"
+  run_check "${repo}" "${fp}"
+  eq "hooksPath hook edit is a redirect" "1" "${CHECK_RC}"
+  has "names the hooksPath hook" "${CHECK_OUT}" ".husky/_/pre-commit"
+}
+
+test_route_symlinked_hooks() {
+  info "Testing a symlinked .git/hooks and a repoint..."
+  local repo="${TEST_DIR}/sh" fp
+  _mkrepo "${repo}"
+  rm -rf "${repo}/.git/hooks"; mkdir "${repo}/.githooks"
+  printf '#!/bin/sh\necho a\n' > "${repo}/.githooks/pre-commit"
+  ln -s ../.githooks "${repo}/.git/hooks"
+  fp="$(workspace_git_fingerprint "${repo}")"
+  run_check "${repo}" "${fp}"
+  eq "symlinked hooks at launch passes" "0" "${CHECK_RC}"
+  printf 'echo PWNED\n' >> "${repo}/.githooks/pre-commit"
+  run_check "${repo}" "${fp}"
+  eq "editing a hook through the symlink is a redirect" "1" "${CHECK_RC}"
+  has "names the hook through the link" "${CHECK_OUT}" ".git/hooks/pre-commit"
+  # Repointing the link at a different directory with identical content still
+  # drifts, because the link target itself is recorded.
+  local repo2="${TEST_DIR}/sr" fp2
+  _mkrepo "${repo2}"; rm -rf "${repo2}/.git/hooks"
+  mkdir "${repo2}/h1" "${repo2}/h2"
+  printf 'echo h\n' > "${repo2}/h1/pre-commit"; printf 'echo h\n' > "${repo2}/h2/pre-commit"
+  ln -s ../h1 "${repo2}/.git/hooks"
+  fp2="$(workspace_git_fingerprint "${repo2}")"
+  rm "${repo2}/.git/hooks"; ln -s ../h2 "${repo2}/.git/hooks"
+  run_check "${repo2}" "${fp2}"
+  eq "repointing the hooks symlink is a redirect" "1" "${CHECK_RC}"
+}
+
+test_route_config_include() {
+  info "Testing config include.path to a tracked file..."
+  local repo="${TEST_DIR}/inc" fp
+  _mkrepo "${repo}"
+  echo '# shared' > "${repo}/.gitshared"
+  git -C "${repo}" config include.path ../.gitshared
+  fp="$(workspace_git_fingerprint "${repo}")"
+  run_check "${repo}" "${fp}"
+  eq "repo with an include at launch passes" "0" "${CHECK_RC}"
+  printf '[core]\n\tfsmonitor = /tmp/x\n' >> "${repo}/.gitshared"
+  run_check "${repo}" "${fp}"
+  eq "editing an included config file is a redirect" "1" "${CHECK_RC}"
+  has "names the included file" "${CHECK_OUT}" ".gitshared"
+  # An include target OUTSIDE the worktree is not agent-writable, so an operator
+  # editing it must not raise a false positive.
+  local repo2="${TEST_DIR}/ext" fp2
+  _mkrepo "${repo2}"
+  echo '# e' > "${TEST_DIR}/extcfg"
+  git -C "${repo2}" config include.path "${TEST_DIR}/extcfg"
+  fp2="$(workspace_git_fingerprint "${repo2}")"
+  printf '# operator edit\n' >> "${TEST_DIR}/extcfg"
+  run_check "${repo2}" "${fp2}"
+  eq "editing an out-of-workspace include does not flag" "0" "${CHECK_RC}"
+}
+
+test_f9_hash_cap() {
+  info "Testing the exec-digest file cap bounds the hashing (F9)..."
+  local repo="${TEST_DIR}/cap" fp lines
+  _mkrepo "${repo}"   # ships ~14 .sample hooks, so a cap of 5 truncates
+  lines="$(SANDBOX_GIT_EXEC_HASH_CAP=5 _git_dir_exec_lines "${repo}/.git" "${repo}")"
+  has "cap records a truncation sentinel" "${lines}" "exec-files-truncated:"
+  # Crossing the cap still changes the digest, so a redirect cannot hide beyond
+  # it: the sentinel carries the file count.
+  fp="$(SANDBOX_GIT_EXEC_HASH_CAP=5 workspace_git_fingerprint "${repo}")"
+  printf '#!/bin/sh\n' > "${repo}/.git/hooks/pre-commit"
+  local rc=0
+  SANDBOX_GIT_EXEC_HASH_CAP=5 workspace_git_exec_check "${repo}" "${fp}" >/dev/null || rc=$?
+  eq "adding a file past the cap still drifts" "1" "${rc}"
+}
+
+test_f9_nested_entry_cap() {
+  info "Testing the nested-entry cap bounds a repo-shaped-dir flood (F9)..."
+  local repo="${TEST_DIR}/ncap" fp i rc=0
+  _mkrepo "${repo}"
+  for i in $(seq 1 12); do _shape "${repo}/n${i}"; done   # 12 repo-shaped dirs
+  fp="$(SANDBOX_GIT_NESTED_ENTRY_CAP=5 workspace_git_fingerprint "${repo}")"
+  set +e
+  CHECK_OUT="$(SANDBOX_GIT_NESTED_ENTRY_CAP=5 workspace_git_exec_check "${repo}" "${fp}")"
+  CHECK_RC=$?
+  set -e
+  eq "a flood past the cap is unverified, not clean" "2" "${CHECK_RC}"
+  has "names the overflow" "${CHECK_OUT}" "are unchecked"
+}
+
+test_benign_exec_key_breadth() {
+  info "Testing a new nested repo with any exec config key refuses, not warns..."
+  local base="${TEST_DIR}/ek" fp key d
+  # Keys git runs that a blacklist must cover; each must make a NEW repo refuse.
+  for key in "diff.external=/x" "pager.status=/x" "credential.helper=!/x" \
+             "trailer.sob.command=/x" "core.fsmonitor=/x" "init.templateDir=/x"; do
+    d="${base}/$(printf '%s' "${key%%=*}" | tr '.' '_')"
+    _mkrepo "${d}"; fp="$(workspace_git_fingerprint "${d}")"
+    _mkrepo "${d}/v"; git -C "${d}/v" config "${key%%=*}" "${key#*=}"
+    run_check "${d}" "${fp}"
+    eq "new nested repo with ${key%%=*} refuses" "1" "${CHECK_RC}"
+  done
+  # A plain https clone has no exec surface and stays benign (F5 UX preserved).
+  d="${base}/https"; _mkrepo "${d}"; fp="$(workspace_git_fingerprint "${d}")"
+  _mkrepo "${d}/v"; git -C "${d}/v" remote add origin https://example.com/r.git
+  run_check "${d}" "${fp}"
+  eq "new nested repo with an https remote stays benign" "2" "${CHECK_RC}"
+  # An ext:: transport URL is an exec vector, so it refuses.
+  d="${base}/ext"; _mkrepo "${d}"; fp="$(workspace_git_fingerprint "${d}")"
+  _mkrepo "${d}/v"; git -C "${d}/v" remote add origin "ext::sh -c payload"
+  run_check "${d}" "${fp}"
+  eq "new nested repo with an ext:: remote refuses" "1" "${CHECK_RC}"
+}
+
+test_cap_does_not_hide_pointer() {
+  info "Testing a dir flood cannot push a malicious pointer past the cap..."
+  local repo="${TEST_DIR}/caphide" fp i
+  _mkrepo "${repo}"; fp="$(workspace_git_fingerprint "${repo}")"
+  # Pad with repo-shaped dirs that sort before the pointer, then plant a
+  # pointer resolving outside .git/modules. Pointers are checked uncapped.
+  for i in 1 2 3 4 5 6; do _shape "${repo}/aaa${i}"; done
+  _shape "${TEST_DIR}/cap-evil-target"
+  mkdir -p "${repo}/zsub"
+  printf 'gitdir: ../../cap-evil-target\n' > "${repo}/zsub/.git"
+  set +e
+  CHECK_OUT="$(SANDBOX_GIT_NESTED_ENTRY_CAP=3 workspace_git_exec_check "${repo}" "${fp}")"
+  CHECK_RC=$?
+  set -e
+  eq "the pointer is still a redirect despite the flood" "1" "${CHECK_RC}"
+  has "names the hidden pointer" "${CHECK_OUT}" "pointer outside .git/modules"
+}
+
+###############################################################################
 # Status values: no baseline is 2, and many findings never wrap to 0
 ###############################################################################
 test_no_baseline_unverified() {
@@ -316,7 +477,13 @@ test_status_never_wraps() {
   done
   run_check "${repo}" "${fp}"
   eq "256 findings return 1" "1" "${CHECK_RC}"
-  has "output is capped" "${CHECK_OUT}" "and more"
+  has "output is capped" "${CHECK_OUT}" "more"
+  # Only the capped number of lines is printed, not all 256.
+  if [[ "$(grep -c '^    p[0-9]* -> ' <<<"${CHECK_OUT}")" -le 20 ]]; then
+    pass "at most 20 pointer lines printed"
+  else
+    fail "pointer list not capped"
+  fi
 }
 
 ###############################################################################
@@ -338,10 +505,18 @@ test_fingerprint_session_json_roundtrip() {
   got="$(jq -c --arg p "${repo}" '.repo_git_fingerprints[$p]' "${log_dir}/session.json")"
   eq "fingerprint round-trips" "${fp}" "${got}"
   local k
-  for k in inode modules_hash gitdir_kind gitdir_hash nested_hash; do
-    [[ -n "$(jq -r --arg k "${k}" '.[$k] // ""' <<<"${got}")" ]] \
-      && pass "fingerprint has ${k}" || fail "fingerprint missing ${k}"
+  for k in inode modules_hash gitdir_kind gitdir_hash nested_hash gitdir_lines; do
+    if [[ -n "$(jq -r --arg k "${k}" '.[$k] // ""' <<<"${got}")" ]]; then
+      pass "fingerprint has ${k}"
+    else
+      fail "fingerprint missing ${k}"
+    fi
   done
+  if [[ "$(jq -r '.nested_map | type' <<<"${got}")" == "object" ]]; then
+    pass "fingerprint nested_map is an object"
+  else
+    fail "fingerprint nested_map not an object"
+  fi
   run_check "${repo}" "${got}"
   eq "session.json baseline passes untampered repo" "0" "${CHECK_RC}"
 }
@@ -374,6 +549,13 @@ main() {
   test_route4_replaced_git
   test_route4_git_becomes_pointer
   test_route4_pointer_rewritten_in_place
+  test_route_hookspath
+  test_route_symlinked_hooks
+  test_route_config_include
+  test_f9_hash_cap
+  test_f9_nested_entry_cap
+  test_benign_exec_key_breadth
+  test_cap_does_not_hide_pointer
   test_no_baseline_unverified
   test_status_never_wraps
   test_route2_submodule_drift

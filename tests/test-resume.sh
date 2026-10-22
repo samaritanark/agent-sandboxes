@@ -813,9 +813,11 @@ test_git_exec_prior_session() {
   if _prior "${repo}"; then fail "an unchanged repo after an un-stopped session was refused"
   else pass "an un-stopped session with an unchanged repo does not refuse"; fi
   # ...but a change its fingerprint can see refuses, even though the
-  # current-state check alone would pass it.
-  mkdir -p "${repo}/vendor/lib/objects" "${repo}/vendor/lib/refs"
+  # current-state check alone would pass it. The planted nested repo carries a
+  # hook, so it is a genuine redirect (a benign new repo would only warn).
+  mkdir -p "${repo}/vendor/lib/objects" "${repo}/vendor/lib/refs" "${repo}/vendor/lib/hooks"
   printf 'ref: refs/heads/main\n' > "${repo}/vendor/lib/HEAD"
+  printf '#!/bin/sh\ntouch /tmp/x\n' > "${repo}/vendor/lib/hooks/pre-commit"
   local rc=0
   workspace_git_exec_check "${repo}" "$(workspace_git_fingerprint "${repo}")" >/dev/null || rc=$?
   [[ "${rc}" -eq 0 ]] && pass "(control) the current-state check alone cannot see it" \

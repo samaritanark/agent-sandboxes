@@ -260,6 +260,18 @@ The sandbox enforces three filesystem rules:
      a fresh one, or turn `.git` into a pointer file aimed at a directory it
      controls. Where `.git` is already a pointer (a linked worktree), the
      agent can rewrite it in place.
+   - **`core.hooksPath`** — a repo that sets this (Husky does, at `.husky/_`,
+     and any team with a tracked `.githooks/` does) runs its hooks from an
+     ordinary, writable, *tracked* directory in the workspace, not from the
+     read-only `.git/hooks/`. The agent edits the hook with a plain file write.
+   - **a symlinked `.git/hooks`** — if the repo ships `.git/hooks` as a symlink
+     to a tracked directory, the read-only mount follows the link to that dir,
+     but the symlink itself sits in the writable `.git`, so the agent can
+     repoint it; and the hook files it points at are tracked and writable.
+   - **a config `include.path` / `includeIf`** — `.git/config` is read-only, but
+     a directive in it can pull in a *tracked* file from the workspace, and that
+     file's settings (`core.fsmonitor`, `core.hooksPath`, a filter driver, ...)
+     apply just the same. The agent edits the included file, not `.git/config`.
 
    Two residuals compound this. First, the IDE/`.gitmodules` coverage is
    "when present": a path *absent* at launch is not created (a read-only
@@ -273,14 +285,50 @@ The sandbox enforces three filesystem rules:
    Because the mount approach cannot close these on its own, a **host-side
    check** (`workspace_git_exec_check`) is the control. At launch it records a
    fingerprint of each repo: the `.git` inode, whether `.git` is a directory or
-   a pointer, a hash of its config and hooks (or of the pointer text), a hash
-   over the submodule gitdirs' config, hooks, and `commondir`, and a hash over
-   every nested repository and `.git` pointer in the tree. Nested repositories
-   are found by git's own shape rule, not by name. Later checks compare against
-   that fingerprint, and also flag a `.git/commondir` or a nested pointer that
-   resolves outside `.git/modules` with no baseline needed. The result is clean,
-   a redirect found, or unverified (a pre-upgrade session with no fingerprint).
-   An unverified result is never reported as clean.
+   a pointer, a hash of the files git would execute from — its config, every
+   file the config pulls in via `include.path` / `includeIf`, its hooks (through
+   a symlinked `hooks` directory), and the directory named by `core.hooksPath`
+   — a hash over the submodule gitdirs' equivalents and their `commondir`, and a
+   per-entry map of every nested repository and `.git` pointer in the tree.
+   Nested repositories are found by git's own shape rule, not by name. Later
+   checks compare against that fingerprint, and also flag a `.git/commondir` or a
+   nested pointer that resolves outside `.git/modules` with no baseline needed.
+   The result is clean, a redirect found, or unverified — a pre-upgrade session
+   with no fingerprint, a brand-new nested repository that carries no recognized
+   host-exec surface (which only warns, and whose state the baseline adopts only
+   when the session had no prior baseline), or more nested repositories than the
+   per-directory digest will walk (a cap that bounds a deliberate flood; the
+   cheap `.git`-pointer checks still run over *every* entry, so a flood cannot
+   push a redirecting pointer past the cap). An unverified result is never
+   reported as clean.
+
+   Three coverage limits are worth stating plainly. An `include.path` or a
+   `core.hooksPath` that points *outside* the workspace is not hashed: it is not
+   agent-writable, so an operator editing it does not raise a false alarm, but it
+   also means the check only covers the in-workspace targets an agent can reach.
+   A session that predates this check, or one that ended without a
+   `sandbox stop`, leaves no fingerprint for a later `run` to compare against; a
+   redirect planted during such a session is invisible to the baseline-free rules
+   until the session turns over.
+
+   And the per-directory digest is **capped** (default 1000 nested repositories,
+   `SANDBOX_GIT_NESTED_ENTRY_CAP`) so an agent cannot make `stop`/`status` crawl
+   by planting thousands of repo-shaped directories. Over the cap the result is
+   reported `unverified` with an explicit "the rest are unchecked" line (never
+   clean), and the cheap `.git`-pointer checks — the ones that catch a redirect
+   that a top-level `git status` would walk into — still run over *every* entry.
+   The residual is a **directory-based** redirect (a nested repo whose own config
+   or hooks run host code) that the agent deliberately sorts *past* the cap by
+   planting more than the cap's worth of benign repo-shaped directories ahead of
+   it: its digest is not computed, so it is surfaced only as the `unverified`
+   flood warning, not named as a redirect. Exploiting it needs the operator to
+   later run git *inside* that specific planted subdirectory (a nested repo does
+   not fire on a top-level `git status` the way a gitlink/pointer does), and the
+   flood itself is a loud, named anomaly. This is an accepted trade-off against
+   failing closed on every large monorepo; raise the cap, or treat overflow as a
+   refusal, if a deployment needs the stronger posture.
+
+   These are transitional or by-design gaps, not claims of complete coverage.
 
    The check runs at four points:
 
@@ -300,8 +348,10 @@ The sandbox enforces three filesystem rules:
    `--i-accept-git-exec-vectors` waives the refusals on `run` and `resume`, and
    the waiver is recorded in the audit log. A waiver accepts the repo's state
    for good, not for one launch: the new session's fingerprint takes that state
-   as its baseline, so from then on only a `.git/commondir` or a pointer outside
-   `.git/modules` can flag it again. The check compares hashes of what
+   as its baseline, so a redirect already present is no longer re-flagged — but
+   any *further* change to what git executes (its config and includes, hooks,
+   `hooksPath`, submodule or nested-repo config), and a `.git/commondir` or a
+   pointer outside `.git/modules`, still flags from then on. The check compares hashes of what
    git reads, so a legitimate change made during a session (for example, you
    running `git config` on the host) shows up as a finding too. That is
    deliberate: it can't tell your edit from the agent's.

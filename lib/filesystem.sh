@@ -167,6 +167,252 @@ _git_sha256_stdin() {
   fi
 }
 
+# Max files hashed in one exec-digest pass. Beyond this the digest records a
+# count-bearing sentinel instead of every file, so an agent cannot make
+# stop/status take minutes by planting thousands of repo-shaped directories
+# (F9). The sentinel carries the count, so crossing the cap still changes the
+# digest and is caught as drift.
+_GIT_EXEC_HASH_CAP="${SANDBOX_GIT_EXEC_HASH_CAP:-2000}"
+
+# Max nested git entries walked per repo. An agent can plant thousands of
+# repo-shaped directories to make stop/status crawl (F9); past this cap the scan
+# stops and the check reports the overflow as UNVERIFIED rather than grinding
+# through it. The entries are sorted, so the capped subset is deterministic and
+# compares consistently between launch and later checks.
+_GIT_NESTED_ENTRY_CAP="${SANDBOX_GIT_NESTED_ENTRY_CAP:-1000}"
+
+# _git_cap_nested — bound only the EXPENSIVE entries (the `dir` entries, each of
+# which gets a per-file exec digest) to _GIT_NESTED_ENTRY_CAP, emitting a
+# "cap\t<dir-count>" sentinel when there are more. `ptr` entries are passed
+# through UNCAPPED: resolving a pointer is one cheap read, and the baseline-free
+# "pointer outside .git/modules" rule must see every pointer — otherwise an agent
+# could flood the tree with cheap repo-shaped directories (which sort before
+# `ptr`) to push a malicious pointer past a combined cap and silently defeat that
+# rule. Used for the digest/map path; the check's pointer loop reads the full
+# uncapped entry list directly.
+_git_cap_nested() {
+  local cap="${SANDBOX_GIT_NESTED_ENTRY_CAP:-${_GIT_NESTED_ENTRY_CAP}}" line kind ndir
+  local -a dirs=() others=()
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    kind="${line%%$'\t'*}"
+    if [[ "${kind}" == "dir" ]]; then dirs+=("${line}"); else others+=("${line}"); fi
+  done
+  ndir="${#dirs[@]}"
+  if [[ "${ndir}" -gt 0 ]]; then
+    if [[ "${ndir}" -le "${cap}" ]]; then
+      printf '%s\n' "${dirs[@]}"
+    else
+      printf '%s\n' "${dirs[@]:0:${cap}}"
+      printf 'cap\t%s\n' "${ndir}"
+    fi
+  fi
+  [[ "${#others[@]}" -gt 0 ]] && printf '%s\n' "${others[@]}"
+}
+
+# _git_hash_batch — read NUL-separated file paths on stdin and print one
+# "<sha256>\t<path>" line per file, hashing them all in ONE sha256sum/shasum
+# invocation (F9: two processes total, not two per file). sha256 is 64 hex
+# chars followed by two spaces, so the path begins at column 67; awk slices
+# there to keep paths with spaces intact. Callers guard against empty input,
+# because xargs on GNU would otherwise run the hasher once against stdin.
+_git_hash_batch() {
+  local prog
+  if command -v sha256sum >/dev/null 2>&1; then prog=(sha256sum)
+  elif command -v shasum >/dev/null 2>&1; then prog=(shasum -a 256)
+  else cat >/dev/null; return 0; fi
+  xargs -0 "${prog[@]}" 2>/dev/null | awk '{ print substr($0,1,64) "\t" substr($0,67) }'
+}
+
+# _git_relpath <abs> <worktree> <gitdir> — a stable, readable label for <abs>:
+# relative to the worktree when it sits under it, else relative to the gitdir's
+# parent (so a top-level hook reads ".git/hooks/pre-commit"), else the absolute
+# path. Only used for display and for the within-run digest, so machine-local
+# absolute paths are fine.
+_git_relpath() {
+  local p="$1" wt="$2" d="$3" parent
+  if [[ -n "${wt}" && "${p}" == "${wt}/"* ]]; then printf '%s' "${p#"${wt}/"}"; return 0; fi
+  parent="${d%/*}"
+  if [[ -n "${parent}" && "${p}" == "${parent}/"* ]]; then printf '%s' "${p#"${parent}/"}"; return 0; fi
+  printf '%s' "${p}"
+}
+
+# _git_config_include_files <cfg> — print, NUL-terminated, the transitive set of
+# files <cfg> pulls in via include.path / includeIf.*.path (NOT <cfg> itself).
+# git reads these and applies their settings — including host-exec ones like
+# core.fsmonitor and core.hooksPath — so a config that is itself read-only can
+# still be steered by an agent-writable included file (F8 companion). Include
+# targets are read with `git config --file` and no `--includes`, which parses
+# the directives without applying any of them, so the read cannot itself fire an
+# exec setting. includeIf conditions are followed unconditionally (conservative:
+# a condition that does not match this host may match the operator's). Cycles
+# are broken with a visited set.
+_git_config_include_files() {
+  _GECF_SEEN="|$1|"
+  _gecf_walk "$1"
+}
+_gecf_walk() {
+  local f="$1" dir item key val tgt
+  [[ -f "${f}" ]] || return 0
+  # Skip the git invocation entirely for the common case of a config with no
+  # include section — a cheap grep instead of a process per git directory,
+  # which matters when a workspace holds thousands of nested repos (F9).
+  grep -qiE '^[[:space:]]*\[include(if)?([[:space:]]|\])' "${f}" 2>/dev/null || return 0
+  dir="${f%/*}"
+  while IFS= read -r -d '' item; do
+    key="${item%%$'\n'*}"; val="${item#*$'\n'}"
+    case "${key}" in *.path) ;; *) continue ;; esac
+    [[ -n "${val}" ]] || continue
+    # shellcheck disable=SC2088  # matching a literal "~/" prefix, not expanding
+    case "${val}" in '~/'*) val="${HOME}/${val#\~/}" ;; esac
+    case "${val}" in /*) tgt="${val}" ;; *) tgt="${dir}/${val}" ;; esac
+    # Normalize ../ segments so the display label reads ".gitshared", not
+    # ".git/../.gitshared", and so cycle detection sees a canonical path.
+    local tdir
+    tdir="$(_git_resolve_dir "/" "${tgt%/*}" 2>/dev/null)"
+    [[ -n "${tdir}" ]] && tgt="${tdir%/}/${tgt##*/}"
+    case "${_GECF_SEEN}" in *"|${tgt}|"*) continue ;; esac
+    _GECF_SEEN="${_GECF_SEEN}|${tgt}|"
+    [[ -f "${tgt}" ]] || continue
+    printf '%s\0' "${tgt}"
+    _gecf_walk "${tgt}"
+  done < <(git config --file "${f}" -z --get-regexp '^include' 2>/dev/null || true)
+}
+
+# _git_dir_exec_lines <gitdir> [<worktree>] — one sorted line per piece of the
+# exec surface of a single git directory: its config, the config's included
+# files, commondir, every file under hooks/ (following a symlinked hooks dir or
+# symlinked hook file), and — when a worktree is given — core.hooksPath and the
+# files under the directory it names. Symlinked hooks/hooksPath also emit a
+# marker line carrying the link target, so repointing a link at a different
+# directory shows as drift even if the new target hashes the same. Files are
+# hashed in one batch and capped (F9). Included and hooksPath files are kept
+# only when they fall inside the worktree (the only place the agent can write);
+# config and commondir are always kept so a replaced/repointed .git still shows.
+_git_dir_exec_lines() {
+  local d="$1" wt="${2:-}" f hp hpdir n has_inc=0
+  local cap="${SANDBOX_GIT_EXEC_HASH_CAP:-${_GIT_EXEC_HASH_CAP}}"
+  local -a files=() markers=()
+  [[ -f "${d}/config" ]] && files+=("${d}/config")
+  [[ -f "${d}/commondir" ]] && files+=("${d}/commondir")
+  while IFS= read -r -d '' f; do
+    has_inc=1
+    [[ -z "${wt}" || "${f}" == "${wt}/"* ]] && files+=("${f}")
+  done < <(_git_config_include_files "${d}/config")
+  if [[ -L "${d}/hooks" ]]; then markers+=("hooks-link:$(readlink "${d}/hooks")"); fi
+  if [[ -d "${d}/hooks" ]]; then
+    while IFS= read -r -d '' f; do files+=("${f}"); done \
+      < <(find -L "${d}/hooks" -type f -print0 2>/dev/null)
+  fi
+  # core.hooksPath needs a git process to read, so gate it on the config (or an
+  # included file) actually mentioning hooksPath — the common nested repo has
+  # none, and paying a git invocation per repo is the F9 cost that matters.
+  if [[ -n "${wt}" ]] && { [[ "${has_inc}" -eq 1 ]] || grep -qi 'hookspath' "${d}/config" 2>/dev/null; }; then
+    hp="$(git config --file "${d}/config" --includes --get core.hooksPath 2>/dev/null || true)"
+    if [[ -n "${hp}" ]]; then
+      markers+=("hookspath:${hp}")
+      case "${hp}" in /*) hpdir="${hp}" ;; *) hpdir="${wt}/${hp}" ;; esac
+      [[ -L "${hpdir}" ]] && markers+=("hookspath-link:$(readlink "${hpdir}")")
+      if [[ -d "${hpdir}" ]]; then
+        while IFS= read -r -d '' f; do files+=("${f}"); done \
+          < <(find -L "${hpdir}" -type f -print0 2>/dev/null)
+      fi
+    fi
+  fi
+  n="${#files[@]}"
+  if [[ "${n}" -gt "${cap}" ]]; then
+    markers+=("exec-files-truncated:${n}")
+    files=("${files[@]:0:${cap}}")
+  fi
+  {
+    [[ "${#markers[@]}" -gt 0 ]] && printf '%s\n' "${markers[@]}"
+    if [[ "${#files[@]}" -gt 0 ]]; then
+      local h p
+      while IFS=$'\t' read -r h p; do
+        [[ -n "${h}" ]] || continue
+        printf '%s:%s\n' "$(_git_relpath "${p}" "${wt}" "${d}")" "${h}"
+      done < <(printf '%s\0' "${files[@]}" | _git_hash_batch)
+    fi
+  } | LC_ALL=C sort
+}
+
+# _git_exec_changed_paths <baseline_lines> <current_lines> — the display labels
+# (the part before the final ":<hash>") that differ between two _git_dir_exec_lines
+# outputs, so a drift finding can name the file the operator should inspect.
+_git_exec_changed_paths() {
+  comm -3 <(printf '%s\n' "$1" | LC_ALL=C sort) <(printf '%s\n' "$2" | LC_ALL=C sort) 2>/dev/null \
+    | sed -e 's/^\t//' -e 's/:[^:]*$//' | LC_ALL=C sort -u | grep -v '^$' || true
+}
+
+# _git_cfg_has_exec_keys <configfile> — true if the config (with its includes)
+# sets any key git will turn into a host command. This is a RECOGNIZED-exec-key
+# blacklist, so it errs on the side of missing a key git adds in future — the
+# caller's message says "no *recognized* host-exec config" for that reason, and a
+# changed EXISTING repo is caught by the full digest regardless of this list;
+# only the new-nested warn-vs-refuse decision depends on it (F5). Covered keys,
+# by when they fire: on status/diff/log/show/commit — fsmonitor, hooksPath, a
+# diff driver (incl. the top-level `diff.external`), a textconv, a filter
+# driver, a pager (`core.pager` and any `pager.<cmd>`), a trailer command, the
+# editor/sequence.editor, a gpg program; on fetch/push/clone — sshCommand,
+# gitProxy, a credential helper, an `ext::`/`fd::`/transport-helper remote URL,
+# a `!`-command submodule update; plus askpass, alternateRefsCommand,
+# uploadpack's pack-objects hook, a merge/diff/mergetool/difftool command, and a
+# `!`-prefixed alias.
+_git_cfg_has_exec_keys() {
+  local cfg="$1" lst
+  [[ -f "${cfg}" ]] || return 1
+  lst="$(git config --file "${cfg}" --includes -l 2>/dev/null)" || return 1
+  # Key-name matches (the key alone proves exec surface).
+  grep -qiE \
+    '^(core\.(fsmonitor|hookspath|sshcommand|pager|editor|askpass|gitproxy|alternaterefscommand)|sequence\.editor|gpg\.([^=]*\.)?program|diff\.external|diff\.[^=]*\.(command|textconv)|difftool\.[^=]*\.cmd|merge\.[^=]*\.driver|mergetool\.[^=]*\.cmd|filter\.[^=]*\.(clean|smudge|process)|credential(\.[^=]*)?\.helper|trailer\.[^=]*\.(command|cmd)|pager\.[^=]*|init\.templatedir|uploadpack\.packobjectshook)=' \
+    <<<"${lst}" && return 0
+  # Value matches: a `!`-prefixed alias, an exec-transport remote/submodule URL,
+  # or a `!`-command submodule update.
+  grep -qiE \
+    '^(alias\.[^=]*=!|remote\.[^=]*\.(url|pushurl)=(ext|fd)::|submodule\.[^=]*\.url=(ext|fd)::|submodule\.[^=]*\.update=!)' \
+    <<<"${lst}" && return 0
+  return 1
+}
+
+# _git_dir_is_benign <gitdir> [<worktree>] — true if this git directory, new
+# since launch, cannot run host code on a routine status/commit: no exec config
+# keys, no hooksPath, no symlinked hooks dir, and no hook files other than the
+# .sample templates git ships. A benign new nested repo only warns; anything
+# else refuses (F5).
+_git_dir_is_benign() {
+  local d="$1"
+  _git_cfg_has_exec_keys "${d}/config" && return 1
+  [[ -L "${d}/hooks" ]] && return 1
+  if [[ -d "${d}/hooks" ]]; then
+    find -L "${d}/hooks" -type f ! -name '*.sample' -print 2>/dev/null | grep -q . && return 1
+  fi
+  return 0
+}
+
+# _git_exec_print_list <rel>... — print up to 20 "    <rel>" lines for a check
+# finding, then an "... and more" line, so a flood of planted entries cannot
+# bury the real one or scroll the operator's terminal for minutes.
+_git_exec_print_list() {
+  local shown=0 rel
+  for rel in "$@"; do
+    if [[ "${shown}" -ge 20 ]]; then echo "    ... and $(($# - shown)) more"; break; fi
+    echo "    ${rel}"
+    shown=$((shown + 1))
+  done
+}
+
+# _git_exec_print_entries <entries> — the same cap, over raw _git_nested_entries
+# "<kind>\t<rel>" lines (used on the pre-upgrade / no-baseline paths).
+_git_exec_print_entries() {
+  local shown=0 k rel
+  while IFS=$'\t' read -r k rel; do
+    [[ -n "${k}" ]] || continue
+    if [[ "${shown}" -ge 20 ]]; then echo "    ... and more"; break; fi
+    echo "    ${k}: ${rel}"
+    shown=$((shown + 1))
+  done <<<"$1"
+}
+
 # _git_modules_hash <repo> — one SHA-256 over the contents of every submodule
 # repository config, hook, AND commondir file under <repo>/.git/modules, each
 # prefixed by its repo-relative path. These live OUTSIDE the read-only workspace
@@ -182,41 +428,39 @@ _git_modules_hash() {
   local repo="$1"
   local base="${repo}/.git/modules"
   [[ -d "${base}" ]] || { printf 'none'; return 0; }
-  local f out=""
+  local f d out=""
+  # Each submodule gitdir has its own config; run the full exec digest over it
+  # so a config include or a symlinked hooks dir planted inside a submodule is
+  # covered the same way it is at the top level. No worktree is passed (a
+  # submodule's own core.hooksPath is an exotic, lower-value vector).
   while IFS= read -r f; do
     [[ -n "${f}" ]] || continue
-    out+="${f#"${repo}/"}:$(_leakscan_sha256 "${f}")
+    d="${f%/config}"
+    out+="mod:${d#"${repo}/"}
+$(_git_dir_exec_digest "${d}")
 "
-  done < <(find "${base}" -type f \( -name config -o -name commondir -o -path '*/hooks/*' \) 2>/dev/null | LC_ALL=C sort)
+  done < <(find "${base}" -type f -name config 2>/dev/null | LC_ALL=C sort)
   [[ -n "${out}" ]] || { printf 'none'; return 0; }
   printf '%s' "${out}" | _git_sha256_stdin
 }
 
-# _git_dir_exec_digest <gitdir> — one "relpath:sha256" line per exec-bearing
-# file of a single git directory: config, commondir, and everything under hooks/.
+# _git_dir_exec_digest <gitdir> [<worktree>] — a single SHA-256 over the exec
+# surface of one git directory (see _git_dir_exec_lines for what that covers).
 _git_dir_exec_digest() {
-  local d="$1" f
-  while IFS= read -r f; do
-    [[ -n "${f}" ]] || continue
-    printf '%s:%s\n' "${f#"${d}/"}" "$(_leakscan_sha256 "${f}")"
-  done < <(
-    [[ -f "${d}/config" ]] && printf '%s\n' "${d}/config"
-    [[ -f "${d}/commondir" ]] && printf '%s\n' "${d}/commondir"
-    [[ -d "${d}/hooks" ]] && find "${d}/hooks" -type f 2>/dev/null | LC_ALL=C sort
-    true
-  )
+  _git_dir_exec_lines "$@" | _git_sha256_stdin
 }
 
 # _git_gitdir_state <repo> — print "<kind> <hash>" for <repo>/.git: kind is
-# dir / file / symlink / missing; hash is over config+commondir+hooks for a
-# directory, over the pointer text for a gitfile, over the link target for a
-# symlink, and "none" when missing.
+# dir / file / symlink / missing; hash is over the full exec digest (config,
+# its includes, commondir, hooks, core.hooksPath) for a directory, over the
+# pointer text for a gitfile, over the link target for a symlink, and "none"
+# when missing.
 _git_gitdir_state() {
   local g="$1/.git"
   if [[ -L "${g}" ]]; then
     printf 'symlink %s\n' "$(readlink "${g}" | _git_sha256_stdin)"
   elif [[ -d "${g}" ]]; then
-    printf 'dir %s\n' "$(_git_dir_exec_digest "${g}" | _git_sha256_stdin)"
+    printf 'dir %s\n' "$(_git_dir_exec_digest "${g}" "$1" | _git_sha256_stdin)"
   elif [[ -f "${g}" ]]; then
     printf 'file %s\n' "$(_git_sha256_stdin < "${g}")"
   else
@@ -293,27 +537,47 @@ _git_nested_entries() {
     | LC_ALL=C sort -u
 }
 
-# _git_nested_hash <repo> [<entries>] — one SHA-256 over every nested git entry
-# (from _git_nested_entries, or the precomputed <entries>): each repo-shaped
-# directory's config/commondir/hooks digest and each pointer's text or link
-# target, prefixed by its relative path. "none" when there are none.
+# _git_nested_entry_digest <repo> <entries> — one "<kind>:<rel>\t<value>" line
+# per nested entry: a repo-shaped directory's exec digest (config, includes,
+# commondir, hooks, and — when the gitdir is named .git, so the worktree is its
+# parent — core.hooksPath), or a pointer's "ptr:" link target / text hash. The
+# shared basis for both the per-entry map (F5) and the combined hash.
+_git_nested_entry_digest() {
+  local repo="$1" entries="$2" kind rel abs wt
+  while IFS=$'\t' read -r kind rel; do
+    [[ -n "${kind}" ]] || continue
+    if [[ "${kind}" == "cap" ]]; then printf 'cap:%s\t%s\n' "${rel}" "${rel}"; continue; fi
+    if [[ "${rel}" == "." ]]; then abs="${repo}"; else abs="${repo}/${rel}"; fi
+    if [[ "${kind}" == "dir" ]]; then
+      wt=""; [[ "${abs}" == */.git ]] && wt="${abs%/.git}"
+      printf 'dir:%s\t%s\n' "${rel}" "$(_git_dir_exec_digest "${abs}" "${wt}")"
+    elif [[ -L "${abs}" ]]; then
+      printf 'ptr:%s\tlink:%s\n' "${rel}" "$(readlink "${abs}")"
+    else
+      printf 'ptr:%s\tfile:%s\n' "${rel}" "$(_leakscan_sha256 "${abs}")"
+    fi
+  done <<<"${entries}" | LC_ALL=C sort
+}
+
+# _git_nested_map <repo> [<entries>] — a compact JSON object mapping each nested
+# entry's "<kind>:<rel>" to its per-entry digest value, so the check can tell a
+# brand-new nested repo (a key only in the current scan) from a changed existing
+# one (a key in both with a different value). "{}" when there are none.
+_git_nested_map() {
+  local repo="$1" entries
+  if [[ $# -ge 2 ]]; then entries="$2"; else entries="$(_git_nested_entries "${repo}")"; fi
+  [[ -n "${entries}" ]] || { printf '{}'; return 0; }
+  _git_nested_entry_digest "${repo}" "${entries}" \
+    | jq -Rn -c '[inputs | select(length>0) | split("\t") | {key: .[0], value: .[1]}] | from_entries'
+}
+
+# _git_nested_hash <repo> [<entries>] — one SHA-256 over every nested git entry,
+# derived from the same per-entry digest as the map. "none" when there are none.
 _git_nested_hash() {
   local repo="$1" entries
   if [[ $# -ge 2 ]]; then entries="$2"; else entries="$(_git_nested_entries "${repo}")"; fi
   [[ -n "${entries}" ]] || { printf 'none'; return 0; }
-  local kind rel abs
-  while IFS=$'\t' read -r kind rel; do
-    [[ -n "${kind}" ]] || continue
-    if [[ "${rel}" == "." ]]; then abs="${repo}"; else abs="${repo}/${rel}"; fi
-    if [[ "${kind}" == "dir" ]]; then
-      printf 'dir:%s\n' "${rel}"
-      _git_dir_exec_digest "${abs}"
-    elif [[ -L "${abs}" ]]; then
-      printf 'ptr:%s:%s\n' "${rel}" "$(readlink "${abs}")"
-    else
-      printf 'ptr:%s:%s\n' "${rel}" "$(_leakscan_sha256 "${abs}")"
-    fi
-  done <<<"${entries}" | _git_sha256_stdin
+  _git_nested_entry_digest "${repo}" "${entries}" | _git_sha256_stdin
 }
 
 # workspace_git_fingerprint <repo> — emit a compact JSON object capturing the
@@ -328,19 +592,35 @@ _git_nested_hash() {
 #                  detectable
 #   modules_hash — submodule gitdir config/hooks/commondir (route 2)
 #   nested_hash  — every nested repo-shaped dir and `.git` pointer (route 3)
+#   nested_map   — per-entry digests of the nested entries, so a new nested repo
+#                  can be told from a changed one (F5)
+#   gitdir_lines — the top-level `.git` directory's exec-digest lines (config,
+#                  includes, hooks, hooksPath), so a drift finding can name the
+#                  file that changed; empty unless `.git` is a directory
 # Recorded in session.json at launch by cmd_run.
 workspace_git_fingerprint() {
   local repo="$1"
-  local gitpath="${repo}/.git" ino="" mh="none" kind gh nh
+  local gitpath="${repo}/.git" ino="" mh="none" kind gh nh="none" nm="{}" gl=""
   read -r kind gh < <(_git_gitdir_state "${repo}")
   if [[ -e "${gitpath}" || -L "${gitpath}" ]]; then
     ino="$(_git_stat_inode "${gitpath}")"
     mh="$(_git_modules_hash "${repo}")"
   fi
-  nh="$(_git_nested_hash "${repo}")"
+  [[ "${kind}" == "dir" ]] && gl="$(_git_dir_exec_lines "${gitpath}" "${repo}")"
+  # Compute the nested entry-digest once and derive both the combined hash and
+  # the per-entry map from it, rather than walking every nested repo twice. The
+  # dir entries are capped (the check caps identically, so the comparison stays
+  # consistent); pointers pass through uncapped.
+  local entries edig
+  entries="$(_git_nested_entries "${repo}" | _git_cap_nested)"
+  if [[ -n "${entries}" ]]; then
+    edig="$(_git_nested_entry_digest "${repo}" "${entries}")"
+    nh="$(printf '%s' "${edig}" | _git_sha256_stdin)"
+    nm="$(printf '%s\n' "${edig}" | jq -Rn -c '[inputs | select(length>0) | split("\t") | {key: .[0], value: .[1]}] | from_entries')"
+  fi
   jq -c -n --arg ino "${ino}" --arg mh "${mh}" --arg kind "${kind}" \
-    --arg gh "${gh}" --arg nh "${nh}" \
-    '{inode: $ino, modules_hash: $mh, gitdir_kind: $kind, gitdir_hash: $gh, nested_hash: $nh}'
+    --arg gh "${gh}" --arg nh "${nh}" --argjson nm "${nm}" --arg gl "${gl}" \
+    '{inode: $ino, modules_hash: $mh, gitdir_kind: $kind, gitdir_hash: $gh, nested_hash: $nh, nested_map: $nm, gitdir_lines: $gl}'
 }
 
 # workspace_git_exec_check <repo> [<fingerprint_json>]
@@ -364,28 +644,53 @@ workspace_git_fingerprint() {
 #                                   since launch (modules_hash drift, compared
 #                                   even when the baseline had no submodules).
 #   3. a nested repository       — any directory git would accept as a repo,
-#                                   changed since launch (nested_hash drift), or
+#                                   changed since launch (nested_map drift), or
 #                                   a nested .git pointer that resolves outside
-#                                   .git/modules.
+#                                   .git/modules. A brand-new nested repo with no
+#                                   exec surface only warns (status 2); one that
+#                                   carries exec config/hooks is a redirect.
 #   4. a replaced/repointed .git — inode, kind, or gitdir_hash differs from the
 #                                   launch baseline.
+#   5. core.hooksPath            — points git's hooks at an in-workspace, tracked
+#                                   directory (e.g. Husky's .husky/_); its files
+#                                   are hashed into gitdir_hash, so editing one is
+#                                   caught (folded into routes 2/3/4's digest).
+#   6. a symlinked .git/hooks    — a hooks directory replaced by a symlink to a
+#                                   tracked dir; the digest follows the link and
+#                                   records its target, so an edit or a repoint
+#                                   drifts.
+#   7. a config include.path     — .git/config (read-only) pulls in an in-workspace
+#                                   tracked file via include.path / includeIf; that
+#                                   file's exec settings (fsmonitor, hooksPath, ...)
+#                                   apply, so its contents are hashed too.
+# Routes 5-7 are DETECTION-ONLY, like 1-4: the hook/config files they ride on are
+# ordinary tracked files an agent (or a person) legitimately edits, so they are
+# not mounted read-only — a drift here is reported, not prevented.
 #
 # Prints one indented line per finding on stdout. Returns a status, never a
 # count (a count wraps at 256):
 #   0 — clean
 #   1 — a redirect was found (or the workspace changed in a way that can carry one)
 #   2 — no redirect found, but some part could not be verified against a
-#       baseline (a pre-upgrade session, or no fingerprint recorded)
+#       baseline (a pre-upgrade session, no fingerprint, a benign new nested repo
+#       whose baseline should advance, or more nested dirs than the scan cap)
 # Read-only / warn-safe: it never writes to the workspace.
 workspace_git_exec_check() {
   local repo="$1" fp="${2:-}"
   local redirect=0 unverified=0
   local want_ino="" want_mh="" want_kind="" want_gh="" want_nh="" have_fp=0
+  local want_nm="" want_gl=""
   if [[ -n "${fp}" ]] && jq -e 'type == "object"' >/dev/null 2>&1 <<<"${fp}"; then
     have_fp=1
     IFS=$'\x1f' read -r want_ino want_mh want_kind want_gh want_nh < <(jq -r \
       '[.inode // "", .modules_hash // "", .gitdir_kind // "", .gitdir_hash // "", .nested_hash // ""] | join("\u001f")' \
       <<<"${fp}")
+    # nested_map (an object) and gitdir_lines (a multi-line string) carry
+    # newlines, so they are read separately rather than through the \x1f join.
+    # Absent in a pre-upgrade baseline, in which case the combined-hash paths
+    # below still apply.
+    want_nm="$(jq -c 'if (.nested_map|type) == "object" then .nested_map else empty end' <<<"${fp}" 2>/dev/null || true)"
+    want_gl="$(jq -r '.gitdir_lines // ""' <<<"${fp}" 2>/dev/null || true)"
   fi
 
   local kind gh ino mh
@@ -405,7 +710,15 @@ workspace_git_exec_check() {
     elif [[ "${gh}" != "${want_gh}" ]]; then
       case "${kind}" in
         file|symlink) echo "  .git pointer was rewritten since launch (it now points git at a different directory)" ;;
-        *)            echo "  .git config or hooks changed since launch" ;;
+        *)
+          echo "  .git config, hooks, an included config file, or core.hooksPath changed since launch:"
+          if [[ -n "${want_gl}" ]]; then
+            local _cp
+            while IFS= read -r _cp; do
+              [[ -n "${_cp}" ]] && echo "    ${_cp}"
+            done < <(_git_exec_changed_paths "${want_gl}" "$(_git_dir_exec_lines "${repo}/.git" "${repo}")")
+          fi
+          ;;
       esac
       redirect=1
     fi
@@ -443,45 +756,101 @@ workspace_git_exec_check() {
   fi
 
   # Route 3: nested repositories and pointers.
-  local entries modreal="" k rel tgt
+  # `entries` is the FULL, uncapped list; the baseline-free pointer rules below
+  # run over all of it, so an agent cannot flood the tree with cheap repo-shaped
+  # directories to push a malicious pointer past the cap. `capped` bounds only
+  # the expensive per-dir digest (identically to workspace_git_fingerprint).
+  local entries capped modreal="" k rel tgt cap_total
   entries="$(_git_nested_entries "${repo}")"
+  capped="$(_git_cap_nested <<<"${entries}")"
+  cap_total="$(sed -n 's/^cap\t//p' <<<"${capped}" | head -1)"
+  if [[ -n "${cap_total}" ]]; then
+    local _ncap="${SANDBOX_GIT_NESTED_ENTRY_CAP:-${_GIT_NESTED_ENTRY_CAP}}"
+    echo "  more than ${_ncap} nested git directories (${cap_total}); only the first ${_ncap} are digest-verified - the rest are unchecked (pointers are still checked in full)"
+    unverified=1
+  fi
   if [[ -d "${repo}/.git/modules" ]]; then
     modreal="$(_git_resolve_dir "${repo}" ".git/modules")"
   fi
+  local -a ptr_outside=() ptr_unresolved=()
   while IFS=$'\t' read -r k rel; do
     [[ "${k}" == "ptr" ]] || continue
     if ! tgt="$(_git_pointer_target "${repo}/${rel}")"; then
-      echo "  nested .git pointer does not resolve: ${rel}"
-      unverified=1
+      ptr_unresolved+=("${rel}")
     elif [[ -z "${modreal}" || "${tgt}" != "${modreal}/"* ]]; then
-      echo "  nested .git pointer outside .git/modules: ${rel} -> ${tgt}"
-      redirect=1
+      ptr_outside+=("${rel} -> ${tgt}")
     fi
   done <<<"${entries}"
-  local listed=0 n_dirs
+  if [[ "${#ptr_unresolved[@]}" -gt 0 ]]; then
+    echo "  nested .git pointer does not resolve:"
+    _git_exec_print_list "${ptr_unresolved[@]}"
+    unverified=1
+  fi
+  if [[ "${#ptr_outside[@]}" -gt 0 ]]; then
+    echo "  nested .git pointer outside .git/modules:"
+    _git_exec_print_list "${ptr_outside[@]}"
+    redirect=1
+  fi
+  # From here the dir-digest comparison uses the capped list.
+  entries="${capped}"
+  local n_dirs
   n_dirs="$(grep -c "^dir"$'\t' <<<"${entries}" || true)"
-  if [[ -n "${want_nh}" ]]; then
+  if [[ -n "${want_nm}" ]]; then
+    # Per-entry baseline (F5): tell a brand-new nested repo from a changed one.
+    # A new repo-shaped dir that carries no host-exec surface (no exec config
+    # keys, no non-sample hooks, no symlinked hooks) only WARNS and lets the
+    # baseline advance, so a repo an agent legitimately clones or `pip -e`
+    # installs does not train the operator to wave the waiver through. A changed
+    # existing repo, or a new one that does carry exec surface, still refuses.
+    local cur_nm key ekind erel eabs ewt
+    cur_nm="$(_git_nested_map "${repo}" "${entries}")"
+    local -a refuse_new=() refuse_chg=() warn_new=()
+    while IFS= read -r key; do
+      [[ -n "${key}" ]] || continue
+      ekind="${key%%:*}"; erel="${key#*:}"
+      [[ "${ekind}" == "dir" ]] || continue   # ptr handled by the loop above
+      if [[ "${erel}" == "." ]]; then eabs="${repo}"; else eabs="${repo}/${erel}"; fi
+      ewt=""; [[ "${eabs}" == */.git ]] && ewt="${eabs%/.git}"
+      if _git_dir_is_benign "${eabs}" "${ewt}"; then
+        warn_new+=("${erel}")
+      else
+        refuse_new+=("${erel}")
+      fi
+    done < <(jq -r --argjson b "${want_nm}" \
+      'to_entries[] | select(.key as $k | ($b[$k]|not)) | .key' <<<"${cur_nm}" 2>/dev/null || true)
+    while IFS= read -r key; do
+      [[ -n "${key}" ]] || continue
+      ekind="${key%%:*}"; erel="${key#*:}"
+      [[ "${ekind}" == "dir" ]] || continue   # changed ptr handled by the loop above
+      refuse_chg+=("${erel}")
+    done < <(jq -r --argjson b "${want_nm}" \
+      'to_entries[] | select(.key as $k | ($b[$k] != null) and ($b[$k] != .value)) | .key' <<<"${cur_nm}" 2>/dev/null || true)
+    if [[ "${#refuse_chg[@]}" -gt 0 ]]; then
+      echo "  nested git repository config/hooks changed since launch (they run when git is invoked there):"
+      _git_exec_print_list "${refuse_chg[@]}"
+      redirect=1
+    fi
+    if [[ "${#refuse_new[@]}" -gt 0 ]]; then
+      echo "  new nested git repository with host-exec config or hooks since launch:"
+      _git_exec_print_list "${refuse_new[@]}"
+      redirect=1
+    fi
+    if [[ "${#warn_new[@]}" -gt 0 ]]; then
+      echo "  new nested git repository since launch (no recognized host-exec config; baseline will advance):"
+      _git_exec_print_list "${warn_new[@]}"
+      unverified=1
+    fi
+  elif [[ -n "${want_nh}" ]]; then
+    # Pre-upgrade baseline with only the combined hash: any nested drift refuses.
     if [[ "$(_git_nested_hash "${repo}" "${entries}")" != "${want_nh}" ]]; then
       echo "  nested git repositories or .git pointers changed since launch (their config/hooks run when git is invoked there):"
       redirect=1
-      listed=1
+      _git_exec_print_entries "${entries}"
     fi
   elif [[ "${n_dirs}" -gt 0 ]]; then
     echo "  nested git repositories present but no launch baseline to compare:"
     unverified=1
-    listed=1
-  fi
-  if [[ "${listed}" -eq 1 ]]; then
-    local shown=0
-    while IFS=$'\t' read -r k rel; do
-      [[ -n "${k}" ]] || continue
-      if [[ "${shown}" -ge 20 ]]; then
-        echo "    ... and more (run: find ${repo} -name HEAD)"
-        break
-      fi
-      echo "    ${k}: ${rel}"
-      shown=$((shown + 1))
-    done <<<"${entries}"
+    _git_exec_print_entries "${entries}"
   fi
 
   [[ "${have_fp}" -eq 1 ]] || [[ "${kind}" == "missing" ]] || unverified=1

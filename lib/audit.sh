@@ -128,7 +128,8 @@ audit_write_session_json() {
   #     P1). Empty (→ false) for Tier 1/2.
   #   SESSION_REPO_GIT_FINGERPRINTS — JSON object mapping each Tier 2/3 repo
   #     path to its launch-time git fingerprint ({inode, modules_hash,
-  #     gitdir_kind, gitdir_hash, nested_hash}, from workspace_git_fingerprint),
+  #     gitdir_kind, gitdir_hash, nested_hash, nested_map, gitdir_lines}, from
+  #     workspace_git_fingerprint),
   #     so run/resume/stop/status can detect a git host-exec redirect the
   #     read-only .git mounts can't prevent (F7). Empty (→ {}) for Tier 1 /
   #     no-repo sessions.

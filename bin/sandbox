@@ -2611,7 +2611,7 @@ recreate_session_pod() {
           _gv_hit=1
           ;;
         *)
-          warn "workspace ${_gvr}: the git host-exec check could not be fully verified (no launch baseline):"
+          warn "workspace ${_gvr}: the git host-exec check could not be fully verified:"
           echo "${_gv_hits}" >&2
           _gv_unverified+=("${_gvr}")
           ;;
@@ -2627,6 +2627,15 @@ recreate_session_pod() {
       fi
     fi
     for _gvr in "${_gv_unverified[@]+"${_gv_unverified[@]}"}"; do
+      # Only ADOPT a baseline when this session has none (the pre-upgrade case
+      # this was built for). An rc=2 can also mean a benign new nested repo or a
+      # scan-cap overflow — cases where a baseline already exists — and
+      # re-recording there would let an agent-modified state (including a redirect
+      # that rc=2 did not refuse) overwrite the trusted baseline and never be
+      # flagged again. Those keep their original baseline and keep warning.
+      if [[ -n "$(jq -r --arg p "${_gvr}" '.repo_git_fingerprints[$p] // empty' "${sj}" 2>/dev/null || true)" ]]; then
+        continue
+      fi
       echo "  Recording the current state of ${_gvr} as this session's git baseline." >&2
       _git_exec_record_baseline "${sj}" "${_gvr}"
     done
