@@ -270,6 +270,14 @@ OPTIONS:
                                     Does not accept a wholly unvetted repo or
                                     over-cap commit drift — use
                                     --i-accept-unvetted-repo for those.
+  --i-accept-git-exec-vectors       Launch even when a --repo has a git host-exec
+                                    redirect (e.g. .git/commondir, or a nested .git
+                                    pointer outside .git/modules), when the last
+                                    session on it ended with one ('sandbox stop'
+                                    reported it), or when that session was never
+                                    stopped and the repo has changed since it
+                                    launched. Inspect the repo first; the
+                                    acceptance is recorded in the audit log.
   --help                            Show this help
 
 TIERS:
@@ -567,6 +575,7 @@ cmd_run() {
   local opt_accept_unmasked_secrets="false"
   local opt_accept_unvetted_repo="false"
   local opt_accept_vetting_drift="false"
+  local opt_accept_git_exec_vectors="false"
   local opt_base_url=""
   local opt_homedir=""
   local -a opt_allow_domains=()
@@ -606,6 +615,7 @@ cmd_run() {
       --i-accept-unmasked-secrets) opt_accept_unmasked_secrets="true" ;;
       --i-accept-unvetted-repo) opt_accept_unvetted_repo="true" ;;
       --i-accept-vetting-drift) opt_accept_vetting_drift="true" ;;
+      --i-accept-git-exec-vectors) opt_accept_git_exec_vectors="true" ;;
       *)                       die "Unknown option: $1. Run 'sandbox run --help' for usage." ;;
     esac
     shift
@@ -1215,6 +1225,52 @@ cmd_run() {
     for _r in "${opt_repos[@]}"; do
       workspace_prescan "${_r}"
     done
+    # Refuse to launch into a workspace carrying a git host-exec redirect the
+    # read-only .git mounts don't cover (F7): the fingerprint below would
+    # otherwise adopt the booby-trapped state as this session's clean baseline.
+    # Two checks. The current-state check uses a fingerprint of the repo as it
+    # is now, so only the baseline-free rules (commondir, a pointer outside
+    # .git/modules) can fire. The prior-session check covers the rest: it uses
+    # the last session's recorded stop result, or, if that session was never
+    # stopped, compares against its launch fingerprint.
+    local _gx_r _gx_out _gx_rc _gx_hit=0
+    for _gx_r in "${opt_repos[@]}"; do
+      _gx_rc=0
+      _gx_out="$(workspace_git_exec_check "${_gx_r}" "$(workspace_git_fingerprint "${_gx_r}")")" || _gx_rc=$?
+      if [[ "${_gx_rc}" -eq 1 ]]; then
+        warn "workspace ${_gx_r} has git host-exec redirect(s) the read-only .git mounts do not cover:"
+        echo "${_gx_out}" >&2
+        _gx_hit=1
+      elif [[ "${_gx_rc}" -ne 0 ]]; then
+        warn "workspace ${_gx_r}: part of the git host-exec check could not be verified:"
+        echo "${_gx_out}" >&2
+      fi
+      if _gx_out="$(_git_exec_prior_session "${_gx_r}")"; then
+        local _gx_line _gx_sid _gx_kind
+        while IFS= read -r _gx_line; do
+          if [[ "${_gx_line}" == "@@ "* ]]; then
+            read -r _ _gx_sid _gx_kind <<<"${_gx_line}"
+            if [[ "${_gx_kind}" == "recorded" ]]; then
+              warn "the last session on ${_gx_r} (${_gx_sid}) ended with git host-exec findings:"
+            else
+              warn "session ${_gx_sid} on ${_gx_r} was never stopped, and the repo has changed since it launched in a way that can carry a git host-exec redirect:"
+            fi
+          else
+            echo "${_gx_line}" >&2
+          fi
+        done <<<"${_gx_out}"
+        _gx_hit=1
+      fi
+    done
+    if [[ "${_gx_hit}" -eq 1 ]]; then
+      if [[ "${opt_accept_git_exec_vectors}" == "true" ]]; then
+        record_override "flag:--i-accept-git-exec-vectors" \
+          "git host-exec redirect in workspace" "${opt_repos[@]}"
+        warn "proceeding despite git host-exec findings (--i-accept-git-exec-vectors)."
+      else
+        die "Refusing to launch: git host-exec findings in the workspace (see the lines above). Inspect and remove them, then re-run with --i-accept-git-exec-vectors to acknowledge. See PRINCIPLES.md 'Filesystem isolation'."
+      fi
+    fi
     check_masking_paths "${opt_repos[@]}"
     # Gate the launch on whether each workspace has been vetted for agent use.
     # Posture (off/advisory/required) is operator-controlled; advisory only
@@ -1377,6 +1433,24 @@ cmd_run() {
   SESSION_INFRA_KUBECONFIG=""
   [[ "${#opt_infra_kubeconfigs[@]}" -gt 0 ]] && SESSION_INFRA_KUBECONFIG="1"
   export SESSION_INFRA_TOKEN SESSION_INFRA_KUBECONFIG
+
+  # Record each repo's launch-time git fingerprint (.git inode/kind/hash,
+  # submodule gitdir hash, nested-repo hash; see workspace_git_fingerprint) so
+  # resume/stop/status can later detect a git host-exec redirect the read-only
+  # .git mounts can't prevent (F7). Captured now, before the agent has run and
+  # after Step 2 refused any redirect already present, so it is a clean
+  # reference. Tier 2/3 with repos only; empty (→ {}) otherwise.
+  SESSION_REPO_GIT_FINGERPRINTS=""
+  if [[ "${opt_tier}" -ge 2 ]] && [[ "${#opt_repos[@]}" -gt 0 ]]; then
+    local _fp_json="{}" _r_fp
+    for _r_fp in "${opt_repos[@]}"; do
+      _fp_json="$(jq -c --arg p "${_r_fp}" \
+        --argjson fp "$(workspace_git_fingerprint "${_r_fp}")" \
+        '. + {($p): $fp}' <<<"${_fp_json}")"
+    done
+    SESSION_REPO_GIT_FINGERPRINTS="${_fp_json}"
+  fi
+  export SESSION_REPO_GIT_FINGERPRINTS
 
   audit_write_session_json \
     "${log_dir}" \
@@ -2162,6 +2236,35 @@ cmd_stop() {
     teardown_workspace_sync "${session_id}"
     echo "==> Capturing workspace diff..."
     capture_workspace_diff "${log_dir}" "${repos[@]}"
+    # Warn (never block teardown) if the agent planted a git host-exec redirect
+    # the read-only .git mounts don't cover (F7). Runs HERE — after the pod delete
+    # (containment) and the macOS sync flush — so it reads the FROZEN final
+    # workspace the operator will next run git against, with no agent still able to
+    # alter it, and never ahead of the containment action. Surfaces the risk right
+    # before the operator returns to the repo on the host.
+    # The result is recorded in session.json so the next 'sandbox run' on the
+    # repo refuses while a redirect found here is unacknowledged.
+    local _gs_r _gs_hits _gs_rc
+    for _gs_r in "${repos[@]}"; do
+      [[ -d "${_gs_r}" ]] || continue
+      _gs_rc=0
+      _gs_hits="$(_git_exec_check_repo "${session_json}" "${_gs_r}" 2>/dev/null)" || _gs_rc=$?
+      _git_exec_record_findings "${session_json}" "${_gs_r}" "${_gs_rc}" "${_gs_hits}"
+      case "${_gs_rc}" in
+        0) ;;
+        1)
+          warn "workspace ${_gs_r} has git host-exec redirect(s) the read-only .git mounts do not cover:"
+          echo "${_gs_hits}" >&2
+          echo "  Inspect before running git in this repo on the host. See PRINCIPLES.md 'Filesystem isolation'." >&2
+          echo "  The next 'sandbox run' on this repo will refuse unless --i-accept-git-exec-vectors is passed." >&2
+          ;;
+        *)
+          warn "workspace ${_gs_r}: the git host-exec check could not be fully verified (no launch baseline):"
+          echo "${_gs_hits}" >&2
+          echo "  Inspect before running git in this repo on the host. See PRINCIPLES.md 'Filesystem isolation'." >&2
+          ;;
+      esac
+    done
   fi
 
   # Capture the agent conversation transcript into the session log directory.
@@ -2299,6 +2402,129 @@ _resume_guide_command() {
   echo "${cmd}"
 }
 
+# _git_exec_check_repo <session_json> <repo> — run workspace_git_exec_check for
+# one repo against its launch-time fingerprint from <session_json>'s
+# .repo_git_fingerprints map (empty = no baseline). Echoes each finding and
+# returns the check's status: 0 clean, 1 redirect, 2 unverified. Callers capture
+# the status with `|| rc=$?`, not `if !`, so 1 and 2 stay distinguishable.
+_git_exec_check_repo() {
+  local session_json="$1" repo="$2" fp=""
+  if [[ -f "${session_json}" ]]; then
+    fp="$(jq -c --arg p "${repo}" '.repo_git_fingerprints[$p] // empty' "${session_json}" 2>/dev/null || true)"
+  fi
+  workspace_git_exec_check "${repo}" "${fp}"
+}
+
+# _git_exec_record_findings <session_json> <repo> <status> <findings> — store
+# cmd_stop's end-of-session git host-exec result for <repo> under
+# .git_exec_findings, so the next 'sandbox run' on that repo can refuse while a
+# redirect from this session is unacknowledged. Recorded for every repo,
+# including clean (0), so "the last session's result" is explicit.
+_git_exec_record_findings() {
+  local sj="$1" repo="$2" status="$3" findings="$4" tmp
+  [[ -f "${sj}" ]] || return 0
+  tmp="$(mktemp)"
+  if jq --arg p "${repo}" --argjson s "${status}" --arg f "${findings}" \
+    '.git_exec_findings = ((.git_exec_findings // {}) + {($p): {status: $s, findings: $f}})' \
+    "${sj}" > "${tmp}"; then
+    mv "${tmp}" "${sj}"
+  else
+    rm -f "${tmp}"
+  fi
+}
+
+# _git_exec_record_baseline <session_json> <repo> — (re)capture <repo>'s git
+# fingerprint into <session_json>, for a session that had none (resume of a
+# pre-upgrade session), so later stop/status checks have something to compare.
+_git_exec_record_baseline() {
+  local sj="$1" repo="$2" fp tmp
+  [[ -f "${sj}" ]] || return 0
+  fp="$(workspace_git_fingerprint "${repo}")" || return 0
+  tmp="$(mktemp)"
+  if jq --arg p "${repo}" --argjson fp "${fp}" \
+    '.repo_git_fingerprints = ((.repo_git_fingerprints // {}) + {($p): $fp})' \
+    "${sj}" > "${tmp}"; then
+    mv "${tmp}" "${sj}"
+  else
+    rm -f "${tmp}"
+  fi
+}
+
+# _git_exec_clear_findings <session_json> — drop the recorded stop results
+# (.git_exec_findings), for a session whose agent is about to run again.
+_git_exec_clear_findings() {
+  local sj="$1" tmp
+  [[ -f "${sj}" ]] || return 0
+  tmp="$(mktemp)"
+  if jq 'del(.git_exec_findings)' "${sj}" > "${tmp}"; then
+    mv "${tmp}" "${sj}"
+  else
+    rm -f "${tmp}"
+  fi
+}
+
+# _git_exec_prior_session <repo> — judge <repo> against the earlier sessions on
+# it (matched by physical path). Returns 0 when any warrants a refusal, printing
+# one "@@ <session_id> <kind>" header per such session followed by its findings;
+# returns 1 otherwise. <kind> is:
+#   recorded  — the newest session on the repo was stopped, and 'sandbox stop'
+#               recorded a redirect (status 1). A newer session supersedes it:
+#               launching one means the operator got past it (clean or waived).
+#   unstopped — a session with no recorded stop result (it ended without
+#               'sandbox stop': an eviction, a killed CLI; it was resumed since
+#               its last stop; or it is still running) whose launch fingerprint
+#               the repo now fails. Every such session is checked, not just the
+#               newest, so an overlapping session on the same repo is covered.
+# The unstopped case matters because nothing recorded how that session ended,
+# and the current-state check in cmd_run cannot see a redirect that needs a
+# baseline to detect.
+_git_exec_prior_session() {
+  local repo="$1" want sj t k st found=1
+  local newest_t="" rec_t="" rec_sj="" rec_key=""
+  local -a unstopped=()
+  want="$(_git_resolve_dir / "${repo}")"
+  [[ -n "${want}" ]] || want="${repo}"
+  for sj in "${SANDBOX_LOGS_DIR}"/ses-*/session.json; do
+    [[ -f "${sj}" ]] || continue
+    t="$(jq -r '.start_time // ""' "${sj}" 2>/dev/null || true)"
+    [[ -n "${t}" && "${t}" != "null" ]] || continue
+    while IFS= read -r k; do
+      [[ -n "${k}" ]] || continue
+      [[ "${k}" == "${repo}" || "$(_git_resolve_dir / "${k}")" == "${want}" ]] || continue
+      [[ -z "${newest_t}" || "${t}" > "${newest_t}" ]] && newest_t="${t}"
+      st="$(jq -r --arg p "${k}" '.git_exec_findings[$p].status // ""' "${sj}" 2>/dev/null || true)"
+      if [[ -n "${st}" ]]; then
+        if [[ -z "${rec_t}" || "${t}" > "${rec_t}" ]]; then
+          rec_t="${t}"; rec_sj="${sj}"; rec_key="${k}"
+        fi
+      else
+        unstopped+=("${sj}"$'\t'"${k}")
+      fi
+    done < <(jq -r '((.repo_git_fingerprints // {}) + (.git_exec_findings // {})) | keys[]' "${sj}" 2>/dev/null || true)
+  done
+
+  if [[ -n "${rec_sj}" && "${rec_t}" == "${newest_t}" ]] \
+    && [[ "$(jq -r --arg p "${rec_key}" '.git_exec_findings[$p].status' "${rec_sj}" 2>/dev/null)" == "1" ]]; then
+    printf '@@ %s recorded\n' "$(basename "$(dirname "${rec_sj}")")"
+    jq -r --arg p "${rec_key}" '.git_exec_findings[$p].findings' "${rec_sj}"
+    found=0
+  fi
+
+  local e fp out rc
+  for e in "${unstopped[@]+"${unstopped[@]}"}"; do
+    sj="${e%%$'\t'*}"; k="${e#*$'\t'}"
+    fp="$(jq -c --arg p "${k}" '.repo_git_fingerprints[$p] // empty' "${sj}" 2>/dev/null || true)"
+    [[ -n "${fp}" ]] || continue
+    rc=0
+    out="$(workspace_git_exec_check "${repo}" "${fp}")" || rc=$?
+    [[ "${rc}" -eq 1 ]] || continue
+    printf '@@ %s unstopped\n' "$(basename "$(dirname "${sj}")")"
+    printf '%s\n' "${out}"
+    found=0
+  done
+  return "${found}"
+}
+
 # recreate_session_pod <session_id> — rebuild and apply the policy + pod for a
 # torn-down session from the non-secret state in session.json, leaving the pod
 # Running and ready to attach. Only called after _resume_recreate_blocker clears
@@ -2315,6 +2541,7 @@ recreate_session_pod() {
   local accept_unmasked_secrets="${2:-false}"
   local accept_unvetted_repo="${3:-false}"
   local accept_vetting_drift="${4:-false}"
+  local accept_git_exec_vectors="${5:-false}"
   local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
   local sj="${log_dir}/session.json"
   local pod_name
@@ -2353,7 +2580,64 @@ recreate_session_pod() {
     echo "==> Re-checking workspace gates before recreate..."
     local _r
     for _r in "${repos[@]}"; do
+      # F11: resume must apply the SAME path gate a fresh 'sandbox run' does.
+      # cmd_run calls validate_repo_path per repo; recreate did not, so a session
+      # recorded before a tightening of those rules (e.g. the F8 refusal of the
+      # agent-sandboxes checkout as a workspace) would relaunch unchecked. The
+      # other rules were enforced at creation, but re-asserting is cheap and keeps
+      # resume honest about "never relaunch what run would refuse".
+      validate_repo_path "${_r}"
       workspace_prescan "${_r}"
+    done
+    # Refuse to relaunch into a workspace the agent booby-trapped with a git
+    # host-exec redirect the read-only .git mounts don't cover (F7). Unlike stop,
+    # resume puts the operator back to work in this repo, so fail closed unless
+    # explicitly waived — mirroring the vetting/secret gates. The waiver is
+    # recorded as an override so the session log names it.
+    # Only a found redirect (status 1) refuses. An unverified result (2: a
+    # pre-upgrade session with no launch baseline) warns and records the
+    # current state as this session's baseline — once the gate has passed — so
+    # stop/status have something to compare against from here on.
+    local _gv_hits _gv_rc _gv_hit=0 _gvr
+    local -a _gv_unverified=()
+    for _gvr in "${repos[@]}"; do
+      _gv_rc=0
+      _gv_hits="$(_git_exec_check_repo "${sj}" "${_gvr}")" || _gv_rc=$?
+      case "${_gv_rc}" in
+        0) ;;
+        1)
+          warn "workspace ${_gvr} has git host-exec redirect(s) the read-only .git mounts do not cover:"
+          echo "${_gv_hits}" >&2
+          _gv_hit=1
+          ;;
+        *)
+          warn "workspace ${_gvr}: the git host-exec check could not be fully verified:"
+          echo "${_gv_hits}" >&2
+          _gv_unverified+=("${_gvr}")
+          ;;
+      esac
+    done
+    if [[ "${_gv_hit}" -eq 1 ]]; then
+      if [[ "${accept_git_exec_vectors}" == "true" ]]; then
+        record_override "flag:--i-accept-git-exec-vectors" \
+          "git host-exec redirect in workspace" "${repos[@]}"
+        warn "proceeding despite git host-exec redirect(s) (--i-accept-git-exec-vectors)."
+      else
+        die "Refusing to resume: a git host-exec redirect was found in the workspace. Inspect and remove it (see the lines above), or re-run with --i-accept-git-exec-vectors. See PRINCIPLES.md 'Filesystem isolation'."
+      fi
+    fi
+    for _gvr in "${_gv_unverified[@]+"${_gv_unverified[@]}"}"; do
+      # Only ADOPT a baseline when this session has none (the pre-upgrade case
+      # this was built for). An rc=2 can also mean a benign new nested repo or a
+      # scan-cap overflow — cases where a baseline already exists — and
+      # re-recording there would let an agent-modified state (including a redirect
+      # that rc=2 did not refuse) overwrite the trusted baseline and never be
+      # flagged again. Those keep their original baseline and keep warning.
+      if [[ -n "$(jq -r --arg p "${_gvr}" '.repo_git_fingerprints[$p] // empty' "${sj}" 2>/dev/null || true)" ]]; then
+        continue
+      fi
+      echo "  Recording the current state of ${_gvr} as this session's git baseline." >&2
+      _git_exec_record_baseline "${sj}" "${_gvr}"
     done
     check_masking_paths "${repos[@]}"
     vetting_gate_repos "$(resolve_vetting_posture)" "${accept_unvetted_repo}" "${accept_vetting_drift}" "${repos[@]}"
@@ -2380,7 +2664,18 @@ recreate_session_pod() {
       audit_log_event "${log_dir}" "secret-scan" "${SESSION_SECRET_SUMMARY}"
     fi
     audit_flush_overrides "${log_dir}"
+    # The agent is about to run again, so any git host-exec result a previous
+    # 'sandbox stop' recorded no longer describes how this session ends. Drop
+    # it: until a stop records a fresh one, the next 'sandbox run' on these
+    # repos compares against the launch fingerprint instead (see
+    # _git_exec_prior_session).
+    _git_exec_clear_findings "${sj}"
   fi
+
+  # The session is running again: reopen its record so status, list, and the
+  # teardown reminder treat it as active until the next 'sandbox stop' (or the
+  # failed-start teardown below) ends it again.
+  audit_reopen_session "${log_dir}"
 
   echo "==> Recreating pod for ${session_id} (${agent}, tier ${tier})..."
   prepare_agent_home "${agent}"
@@ -2419,6 +2714,7 @@ cmd_resume() {
   local opt_accept_unmasked_secrets="false"
   local opt_accept_unvetted_repo="false"
   local opt_accept_vetting_drift="false"
+  local opt_accept_git_exec_vectors="false"
   local session_id=""
 
   while [[ $# -gt 0 ]]; do
@@ -2427,10 +2723,11 @@ cmd_resume() {
       --i-accept-unmasked-secrets) opt_accept_unmasked_secrets="true" ;;
       --i-accept-unvetted-repo)    opt_accept_unvetted_repo="true" ;;
       --i-accept-vetting-drift)    opt_accept_vetting_drift="true" ;;
+      --i-accept-git-exec-vectors) opt_accept_git_exec_vectors="true" ;;
       --help|-h)
         echo "Usage: sandbox resume <SESSION_ID> [--keep-alive]"
         echo "                      [--i-accept-unmasked-secrets] [--i-accept-unvetted-repo]"
-        echo "                      [--i-accept-vetting-drift]"
+        echo "                      [--i-accept-vetting-drift] [--i-accept-git-exec-vectors]"
         echo ""
         echo "Reconnects to a session. If its pod is still running, re-attaches."
         echo "If the pod was torn down, recreates it from the recorded session"
@@ -2441,6 +2738,10 @@ cmd_resume() {
         echo "repo (the agent may have changed it since launch). The --i-accept-*"
         echo "flags waive a gate exactly as on 'sandbox run' — so a session launched"
         echo "with a waiver can be resumed — while the default still fails closed."
+        echo "--i-accept-git-exec-vectors waives the git host-exec check, which"
+        echo "refuses to resume when the agent planted a git config/hooks redirect"
+        echo "(e.g. .git/commondir, a nested .git, a changed submodule config, or a"
+        echo "replaced .git) that would run on the host on your next 'git status'."
         echo "Each waiver used is recorded in the session's audit log."
         exit 0 ;;
       -*)           die "Unknown option: $1" ;;
@@ -2489,7 +2790,8 @@ cmd_resume() {
     fi
     ensure_cluster_ready
     recreate_session_pod "${session_id}" \
-      "${opt_accept_unmasked_secrets}" "${opt_accept_unvetted_repo}" "${opt_accept_vetting_drift}"
+      "${opt_accept_unmasked_secrets}" "${opt_accept_unvetted_repo}" "${opt_accept_vetting_drift}" \
+      "${opt_accept_git_exec_vectors}"
   else
     local pod_phase
     pod_phase="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
@@ -2710,6 +3012,48 @@ infra_version_line() {
     "${label}:" "${pinned:--}" "${installed:--}" "${note}"
 }
 
+# _status_git_exec_scan — warn about git host-exec redirects (F7) in the live
+# workspaces of active (un-ended) Tier 2/3 sessions. Read-only; a section of
+# cmd_status so an operator sees a planted redirect before running git on the
+# host. Enumerates session dirs the same way the teardown reminder does.
+_status_git_exec_scan() {
+  local any=0 session_dir sj end_time tier _r _hits _rc
+  for session_dir in "${SANDBOX_LOGS_DIR}"/ses-*/; do
+    [[ -d "${session_dir}" ]] || continue
+    sj="${session_dir%/}/session.json"
+    [[ -f "${sj}" ]] || continue
+    end_time="$(jq -r '.end_time // ""' "${sj}" 2>/dev/null || echo "")"
+    [[ -n "${end_time}" && "${end_time}" != "null" ]] && continue
+    tier="$(jq -r '.tier // 1' "${sj}" 2>/dev/null || echo 1)"
+    [[ "${tier}" -ge 2 ]] || continue
+    local -a _repos=()
+    read_into_array _repos < <(jq -r '.repos[]? // empty' "${sj}" 2>/dev/null || true)
+    [[ "${#_repos[@]}" -gt 0 ]] || continue
+    for _r in "${_repos[@]}"; do
+      [[ -d "${_r}" ]] || continue
+      _rc=0
+      _hits="$(_git_exec_check_repo "${sj}" "${_r}" 2>/dev/null)" || _rc=$?
+      [[ "${_rc}" -eq 0 ]] && continue
+      if [[ "${any}" -eq 0 ]]; then
+        echo "Workspace git-exec check:"
+        any=1
+      fi
+      if [[ "${_rc}" -eq 1 ]]; then
+        echo "  ${C_YELLOW}$(basename "${session_dir%/}")${C_RESET} ${_r} (redirect found)"
+      else
+        echo "  ${C_YELLOW}$(basename "${session_dir%/}")${C_RESET} ${_r} (unverified: no launch baseline)"
+      fi
+      echo "${_hits}"
+    done
+  done
+  if [[ "${any}" -eq 1 ]]; then
+    echo "  (inspect before running git in these repos on the host; see PRINCIPLES.md)"
+  else
+    echo "Workspace git-exec check: $(c_ok "no redirects in active Tier 2/3 workspaces")"
+  fi
+  echo ""
+}
+
 cmd_status() {
   echo "=== Sandbox Status ==="
   echo ""
@@ -2832,6 +3176,9 @@ EOF
       echo "  Fix: run 'sandbox rebuild --agent all' (needs Docker or Podman)."
     fi
   fi
+  echo ""
+
+  _status_git_exec_scan
 }
 
 ###############################################################################

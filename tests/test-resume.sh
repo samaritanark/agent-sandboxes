@@ -118,18 +118,24 @@ test_recreate_reruns_gates_before_apply() {
   resolve_vetting_posture() { echo off; }
   resolve_inference_endpoint() { echo ""; }
   kubectl() { echo apply >> "${applied}"; }
-  # Gate stubs record invocation; all pass for the first case.
+  # Gate stubs record invocation; all pass for the first case. validate_repo_path
+  # (F11) and the git-exec check are new gates: stub them like the rest so this
+  # focused test stays about ordering/refusal, not the gates' own logic.
+  validate_repo_path()  { echo validate >> "${gatelog}"; }
   workspace_prescan()   { echo prescan >> "${gatelog}"; }
   check_masking_paths() { echo masking >> "${gatelog}"; }
   vetting_gate_repos()  { echo vetting >> "${gatelog}"; }
   secret_gate_repos()   { echo secret  >> "${gatelog}"; }
+  _git_exec_check_repo(){ return 0; }   # clean: no git host-exec redirect
 
   # Case A — all gates pass: every gate runs, then the apply happens.
   ( recreate_session_pod "ses-gate-test" ) >/dev/null 2>&1 || true
   local ran; ran="$(tr '\n' ',' < "${gatelog}")"
-  { grep -q prescan "${gatelog}" && grep -q masking "${gatelog}" \
-    && grep -q vetting "${gatelog}" && grep -q secret "${gatelog}"; } \
-    && pass "all four workspace gates run on recreate" || fail "missing gate(s): ${ran}"
+  { grep -q validate "${gatelog}" && grep -q prescan "${gatelog}" \
+    && grep -q masking "${gatelog}" && grep -q vetting "${gatelog}" \
+    && grep -q secret "${gatelog}"; } \
+    && pass "all workspace gates (incl. validate_repo_path, F11) run on recreate" \
+    || fail "missing gate(s): ${ran}"
   [[ -s "${applied}" ]] && pass "apply proceeds once gates pass" || fail "apply did not run when gates passed"
 
   # Case B — a gate refuses: apply must NOT run. The real gates fail closed via
@@ -140,6 +146,48 @@ test_recreate_reruns_gates_before_apply() {
   ( recreate_session_pod "ses-gate-test" ) >/dev/null 2>&1 || true
   [[ ! -s "${applied}" ]] && pass "a gate refusal aborts before any cluster apply" \
     || fail "apply ran despite a gate refusal — resume would relaunch an ungated workspace"
+
+  # Case C — a git host-exec redirect (F7) refuses resume unless waived. Restore
+  # the passing secret gate, and make the git-exec check report a hit.
+  secret_gate_repos()   { echo secret >> "${gatelog}"; }
+  _git_exec_check_repo(){ echo "  .git/commondir present"; return 1; }
+  : > "${applied}"
+  ( recreate_session_pod "ses-gate-test" ) >/dev/null 2>&1 || true
+  [[ ! -s "${applied}" ]] && pass "a git host-exec redirect aborts resume (no --i-accept-git-exec-vectors)" \
+    || fail "apply ran despite a git host-exec redirect — resume would relaunch a booby-trapped repo"
+  # With the waiver (5th arg true), resume proceeds to apply.
+  : > "${applied}"
+  ( recreate_session_pod "ses-gate-test" false false false true ) >/dev/null 2>&1 || true
+  [[ -s "${applied}" ]] && pass "--i-accept-git-exec-vectors lets resume proceed" \
+    || fail "waiver did not let resume proceed past the git-exec check"
+
+  # Case D — an unverified result (2: pre-upgrade session, no baseline) warns
+  # but does not refuse, and records the current state as the baseline.
+  _git_exec_check_repo(){ echo "  .git integrity baseline missing"; return 2; }
+  # A stop result recorded before this resume is stale once the agent runs
+  # again; recreate must drop it.
+  jq --arg p "${TEST_DIR}/repoA" '.git_exec_findings = {($p): {status: 0, findings: ""}}
+    | .end_time = "2026-10-01T00:00:00Z" | .end_reason = "evicted" | .end_detail = "low on disk"' \
+    "${sdir}/session.json" > "${sdir}/session.json.tmp" && mv "${sdir}/session.json.tmp" "${sdir}/session.json"
+  : > "${applied}"
+  ( recreate_session_pod "ses-gate-test" ) >/dev/null 2>&1 || true
+  [[ -s "${applied}" ]] && pass "an unverified git-exec result does not refuse resume" \
+    || fail "resume refused on an unverified (status 2) git-exec result"
+  jq -e --arg p "${TEST_DIR}/repoA" '.repo_git_fingerprints[$p].gitdir_kind' "${sdir}/session.json" >/dev/null 2>&1 \
+    && pass "an unverified resume records a git baseline in session.json" \
+    || fail "no git baseline recorded after an unverified resume"
+  jq -e 'has("git_exec_findings") | not' "${sdir}/session.json" >/dev/null \
+    && pass "recreate drops the stale stop result" \
+    || fail "recreate kept a stop result recorded before the resume"
+  jq -e '.end_time == null and (has("end_reason") | not) and (has("end_detail") | not)' \
+    "${sdir}/session.json" >/dev/null \
+    && pass "recreate reopens the session (end_time/end_reason cleared)" \
+    || fail "recreate left the session marked as ended"
+  jq -e '[.events[]? | select(.type == "resumed"
+          and (.message | contains("2026-10-01T00:00:00Z")) and (.message | contains("evicted")))] | length == 1' \
+    "${sdir}/session.json" >/dev/null \
+    && pass "the previous ending is kept in a resumed event" \
+    || fail "no resumed event recording the previous ending"
 }
 
 # recreate_session_pod must thread cmd_resume's --i-accept-* waiver flags into
@@ -166,6 +214,8 @@ test_recreate_threads_waiver_flags() {
   resolve_inference_endpoint() { echo ""; }
   vetting_forbid_unvetted_override() { echo false; }
   kubectl() { :; }
+  validate_repo_path()  { :; }
+  _git_exec_check_repo(){ return 0; }
   workspace_prescan()   { :; }
   check_masking_paths() { :; }
   # Capture the acceptance args each gate receives; the gates also stash the
@@ -226,6 +276,8 @@ test_recreate_tears_down_on_pod_failure() {
   # `get pod` returns non-zero so teardown_partial_session sees the pod as gone
   # (the happy path); every other kubectl call is a harmless no-op.
   kubectl() { case "$1" in get) return 1 ;; *) return 0 ;; esac; }
+  validate_repo_path()  { :; }
+  _git_exec_check_repo(){ return 0; }
   workspace_prescan()   { :; }
   check_masking_paths() { :; }
   vetting_gate_repos()  { :; }
@@ -713,6 +765,83 @@ test_cmd_stop_flags_failed_pod_delete() {
     || fail "end_reason not set to teardown-incomplete (got '$(cat "${reasonf}")')"
 }
 
+# 'sandbox run' judges each repo against the most recent earlier session on
+# it: the result 'sandbox stop' recorded, or — when that session was never
+# stopped (eviction, killed CLI) — a comparison against its launch fingerprint.
+test_git_exec_prior_session() {
+  info "Testing the prior-session git host-exec check read by 'sandbox run'..."
+  SANDBOX_LOGS_DIR="${TEST_DIR}/gxlogs"
+  local repo="${TEST_DIR}/gxrepo" fp out
+  mkdir -p "${repo}"; git -C "${repo}" init -q
+  fp="$(workspace_git_fingerprint "${repo}")"
+  # _gx_ses <id> <start_time> [<end_time>] — a session that launched on repo.
+  _gx_ses() {
+    mkdir -p "${SANDBOX_LOGS_DIR}/$1"
+    jq -n --arg r "${repo}" --arg s "$2" --arg e "${3:-}" --argjson fp "${fp}" \
+      '{start_time: $s, end_time: (if $e == "" then null else $e end), repos: [$r], repo_git_fingerprints: {($r): $fp}}' \
+      > "${SANDBOX_LOGS_DIR}/$1/session.json"
+  }
+  _prior() { _git_exec_prior_session "$@" >/dev/null; }
+
+  if _prior "${repo}"; then fail "no sessions yet, but a refusal was reported"
+  else pass "no prior sessions -> no refusal"; fi
+
+  # A stopped session that recorded a redirect refuses (path matched physically).
+  _gx_ses ses-gx1 2026-10-01T00:00:00Z 2026-10-01T01:00:00Z
+  _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx1/session.json" "${repo}" 1 "  .git/commondir present"
+  if out="$(_git_exec_prior_session "${repo}/")"; then
+    pass "a recorded redirect refuses the next run"
+  else
+    fail "recorded redirect not found"
+  fi
+  [[ "$(head -1 <<<"${out}")" == "@@ ses-gx1 recorded" ]] && pass "names the session and kind" \
+    || fail "wrong header: ${out}"
+  case "${out}" in *commondir*) pass "carries the findings" ;; *) fail "findings missing: ${out}" ;; esac
+
+  # A later clean stop clears it; an unverified (2) stop does not block.
+  _gx_ses ses-gx2 2026-10-02T00:00:00Z 2026-10-02T01:00:00Z
+  _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx2/session.json" "${repo}" 0 ""
+  if _prior "${repo}"; then fail "a later clean session did not clear it"
+  else pass "a later clean session clears it"; fi
+  _gx_ses ses-gx3 2026-10-03T00:00:00Z 2026-10-03T01:00:00Z
+  _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx3/session.json" "${repo}" 2 "  baseline missing"
+  if _prior "${repo}"; then fail "an unverified end blocked the next run"
+  else pass "an unverified end does not block the next run"; fi
+
+  # A newer session that was never stopped: unchanged repo passes...
+  _gx_ses ses-gx4 2026-10-04T00:00:00Z
+  if _prior "${repo}"; then fail "an unchanged repo after an un-stopped session was refused"
+  else pass "an un-stopped session with an unchanged repo does not refuse"; fi
+  # ...but a change its fingerprint can see refuses, even though the
+  # current-state check alone would pass it. The planted nested repo carries a
+  # hook, so it is a genuine redirect (a benign new repo would only warn).
+  mkdir -p "${repo}/vendor/lib/objects" "${repo}/vendor/lib/refs" "${repo}/vendor/lib/hooks"
+  printf 'ref: refs/heads/main\n' > "${repo}/vendor/lib/HEAD"
+  printf '#!/bin/sh\ntouch /tmp/x\n' > "${repo}/vendor/lib/hooks/pre-commit"
+  local rc=0
+  workspace_git_exec_check "${repo}" "$(workspace_git_fingerprint "${repo}")" >/dev/null || rc=$?
+  [[ "${rc}" -eq 0 ]] && pass "(control) the current-state check alone cannot see it" \
+    || fail "control: current-state check returned ${rc}"
+  if out="$(_git_exec_prior_session "${repo}")"; then
+    pass "an un-stopped session's launch baseline catches the change"
+  else
+    fail "change after an un-stopped session not caught"
+  fi
+  [[ "$(head -1 <<<"${out}")" == "@@ ses-gx4 unstopped" ]] && pass "reported as unstopped" \
+    || fail "wrong header: ${out}"
+
+  # An overlapping session: a NEWER session on the repo stopped clean does not
+  # hide the older un-stopped one, whose baseline the repo still fails.
+  _gx_ses ses-gx5 2026-10-05T00:00:00Z 2026-10-05T01:00:00Z
+  _git_exec_record_findings "${SANDBOX_LOGS_DIR}/ses-gx5/session.json" "${repo}" 0 ""
+  if out="$(_git_exec_prior_session "${repo}")"; then
+    pass "an older un-stopped session is still checked after a newer clean stop"
+  else
+    fail "a newer clean stop hid an older un-stopped session"
+  fi
+  case "${out}" in *"@@ ses-gx4 unstopped"*) pass "names the older session" ;; *) fail "wrong output: ${out}" ;; esac
+}
+
 main() {
   info "Running ${TEST_NAME} tests..."
   # NOTE: this suite is ORDER-DEPENDENT. Earlier tests globally stub cmd_stop and
@@ -724,6 +853,7 @@ main() {
   test_guide_command_reconstructs_run
   test_recreate_reruns_gates_before_apply
   test_recreate_threads_waiver_flags
+  test_git_exec_prior_session
   test_recreate_tears_down_on_pod_failure
   test_teardown_partial_session_integrity
   test_adopt_session_secrets_ownerrefs
