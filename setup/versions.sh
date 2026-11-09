@@ -26,7 +26,7 @@
 # installer). k3s tracks upstream Kubernetes' support window, so this is the pin
 # that matters most for EOL.
 # renovate: datasource=github-releases depName=k3s-io/k3s versioning=semver-coerced
-SANDBOX_K3S_VERSION="${SANDBOX_K3S_VERSION:-v1.37.0+k3s1}"
+SANDBOX_K3S_VERSION="${SANDBOX_K3S_VERSION:-v1.37.1+k3s1}"
 
 # Cilium — Helm chart version, passed as `--version` to `helm upgrade --install`.
 # renovate: datasource=helm depName=cilium registryUrl=https://helm.cilium.io versioning=semver
@@ -38,7 +38,7 @@ SANDBOX_CILIUM_VERSION="${SANDBOX_CILIUM_VERSION:-1.20.1}"
 # google/gvisor (tags look like release-YYYYMMDD.0) plus `sandbox status`
 # surfacing staleness. "latest" is the historical unpinned value and still works.
 # renovate: datasource=github-tags depName=google/gvisor extractVersion=^release-(?<version>.+)$ versioning=loose
-SANDBOX_GVISOR_RELEASE="${SANDBOX_GVISOR_RELEASE:-20260914.0}"
+SANDBOX_GVISOR_RELEASE="${SANDBOX_GVISOR_RELEASE:-20261102.0}"
 
 # helm — only used when setup has to install helm itself (get-helm-3). Passed as
 # DESIRED_VERSION. Constrained to <4 in renovate.json: setup uses the get-helm-3
