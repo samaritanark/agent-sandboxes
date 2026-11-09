@@ -91,6 +91,7 @@ min_sandbox_version: 2.12.0          # oldest CLI allowed to use this overlay
 |----------|------------|
 | `SANDBOX_EXTRA_ALLOWED_DOMAINS` | comma-separated `extra_allowed_domains` (convenient for CI / shell-rc) |
 | `SANDBOX_OVERLAY` | `overlay:` |
+| `SANDBOX_TEARDOWN_REMINDER_GRACE` | seconds a just-launched session may be pod-less before `sandbox list` warns it ended without teardown (default 120); a large value effectively disables the reminder. Non-numeric values fall back to the default. |
 | `OPENCODE_API_KEY` | required in host env for the opencode agent |
 | `OPENCODE_BASE_URL` | opencode endpoint (or `--base-url`) |
 

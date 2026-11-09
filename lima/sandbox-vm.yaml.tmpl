@@ -52,14 +52,10 @@ portForwards:
   - guestPort: __APISERVER_PORT__
     hostPort: __APISERVER_PORT__
     hostIP: "127.0.0.1"
-  # Hubble relay
-  - guestPort: 4245
-    hostPort: 4245
-    hostIP: "127.0.0.1"
 
 # No `networks:` block — Lima's default user-mode networking covers the
-# VM's needs: outbound internet for provisioning, plus the host port-forwards
-# declared above for kubectl and Hubble. The `lima: shared` mode would add a
+# VM's needs: outbound internet for provisioning, plus the host port-forward
+# declared above for kubectl. The `lima: shared` mode would add a
 # host<->VM direct-IP interface that nothing here uses, and it requires the
 # sudo-installed socket_vmnet helper on macOS.
 
@@ -108,9 +104,15 @@ provision:
       # (x86_64 / aarch64) — do NOT rename the architecture. An earlier
       # `aarch64`->`arm64` rewrite produced a 404 on Apple Silicon, which
       # (under `set -e`) aborted provisioning before Cilium ever installed.
-      # Download the binaries and their .sha512 manifests into a working
-      # directory so `sha512sum -c` finds the files the manifests name,
-      # verify, then install. See gvisor.dev/docs/user_guide/install.
+      #
+      # As of the 2026-09 releases the bucket no longer holds standalone runsc /
+      # shim objects; each release dir now ships one bundled `gvisor.tar.bz2`
+      # (gvisor.dev/issue/13718) carrying runsc, the containerd shim, and a
+      # `gvisor-bin/` directory of sidecar binaries that modern runsc expects to
+      # find next to its own binary (the embedded fallback is deprecated and
+      # stops working after 2026-10). Download bundle + manifest into a working
+      # dir so `sha512sum -c` finds the file the manifest names, verify, extract,
+      # then install runsc, the shim, and gvisor-bin/ into /usr/local/bin.
       gvisor_arch="$(uname -m)"
       # Pinned release id (YYYYMMDD.N) from setup/versions.sh; empty == latest.
       gvisor_release="__GVISOR_RELEASE__"; [ -n "${gvisor_release}" ] || gvisor_release="latest"
@@ -119,13 +121,25 @@ provision:
       (
         cd "${gvisor_tmp}"
         curl -fsSL \
-          -O "${gvisor_url}/runsc" \
-          -O "${gvisor_url}/runsc.sha512" \
-          -O "${gvisor_url}/containerd-shim-runsc-v1" \
-          -O "${gvisor_url}/containerd-shim-runsc-v1.sha512"
-        sha512sum -c runsc.sha512 containerd-shim-runsc-v1.sha512
+          -O "${gvisor_url}/gvisor.tar.bz2" \
+          -O "${gvisor_url}/gvisor.tar.bz2.sha512"
+        sha512sum -c gvisor.tar.bz2.sha512
+        tar -xjf gvisor.tar.bz2
         chmod +x runsc containerd-shim-runsc-v1
-        mv runsc containerd-shim-runsc-v1 /usr/local/bin/
+        install -m 755 runsc containerd-shim-runsc-v1 /usr/local/bin/
+        # Install gvisor-bin/ next to runsc. runsc exec's these (the sentry) as
+        # root, so force root:root and strip go-w rather than trust the tarball's
+        # stored owners. Provisioning runs as root here (mode: system), but the
+        # explicit chown/chmod keeps this correct regardless of upstream metadata.
+        # Stage + rename so runsc never sees a partial dir; the rm-then-mv leaves
+        # a brief absent window, closed by the k3s restart that follows.
+        rm -rf /usr/local/bin/.gvisor-bin.new
+        cp -R --preserve=mode gvisor-bin /usr/local/bin/.gvisor-bin.new
+        chown -R root:root /usr/local/bin/.gvisor-bin.new
+        chmod -R go-w /usr/local/bin/.gvisor-bin.new
+        chmod 755 /usr/local/bin/.gvisor-bin.new
+        rm -rf /usr/local/bin/gvisor-bin
+        mv /usr/local/bin/.gvisor-bin.new /usr/local/bin/gvisor-bin
       )
       rm -rf "${gvisor_tmp}"
 
@@ -157,12 +171,9 @@ provision:
       helm install cilium cilium/cilium ${cilium_version_flag} \
         --namespace kube-system \
         --set operator.replicas=1 \
-        --set hubble.relay.enabled=true \
+        --set hubble.relay.enabled=false \
         --set hubble.enabled=true \
         --set hubble.metrics.enableOpenMetrics=false \
-        --set hubble.relay.resources.requests.cpu=50m \
-        --set hubble.relay.resources.requests.memory=128Mi \
-        --set hubble.relay.resources.limits.memory=256Mi \
         --set kubeProxyReplacement=true \
         --set k8sServiceHost="127.0.0.1" \
         --set k8sServicePort="__APISERVER_PORT__" \
@@ -193,6 +204,10 @@ provision:
         "https://github.com/containerd/nerdctl/releases/download/v${nerdctl_ver}/nerdctl-full-${nerdctl_ver}-linux-${nerdctl_arch}.tar.gz" \
         | tar -xz -C /usr/local
       mkdir -p /etc/buildkit
+      # GC policy: cap the build cache and keep buildkit's free-space floor
+      # well above the kubelet's eviction-soft line, or the cache grows until
+      # the kubelet evicts a running sandbox. Rationale + values must match
+      # setup/linux.sh install_nerdctl_buildkit_linux.
       cat > /etc/buildkit/buildkitd.toml << 'BUILDKITD_EOF'
       [worker.oci]
         enabled = false
@@ -200,6 +215,10 @@ provision:
         enabled = true
         address = "/run/k3s/containerd/containerd.sock"
         namespace = "k8s.io"
+        gc = true
+        reservedSpace = "2GB"
+        maxUsedSpace = "10GB"
+        minFreeSpace = "30%"
       BUILDKITD_EOF
       systemctl daemon-reload
       systemctl enable --now buildkit

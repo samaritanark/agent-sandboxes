@@ -388,6 +388,43 @@ _workspace_mount_path() {
   fi
 }
 
+# Read-only workspace overlay volume name — unique per (repo index, path index
+# within READONLY_WORKSPACE_PATHS). A pure function of the two indices so the
+# volumes: and volumeMounts: blocks, which both walk the same list via
+# _readonly_workspace_entries, always agree (mirrors _mask_dir_volume_name).
+_readonly_volume_name() {
+  local repo_idx="$1" path_idx="$2"
+  echo "ro-ws-${repo_idx}-${path_idx}"
+}
+
+# _readonly_workspace_entries <repo_dir> — for the given repo, echo one line
+# "<path_idx>\t<relpath>\t<hostPathType>" per READONLY_WORKSPACE_PATHS entry
+# that EXISTS in the repo with the expected kind, plus a trailing entry for a
+# `.git` that is a regular file (linked worktree / submodule pointer): make it
+# read-only too so the agent can't repoint it at an in-workspace path the
+# operator's host git would then follow. The existence predicate lives here
+# only, so the volumes and mounts builders cannot disagree about what to emit.
+_readonly_workspace_entries() {
+  local repo_dir="$1" pidx=0 entry relpath kind
+  for entry in "${READONLY_WORKSPACE_PATHS[@]}"; do
+    relpath="${entry%:*}"
+    kind="${entry#*:}"
+    if [[ "${kind}" == f && -f "${repo_dir}/${relpath}" ]]; then
+      printf '%s\t%s\tFile\n' "${pidx}" "${relpath}"
+    elif [[ "${kind}" == d && -d "${repo_dir}/${relpath}" ]]; then
+      printf '%s\t%s\tDirectory\n' "${pidx}" "${relpath}"
+    fi
+    pidx=$((pidx + 1))
+  done
+  # .git as a regular file => linked worktree or submodule. Its config/hooks
+  # live outside the workspace (not mounted, so out of the agent's reach), but
+  # the pointer file itself is in-workspace and must not be rewritable. Index
+  # is len(list) so it never collides with a positional entry above.
+  if [[ -f "${repo_dir}/.git" ]]; then
+    printf '%s\t.git\tFile\n' "${#READONLY_WORKSPACE_PATHS[@]}"
+  fi
+}
+
 # build_volumes_block — emit volumes: list for pod spec
 # Signature: build_volumes_block <tier> <agent_home> <session_id> <infra_kubeconfig> [repo1 ...]
 build_volumes_block() {
@@ -496,6 +533,27 @@ EOF
     done < <(load_repo_masked_paths "${repos[$i]}")
   done
 
+  # Per-repo READ-ONLY overlays (git hooks/config, submodule + editor +
+  # devcontainer config — see READONLY_WORKSPACE_PATHS in lib/filesystem.sh).
+  # Unlike the masks above these mount the REAL file/dir from the workspace
+  # backing store (same hostPath as the workspace volume), so git/IDE still read
+  # it; the mounts block adds readOnly: true so the agent cannot rewrite it.
+  # They nest inside the workspace mount exactly like the mask overlays.
+  local ro_idx ro_rel ro_kind rovname
+  for i in "${!repos[@]}"; do
+    hpath="$(resolve_workspace_mount "${session_id}" "${repos[$i]}")"
+    while IFS=$'\t' read -r ro_idx ro_rel ro_kind; do
+      [[ -z "${ro_idx}" ]] && continue
+      rovname="$(_readonly_volume_name "$i" "${ro_idx}")"
+      cat <<EOF
+    - name: ${rovname}
+      hostPath:
+        path: "${hpath}/${ro_rel}"
+        type: ${ro_kind}
+EOF
+    done < <(_readonly_workspace_entries "${repos[$i]}")
+  done
+
   [[ -n "${agent_home}" ]] && cat <<EOF
     - name: agent-home
       hostPath:
@@ -598,6 +656,22 @@ EOF
       kdname="$(_kube_overlay_volume_name "$i" "${total}")"
       printf '        - name: %s\n          mountPath: %s/%s\n' "${kdname}" "${mpath}" "${MASKED_DIR_PATH}"
     fi
+  done
+
+  # Per-repo READ-ONLY overlay mounts — same list, order, and existence test as
+  # build_volumes_block (via _readonly_workspace_entries), so the volume names
+  # line up. readOnly: true is what actually blocks the agent from rewriting
+  # these host-exec vectors.
+  local ro_idx ro_rel ro_kind rovname
+  for i in "${!repos[@]}"; do
+    r="${repos[$i]}"
+    mpath="$(_workspace_mount_path "$r" "${total}")"
+    while IFS=$'\t' read -r ro_idx ro_rel ro_kind; do
+      [[ -z "${ro_idx}" ]] && continue
+      rovname="$(_readonly_volume_name "$i" "${ro_idx}")"
+      printf '        - name: %s\n          mountPath: %s/%s\n          readOnly: true\n' \
+        "${rovname}" "${mpath}" "${ro_rel}"
+    done < <(_readonly_workspace_entries "${r}")
   done
 
   [[ -n "${agent_home}" ]] && printf '        - name: agent-home\n          mountPath: %s\n' "${agent_config_mount}"

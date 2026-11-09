@@ -38,15 +38,17 @@
   // are NOT OSV-mapped, so today this produces no alerts and is purely a
   // harmless default-hardening flag that starts working if an OSV-covered
   // manager is ever added. CVE watching for the isolation stack still relies on
-  // `sandbox status` staleness, operator review, and Trivy scanning image
-  // contents (see .github/workflows/security.yaml).
+  // `sandbox status` staleness and operator review; image-content scanning of
+  // the built agent containers is NOT yet wired into CI (see the "Not covered"
+  // note in .github/workflows/security.yaml).
   osvVulnerabilityAlerts: true,
 
   // Division of labor with Dependabot (.github/dependabot.yml):
   //   - Dependabot owns github-actions + the Docker FROM lines.
-  //   - Renovate owns ONLY the shell-variable infra pins in setup/versions.sh,
-  //     which Dependabot cannot parse. enabledManagers keeps the two from
-  //     opening duplicate PRs for the same thing.
+  //   - Renovate owns the shell-variable infra pins in setup/versions.sh (which
+  //     Dependabot cannot parse) and the annotated `ARG` version pins in
+  //     docker/Dockerfile.base (e.g. UV_VERSION). Neither overlaps Dependabot's
+  //     FROM-line scope, so the two never open duplicate PRs for the same thing.
   enabledManagers: ['custom.regex'],
 
   // Match the machine-readable `# renovate:` annotation immediately above each
@@ -59,6 +61,17 @@
       managerFilePatterns: ['/^setup/versions\\.sh$/'],
       matchStrings: [
         '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: registryUrl=(?<registryUrl>\\S+))?(?: extractVersion=(?<extractVersion>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s*\\nSANDBOX_[A-Z0-9_]+="\\$\\{SANDBOX_[A-Z0-9_]+:-(?<currentValue>[^}"]+)\\}"',
+      ],
+    },
+    {
+      // Annotated `ARG NAME=value` version pins in the base image (e.g.
+      // UV_VERSION). Only ARGs carrying a `# renovate:` annotation immediately
+      // above are tracked; unannotated ARGs and the FROM lines (Dependabot's)
+      // are left alone.
+      customType: 'regex',
+      managerFilePatterns: ['/^docker/Dockerfile\\.base$/'],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: registryUrl=(?<registryUrl>\\S+))?(?: extractVersion=(?<extractVersion>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s*\\nARG [A-Z0-9_]+=(?<currentValue>\\S+)',
       ],
     },
   ],
