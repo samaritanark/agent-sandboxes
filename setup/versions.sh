@@ -26,7 +26,7 @@
 # installer). k3s tracks upstream Kubernetes' support window, so this is the pin
 # that matters most for EOL.
 # renovate: datasource=github-releases depName=k3s-io/k3s versioning=semver-coerced
-SANDBOX_K3S_VERSION="${SANDBOX_K3S_VERSION:-v1.37.0+k3s1}"
+SANDBOX_K3S_VERSION="${SANDBOX_K3S_VERSION:-v1.37.1+k3s1}"
 
 # Cilium — Helm chart version, passed as `--version` to `helm upgrade --install`.
 # renovate: datasource=helm depName=cilium registryUrl=https://helm.cilium.io versioning=semver
@@ -38,15 +38,19 @@ SANDBOX_CILIUM_VERSION="${SANDBOX_CILIUM_VERSION:-1.20.2}"
 # google/gvisor (tags look like release-YYYYMMDD.0) plus `sandbox status`
 # surfacing staleness. "latest" is the historical unpinned value and still works.
 # renovate: datasource=github-tags depName=google/gvisor extractVersion=^release-(?<version>.+)$ versioning=loose
-SANDBOX_GVISOR_RELEASE="${SANDBOX_GVISOR_RELEASE:-20260907.0}"
+SANDBOX_GVISOR_RELEASE="${SANDBOX_GVISOR_RELEASE:-20261102.0}"
 
 # helm — only used when setup has to install helm itself (get-helm-3). Passed as
 # DESIRED_VERSION. Constrained to <4 in renovate.json: setup uses the get-helm-3
 # installer and the Cilium chart is validated against helm 3.
 # renovate: datasource=github-releases depName=helm/helm versioning=semver
-SANDBOX_HELM_VERSION="${SANDBOX_HELM_VERSION:-v3.22.0}"
+SANDBOX_HELM_VERSION="${SANDBOX_HELM_VERSION:-v3.22.1}"
 
-# nerdctl — macOS-only in-VM image builder (nerdctl-full release asset).
+# nerdctl — the image builder on BOTH platforms (nerdctl-full release asset,
+# which bundles buildkit). macOS builds inside the Lima VM; Linux installs
+# nerdctl + buildkit on the host (setup/linux.sh install_nerdctl_buildkit_linux)
+# with buildkit's containerd worker pointed at k3s's own containerd, so a build
+# lands directly where k3s reads images — no host Docker/Podman required.
 # renovate: datasource=github-releases depName=containerd/nerdctl versioning=semver
 SANDBOX_NERDCTL_VERSION="${SANDBOX_NERDCTL_VERSION:-2.3.5}"
 

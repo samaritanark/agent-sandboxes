@@ -222,10 +222,27 @@ The sandbox enforces three filesystem rules:
    | `.npmrc`                       | Hidden (empty file overlay)                     |
    | `*-openrc.sh`, `clouds.yaml`   | Hidden (empty file overlay)                     |
    | `kubeconfig`, `.kube/`         | Hidden (empty file / emptyDir)                  |
-   | `.git/config`                  | Read-only                                       |
-   | `.gitmodules`                  | Read-only                                       |
-   | `.vscode/`, `.idea/`           | Read-only                                       |
-   | `.devcontainer/`               | Read-only                                       |
+   | `.git/config`, `.git/hooks/`   | Read-only when present                          |
+   | `.gitmodules`                  | Read-only when present                          |
+   | `.vscode/`, `.idea/`           | Read-only when present                          |
+   | `.devcontainer/`               | Read-only when present                          |
+
+   The read-only rows are host-exec vectors: git runs `.git/hooks/*` and
+   reads `core.fsmonitor` from `.git/config` on a routine `git status`;
+   `.gitmodules`, `.vscode/`, `.idea/`, and `.devcontainer/` are executed
+   by an IDE or `git submodule`. Because the pod runs as the operator's uid
+   on the hostPath workspace, the agent would otherwise be able to rewrite
+   them and get host code execution as the operator the next time they run
+   git or open the repo. Each is bind-mounted **read-only** so the agent
+   cannot modify it. The coverage is "when present": a path that exists at
+   launch is protected, but one that is *absent* at launch is not created
+   (a read-only hostPath cannot shadow a missing file, and creating it would
+   write into the operator's repo), so the agent can still introduce a *new*
+   `.gitmodules` / `.vscode/` / `.idea/` / `.devcontainer/` — which matters
+   only on a deliberate operator action (opening the repo in an IDE,
+   reopening in a devcontainer, or running a submodule command). `.git/config`
+   and `.git/hooks/` exist in every real checkout, so the routine git vectors
+   are always covered.
 
    The built-in set is extensible per-repo: `sandbox mask add --repo
    <PATH> <RELPATH>` records additional paths (including nested ones)

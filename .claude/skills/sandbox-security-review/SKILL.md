@@ -69,6 +69,22 @@ hostPath, securityContext change, volume, or symlink-reachable write must not
 give the agent a path onto the host or into another pod. Check mount *paths* and
 `readOnly`, not just that a mount exists.
 
+   Containment also fails if **documentation, `sandbox install`, or any tooling
+   tells the operator to run something that later executes agent-writable content
+   on the host.** The agent writes the workspace and agent-home trees, and on
+   tier 2/3 a `--repo` checkout syncs to the host — so any setup instruction that
+   adds a shell-rc `PATH` entry, `source`s a file, or invokes a binary by a path
+   that resolves against the *shell's* starting directory (a relative path,
+   `$(pwd)`, or `./bin` captured verbatim into `~/.bashrc`/`~/.zshrc`) lets the
+   agent drop a file in that tree and gain host code execution — or a `bin/sudo`
+   shim that captures the operator's password — the next time the operator opens
+   a shell there. Setup steps must resolve to **absolute paths fixed at the moment
+   the line is written**, pointing only at operator-controlled locations. Review
+   operator-facing setup instructions in docs/README as attack surface, not just
+   prose — this is a containment finding even though it lives in Markdown, and it
+   is distinct from invariant 6's *false claims*: the instruction can be perfectly
+   truthful and still be an exploit primitive.
+
 **2. Egress cannot be evaded or self-widened.** Default-deny via Cilium
 `policyEnforcementMode: always` + per-session policy. The allowlist is a
 containment boundary, so **widening it is operator authority only** — never
@@ -81,10 +97,22 @@ still pass the blocked-destinations check?
 Hubble flow export is the network audit record; the session audit log records
 what happened. The agent must not be able to **silence, starve, evict, OOM, or
 forge** either one. Specifically:
-   - Any component on the audit path (hubble-relay, cilium, the export step)
-     must not be the first eviction/OOM victim the agent can trigger — check QoS
-     class and resource requests on **both the memory and the ephemeral-storage
-     axes** (they rank differently; QoS does not rank disk).
+   - Any component on the audit path (the **Cilium agent**, which carries
+     Hubble, and the `kubectl exec ds/cilium -- hubble observe` export step —
+     NOT hubble-relay, which this platform does not use) must not be the first
+     eviction/OOM victim the agent can trigger. **Check the control that
+     actually applies to each component — it is not always QoS/requests.** The
+     Cilium agent installs with `resources: {}` (so BestEffort by QoS), and what
+     keeps it alive is the chart's **`system-node-critical` priority class**: the
+     kubelet refuses to evict a critical pod, and a node-critical pod's
+     `oom_score_adj` is pinned to -997 *before* QoS is consulted. So for the
+     agent, confirm no change overrides `priorityClassName` or sets
+     `enableCriticalPriorityClass=false` (`tests/test-cilium-install-audit.sh`
+     guards both install paths); reading its QoS/requests would show BestEffort
+     and conclude wrongly. For any OTHER audit component (one with no critical
+     priority class — e.g. a pod this repo adds and relies on), check QoS class
+     and resource requests on **both the memory and the ephemeral-storage axes**
+     (they rank differently; QoS does not rank disk).
    - Any forensic/state artifact written to an **agent-writable location**
      (workspace, agent-home) is **not evidence** — the agent can forge or delete
      it. A trustworthy signal must derive from **operator-side state the agent
@@ -144,23 +172,34 @@ the audit record when the path is abnormal. Blast-radius and eviction *tuning*
 are in scope here (they are NOT mere DoS) **when getting them wrong disables a
 security control or widens which sessions are affected.** Size eviction/GC
 settings against **k3s's compiled-in defaults, not vanilla kubelet's** — they
-differ: k3s *appears* to override `EvictionHard` (to
-`imagefs.available<5%,nodefs.available<5%`, which would drop the vanilla
-`memory.available<100Mi` threshold entirely) and to set a 10%
-`EvictionMinimumReclaim` (vanilla defaults to 0). Both are **inferred from
-secondary sources, not confirmed against k3s docs at the pinned tag** — treat
-them as leads to check, not facts to cite, and don't build a finding on the
-*absence* of memory eviction without confirming it. The 5-minute
-`evictionPressureTransitionPeriod`, by contrast, is the **vanilla upstream
-default**, not a k3s override — don't cite it as a k3s difference. Confirm each
-against the kubelet args on a real node at the pinned tag (one `ps`/node-args
-check settles all three); a misattributed mechanism is itself an invariant-6
-claim, and so is stating an inference as fact.
+differ, and this is now **confirmed at the pinned tag** (v1.36.3+k3s1,
+`pkg/daemons/agent/agent.go:192-199`, applied unconditionally in
+`defaultKubeletConfig`): k3s overrides `EvictionHard` to
+`imagefs.available<5%,nodefs.available<5%`, which **drops the vanilla
+`memory.available<100Mi` threshold entirely**, and sets
+`EvictionMinimumReclaim` to `imagefs.available:10%,nodefs.available:10%`
+(vanilla defaults to 0). Consequence: **k3s runs no kubelet memory eviction** —
+under memory pressure the *kernel OOM killer* selects the victim by
+`oom_score_adj` (derived from QoS class and requests), not a kubelet
+memory-eviction ranking. So a memory request still protects a pod, but by
+lowering its OOM score, not by reordering an eviction that never fires; a
+comment that credits "kubelet memory eviction" is an invariant-6 mechanism
+error (this is exactly N5/N6, issue #95). The 5-minute
+`evictionPressureTransitionPeriod` is the **vanilla upstream default**, not a
+k3s override — don't cite it as a k3s difference. When code changes these
+thresholds, re-confirm against the pinned tag's source (and, for a real
+deployment, the kubelet args on the node); a misattributed mechanism is itself
+an invariant-6 claim, and so is stating an inference as fact.
 
 ## What to report vs. skip (this repo's rules, overriding the generic ones)
 
 **DO report** (the generic skill wrongly suppresses these):
 - Security-assurance falsehoods in **any** file, Markdown included (invariant 6).
+- **Insecure operator setup instructions** — docs/README/`sandbox install` steps
+  that resolve an agent-writable or start-dir-relative path at shell startup
+  (shell-rc `PATH`/`source` of `$(pwd)` or `bin/…`), handing the agent host code
+  execution (invariant 1). Docs are in scope for dangerous *recipes*, not only
+  false claims — do **not** wave a doc hunk through as "non-code."
 - **Audit / anti-forensics** gaps the in-sandbox agent can trigger — silencing,
   starving, evicting, or forging the flow log or audit record (invariant 3).
 - **Eviction / lifecycle blast-radius** that defeats containment, revocation, or
@@ -185,6 +224,16 @@ a static read. So:
 - **Reason from platform semantics.** k8s GC/eviction/QoS, Cilium policy
   identity, gVisor's syscall surface. When a claim rides on a compiled-in default,
   check it at the **pinned version** (`setup/versions.sh`).
+- **Check changed shell for exit-code traps that silently flip a control.** A
+  pipeline whose head keeps writing after the tail exits — `printf … | grep -q`,
+  `… | head` — returns **141** under `set -o pipefail` (the head takes SIGPIPE),
+  so a *match* reads as failure. When that status gates a security/containment or
+  operator-trust decision (an image-presence preflight, a `status` present/missing
+  count, a gate's pass/fail), the control silently inverts — a *present* item
+  reported absent, or vice-versa. Prefer a here-string (`grep -q … <<<"$x"`) where
+  no pipe is needed, and verify the exit code in the **match** case, not just the
+  no-match case. Extend the same suspicion to any `$(…)`/inline command
+  substitution whose failure `set -e` won't catch.
 - **Trace every exit path**, not the happy path — that is where revocation and
   audit gaps live.
 - **Follow claims and prescribed remediations into UNCHANGED code — do not stop
@@ -242,9 +291,16 @@ instance.
   fire on eviction; the doc/comment said it did. (Invariants 4, 6.)
 - **Audit breadcrumb written to an ephemeral or agent-writable path** — lost on
   pod death, and forgeable by the agent, so it isn't evidence. (Invariant 3.)
-- **Audit channel as first eviction/OOM victim** — hubble-relay BestEffort (no
-  resource requests) let the agent starve the egress log; disk-axis ranking is
-  separate from memory-axis. (Invariant 3.)
+- **Audit path mis-identified, then hardened** — a comment/skill named
+  hubble-relay as the egress-log channel and added resource requests to protect
+  it, but the audit reads the Cilium AGENT's Hubble directly
+  (`kubectl exec ds/cilium -- hubble observe`, lib/cluster.sh); relay was never
+  on the path and is disabled in the install as of #103 (pre-#103 hosts keep the
+  relay Deployment until setup re-runs, so a live host may still show it). Trace
+  the actual exporter before
+  crediting any component with carrying the audit — and when you do check a real
+  audit component, QoS/requests rank on the memory and ephemeral-storage axes
+  separately (QoS does not rank disk). (Invariant 3.)
 - **Eviction tuning sized against vanilla kubelet, not k3s** — wrong thresholds /
   minimum-reclaim widened the blast radius across sessions. (Invariant 7.)
 - **Teardown swallowing revocation reminders / asserting false success** — a
@@ -255,6 +311,24 @@ instance.
   authority. (Invariants 2, 5.)
 - **Sudo/PATH and cross-platform gaps** — a control that silently no-ops on one
   platform (macOS/lima vs Linux/WSL) or under a restricted `sudo secure_path`.
+  (Recurred on PR #113: a new `k3s_images_list` used bare `sudo k3s` on the macOS
+  branch — no `-n`, no absolute path — so it would prompt under `passwordlessSudo:
+  false` and miss `secure_path`, against the repo's own #72 convention.)
+- **Insecure setup recipe in docs — shell-rc PATH/source of a start-dir-relative
+  path** — the README/tutorial told the operator to add `export
+  PATH="$(pwd)/bin:$PATH"` and `source bin/completions/…` to `~/.bashrc`; both
+  resolve against whatever directory the shell *starts* in, not the sandbox
+  checkout, so an agent that writes `<repo>/bin/…` in a tier 2/3 workspace gains
+  host code execution (and a password-stealing `bin/sudo` shim) the moment the
+  operator opens a shell there. Setup instructions must emit absolute, write-time-
+  fixed paths. Docs are in scope for dangerous recipes, not only false claims; the
+  PR's own review run missed this by treating the docs hunk as non-code. (Invariant 1.)
+- **`printf | grep -q` under `pipefail` returns 141 for a present item** — the
+  head takes SIGPIPE when grep exits on the first match, so an image-presence
+  preflight and the `sandbox status` present/missing count read a *present* image
+  as absent (false red + a needless rebuild prompt), and the documented tri-state
+  contract breaks. Use a here-string; audit changed pipelines whose exit code
+  gates a control. (Method: verify behavior.)
 - **Credential survival via a killed CLI, not just eviction** — teardown that runs
   only on normal exit / pod-eviction leaves a non-`--keep-alive` session's pod and
   Secrets live when the `sandbox` process itself is signalled or killed (closed
@@ -288,7 +362,18 @@ instance.
   asserting a compiled-in default (k3s eviction thresholds) as verified when it
   was only inferred from secondary sources; future readers cite the parenthetical,
   not the caveat two sentences later. State inferences as inferences until checked
-  at the pinned tag. (Invariant 6.)
+  at the pinned tag. (Invariant 6.) *(The specific k3s-eviction inference is now
+  confirmed at v1.36.3+k3s1 — see the eviction-tuning paragraph above — but the
+  lesson stands for the next compiled-in default.)*
+- **A protection credited to the wrong mechanism** — a comment said a pod's
+  memory request lifts it out of "the kubelet's first OOM/eviction victim"
+  position *under memory pressure*, but k3s runs no kubelet memory eviction
+  (confirmed above); the request works via the kernel OOM killer's
+  `oom_score_adj`. The control holds, but a reader auditing "does kubelet
+  memory-eviction rank this correctly?" checks a mechanism that never fires. When
+  a comment names the *mechanism* of a control, verify that mechanism is the one
+  actually in force at the pinned tag — a right-conclusion / wrong-reason claim is
+  still an invariant-6 defect (issue #95, N5/N6). (Invariant 6.)
 - **Ordering in a re-entrant teardown — the FIRST step must be the CONTAINMENT
   action, not the credential-object deletes.** Once teardown can fire at moments
   the operator didn't choose (a signalled disconnect) where the process may be

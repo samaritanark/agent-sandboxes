@@ -462,8 +462,10 @@ delete_kubeconfig_secret() {
 
 # export_hubble_flows — export Hubble flows for session
 # Reads from the Cilium agent's local Hubble via `kubectl exec`, not the host
-# `hubble` CLI: the host CLI needs a Hubble Relay connection on localhost:4245
-# that nothing sets up. On this single-node cluster the agent sees every flow.
+# `hubble` CLI: the host CLI needs a Hubble Relay connection on localhost:4245,
+# and relay is intentionally disabled (single-node: the agent already sees every
+# flow, so relay would be pure overhead — see the Cilium install in
+# setup/common.sh). The agent-side Hubble this reads is enabled there.
 export_hubble_flows() {
   local session_id="$1"
   local log_dir="$2"
