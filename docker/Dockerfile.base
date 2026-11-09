@@ -73,7 +73,7 @@ RUN node --version && npm --version
 # from PyPI at build time (below), so keep it current rather than years stale.
 # Tracked by Renovate via the annotation (see renovate.json5 customManagers).
 # renovate: datasource=github-tags depName=astral-sh/uv
-ARG UV_VERSION=0.12.21
+ARG UV_VERSION=0.12.23
 # uv release assets are keyed by `uname -m` (x86_64 / aarch64).
 RUN arch="$(uname -m)" \
   && curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${arch}-unknown-linux-gnu.tar.gz" \
