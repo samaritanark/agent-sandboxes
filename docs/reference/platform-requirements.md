@@ -3,10 +3,12 @@
 [← Documentation](../index.md)
 
 **Linux**: k3s, gVisor, Cilium, kubectl, helm, jq, xxd, sha256sum,
-curl, git. Also betterleaks (the Tier 2/3 pre-launch secret gate fails
-closed without it) — `sandbox setup` installs the pinned version
-(`setup/versions.sh`) if it is missing or older, so it is not a manual
-prerequisite.
+curl, git. Also nerdctl + buildkit (the image builder — `sandbox setup`
+installs the pinned `nerdctl-full` release and wires buildkit to k3s's
+containerd, so **no host Docker or Podman is required**) and betterleaks
+(the Tier 2/3 pre-launch secret gate fails closed without it). Both are
+installed from the pins in `setup/versions.sh` if missing, so neither is a
+manual prerequisite.
 
 **macOS**: Lima (`brew install lima`) — provisions an Ubuntu 24.04 VM
 with identical stack

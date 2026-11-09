@@ -49,7 +49,10 @@ full walkthrough, including Tier 2/3 and options, is in
 > [Corporate TLS-intercept proxies](docs/how-to/tls-intercept-proxies.md).
 
 ```bash
-# 1. Put the CLI on PATH and load completions (add to your shell rc to persist).
+# 1. Put the CLI on PATH and load completions for this shell. To persist, append
+#    ABSOLUTE paths to your shell rc (see the tutorial) - don't copy the relative
+#    lines below into an rc file, which would re-resolve them against each new
+#    shell's starting directory, not this checkout.
 export PATH="$(pwd)/bin:$PATH"
 source bin/completions/sandbox.bash   # or sandbox.zsh
 

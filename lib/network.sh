@@ -151,9 +151,9 @@ wait_for_k3s_api() {
 #   3. Restart the cilium-agent iff the devices OR the IPv4 drifted, so it
 #      re-reads `devices` and re-stamps the BPF masquerade source.
 #   4. Whenever the agent restarts, re-emit EndpointSlices for pod-backed
-#      Services (CoreDNS, hubble-relay): the agent restart leaves the BPF
-#      service-LB backend map stale, so pod->ClusterIP — including CoreDNS's
-#      path to kube-apiserver — stays broken until the slice is re-programmed.
+#      Services (CoreDNS): the agent restart leaves the BPF service-LB backend
+#      map stale, so pod->ClusterIP — including CoreDNS's path to kube-apiserver
+#      — stays broken until the slice is re-programmed.
 #
 # Behaviour by VPN state (device half):
 #   - VPN up: pin devices='{primary,vpn,...}' so VPN-routed pod egress is SNAT'd
@@ -308,14 +308,12 @@ reconcile_host_network() {
     }
 
     # Re-emit EndpointSlices for pod-backed Services so the fresh agent
-    # re-programs BPF backend slots. Without this, CoreDNS (and any other
-    # Service whose backend is a pod, e.g. hubble-relay's ClusterIP) stays
-    # unreachable from inside other pods until something else reconciles.
+    # re-programs BPF backend slots. Without this, CoreDNS (whose backend is a
+    # pod) stays unreachable from inside other pods until something else
+    # reconciles.
     echo "  Bouncing pod-backed control-plane pods to re-program service backends..."
     kubectl --kubeconfig "${kc}" -n kube-system delete pod \
       -l k8s-app=kube-dns --ignore-not-found >/dev/null 2>&1 || true
-    kubectl --kubeconfig "${kc}" -n kube-system delete pod \
-      -l app.kubernetes.io/name=hubble-relay --ignore-not-found >/dev/null 2>&1 || true
     kubectl --kubeconfig "${kc}" -n kube-system rollout status deploy/coredns --timeout=120s || {
       ok=0
       echo "  WARN: CoreDNS did not become ready within 120s." >&2

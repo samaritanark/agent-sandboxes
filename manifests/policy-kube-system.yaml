@@ -6,7 +6,6 @@
 # With policyEnforcementMode: always, Cilium enforces default-deny on every
 # endpoint cluster-wide, including system pods.  Without this policy:
 #   - CoreDNS cannot forward queries to upstream resolvers → EAI_AGAIN
-#   - hubble-relay cannot reach cilium-agent gRPC → CrashLoopBackOff
 #   - local-path-provisioner cannot reach the API server → CrashLoopBackOff
 #
 # kube-system pods are trusted cluster infrastructure.  Sandbox pod isolation

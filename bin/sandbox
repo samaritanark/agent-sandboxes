@@ -771,6 +771,39 @@ cmd_run() {
     die "Tier ${opt_tier} requires --repo <PATH>."
   fi
 
+  # Fail fast if the image this session needs was never built/imported. These
+  # images use imagePullPolicy: Never (no backing registry — see lib/manifest.sh
+  # and Step 6), so a missing one otherwise surfaces only as a cryptic
+  # ErrImageNeverPull after the pod is created and torn down. The classic cause
+  # is an install that ran with no container runtime, where build_images skips
+  # the build with only a warning. Checked here in Step 1 — before session.json,
+  # the agent-home staging, any Secret, or the pod — so a miss aborts with zero
+  # side effects to clean up. Best-effort: k3s_image_present returns 2 when it
+  # cannot tell (no passwordless sudo, VM down), and we proceed rather than block
+  # on uncertainty. opt_agent/opt_tier are final by now (parsed + profile-
+  # resolved above), so this tag matches the one Step 6 builds for the manifest.
+  local _preflight_image
+  if [[ "${opt_tier}" -eq 3 ]]; then
+    _preflight_image="docker.io/library/sandbox:${opt_agent}-infra"
+  else
+    _preflight_image="docker.io/library/sandbox:${opt_agent}"
+  fi
+  local _img_status=0
+  k3s_image_present "${_preflight_image}" || _img_status=$?
+  if [[ "${_img_status}" -eq 1 ]]; then
+    echo "ERROR: image '${_preflight_image}' is not present in the cluster." >&2
+    echo "  Agent pods use imagePullPolicy: Never, so this image must be built" >&2
+    echo "  and imported locally before a session can start. The usual cause is" >&2
+    echo "  an install that ran without Docker or Podman (the image build is" >&2
+    echo "  skipped with only a warning). Install a container runtime, then:" >&2
+    echo "" >&2
+    echo "    sandbox rebuild --agent all   # rebuild + import all images" >&2
+    echo "    # or re-run the full install once a runtime is present:" >&2
+    echo "    sandbox install" >&2
+    echo "" >&2
+    die "No runnable image for agent '${opt_agent}' (tier ${opt_tier})."
+  fi
+
   local _r
   for _r in "${opt_repos[@]+"${opt_repos[@]}"}"; do
     validate_repo_path "${_r}"
@@ -1690,6 +1723,140 @@ cmd_run() {
 }
 
 ###############################################################################
+# Evicted / abnormally-ended session detector (issue #94 Item 1, warn-only)
+#
+# A node-pressure eviction (or a teardown that never completed) leaves a session
+# whose session.json was never stamped with an end_time. Its pod's
+# ownerReference GC only fires when the pod is DELETED, not when it is evicted or
+# crashes (see cmd_stop / invariant 4), so any session-scoped credential Secrets
+# stay live until an operator runs `sandbox stop`. Nothing else surfaces that the
+# session ended abnormally. These helpers detect that state and remind the
+# operator; they take NO destructive action (auto-reap is deferred — issue #94).
+###############################################################################
+
+# _teardown_reminder_reason — pure predicate (no kubectl/stat), so it is unit
+# testable. Echoes a short reason string when a session ended WITHOUT a recorded
+# teardown and may still own live credentials; echoes nothing when there is
+# nothing to remind about. Args: end_time  pod_phase  age_seconds  grace_seconds.
+# pod_phase is a kubelet phase (Running/Pending/Failed/Succeeded/Unknown) or the
+# literal "absent" when the pod object is gone.
+_teardown_reminder_reason() {
+  local end_time="$1" pod_phase="$2" age="$3" grace="$4"
+  # Defense in depth: grace reaches bash arithmetic below, where a non-numeric
+  # value would be evaluated as an expression (and under `set -u` could even
+  # abort cmd_list). Direct callers (tests) land here too, so validate here as
+  # well as at the read site in warn_untorndown_sessions.
+  [[ "${grace}" =~ ^[0-9]+$ ]] || grace=120
+  # A recorded end_time means cmd_stop ran: a clean stop, or an abnormal end it
+  # already captured (end_reason) and whose Secrets it already revoked. Nothing
+  # to nag about either way.
+  [[ -n "${end_time}" && "${end_time}" != "null" ]] && return 0
+  case "${pod_phase}" in
+    Failed)
+      # Evicted/OOMed/crashed. The pod object lingers in Failed (that is exactly
+      # why GC never cascaded), so its Secrets are still live. A pod only reaches
+      # Failed after it has run, so this is unambiguous — flag it regardless of
+      # age.
+      echo "pod Failed (evicted/crashed), credentials not revoked"
+      ;;
+    absent)
+      # The pod is gone but the session was never stamped ended — a teardown that
+      # did not finish. But session.json is written BEFORE the pod is created, so
+      # a session still launching also reads as absent+no-end_time; suppress
+      # inside the launch grace window to avoid flagging in-flight runs.
+      [[ "${age}" =~ ^[0-9]+$ ]] && [[ "${age}" -lt "${grace}" ]] && return 0
+      echo "pod gone with no recorded teardown"
+      ;;
+    *)
+      # Running/Pending/Succeeded, or an existing pod whose phase we couldn't
+      # read: a healthy, launching, or detached --keep-alive session. Not a
+      # teardown gap — never flag it. (Unknown is deprecated upstream and is no
+      # longer produced now the per-pod query distinguishes absent from error.)
+      :
+      ;;
+  esac
+  return 0
+}
+
+# _session_json_age_seconds — seconds since session.json was last written, used
+# only to suppress the launch-window race above. Fails safe: on any stat error
+# it returns 0 (treated as "fresh", so an absent pod is NOT flagged).
+_session_json_age_seconds() {
+  local f="$1" mtime now
+  now="$(date +%s 2>/dev/null || echo 0)"
+  if is_macos; then
+    mtime="$(stat -f %m "${f}" 2>/dev/null || echo "${now}")"
+  else
+    mtime="$(stat -c %Y "${f}" 2>/dev/null || echo "${now}")"
+  fi
+  [[ "${mtime}" =~ ^[0-9]+$ ]] || mtime="${now}"
+  local age=$(( now - mtime ))
+  # A session.json mtime in the future (clock skew, a restored/copied tree)
+  # yields a negative age, which fails the digits-only guard at the absent-pod
+  # check and would flip "fails safe → fresh" into a spurious "pod gone". Clamp
+  # to 0 (fresh) so the suppression window still applies.
+  (( age < 0 )) && age=0
+  echo "${age}"
+}
+
+# warn_untorndown_sessions — after the session table, remind the operator (on
+# stderr) about each session that ended without teardown and may still own live
+# credentials. Warn-only: takes no action. Best-effort — never fail cmd_list over
+# it, and stay quiet when the cluster is unreachable.
+warn_untorndown_sessions() {
+  [[ -d "${SANDBOX_LOGS_DIR}" ]] || return 0
+  # Reachability guard: an "absent" pod is only evidence of a torn-down session
+  # if the cluster is actually reachable. When it is NOT, every `kubectl get pod`
+  # fails and every un-stamped session would read as absent — a misleading "pod
+  # gone, run sandbox stop" storm. cmd_list already prints "(could not reach
+  # cluster)" in that case, and a real gap re-surfaces on the next reachable
+  # list, so stay silent rather than cry wolf.
+  kubectl get pods -n "${SANDBOX_NAMESPACE}" &>/dev/null 2>&1 || return 0
+  local grace="${SANDBOX_TEARDOWN_REMINDER_GRACE:-120}"
+  # SANDBOX_TEARDOWN_REMINDER_GRACE (operator env, seconds) is the launch-window
+  # suppression; set it large to effectively disable the reminder. Validate
+  # before it reaches arithmetic in _teardown_reminder_reason — a non-numeric
+  # value must fall back to the default, not abort cmd_list under `set -u`.
+  [[ "${grace}" =~ ^[0-9]+$ ]] || grace=120
+  local session_dir sid session_json end_time pod_name pod_phase phase_out age reason
+  for session_dir in "${SANDBOX_LOGS_DIR}"/ses-*/; do
+    [[ -d "${session_dir}" ]] || continue
+    session_json="${session_dir}/session.json"
+    [[ -f "${session_json}" ]] || continue
+    end_time="$(jq -r '.end_time // ""' "${session_json}" 2>/dev/null || echo "")"
+    # Fast path: a stamped session is settled — skip before touching the cluster.
+    [[ -n "${end_time}" && "${end_time}" != "null" ]] && continue
+    sid="$(basename "${session_dir}")"
+    # Resolve the pod name the SAME way cmd_stop does (resolve_pod_name), so the
+    # oldest records — written before pod_name was added to the schema — are
+    # checked via the sandbox-<id> fallback instead of silently skipped. Those
+    # are the likeliest real orphans.
+    pod_name="$(resolve_pod_name "${sid}")"
+    # One query, three outcomes:
+    #   exit != 0           → an API error on THIS object (RBAC denial, throttle,
+    #                         dropped connection). Say nothing rather than claim
+    #                         the pod is gone and send the operator to 'sandbox
+    #                         stop' a live session on a false alarm.
+    #   exit 0, empty        → not found: genuinely absent / torn down.
+    #   exit 0, "Pod:<phase>" → exists; <phase> is "" if not set yet.
+    if ! phase_out="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
+         --ignore-not-found=true -o jsonpath='{.kind}:{.status.phase}' 2>/dev/null)"; then
+      continue
+    fi
+    if [[ -z "${phase_out}" ]]; then
+      pod_phase="absent"
+    else
+      pod_phase="${phase_out#Pod:}"
+    fi
+    age="$(_session_json_age_seconds "${session_json}")"
+    reason="$(_teardown_reminder_reason "${end_time}" "${pod_phase}" "${age}" "${grace}")"
+    [[ -n "${reason}" ]] && \
+      warn "session ${sid} ended without teardown (${reason}); run 'sandbox stop ${sid}' to revoke its credentials."
+  done
+  return 0
+}
+
+###############################################################################
 # cmd_list — list sessions
 ###############################################################################
 cmd_list() {
@@ -1732,6 +1899,10 @@ cmd_list() {
   else
     echo "  (log directory does not exist: ${SANDBOX_LOGS_DIR})"
   fi
+
+  # Surface any session that ended without teardown and may still own live
+  # credential Secrets (issue #94 Item 1). Warn-only, on stderr.
+  warn_untorndown_sessions
 }
 
 ###############################################################################
@@ -2137,6 +2308,13 @@ _resume_guide_command() {
 # resume can never relaunch a workspace that a fresh 'sandbox run' would refuse.
 recreate_session_pod() {
   local session_id="$1"
+  # Launch-gate waivers, threaded from cmd_resume's --i-accept-* flags (default
+  # false = fail closed). The operator re-asserts them at resume time against the
+  # freshly re-scanned workspace, so a secret the agent added since launch is
+  # still surfaced and consciously re-accepted — not silently inherited.
+  local accept_unmasked_secrets="${2:-false}"
+  local accept_unvetted_repo="${3:-false}"
+  local accept_vetting_drift="${4:-false}"
   local log_dir="${SANDBOX_LOGS_DIR}/${session_id}"
   local sj="${log_dir}/session.json"
   local pod_name
@@ -2164,10 +2342,13 @@ recreate_session_pod() {
   # workspace is not carried in session.json — for a Tier 2 repo it is the live
   # host directory, which the previous session's agent could have modified — so
   # resume must NOT relaunch a workspace that a fresh 'sandbox run' would refuse
-  # (masking type check, repo vetting, unmasked-secret scan). These fail closed
-  # and mirror cmd_run's Step 2 exactly, with every override hardcoded false:
-  # resume carries no --i-accept-* waivers, so anything needing one is refused
-  # here and the operator relaunches via 'sandbox run' with the flag they intend.
+  # (masking type check, repo vetting, unmasked-secret scan). These mirror
+  # cmd_run's Step 2 exactly: the gates re-scan the live workspace and fail
+  # closed, and the operator's --i-accept-* waivers (threaded in above; default
+  # false) are honored the same way they are on 'sandbox run' — so a session
+  # launched with a waiver can be resumed, while an un-waived gate still refuses.
+  # Honoring them here against the FRESH scan means any secret the agent added
+  # since launch is surfaced and must be re-accepted, not silently inherited.
   if [[ "${tier}" -ge 2 ]] && [[ "${#repos[@]}" -gt 0 ]]; then
     echo "==> Re-checking workspace gates before recreate..."
     local _r
@@ -2175,13 +2356,30 @@ recreate_session_pod() {
       workspace_prescan "${_r}"
     done
     check_masking_paths "${repos[@]}"
-    vetting_gate_repos "$(resolve_vetting_posture)" "false" "false" "${repos[@]}"
+    vetting_gate_repos "$(resolve_vetting_posture)" "${accept_unvetted_repo}" "${accept_vetting_drift}" "${repos[@]}"
     local _endpoint _endpoint_trusted="false"
     _endpoint="$(resolve_inference_endpoint "${agent}")"
     if [[ -n "${_endpoint}" ]] && inference_endpoint_is_trusted "${_endpoint}"; then
       _endpoint_trusted="true"
     fi
-    secret_gate_repos "false" "${_endpoint_trusted}" "false" "${repos[@]}"
+    # Mirror cmd_run: accepting an unvetted repo also lets the secret gate honor
+    # that repo's exception list, subject to the overlay forbid knob.
+    local _accept_unvetted_eff="${accept_unvetted_repo}"
+    [[ "${_accept_unvetted_eff}" == "true" && "$(vetting_forbid_unvetted_override)" == "true" ]] && _accept_unvetted_eff="false"
+    secret_gate_repos "${accept_unmasked_secrets}" "${_endpoint_trusted}" "${_accept_unvetted_eff}" "${repos[@]}"
+    # Audit parity with cmd_run's launch-time recording (bin/sandbox Step 4): log
+    # what THIS re-gate of the (possibly agent-modified) live workspace found —
+    # the vetting and secret-scan summaries the gates stashed — then flush any
+    # waiver they recorded. So the session log shows the resume actually re-gated
+    # the workspace and names every waiver it received, not just the launch's.
+    # session.json already exists for a resumed session, so these append cleanly.
+    if [[ -n "${SESSION_VETTING_SUMMARY:-}" ]]; then
+      audit_log_event "${log_dir}" "vetting" "${SESSION_VETTING_SUMMARY}"
+    fi
+    if [[ -n "${SESSION_SECRET_SUMMARY:-}" ]]; then
+      audit_log_event "${log_dir}" "secret-scan" "${SESSION_SECRET_SUMMARY}"
+    fi
+    audit_flush_overrides "${log_dir}"
   fi
 
   echo "==> Recreating pod for ${session_id} (${agent}, tier ${tier})..."
@@ -2218,18 +2416,32 @@ recreate_session_pod() {
 ###############################################################################
 cmd_resume() {
   local opt_keep_alive="false"
+  local opt_accept_unmasked_secrets="false"
+  local opt_accept_unvetted_repo="false"
+  local opt_accept_vetting_drift="false"
   local session_id=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --keep-alive) opt_keep_alive="true" ;;
+      --i-accept-unmasked-secrets) opt_accept_unmasked_secrets="true" ;;
+      --i-accept-unvetted-repo)    opt_accept_unvetted_repo="true" ;;
+      --i-accept-vetting-drift)    opt_accept_vetting_drift="true" ;;
       --help|-h)
         echo "Usage: sandbox resume <SESSION_ID> [--keep-alive]"
+        echo "                      [--i-accept-unmasked-secrets] [--i-accept-unvetted-repo]"
+        echo "                      [--i-accept-vetting-drift]"
         echo ""
         echo "Reconnects to a session. If its pod is still running, re-attaches."
         echo "If the pod was torn down, recreates it from the recorded session"
         echo "state when possible (Linux, tier 1/2, no profile, non-opencode);"
         echo "otherwise prints the 'sandbox run' command to relaunch an equivalent."
+        echo ""
+        echo "Recreating a Tier 2/3 pod re-runs the workspace gates against the LIVE"
+        echo "repo (the agent may have changed it since launch). The --i-accept-*"
+        echo "flags waive a gate exactly as on 'sandbox run' — so a session launched"
+        echo "with a waiver can be resumed — while the default still fails closed."
+        echo "Each waiver used is recorded in the session's audit log."
         exit 0 ;;
       -*)           die "Unknown option: $1" ;;
       *)
@@ -2276,7 +2488,8 @@ cmd_resume() {
       exit 1
     fi
     ensure_cluster_ready
-    recreate_session_pod "${session_id}"
+    recreate_session_pod "${session_id}" \
+      "${opt_accept_unmasked_secrets}" "${opt_accept_unvetted_repo}" "${opt_accept_vetting_drift}"
   else
     local pod_phase
     pod_phase="$(kubectl get pod -n "${SANDBOX_NAMESPACE}" "${pod_name}" \
@@ -2583,6 +2796,42 @@ cmd_status() {
   else
     echo "  Status: not found (run 'sandbox setup')"
   fi
+  echo ""
+
+  # Sandbox images — the locally-built, imagePullPolicy: Never images that pods
+  # run. A clean cluster with these missing (e.g. an install that ran without a
+  # container runtime) still shows green everywhere above but fails at
+  # 'sandbox run'; this row is the early warning for that gap.
+  echo "Sandbox images:"
+  local _img_list _img_rc=0
+  _img_list="$(k3s_images_list)" || _img_rc=$?
+  if [[ "${_img_rc}" -ne 0 ]]; then
+    echo "  ${C_YELLOW}(could not query containerd — needs passwordless sudo on Linux, or the VM is stopped)${C_RESET}"
+  else
+    local _expected _present_n=0 _missing=()
+    while IFS= read -r _expected; do
+      [[ -z "${_expected}" ]] && continue
+      # Here-string, not `printf | grep -q`: under `pipefail` a matching grep
+      # exits early, printf takes SIGPIPE → 141, and a *present* image would be
+      # miscounted as missing (red status + a needless rebuild prompt).
+      if grep -Fxq -- "${_expected}" <<<"${_img_list}"; then
+        _present_n=$((_present_n + 1))
+      else
+        _missing+=("${_expected#docker.io/library/}")
+      fi
+    done <<EOF
+$(sandbox_expected_images)
+EOF
+    local _expected_n
+    _expected_n="$(sandbox_expected_images | wc -l | tr -d ' ')"
+    if [[ "${#_missing[@]}" -eq 0 ]]; then
+      echo "  Status: $(c_ok "${_present_n}/${_expected_n} present")"
+    else
+      echo "  Status: ${C_RED}${_present_n}/${_expected_n} present${C_RESET}"
+      echo "  Missing: ${_missing[*]}"
+      echo "  Fix: run 'sandbox rebuild --agent all' (needs Docker or Podman)."
+    fi
+  fi
 }
 
 ###############################################################################
@@ -2668,16 +2917,6 @@ cmd_rebuild() {
     *) die "Invalid --agent: ${opt_agent} (must be claude, codex, opencode, copilot, grok, shell, base, or all)" ;;
   esac
 
-  # Container builder — match setup/common.sh preference order.
-  local container_cli=""
-  if command -v docker &>/dev/null; then
-    container_cli="docker"
-  elif command -v podman &>/dev/null; then
-    container_cli="podman"
-  else
-    die "Neither docker nor podman found. Install one and retry."
-  fi
-
   local platform
   platform="$(detect_platform)"
   if [[ "${platform}" == "macos" ]]; then
@@ -2686,12 +2925,33 @@ cmd_rebuild() {
     exit 1
   fi
 
+  # Linux: build with nerdctl + buildkit straight into k3s's containerd (set up
+  # by 'sandbox install' — see setup/linux.sh install_nerdctl_buildkit_linux).
+  # No host Docker/Podman and no save|import round-trip.
+  # Absolute nerdctl path for the sudo invocations below: sudo's secure_path may
+  # omit /usr/local/bin (RHEL/Alma), so a bare `sudo nerdctl` would fail even
+  # though nerdctl is installed there. See nerdctl_bin / k3s_bin in lib/platform.sh.
+  local nerdctl_path
+  nerdctl_path="$(nerdctl_bin 2>/dev/null)" \
+    || die "nerdctl not found — run 'sandbox install' (it installs nerdctl + buildkit on Linux)."
+  # `nerdctl build` shells out to its co-located buildctl (and `nerdctl run` to
+  # runc); sudo's secure_path can omit that dir (RHEL/Alma), so run nerdctl with
+  # that dir on PATH — an absolute nerdctl path alone is not enough, since nerdctl
+  # would then fail to exec buildctl ("no buildkit host is available"). Use a
+  # FIXED PATH rather than appending the caller's ${PATH}: nerdctl runs as root,
+  # so inheriting the engineer's PATH would let root resolve a helper by name
+  # from a user-writable directory (the PATH-under-sudo class from #72/#92).
+  local -a nerdctl=(
+    sudo env "PATH=$(dirname "${nerdctl_path}"):/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
+    "${nerdctl_path}" --address /run/k3s/containerd/containerd.sock --namespace k8s.io
+  )
+
   local docker_dir="${SANDBOX_ROOT}/docker"
   mkdir -p "${SANDBOX_LOGS_DIR}"
   local build_log="${SANDBOX_LOGS_DIR}/image-builds.log"
 
   echo "==> Rebuilding sandbox image(s): ${opt_agent}"
-  echo "    Builder:  ${container_cli}"
+  echo "    Builder:  nerdctl + buildkit (into k3s containerd)"
   echo "    No-cache: ${opt_no_cache}"
   echo "    Tier 3:   ${opt_tier3}"
   echo ""
@@ -2707,26 +2967,13 @@ cmd_rebuild() {
       die "Dockerfile not found: ${docker_dir}/${dockerfile}"
     fi
     echo "==> Building ${tag} (${dockerfile})"
-    "${container_cli}" build "${common_flags[@]}" \
+    "${nerdctl[@]}" build "${common_flags[@]}" \
       -t "${tag}" -f "${docker_dir}/${dockerfile}" "$@" "${docker_dir}"
-    _import_to_k3s "${tag}"
-    _record_build "${tag}"
-  }
-
-  _import_to_k3s() {
-    local tag="$1"
-    if [[ "${platform}" != "linux" ]]; then return 0; fi
-    if ! command -v k3s &>/dev/null; then
-      warn "k3s not found — skipping containerd import for ${tag}"
-      return 0
-    fi
-    echo "    Importing ${tag} into k3s containerd..."
-    local k3s
-    k3s="$(k3s_bin)"
-    "${container_cli}" save "${tag}" | sudo "${k3s}" ctr images import -
-    # Re-pin against kubelet image GC: a fresh import resets the label, and these
-    # Never-policy images cannot be re-pulled once evicted. See lib/platform.sh.
+    # Re-pin against kubelet image GC: a fresh build resets the label, and these
+    # Never-policy images cannot be re-pulled once evicted. The build landed
+    # directly in k3s's containerd. Best-effort. See pin_k3s_image in lib/platform.sh.
     pin_k3s_image "${tag}"
+    _record_build "${tag}"
   }
 
   # _record_build <tag> — append version info to image-builds.log
@@ -2745,7 +2992,9 @@ cmd_rebuild() {
 
     local agent_ver="(unknown)"
     if [[ -n "${version_cmd}" ]]; then
-      agent_ver="$("${container_cli}" run --rm --entrypoint sh "${tag}" \
+      # --net none: this throwaway container only runs a --version command, so
+      # skip CNI setup entirely. Graceful: any failure records "(unknown)".
+      agent_ver="$("${nerdctl[@]}" run --rm --net none --entrypoint sh "${tag}" \
                    -c "${version_cmd}" 2>/dev/null | head -1 || echo '(unknown)')"
     fi
     local ts
@@ -3215,6 +3464,20 @@ _upgrade_infra_phase() {
   if ${dry_run}; then
     echo "(dry run — no changes made)"
     return 0
+  fi
+
+  # Operator-managed gVisor guard. When setup only REUSED the operator's own
+  # gVisor (recorded as gvisor-foreign, never gvisor), install_gvisor_linux
+  # deliberately no-ops to avoid overwriting their binary — so 'upgrade --gvisor'
+  # would restart k3s and record the target version while the old gVisor keeps
+  # running every pod. Refuse up front (before any work — matters for --all, so
+  # we don't leave k3s/Cilium upgraded-but-unrecorded) instead of reporting a
+  # phantom upgrade. Marker dir default mirrors SANDBOX_MARKER_DIR (setup/common.sh).
+  if ${do_gvisor}; then
+    local marker_dir="${SANDBOX_MARKER_DIR:-/var/lib/sandbox/install-markers}"
+    if [[ -f "${marker_dir}/gvisor-foreign" && ! -f "${marker_dir}/gvisor" ]]; then
+      die "gVisor here is operator-managed — the sandbox reused your existing runsc and did not install it, so 'upgrade --gvisor' cannot move it. Upgrade it yourself, or 'sudo rm ${marker_dir}/gvisor-foreign' and re-run to install the pinned ${tgt_gvisor}."
+    fi
   fi
 
   # Running-session guard: an upgrade restarts k3s and can blip the Cilium

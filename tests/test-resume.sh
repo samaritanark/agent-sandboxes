@@ -142,6 +142,65 @@ test_recreate_reruns_gates_before_apply() {
     || fail "apply ran despite a gate refusal — resume would relaunch an ungated workspace"
 }
 
+# recreate_session_pod must thread cmd_resume's --i-accept-* waiver flags into
+# the gates (so a session launched with a waiver can be resumed) and flush any
+# resulting waiver to the audit ledger, parity with cmd_run's launch flush. #112.
+test_recreate_threads_waiver_flags() {
+  info "Testing recreate_session_pod threads the --i-accept-* waivers and flushes the audit ledger..."
+  _set_platform linux
+  local arglog="${TEST_DIR}/arglog" flushlog="${TEST_DIR}/flushlog"
+  : > "${arglog}"; : > "${flushlog}"
+
+  SANDBOX_LOGS_DIR="${TEST_DIR}/logs"
+  local sdir="${SANDBOX_LOGS_DIR}/ses-waiver-test"
+  mkdir -p "${sdir}" "${TEST_DIR}/repoW"
+  printf '{"agent":"claude","tier":2,"name":"t","user":"u","repos":["%s"],"allowed_domains":[],"kube_api_cidr":"","kube_api_port":""}\n' \
+    "${TEST_DIR}/repoW" > "${sdir}/session.json"
+
+  prepare_agent_home() { :; }
+  build_cilium_policy() { echo policy; }
+  build_pod_manifest() { echo pod; }
+  wait_for_pod() { :; }
+  resolve_pod_name() { echo sandbox-x; }
+  resolve_vetting_posture() { echo required; }
+  resolve_inference_endpoint() { echo ""; }
+  vetting_forbid_unvetted_override() { echo false; }
+  kubectl() { :; }
+  workspace_prescan()   { :; }
+  check_masking_paths() { :; }
+  # Capture the acceptance args each gate receives; the gates also stash the
+  # summaries recreate logs for audit parity with cmd_run.
+  vetting_gate_repos()  { SESSION_VETTING_SUMMARY="vetted:ok"; echo "vetting posture=$1 unvetted=$2 drift=$3" >> "${arglog}"; }
+  secret_gate_repos()   { SESSION_SECRET_SUMMARY="secrets:0"; echo "secret accept_unmasked=$1 trusted=$2 unvetted_eff=$3" >> "${arglog}"; }
+  audit_log_event()     { echo "event=$2" >> "${arglog}"; }
+  audit_flush_overrides() { echo "flushed $1" >> "${flushlog}"; }
+
+  # Default (no flags) → gates see false (fail closed), as before.
+  ( recreate_session_pod "ses-waiver-test" ) >/dev/null 2>&1 || true
+  grep -q 'secret accept_unmasked=false' "${arglog}" \
+    && pass "no flag -> secret gate gets accept_unmasked=false (fail closed)" \
+    || fail "default did not pass accept_unmasked=false: $(cat "${arglog}")"
+
+  # With all three waivers → gates see true, and the ledger is flushed.
+  : > "${arglog}"; : > "${flushlog}"
+  ( recreate_session_pod "ses-waiver-test" true true true ) >/dev/null 2>&1 || true
+  grep -q 'secret accept_unmasked=true' "${arglog}" \
+    && pass "--i-accept-unmasked-secrets threads to the secret gate" \
+    || fail "accept_unmasked not threaded: $(cat "${arglog}")"
+  grep -q 'vetting posture=required unvetted=true drift=true' "${arglog}" \
+    && pass "--i-accept-unvetted-repo/--i-accept-vetting-drift thread to the vetting gate" \
+    || fail "vetting waivers not threaded: $(cat "${arglog}")"
+  grep -q 'unvetted_eff=true' "${arglog}" \
+    && pass "accepting an unvetted repo lets the secret gate honor its exceptions" \
+    || fail "unvetted_eff not threaded: $(cat "${arglog}")"
+  [[ -s "${flushlog}" ]] \
+    && pass "waivers flushed to the audit ledger on recreate" \
+    || fail "audit_flush_overrides not called on recreate"
+  { grep -q 'event=vetting' "${arglog}" && grep -q 'event=secret-scan' "${arglog}"; } \
+    && pass "recreate logs the re-gate's vetting + secret-scan summaries (cmd_run parity)" \
+    || fail "re-gate audit summary events not emitted: $(cat "${arglog}")"
+}
+
 # A pod that never becomes Ready must be torn down, not left orphaned in
 # Pending/Running/Error for the operator to clean up by hand. recreate_session_pod
 # runs wait_for_pod in a subshell and calls cmd_stop on failure.
@@ -175,6 +234,11 @@ test_recreate_tears_down_on_pod_failure() {
   # does via exit 1). cmd_stop records that teardown ran.
   wait_for_pod() { return 1; }
   cmd_stop() { echo "stopped $1" >> "${stoplog}"; }
+  # recreate_session_pod records the re-gate summaries and flushes any waiver to
+  # the audit ledger; no-op both (nothing to record here) so the path reaches the
+  # wait/teardown deterministically regardless of leaked stubs from prior tests.
+  audit_log_event() { :; }
+  audit_flush_overrides() { :; }
 
   ( recreate_session_pod "ses-fail-test" ) >/dev/null 2>&1 || true
   grep -q "stopped ses-fail-test" "${stoplog}" \
@@ -659,6 +723,7 @@ main() {
   test_blocker_guides_the_rest
   test_guide_command_reconstructs_run
   test_recreate_reruns_gates_before_apply
+  test_recreate_threads_waiver_flags
   test_recreate_tears_down_on_pod_failure
   test_teardown_partial_session_integrity
   test_adopt_session_secrets_ownerrefs

@@ -24,7 +24,7 @@ a runtime alone does nothing about.
 |------|------------|----------------------|---------------------|----------------------|----------------------|
 | **Agent Sandbox** (this) | Policy layer over a gVisor pod | gVisor (syscall interception) | Yes — per-tier allowlist | Yes — OAuth / per-session Secrets | — |
 | **Apple `container`** | macOS container runtime | Hardware VM, one per container (*stronger* than gVisor) | No | No | No — complementary |
-| **Docker / Podman** | Container runtimes | Shared-kernel namespaces (weaker) | No | No | No — we *use* them to build images |
+| **Docker / Podman** | Container runtimes | Shared-kernel namespaces (weaker) | No | No | No — not required (we build images with nerdctl + buildkit into k3s's containerd) |
 | **Dev Containers** (VS Code) | Reproducible dev environment | Same as Docker | No | No — assumes trusted code | No — different goal |
 | **Hosted agent sandboxes** (E2B, Daytona, Codex cloud, etc.) | Cloud code-execution for agents | Provider microVMs (strong) | Provider-controlled | On the provider's infra | Closest in *intent*, different in *place* |
 
@@ -43,11 +43,12 @@ A few notes on the rows worth a sentence each:
   isolation-backend change, not a drop-in, and it's macOS-on-Apple-Silicon
   only (macOS 26+), so it's a someday, not a today.
 
-- **Docker / Podman** aren't rivals at all — the sandbox shells out to
-  whichever you have to *build* its images (see [Rebuilding
-  Images](../how-to/rebuilding-images.md)). The confusion is only ever
-  "can't I just `docker run` the agent?" You can, and you'd be running it
-  in a box with the door open.
+- **Docker / Podman** aren't rivals at all, and aren't even required: the
+  sandbox builds its images with nerdctl + buildkit straight into k3s's own
+  containerd (see [Rebuilding Images](../how-to/rebuilding-images.md)), so no
+  host container runtime is needed. The confusion is only ever "can't I just
+  `docker run` the agent?" You can, and you'd be running it in a box with the
+  door open.
 
 - **Hosted agent sandboxes** are the closest in intent — they also exist
   to run agents you don't fully trust. The difference is where the agent
