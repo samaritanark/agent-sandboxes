@@ -24,6 +24,29 @@ MASKED_FILE_PATHS=(.env .env.local .npmrc clouds.yaml kubeconfig)
 MASKED_DIR_PATH=.kube
 MASKED_OPENRC_PATTERN='*-openrc.sh'
 
+# READONLY_WORKSPACE_PATHS — workspace-relative paths mounted READ-ONLY (not
+# masked/emptied) on Tier 2/3. These are host-exec vectors: git reads
+# .git/config (core.fsmonitor runs on an index refresh) and runs .git/hooks/*,
+# submodules come from .gitmodules, and an IDE/devcontainer autoruns
+# .vscode/, .idea/, and .devcontainer/ config. The pod runs as the operator's
+# uid on the hostPath workspace (resolve_pod_uid), so without these mounts a
+# Tier 2/3 agent could plant any of them and get host code execution as the
+# operator — outside gVisor and default-deny egress — the next time the
+# operator runs git or opens an editor in the repo. Each entry is "relpath:kind"
+# where kind is f (file) or d (directory); the manifest builder uses it to pick
+# the hostPath volume type. This list is the enforcer behind PRINCIPLES.md
+# "Filesystem isolation" rule 2 and config/tiers/tier2.yaml readonly_paths;
+# tests/test-workspace-readonly.sh fails if the three drift apart.
+# shellcheck disable=SC2034  # consumed in lib/manifest.sh (sourced together)
+READONLY_WORKSPACE_PATHS=(
+  ".git/config:f"
+  ".git/hooks:d"
+  ".gitmodules:f"
+  ".vscode:d"
+  ".idea:d"
+  ".devcontainer:d"
+)
+
 # validate_repo_path — check that path is safe for use as workspace
 validate_repo_path() {
   local repo="$1"

@@ -49,6 +49,7 @@ filesystem:
   # These are mounted read-only from host
   readonly_paths:
     - ".git/config"
+    - ".git/hooks/"
     - ".gitmodules"
     - ".vscode/"
     - ".idea/"

@@ -163,6 +163,64 @@ pin_k3s_image() {
   fi
 }
 
+# k3s_images_list — print every image ref known to the cluster's containerd, one
+# per line. Reads containerd directly rather than via kubectl, so the answer is
+# independent of whatever cluster the operator's active kubecontext points at
+# (operators routinely have other contexts) and reflects exactly what the kubelet
+# can run under imagePullPolicy: Never. Returns non-zero and prints nothing when
+# it cannot query — k3s absent, no passwordless sudo on Linux (we use `sudo -n`
+# so an otherwise sudo-free path never sprouts a password prompt), or the Lima VM
+# down on macOS — so callers can treat "can't tell" distinctly from "not there".
+k3s_images_list() {
+  if is_macos; then
+    # -n (no prompt) and an absolute k3s path, matching build_images_macos and
+    # the #72 PATH-under-sudo convention: a VM configured with
+    # passwordlessSudo: false must fail silently here rather than block on a
+    # prompt, and secure_path may not include /usr/local/bin.
+    limactl shell "${LIMA_VM_NAME}" -- \
+      sudo -n /usr/local/bin/k3s ctr -n k8s.io images ls -q 2>/dev/null || return 1
+  else
+    command -v k3s &>/dev/null || return 1
+    local k3s
+    k3s="$(k3s_bin)" || return 1
+    # No separate `sudo -n true` probe: the `ctr` call below already fails
+    # without prompting when sudo needs a password, so both "no passwordless
+    # sudo" and "ctr failed" map to the same return 1 (→ undeterminable).
+    # Dropping the probe saves one COMMAND log line per status/run on
+    # passwordless hosts; a host that needs a password still records one
+    # authentication failure per call (now from `ctr`), which no `sudo -n`
+    # form avoids.
+    sudo -n "${k3s}" ctr -n k8s.io images ls -q 2>/dev/null || return 1
+  fi
+}
+
+# k3s_image_present <tag> — is this image in the cluster's containerd? Three-way
+# so callers never block on uncertainty:
+#   0  present
+#   1  definitively absent (never built/imported — the ErrImageNeverPull cause)
+#   2  undeterminable (k3s missing, no passwordless sudo, or VM down)
+k3s_image_present() {
+  local tag="$1" list
+  list="$(k3s_images_list)" || return 2
+  # Here-string, not `printf | grep -q`: under `pipefail` grep exits on the
+  # first match and printf takes SIGPIPE, so a *present* image would propagate
+  # 141 and break the 0/1/2 contract. A here-string has no pipe to signal.
+  grep -Fxq -- "${tag}" <<<"${list}"
+}
+
+# sandbox_expected_images — echo the image tags a full install builds, one per
+# line: base + shell, plus <agent> and <agent>-infra for every supported agent.
+# Derived from VALID_AGENTS (lib/agents.sh) so it tracks the agent roster
+# automatically; kept in lock-step with build_images() in setup/common.sh.
+sandbox_expected_images() {
+  local prefix="docker.io/library/sandbox"
+  printf '%s\n' "${prefix}:base" "${prefix}:shell"
+  local a
+  for a in "${VALID_AGENTS[@]}"; do
+    printf '%s\n' "${prefix}:${a}" "${prefix}:${a}-infra"
+  done
+}
+
 # detect_platform — returns "linux" or "macos"
 detect_platform() {
   local uname_out

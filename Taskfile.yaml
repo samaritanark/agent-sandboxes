@@ -28,6 +28,8 @@ tasks:
       - bash tests/test-dns.sh
       - bash tests/test-firewalld.sh
       - bash tests/test-install-markers.sh
+      - bash tests/test-buildkit-gc.sh
+      - bash tests/test-cilium-install-audit.sh
       - bash tests/test-platform.sh
       - bash tests/test-profile.sh
       - bash tests/test-link.sh
@@ -39,9 +41,11 @@ tasks:
       - bash tests/test-grok.sh
       - bash tests/test-agent-home.sh
       - bash tests/test-workspace-mount.sh
+      - bash tests/test-workspace-readonly.sh
       - bash tests/test-secrets.sh
       - bash tests/test-allow.sh
       - bash tests/test-resume.sh
+      - bash tests/test-teardown-reminder.sh
       - bash tests/test-audit.sh
       - bash tests/test-catalogue.sh
       - bash tests/test-dependency-manifest.sh
