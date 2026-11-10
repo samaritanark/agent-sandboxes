@@ -52,7 +52,7 @@ SANDBOX_HELM_VERSION="${SANDBOX_HELM_VERSION:-v3.22.1}"
 # with buildkit's containerd worker pointed at k3s's own containerd, so a build
 # lands directly where k3s reads images — no host Docker/Podman required.
 # renovate: datasource=github-releases depName=containerd/nerdctl versioning=semver
-SANDBOX_NERDCTL_VERSION="${SANDBOX_NERDCTL_VERSION:-2.4.0}"
+SANDBOX_NERDCTL_VERSION="${SANDBOX_NERDCTL_VERSION:-2.4.2}"
 
 # betterleaks — HOST-side secret scanner that gates every Tier 2/3 `sandbox run`
 # (the pre-launch scan in lib/filesystem.sh fails closed without it). Unlike the
