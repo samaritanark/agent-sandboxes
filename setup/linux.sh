@@ -97,7 +97,8 @@ check_linux_prerequisites() {
   fi
 
   # Required tools
-  local tools=("curl" "git" "jq")
+  # bzip2: tar -xj needs it to unpack the gVisor bundle (gvisor.tar.bz2).
+  local tools=("curl" "git" "jq" "bzip2")
   local missing=0
   for tool in "${tools[@]}"; do
     if ! command -v "${tool}" &>/dev/null; then
@@ -109,7 +110,7 @@ check_linux_prerequisites() {
   if [[ "${missing}" -gt 0 ]]; then
     echo "  Installing missing prerequisites..."
     sudo apt-get update -qq
-    sudo apt-get install -y --no-install-recommends curl git jq ca-certificates
+    sudo apt-get install -y --no-install-recommends curl git jq bzip2 ca-certificates
   fi
 
   echo "  Prerequisites satisfied."

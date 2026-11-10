@@ -2686,11 +2686,20 @@ infra_installed_cilium() {
 }
 
 # infra_installed_gvisor — the runsc release from `runsc --version` (first line:
-# "runsc version release-YYYYMMDD.N"). Host-local: meaningful on Linux; on macOS
-# runsc lives in the VM, so this prints empty.
+# "runsc version release-YYYYMMDD.N"). On Linux runsc is on the host; on macOS it
+# lives in the Lima VM (/usr/local/bin), so ask the VM. Empty if the VM is down
+# or runsc is absent.
 infra_installed_gvisor() {
-  command -v runsc &>/dev/null || return 0
-  runsc --version 2>/dev/null | head -1 | sed -E 's/.*release-?//; s/[[:space:]].*//' || true
+  local out=""
+  if is_macos; then
+    lima_vm_running || return 0
+    out="$(limactl shell "${LIMA_VM_NAME}" -- /usr/local/bin/runsc --version 2>/dev/null || true)"
+  else
+    command -v runsc &>/dev/null || return 0
+    out="$(runsc --version 2>/dev/null || true)"
+  fi
+  [[ -n "${out}" ]] || return 0
+  printf '%s\n' "${out}" | head -1 | sed -E 's/.*release-?//; s/[[:space:]].*//'
 }
 
 # infra_version_line LABEL PINNED INSTALLED — one aligned status row with a drift
