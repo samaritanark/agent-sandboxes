@@ -113,6 +113,15 @@ provision:
       # stops working after 2026-10). Download bundle + manifest into a working
       # dir so `sha512sum -c` finds the file the manifest names, verify, extract,
       # then install runsc, the shim, and gvisor-bin/ into /usr/local/bin.
+      # The bundle is bzip2-compressed and the Ubuntu cloud image ships without
+      # bzip2, so `tar -xj` fails ("bzip2: Cannot exec") and, under `set -e`,
+      # aborts provisioning before Cilium installs (node stuck NotReady). The
+      # lock timeout waits out cloud-init's own apt run on first boot.
+      if ! command -v bzip2 >/dev/null 2>&1; then
+        apt-get -o DPkg::Lock::Timeout=300 update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 \
+          install -y --no-install-recommends bzip2
+      fi
       gvisor_arch="$(uname -m)"
       # Pinned release id (YYYYMMDD.N) from setup/versions.sh; empty == latest.
       gvisor_release="__GVISOR_RELEASE__"; [ -n "${gvisor_release}" ] || gvisor_release="latest"
