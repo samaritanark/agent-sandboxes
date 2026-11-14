@@ -16,12 +16,37 @@ LINUX="${SANDBOX_ROOT}/setup/linux.sh"
 LIMA="${SANDBOX_ROOT}/lima/sandbox-vm.yaml.tmpl"
 
 # gc_lines <file> <start-regex> <end-regex> — the GC keys inside that file's
-# buildkitd.toml heredoc, whitespace-stripped, one per line.
+# buildkitd.toml heredoc, whitespace-stripped, one per line. Only keys under the
+# [worker.containerd] table count: buildkitd silently ignores the same keys in
+# any other table (or unknown keys anywhere), so a policy that drifts into
+# [worker.oci] would leave the containerd worker on buildkit's defaults with no
+# warning. `|| true` keeps an empty match from ending the script inside the
+# command substitution, so the per-key loop below prints the FAIL line.
 gc_lines() {
   sed -n "/$2/,/$3/p" "$1" \
+    | sed -n '/\[worker\.containerd\]/,/^[[:space:]]*\[/p' \
     | grep -E '^[[:space:]]*(gc|reservedSpace|maxUsedSpace|minFreeSpace)[[:space:]]*=' \
-    | tr -d ' \t' | sort
+    | tr -d ' \t' | sort || true
 }
+
+# The scoping itself must hold: the same keys under [worker.oci] are not found.
+misplaced="$(mktemp)"
+trap 'rm -f "${misplaced}"' EXIT
+cat > "${misplaced}" <<'TOML'
+tee /etc/buildkit/buildkitd.toml
+[worker.oci]
+  enabled = false
+  gc = true
+  reservedSpace = "2GB"
+  maxUsedSpace = "10GB"
+  minFreeSpace = "30%"
+[worker.containerd]
+  enabled = true
+EOF
+TOML
+[[ -z "$(gc_lines "${misplaced}" 'tee \/etc\/buildkit\/buildkitd.toml' '^EOF$')" ]] \
+  || fail "gc_lines counted GC keys outside [worker.containerd]"
+pass "GC keys outside [worker.containerd] are not counted"
 
 linux_gc="$(gc_lines "${LINUX}" 'tee \/etc\/buildkit\/buildkitd.toml' '^EOF$')"
 lima_gc="$(gc_lines "${LIMA}" 'cat > \/etc\/buildkit\/buildkitd.toml' 'BUILDKITD_EOF$')"

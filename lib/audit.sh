@@ -126,6 +126,13 @@ audit_write_session_json() {
   #     so cmd_stop's issuer-side revoke reminders key off the record rather
   #     than off live Secret existence, which the pod-delete GC races (PR #93
   #     P1). Empty (→ false) for Tier 1/2.
+  #   SESSION_REPO_GIT_FINGERPRINTS — JSON object mapping each Tier 2/3 repo
+  #     path to its launch-time git fingerprint ({inode, modules_hash,
+  #     gitdir_kind, gitdir_hash, nested_hash, nested_map, gitdir_lines}, from
+  #     workspace_git_fingerprint),
+  #     so run/resume/stop/status can detect a git host-exec redirect the
+  #     read-only .git mounts can't prevent (F7). Empty (→ {}) for Tier 1 /
+  #     no-repo sessions.
   jq -n \
     --arg id "${session_id}" \
     --arg agent "${agent}" \
@@ -146,6 +153,7 @@ audit_write_session_json() {
     --arg kube_host_entity "${SESSION_KUBE_HOST_ENTITY:-}" \
     --arg infra_token "${SESSION_INFRA_TOKEN:-}" \
     --arg infra_kubeconfig "${SESSION_INFRA_KUBECONFIG:-}" \
+    --arg repo_git_fingerprints "${SESSION_REPO_GIT_FINGERPRINTS:-}" \
     '{
       id: $id,
       agent: $agent,
@@ -166,6 +174,7 @@ audit_write_session_json() {
       kube_host_entity: $kube_host_entity,
       infra_token: ($infra_token != ""),
       infra_kubeconfig: ($infra_kubeconfig != ""),
+      repo_git_fingerprints: (if $repo_git_fingerprints == "" then {} else ($repo_git_fingerprints | fromjson) end),
       allowed_domains: $domains,
       retention_days: $retention_days
     }' > "${log_dir}/session.json"
@@ -272,6 +281,37 @@ audit_record_dependencies() {
   # Guard the mv on jq succeeding so a failed jq never truncates session.json
   # (PR #93 P4; consistent with the other audit writers).
   if jq --argjson deps "${deps_json}" '.dependencies = $deps' \
+    "${session_json}" > "${tmp}"; then
+    mv "${tmp}" "${session_json}"
+  else
+    rm -f "${tmp}"
+  fi
+}
+
+# audit_reopen_session <log_dir> — mark a stopped session as running again,
+# for 'sandbox resume' recreating its pod. Records a "resumed" event carrying
+# the previous end_time/end_reason (so the earlier ending stays on record),
+# then clears end_time, end_reason, and end_detail. Without this a recreated
+# session keeps its old end_time — so 'sandbox status' and the teardown
+# reminder skip it as ended — and a clean re-stop would keep a stale
+# end_reason (audit_record_end_reason only writes a non-empty one). No-op
+# when the session has not ended.
+audit_reopen_session() {
+  local log_dir="$1"
+  local session_json="${log_dir}/session.json"
+
+  [[ -f "${session_json}" ]] || return 0
+
+  local prev_end prev_reason
+  prev_end="$(jq -r '.end_time // ""' "${session_json}" 2>/dev/null || true)"
+  [[ -n "${prev_end}" && "${prev_end}" != "null" ]] || return 0
+  prev_reason="$(jq -r '.end_reason // ""' "${session_json}" 2>/dev/null || true)"
+  audit_log_event "${log_dir}" "resumed" \
+    "previous end_time=${prev_end}${prev_reason:+ end_reason=${prev_reason}}"
+
+  local tmp
+  tmp="$(mktemp)"
+  if jq '.end_time = null | del(.end_reason, .end_detail)' \
     "${session_json}" > "${tmp}"; then
     mv "${tmp}" "${session_json}"
   else

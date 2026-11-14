@@ -42,6 +42,7 @@ tasks:
       - bash tests/test-agent-home.sh
       - bash tests/test-workspace-mount.sh
       - bash tests/test-workspace-readonly.sh
+      - bash tests/test-git-exec-check.sh
       - bash tests/test-secrets.sh
       - bash tests/test-allow.sh
       - bash tests/test-resume.sh

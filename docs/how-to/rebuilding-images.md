@@ -34,15 +34,18 @@ cadence your organization sets.
 
 The build cache shares a disk with your running sessions, so `sandbox install`
 gives buildkit a GC policy: the cache is capped at about 10 GB, and after each
-build buildkit prunes if free space is below 30% of the disk, well above the 15%
-line where the kubelet starts evicting sandboxes. The trim lands within about a
+build buildkit prunes if free space is below about 30% of the disk, well above
+the 15% line where the kubelet starts evicting sandboxes. The trim lands within about a
 minute of a build finishing, so give a fresh `sandbox rebuild` a minute before
 launching a session. If you installed before this policy existed, re-run
 `sandbox install` to pick it up (on macOS it applies to newly provisioned VMs),
 and in the meantime you can clear the cache by hand - on Linux,
 `sudo /usr/local/bin/buildctl --addr unix:///run/buildkit/buildkitd.sock prune`
 (the absolute path matters on RHEL/Alma, where sudo's `secure_path` omits
-`/usr/local/bin`).
+`/usr/local/bin`). If `sandbox install` found a nerdctl/buildkit it didn't
+install, the policy only takes effect on buildkit v0.17.0 or newer - older
+buildkitd versions silently ignore these settings, so upgrade that builder or
+prune by hand.
 
 <details>
 <summary><b>Manual build (advanced — only when sandbox rebuild can't be used)</b></summary>
@@ -54,8 +57,10 @@ fully-qualified `docker.io/library/` prefix (the images are referenced that way
 and k3s' containerd will not match a bare `localhost/...`).
 
 ```bash
-# All commands go through k3s's containerd:
-nerdctl="sudo /usr/local/bin/nerdctl --address /run/k3s/containerd/containerd.sock --namespace k8s.io"
+# All commands go through k3s's containerd. `nerdctl build` finds its buildctl
+# helper by PATH, and sudo's secure_path omits /usr/local/bin on RHEL/Alma, so
+# set a fixed PATH (not your own $PATH, which root would then search):
+nerdctl="sudo env PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin /usr/local/bin/nerdctl --address /run/k3s/containerd/containerd.sock --namespace k8s.io"
 
 # Build base (required for all others)
 $nerdctl build -t docker.io/library/sandbox:base -f docker/Dockerfile.base docker/

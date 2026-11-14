@@ -234,15 +234,138 @@ The sandbox enforces three filesystem rules:
    on the hostPath workspace, the agent would otherwise be able to rewrite
    them and get host code execution as the operator the next time they run
    git or open the repo. Each is bind-mounted **read-only** so the agent
-   cannot modify it. The coverage is "when present": a path that exists at
-   launch is protected, but one that is *absent* at launch is not created
-   (a read-only hostPath cannot shadow a missing file, and creating it would
-   write into the operator's repo), so the agent can still introduce a *new*
-   `.gitmodules` / `.vscode/` / `.idea/` / `.devcontainer/` — which matters
-   only on a deliberate operator action (opening the repo in an IDE,
-   reopening in a devcontainer, or running a submodule command). `.git/config`
-   and `.git/hooks/` exist in every real checkout, so the routine git vectors
-   are always covered.
+   cannot modify it.
+
+   These mounts block modification of the *existing* `.git/config` and
+   `.git/hooks/` (and the listed IDE directories) **only** — they are not a
+   complete seal on git host-exec, and must not be read as one. The rest of
+   `.git` stays writable (the agent needs it to commit), and git reads
+   configuration and hooks from several places these mounts do not cover.
+   The following remain **open**, and each fires on the operator's next
+   routine `git status` / `git commit` on the host:
+
+   - **`.git/commondir`** — one line redirects `$GIT_COMMON_DIR`, so config
+     and hooks are then read from an agent-controlled directory inside `.git`.
+   - **`.git/modules/<name>/config`** (and its hooks) — a submodule's own
+     repository config, read when a top-level `git status` walks into the
+     submodule. This includes a repo that had no submodules at launch: the
+     agent can create `.git/modules/` and a gitlink pointing into it.
+   - **a nested repository** in a subdirectory — any directory git accepts
+     as a repository, whether named `.git` or not (a bare-format repo
+     works too), or a `.git` pointer file aimed at one. git uses it when run
+     from that subdirectory, and a gitlink can make a top-level `git status`
+     walk into it.
+   - **replacing or repointing `.git`** — `.git` itself is not a mount point
+     (only its children are), so the agent can `mv .git .git-old` and create
+     a fresh one, or turn `.git` into a pointer file aimed at a directory it
+     controls. Where `.git` is already a pointer (a linked worktree), the
+     agent can rewrite it in place.
+   - **`core.hooksPath`** — a repo that sets this (Husky does, at `.husky/_`,
+     and any team with a tracked `.githooks/` does) runs its hooks from an
+     ordinary, writable, *tracked* directory in the workspace, not from the
+     read-only `.git/hooks/`. The agent edits the hook with a plain file write.
+   - **a symlinked `.git/hooks`** — if the repo ships `.git/hooks` as a symlink
+     to a tracked directory, the read-only mount follows the link to that dir,
+     but the symlink itself sits in the writable `.git`, so the agent can
+     repoint it; and the hook files it points at are tracked and writable.
+   - **a config `include.path` / `includeIf`** — `.git/config` is read-only, but
+     a directive in it can pull in a *tracked* file from the workspace, and that
+     file's settings (`core.fsmonitor`, `core.hooksPath`, a filter driver, ...)
+     apply just the same. The agent edits the included file, not `.git/config`.
+
+   Two residuals compound this. First, the IDE/`.gitmodules` coverage is
+   "when present": a path *absent* at launch is not created (a read-only
+   hostPath cannot shadow a missing file, and creating it would write into the
+   operator's repo), so the agent can still introduce a *new* `.gitmodules` /
+   `.vscode/` / `.idea/` / `.devcontainer/` — which lands whenever the operator
+   opens the repo in an editor that trusts the folder, or runs a submodule
+   command. (VS Code's `task.allowAutomaticTasks` defaults to off, which keeps
+   the main IDE autorun path closed unless the operator enabled it.)
+
+   Because the mount approach cannot close these on its own, a **host-side
+   check** (`workspace_git_exec_check`) is the control. At launch it records a
+   fingerprint of each repo: the `.git` inode, whether `.git` is a directory or
+   a pointer, a hash of the files git would execute from — its config, every
+   file the config pulls in via `include.path` / `includeIf`, its hooks (through
+   a symlinked `hooks` directory), and the directory named by `core.hooksPath`
+   — a hash over the submodule gitdirs' equivalents and their `commondir`, and a
+   per-entry map of every nested repository and `.git` pointer in the tree.
+   Nested repositories are found by git's own shape rule, not by name. Later
+   checks compare against that fingerprint, and also flag a `.git/commondir` or a
+   nested pointer that resolves outside `.git/modules` with no baseline needed.
+   The result is clean, a redirect found, or unverified — a pre-upgrade session
+   with no fingerprint, a brand-new nested repository that carries no recognized
+   host-exec surface (which only warns, and whose state the baseline adopts only
+   when the session had no prior baseline), or more nested repositories than the
+   per-directory digest will walk (a cap that bounds a deliberate flood; the
+   cheap `.git`-pointer checks still run over *every* entry, so a flood cannot
+   push a redirecting pointer past the cap). An unverified result is never
+   reported as clean.
+
+   Three coverage limits are worth stating plainly. An `include.path` or a
+   `core.hooksPath` that points *outside* the workspace is not hashed: it is not
+   agent-writable, so an operator editing it does not raise a false alarm, but it
+   also means the check only covers the in-workspace targets an agent can reach.
+   A session that predates this check, or one that ended without a
+   `sandbox stop`, leaves no fingerprint for a later `run` to compare against; a
+   redirect planted during such a session is invisible to the baseline-free rules
+   until the session turns over.
+
+   And the per-directory digest is **capped** (default 1000 nested repositories,
+   `SANDBOX_GIT_NESTED_ENTRY_CAP`) so an agent cannot make `stop`/`status` crawl
+   by planting thousands of repo-shaped directories. Over the cap the result is
+   reported `unverified` with an explicit "the rest are unchecked" line (never
+   clean), and the cheap `.git`-pointer checks — the ones that catch a redirect
+   that a top-level `git status` would walk into — still run over *every* entry.
+   The residual is a **directory-based** redirect (a nested repo whose own config
+   or hooks run host code) that the agent deliberately sorts *past* the cap by
+   planting more than the cap's worth of benign repo-shaped directories ahead of
+   it: its digest is not computed, so it is surfaced only as the `unverified`
+   flood warning, not named as a redirect. Exploiting it needs the operator to
+   later run git *inside* that specific planted subdirectory (a nested repo does
+   not fire on a top-level `git status` the way a gitlink/pointer does), and the
+   flood itself is a loud, named anomaly. This is an accepted trade-off against
+   failing closed on every large monorepo; raise the cap, or treat overflow as a
+   refusal, if a deployment needs the stronger posture.
+
+   These are transitional or by-design gaps, not claims of complete coverage.
+
+   The check runs at four points:
+
+   - **`sandbox run`** refuses to launch when a repo has a `.git/commondir` or
+     a nested pointer outside `.git/modules`, or when the last session on it
+     ended with a redirect. For any earlier session on the repo that was never
+     stopped (an eviction, a killed CLI, a resume since its last stop, or one
+     still running), `run` compares the repo against that session's launch
+     fingerprint, and refuses on any redirect it finds.
+   - **`sandbox stop`** warns, on the frozen workspace after the pod is torn
+     down, and records the result in the session log so the next run sees it.
+   - **`sandbox resume`** refuses to relaunch when it finds a redirect. When
+     the result is unverified it warns and records the current state as the
+     session's baseline.
+   - **`sandbox status`** warns for active sessions.
+
+   `--i-accept-git-exec-vectors` waives the refusals on `run` and `resume`, and
+   the waiver is recorded in the audit log. A waiver accepts the repo's state
+   for good, not for one launch: the new session's fingerprint takes that state
+   as its baseline, so a redirect already present is no longer re-flagged — but
+   any *further* change to what git executes (its config and includes, hooks,
+   `hooksPath`, submodule or nested-repo config), and a `.git/commondir` or a
+   pointer outside `.git/modules`, still flags from then on. The check compares hashes of what
+   git reads, so a legitimate change made during a session (for example, you
+   running `git config` on the host) shows up as a finding too. That is
+   deliberate: it can't tell your edit from the agent's.
+   This is detection, not prevention, and that is a deliberate choice: fully
+   closing the vector would mean isolating the agent from the operator's live
+   `.git` — working against a materialized copy and returning changes as a
+   reviewed diff — and that friction is not worth it for the Tier 2/3
+   live-editing workflow these repos exist to support. So these routes stay
+   open by design, and the host-side check plus the operator's review of what it
+   flags is the accepted mitigation. Note also that because `.git/config`
+   is read-only in the pod, agent git commands that rewrite it (`git remote
+   add`, `git push -u`, `git config`) fail with "Device or resource busy" —
+   expected, not a bug; the agent should set remotes before launch or push to
+   an already-configured upstream.
 
    The built-in set is extensible per-repo: `sandbox mask add --repo
    <PATH> <RELPATH>` records additional paths (including nested ones)
