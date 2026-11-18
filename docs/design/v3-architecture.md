@@ -2066,8 +2066,11 @@ can run in parallel:
   not match betterleaks 1.10.0; both are recorded. Pilot 2 adds
   `is_path_masked`, `extract_yaml_list_from_file`, and
   `_leakscan_finding_accepted` (zero divergences on 42,601 further cases). The
-  rest of the secret gate (`scan_repo_secrets`, `secret_gate_repos`), vetting
-  verification, and the other modules are not ported.
+  Pilot 3 ports `scan_repo_secrets` and its config, ignore-file, and scanner
+  invocation helpers (zero divergences on 1,033 cases against a stub scanner,
+  comparing stdout and the scanner's recorded arguments and generated config).
+  `secret_gate_repos`, vetting verification, and the other modules are not
+  ported.
 
 ---
 

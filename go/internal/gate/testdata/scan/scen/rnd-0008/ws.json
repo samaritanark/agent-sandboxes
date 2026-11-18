@@ -1,0 +1,1 @@
+[{"EndColumn":71,"File":"@REPO@/sops.yaml","Match":"\\t","RuleID":"generic-api-key","StartColumn":32,"StartLine":6},{"EndColumn":27,"File":"@REPO@/../outside/u.txt","Match":"é日本","RuleID":"x y","StartColumn":8,"StartLine":3},{"EndColumn":26,"File":"@REPO@/vendor/v.js","Match":"line1\nline2","RuleID":"r\tt","StartColumn":16,"StartLine":3}]

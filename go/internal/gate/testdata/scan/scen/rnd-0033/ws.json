@@ -1,0 +1,1 @@
+[[1],{"EndColumn":4,"File":"@REPO@/x-openrc.sh","Match":"tab\t","RuleID":"","StartColumn":7,"StartLine":5},{"EndColumn":4,"File":"@REPO@/secret.txt","Match":"back\\slash","RuleID":"x y","StartColumn":10,"StartLine":2},{"EndColumn":72,"Extra":"x","File":"@REPO@/sops.yaml","Match":"REDACTED","RuleID":"aws-access-token","StartColumn":32,"StartLine":6}]

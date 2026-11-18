@@ -1,0 +1,1 @@
+[{"File":"@REPO@/.git/config","Match":"back\\slash","RuleID":"","StartColumn":2,"StartLine":8},{"EndColumn":2,"Extra":"x","File":"@REPO@/.git/config","Match":"ghp_***","RuleID":"","StartColumn":3,"StartLine":0}]

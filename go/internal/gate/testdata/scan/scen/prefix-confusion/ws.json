@@ -1,0 +1,1 @@
+[{"File":"@REPO@-other/a.txt","Match":"R","RuleID":"rule-a","StartLine":3},{"File":"a.txt","Match":"R","RuleID":"rule-a","StartLine":3},{"File":"@REPO@","Match":"R","RuleID":"r","StartLine":1}]

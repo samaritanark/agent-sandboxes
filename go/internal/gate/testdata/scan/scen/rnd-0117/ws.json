@@ -1,0 +1,1 @@
+[{"EndColumn":27,"File":"@REPO@/","Match":"é日本","RuleID":"r\tt","StartColumn":8,"StartLine":12},{"EndColumn":12,"File":"@REPO@/privdir/x","Match":"\tlead","RuleID":"x y","StartColumn":4,"StartLine":4},{"EndColumn":11,"File":"@REPO@/../outside/ünï/.venv/x","Match":"a  b","RuleID":"rule-a","StartColumn":5,"StartLine":"0"}]

@@ -1,0 +1,1 @@
+[{"EndColumn":17,"File":"x-openrc.sh","StartColumn":2,"StartLine":6},{"EndColumn":16,"Match":"line1\nline2","RuleID":"rule-a","StartColumn":4,"StartLine":9},{"File":"@REPO@/","Match":"back\\slash","RuleID":"","StartColumn":12,"StartLine":9},{"EndColumn":20,"File":"@REPO@/a b.txt","Match":"","RuleID":"rule-a","StartColumn":17,"StartLine":"11"}]

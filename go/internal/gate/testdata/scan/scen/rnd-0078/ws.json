@@ -1,0 +1,1 @@
+[{"EndColumn":37,"File":"@REPO@/.kube/config","Match":"tab\t","RuleID":"rule-a","StartColumn":12,"StartLine":11},{"EndColumn":15,"File":"@REPO@/node_modules/p/i.js","Match":"a\tb","RuleID":"aws-access-token","StartColumn":11,"StartLine":"5"}]

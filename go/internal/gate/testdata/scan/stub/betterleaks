@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Stub scanner for the scan_repo_secrets differential. Logs how it was called (arguments, the
+# generated config's content, whether -i is an empty dir) and answers from a scenario directory:
+#   $STUB_SCEN/ws.json | gc.json   report for a directory target | the .git/config target
+#   $STUB_SCEN/ws.rc   | gc.rc     exit code (default 0)
+# "@REPO@" in a report is replaced by the scanned repo's real path. Temp names are normalised so
+# the log is identical between runs and between the bash and Go callers.
+set -u
+norm() { sed -e "s|$STUB_ROOT|<T>|g" -e 's|/sandbox-leakcfg-[A-Za-z0-9]*|/<gen-config>|g' -e 's|/sandbox-leakscan-[A-Za-z0-9]*|/<report>|g' -e 's|/sandbox-leakignore-[A-Za-z0-9]*|/<empty-ignore-dir>|g'; }
+sub=dir
+[[ "${1:-}" == dir ]] || { echo "stub: unexpected subcommand ${1:-}" >> "$STUB_LOG"; exit 99; }
+target="$2"; shift 2
+report="" cfg="" ign="" flags=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -r) report="$2"; shift 2 ;;
+    -c) cfg="$2"; shift 2 ;;
+    -i) ign="$2"; shift 2 ;;
+    *) flags+=" $1"; shift ;;
+  esac
+done
+if [[ "$target" == */.git/config ]]; then kind=gc; repo="${target%/.git/config}"; else kind=ws; repo="$target"; fi
+{
+  echo "## scan $kind target=$target report=$report flags:$flags"
+  if [[ -n "$cfg" ]]; then
+    echo "config=$cfg"
+    [[ "$cfg" == */sandbox-leakcfg-* ]] && sed 's/^/  | /' "$cfg"
+  fi
+  if [[ -n "$ign" ]]; then
+    if [[ -d "$ign" ]]; then echo "ignore=$ign dir entries=$(ls -A "$ign" | wc -l | tr -d ' ')"; else echo "ignore=$ign file"; fi
+  fi
+} | norm >> "$STUB_LOG"
+if [[ -f "$STUB_SCEN/$kind.json" ]]; then
+  sed "s|@REPO@|$repo|g" "$STUB_SCEN/$kind.json" > "$report"
+fi
+rc=0; [[ -f "$STUB_SCEN/$kind.rc" ]] && rc="$(cat "$STUB_SCEN/$kind.rc")"
+exit "$rc"

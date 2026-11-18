@@ -1,0 +1,1 @@
+[{"EndColumn":10,"Extra":"x","File":"@REPO@/node_modules/p/i.js","Match":"ghp_***","RuleID":"aws-access-token","StartColumn":13,"StartLine":0},{"EndColumn":22,"File":"@REPO@/.gitx/a","Match":"line1\nline2","RuleID":"aws-access-token","StartColumn":0,"StartLine":3},{"EndColumn":4,"File":"@REPO@/a.txt","Match":"REDACTED","RuleID":"generic-api-key","StartColumn":2}]

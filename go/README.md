@@ -18,7 +18,7 @@ Layout so far:
 
 | Path | Port of |
 |---|---|
-| `internal/gate` | the secret gate in `lib/filesystem.sh`: `finding_is_encrypted`, `is_path_masked` (with `extract_yaml_list_from_file` from `lib/config.sh`), `_leakscan_finding_accepted` |
+| `internal/gate` | the secret gate in `lib/filesystem.sh`: `finding_is_encrypted`, `is_path_masked` (with `extract_yaml_list_from_file` from `lib/config.sh`), `_leakscan_finding_accepted`, `scan_repo_secrets` and its helpers |
 
 Not yet here (see S8): the host binary, the policy CLI, `sandboxd`, and the
 import-graph check from §5.1.1.
@@ -49,6 +49,14 @@ go/internal/gate/testdata/accepted/gen-cases.sh
 go/internal/gate/testdata/masked/oracle.sh masked > go/internal/gate/testdata/masked/golden-masked.tsv
 go/internal/gate/testdata/masked/oracle.sh lists  > go/internal/gate/testdata/masked/golden-lists.tsv
 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go/internal/gate/testdata/accepted/oracle.sh > go/internal/gate/testdata/accepted/golden-accepted.tsv
+```
+
+Pilot 3 (`testdata/scan`, a stub scanner plus fixture repos; the oracle prints the gate's output and the stub's log):
+
+```bash
+(cd go && go run ./internal/gate/internal/genscan -base internal/gate/testdata/scan -seed 1 -n 250)
+# on Linux, with LC_ALL=C, from anywhere:
+go/internal/gate/testdata/scan/oracle.sh > go/internal/gate/testdata/scan/golden-scan.txt
 ```
 
 The committed golden files were produced with GNU awk 5.2.1 under `LC_ALL=C` on Ubuntu 24.04

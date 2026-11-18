@@ -1,0 +1,1 @@
+[{"EndColumn":11,"File":"@REPO@/.git/config","Match":"","RuleID":"aws-access-token","StartColumn":5,"StartLine":6},{"EndColumn":31,"File":"@REPO@/.git/config","Match":null,"RuleID":"generic-api-key","StartColumn":15,"StartLine":7},{"EndColumn":1,"File":"@REPO@/.git/config","Match":"a\tb","RuleID":"r\tt","StartColumn":0,"StartLine":5}]

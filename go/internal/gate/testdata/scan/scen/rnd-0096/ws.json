@@ -1,0 +1,1 @@
+[{"EndColumn":72,"File":"@REPO@/sops.yaml","Match":"line1\nline2","RuleID":"r\tt","StartColumn":31,"StartLine":6},{"EndColumn":22,"File":"@REPO@/missing.txt","Match":"line1\nline2","RuleID":"a:b","StartColumn":4,"StartLine":6}]

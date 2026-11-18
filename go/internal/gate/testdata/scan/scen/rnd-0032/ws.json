@@ -1,0 +1,1 @@
+[null,{"EndColumn":28,"File":"@REPO@/u.txt","Match":"é日本","RuleID":"","StartColumn":18,"StartLine":1},{"EndColumn":36,"File":"@REPO@/.env","Match":"line1\nline2","RuleID":"","StartColumn":0,"StartLine":2},{"EndColumn":71,"File":"@REPO@/sops.yaml","Match":"x\ry","RuleID":"rule-a","StartColumn":32,"StartLine":6}]

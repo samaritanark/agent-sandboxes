@@ -1,0 +1,1 @@
+[{"EndColumn":37,"File":"@REPO@/../outside/dir/../a.txt","Match":"\tlead","RuleID":"aws-access-token","StartColumn":4,"StartLine":999},{"EndColumn":35,"File":"u.txt","Match":"a\tb","RuleID":"rule-a","StartColumn":18,"StartLine":5}]

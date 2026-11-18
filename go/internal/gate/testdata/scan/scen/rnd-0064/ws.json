@@ -1,0 +1,1 @@
+[{"EndColumn":7,"Extra":"x","File":"@REPO@/secret.txt","Match":null,"RuleID":"x y","StartColumn":0,"StartLine":1},{"EndColumn":9,"File":"missing.txt","RuleID":"generic-api-key","StartColumn":10,"StartLine":0},{"EndColumn":39,"File":"@REPO@/.kube/config","Match":"REDACTED","RuleID":"aws-access-token","StartColumn":18,"StartLine":6}]

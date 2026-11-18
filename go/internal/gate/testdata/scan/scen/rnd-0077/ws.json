@@ -1,0 +1,1 @@
+[{"EndColumn":5,"File":"@REPO@/a b.txt","Match":"REDACTED","RuleID":"generic-api-key","StartColumn":16,"StartLine":1},{"EndColumn":2,"File":"@REPO@/.gitx/a","Match":"\\t","RuleID":"x y","StartColumn":15,"StartLine":10},[1],{"EndColumn":21,"File":"@REPO@/dir/../a.txt","Match":"a  b","RuleID":"aws-access-token","StartColumn":17,"StartLine":8}]

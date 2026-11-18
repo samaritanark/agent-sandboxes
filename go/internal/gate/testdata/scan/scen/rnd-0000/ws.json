@@ -1,0 +1,1 @@
+[{"EndColumn":14,"File":"@REPO@/../outside/vendor/v.js","Match":"back\\slash","RuleID":"a:b","StartColumn":0,"StartLine":0},{"EndColumn":29,"File":".git/x/y","Match":"é日本","RuleID":"generic-api-key","StartColumn":11,"StartLine":11}]

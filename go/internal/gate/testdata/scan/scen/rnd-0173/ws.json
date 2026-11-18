@@ -1,0 +1,1 @@
+[{"EndColumn":31,"File":"@REPO@/u.txt","Match":"a  b","RuleID":"generic-api-key","StartColumn":12,"StartLine":5},{"EndColumn":33,"File":"@REPO@/a.txt","Match":"\tlead","RuleID":"r\tt","StartColumn":18,"StartLine":1},{"EndColumn":18,"File":"@REPO@/../outside/src/x.py","Match":"","RuleID":"rule-a","StartColumn":0,"StartLine":9}]

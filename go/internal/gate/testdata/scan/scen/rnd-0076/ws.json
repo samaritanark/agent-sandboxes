@@ -1,0 +1,1 @@
+[{"EndColumn":20,"File":"@REPO@/.env","Match":"tab\t","RuleID":"generic-api-key","StartColumn":9,"StartLine":7},{"EndColumn":28,"File":"@REPO@/../outside/ign.txt","Match":"a  b","RuleID":"rule-a","StartColumn":8,"StartLine":0}]

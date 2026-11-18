@@ -1,0 +1,1 @@
+[{"EndColumn":38,"File":"@REPO@/.git/config","Match":null,"RuleID":"rule-a","StartColumn":2,"StartLine":4},{"EndColumn":38,"Extra":"x","File":"@REPO@/.git/config","Match":"line1\nline2","RuleID":"x y","StartColumn":8,"StartLine":7},{"File":"@REPO@/.git/config","Match":"null","RuleID":"rule-a","StartColumn":19,"StartLine":10},"str",[1]]

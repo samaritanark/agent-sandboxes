@@ -1,0 +1,1 @@
+[{"EndColumn":34,"Extra":"x","File":"@REPO@/.git/config","Match":"","RuleID":"generic-api-key","StartColumn":5,"StartLine":5},{"EndColumn":3,"File":"@REPO@/.git/config","Match":"x\ry","RuleID":"rule-a","StartColumn":3,"StartLine":6}]

@@ -1,0 +1,1 @@
+[{"EndColumn":15,"File":"@REPO@/missing.txt","Match":"REDACTED","RuleID":"","StartColumn":13,"StartLine":6},{"EndColumn":24,"File":"node_modules/p/i.js","Match":"line1\nline2","RuleID":"x y","StartColumn":13,"StartLine":0},{"EndColumn":5,"File":"@REPO@/../outside/src/x.py","Match":"ghp_***","RuleID":"r\tt","StartColumn":15,"StartLine":9}]

@@ -1,0 +1,1 @@
+[{"EndColumn":0,"File":"@REPO@/.git/x/y","Match":"REDACTED","RuleID":"r\tt","StartColumn":13},{"EndColumn":3,"Extra":"x","File":"@REPO@/","Match":"tab\t","RuleID":"","StartColumn":18,"StartLine":0},{"EndColumn":19,"File":"@REPO@/sealed.yaml","Match":"a\tb","RuleID":"rule-a","StartColumn":9,"StartLine":7}]
