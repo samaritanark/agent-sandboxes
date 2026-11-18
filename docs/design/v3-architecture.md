@@ -1422,6 +1422,21 @@ under `~/.sandbox` pushed the same way, and `sandbox doctor` reports the
 weaker protection. VM root can still read the key from memory (§5.9.8). The broker never has
 read access to the store. It is destroyed with the session (§5.4.3).
 
+S5 prototyped this handover (`docs/design/spikes/S5.md`). Entries are
+AES-256-GCM with the credential id as associated data: a flipped byte, a wrong
+key, and an entry moved under another id were all rejected, and no plaintext
+was on disk. The unprivileged user could not read the key, the store, or the CA
+key. The broker received its secrets over its stdin pipe only (none in its
+command line, environment, or any file) and held exactly its session's
+bindings in memory: a credential bound to no session never entered it, and a
+second session's broker held only its own. **A long-lived root process
+retains plaintext after handing it over** (Go strings cannot be wiped), so the
+decrypt-and-start step MUST run in a short-lived helper that exits after the
+handover and writes the pipe synchronously before wiping its buffer. `sandboxd`
+then supervises the reparented broker by cgroup or transient unit, not as a
+child. The plaintext also lives in the gateway process's memory while it
+injects, as §5.8.2 accepts.
+
 Destroying a session's bindings is **local** revocation. Issuer-side
 revocation of a long-lived credential stays the operator's responsibility, as
 in v2; `sandbox stop` keeps v2's reminder.
@@ -1606,7 +1621,17 @@ and does not require it.
   good for one session's names, not for every site for a year. A hot-added
   intercepted name (§5.8.8) gets a re-issued certificate. Clients that ignore
   name constraints make the constraint defense in depth only; the key
-  confinement is what holds.
+  confinement is what holds. S5 measured this
+  (`docs/design/spikes/S5.md`): with a critical name constraint, `pathlen:0`,
+  and 2 h validity, OpenSSL rejected a leaf for `evil.com` signed by the session
+  intermediate (`permitted subtree violation`), and one session's intermediate
+  could not sign another session's host; subdomains of a permitted name are
+  allowed. The gateway user could read its leaf key but not the intermediate or
+  root key. Leaves are minted per host at session start, so a hot-added
+  intercepted name needs the root helper to issue another. Nothing revokes a
+  certificate before its end time, so a stolen leaf key is usable for the
+  session lifetime. Enforcement by the guests' other TLS stacks (Go, Node,
+  rustls, Python) was not tested.
 
 ### 5.11 Dependencies (catalogue)
 
@@ -1972,8 +1997,9 @@ can run in parallel:
   (injection, misuse blocking, streaming scrub, fail-closed) works at about
   0.7 ms per request and 16 MiB. HTTP upgrades (raw handshake) and mTLS
   re-origination with an explicit server name also pass. Real WebSocket and
-  SPDY framing, ECH, proxy chaining, the encrypted store, and the unprivileged
-  posture are not tested.
+  SPDY framing, ECH, proxy chaining, and the unprivileged gateway posture are
+  not tested. An encrypted store, per-session CA issuance, and broker start
+  were prototyped (§5.9.2, §5.10).
 
 ### S6 — Fleet capability check
 
