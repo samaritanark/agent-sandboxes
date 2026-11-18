@@ -514,7 +514,9 @@ runtime** (D-04).
 - No host-exec interop; no shared clipboard; **no port forwarding of any kind
   from the guest to the host**. Lima otherwise appends a fallback rule that
   forwards every guest loopback listener to the same port on host loopback
-  (review F4; S7 confirms against the Lima version in use), which would let VM
+  (review F4; confirmed on Lima 2.3.0 in S7, where a guest loopback listener
+  appeared on host loopback with defaults and did not with `plain: true`),
+  which would let VM
   root squat on host ports. The Lima drivers MUST set `plain: true` (if S7
   confirms the appliance needs nothing plain mode removes) or, failing that, a
   first `portForwards` rule `{guestIP: "0.0.0.0", proto: any, ignore: true}`.
@@ -566,6 +568,19 @@ host loopback services. Therefore:
   resolver on Windows). It is allowed for DNS only. DNS-based exfiltration by
   VM root through it is not a new exposure, because VM root already has NAT'd
   internet access.
+- **Measured on `lima-vz` (S7, Lima 2.3.0, `docs/design/spikes/S7.md`):**
+  Lima's `networkOpts.hostLoopback` (vz only, default true) lets the guest
+  reach host loopback-only and all-interface services through
+  `host.lima.internal` (192.168.5.2) and the host's LAN address. Set to
+  `false`, all three measured targets were blocked while outbound NAT kept
+  working. Lima's own comment says LAN-address reach remains; that did not
+  reproduce, and the cause is unknown. Because the setting lives in the
+  hypervisor's NAT, VM root cannot change it. Therefore **whenever a `lima-vz`
+  VM uses Lima's built-in user-mode NAT, the driver MUST set
+  `hostLoopback: false`**. It is defense in depth, not the control: it blocks
+  all host reach (so it cannot scope declared Tier 3 endpoints), it does not
+  exist for `lima-qemu` or Hyper-V, and IPv6 and VM-root tampering with routes
+  are untested.
 - **Mechanism and owner (S7 evaluates first):** a host-side userspace network
   stack as the VM's only NIC (the gvisor-tap-vsock approach Lima's user-mode
   networking already uses), run by **`sandbox netd`** (D-31): a mode of the
@@ -767,13 +782,28 @@ reachable from any microVM. It:
   dependency. Firecracker is excluded: it lacks virtio-fs, which workspace
   sharing needs. QEMU is excluded for attack-surface reasons.
 - Driven by containerd directly, not by a kubelet. containerd provides image
-  storage and snapshots; Kata provides the VM.
+  storage and snapshots; Kata provides the VM. S1 confirmed this works with
+  containerd 2.4.2 and Kata 4.4.0 on arm64 (`docs/design/spikes/S1.md`), with
+  three packaging constraints the image build MUST handle: the Cloud
+  Hypervisor configuration and the Go shim ship in the separate
+  `kata-go-static` bundle, not in `kata-static`; Kata accepts only its shipped
+  configuration files, so `sandboxd` selects Cloud Hypervisor through
+  containerd's runtime config path, not a custom `KATA_CONF_FILE`; and the
+  shipped config enables no CPU or memory annotations, so per-session sizing
+  is an open design item.
 - gVisor is removed (D-02). Codex's own bubblewrap sandbox failed under gVisor
   (`lib/onboard.sh:211-264`); S1 records whether it works under Kata, and if
   so the `danger-full-access` override MAY be dropped. Agent-native sandboxes
   are optional defense in depth; Kata is the boundary, and parity never
   depends on them. Any compatibility override is documented and tested not to
-  grant access outside the guest.
+  grant access outside the guest. S1 result (`docs/design/spikes/S1.md`):
+  bubblewrap works under Kata with the §5.5.2 posture (UID 1000, no
+  capabilities, `no_new_privs`) only with two in-guest compatibility
+  overrides: the runtime's masked and read-only `/proc` and `/sys` paths
+  removed, and a seccomp profile that permits user-namespace creation (the
+  default profile blocks it). Both weaken in-guest defense in depth only; neither
+  reaches outside the microVM. Whether Codex takes them, or keeps the
+  `danger-full-access` override, is open (OQ-16).
 
 #### 5.5.2 Workload hardening (parity with v2 pod hardening)
 
@@ -783,6 +813,14 @@ no service-account token, no container runtime socket, no access to
 `sandboxd`, and no route except its link. Dependencies additionally run as a
 non-zero catalogue `run_as_user` with no workspace or history mount
 (`lib/catalogue.sh:189-198, 243-257`).
+
+**Guest seccomp is off by default in Kata.** S1 found that the shipped Kata
+configuration sets `disable_guest_seccomp = true`: the container's seccomp
+profile reaches the VM but is not applied (`Seccomp: 0` inside the guest). The
+image's Kata configuration MUST set it to `false`, and P-02 MUST read
+`Seccomp: 2` from inside a real guest. Compatibility of the default profile
+with each supported agent is an S2 question; it blocks user-namespace creation,
+which is why Codex's bubblewrap fails under it (§5.5.1).
 
 #### 5.5.3 Resource model
 
@@ -853,6 +891,12 @@ operator to apply or discard explicitly.
    to a masked path made in the VM is never written to the host. (Without the
    second half, an agent could create `.env` in the VM and overwrite the
    operator's real `.env`.) In-guest empty overlays remain as defense in depth.
+   S1 found that Kata's file mask truncates any file already present at that
+   path in the VM copy when the microVM starts (directory masks and read-only
+   overlays do not). This is harmless only because masked files are never in
+   the VM copy; the gate MUST NOT report the empty placeholder as a change,
+   and P-12 MUST assert that the VM copy never holds real content at a masked
+   path.
 2. **Host-exec vectors never flow VM → host.** These paths are synced host →
    VM only; creation, modification, or deletion of them in the VM is never
    propagated:
@@ -919,7 +963,9 @@ operator to apply or discard explicitly.
    - Host → VM: all refs and `HEAD` flow unconditionally.
 7. **Index (two-way, merged by entry).** `.git/index` is never copied as a
    file. The host binary parses it in Go (strict size and entry-count limits,
-   checksum trailer verified) and merges it per path and stage, three ways:
+   checksum trailer verified; it MUST read index versions 2, 3, and 4, because
+   the guest image enables `feature.manyFiles`, OQ-17) and merges it per path
+   and stage, three ways:
    the last-synced snapshot, the host index, and the VM index. A path changed
    on only one side takes that side's entry, so `git add`, `git reset`,
    `git rm`, branch switches, and merge-conflict stages carry both ways in
@@ -1141,7 +1187,26 @@ gateway forwards; topology guarantees nothing bypasses it.
   one session, so no source-IP mapping exists to go stale.
 - Plumbing SHOULD use the standard CNI `ptp`/`bridge` and `firewall` plugins
   driven through go-cni from `sandboxd`. Bespoke netlink or nftables code is
-  written only where CNI cannot meet this section (S1).
+  written only where CNI cannot meet this section (S1). S1 measured this
+  topology on Kata 4.4.0 (`docs/design/spikes/S1.md`):
+  - The `ptp` plugin, executed **inside the gateway namespace** with the agent
+    namespace as `CNI_NETNS`, puts the host end of the link in the gateway
+    namespace and the guest end in the agent namespace, leaving no veth end in
+    the VM root namespace. A Kata microVM started on that namespace
+    (`ctr run --with-ns network:/var/run/netns/<agent-ns>`) got the interface
+    and address and reached the gateway.
+  - **Namespaces are single-use.** Killing a microVM leaves Kata's traffic
+    control redirect on the guest-side interface, and a new microVM on the
+    same namespace fails (`Failed to add qdisc ... file exists`). `sandboxd`
+    MUST delete and recreate both namespaces per session.
+  - **Weak-host rules are required.** The gateway namespace answers ARP for,
+    and accepts packets addressed to, its uplink address on the guest link.
+    The input chain MUST drop traffic from the guest link whose destination is
+    not the gateway's link address or whose source is not the guest's address;
+    both rules fired in testing. Forwarding stays disabled in the gateway
+    namespace (`net.ipv4.ip_forward=0`), so nftables is a second layer.
+  - A new namespace has no working resolver: it inherits `127.0.0.53`. The
+    gateway's upstream resolver address MUST be set explicitly (§5.8.9).
 
 #### 5.8.3 Filtering resolver
 
@@ -1544,9 +1609,26 @@ during the session):
 - **Default:** sessions on the same repo share the one VM-local working tree.
   This matches v2 on Linux. On macOS v2 gives each session its own copy, so
   this is a behaviour change there and MUST be called out in the release notes.
-- Shared-tree mounts MUST use virtio-fs settings that keep guests coherent
-  (expected `cache=never`; validated in S1, including a concurrent-write
-  test).
+- Shared-tree mounts MUST use virtio-fs settings that keep guests coherent.
+  S1 measured the trade-off (`docs/design/spikes/S1.md`, Kata 4.4.0, nested on
+  Apple M6): the shipped `cache=auto` is fast but a second microVM can read a
+  stale file size for up to 1 s after an in-place overwrite (observed: 3 of 8
+  bytes read), while `cache=never` is coherent but about 19× slower on
+  metadata (20,000 files: `find` 12.3 s against 0.66 s). On a 100,000-file
+  repository `git status` inside a microVM took about 10 to 13 s under `auto`
+  and about 23 s under `never`, against 0.07 s natively in the appliance VM:
+  **large repositories are slow under either mode**, because every `git status`
+  re-stats every file across virtio-fs. This is an open usability risk for the
+  shared-tree design, not a cache-mode choice; S1.md records
+  the measured mitigations (git settings take about a third off; a virtiofsd
+  thread pool and vCPU count showed no benefit) and the larger options (OQ-17).
+  For typical repositories (a few thousand files) `git status` takes about
+  0.2 to 0.4 s in the microVM. `metadata` and
+  `always` cache attributes without expiry and are not acceptable for a shared
+  tree. **Decision (OQ-15): `auto`.** The sync tool MUST write by atomic
+  rename, which creates a new inode and avoids the stale-size case; the
+  up-to-1-s window for in-place overwrites between two sessions is stated in
+  the release notes.
 - **Opt-in `--worktree`:** each session gets its own `git worktree` and branch
   under the repo's VM copy, sharing the object store. Worktree metadata stays
   VM-side (`.git/worktrees/` is never synced to the host, §5.6.2). The branch
@@ -1615,7 +1697,7 @@ implementations until the bash is deleted (S8, D-34).
 | ID | Protection | v2 mechanism | v3 mechanism | Acceptance test | v2 coverage today |
 |---|---|---|---|---|---|
 | P-01 | Kernel isolation of the agent | gVisor | Kata `clh` | `test-runtime-kata` (new): agent runs in a guest kernel; VM `/dev`, `/proc`, processes not visible | `test-gvisor` checks the RuntimeClass and dmesg on its own pod only |
-| P-02 | Workload hardening | securityContext, no SA token, no RBAC | §5.5.2 in the guest | `test-workload-hardening` (new): asserts uid, caps, no_new_privs, seccomp on a real session | No test asserts the agent pod's securityContext |
+| P-02 | Workload hardening | securityContext, no SA token, no RBAC | §5.5.2 in the guest | `test-workload-hardening` (new): asserts uid, caps, no_new_privs, and seccomp (`Seccomp: 2` read from inside the guest; Kata's shipped default leaves it at 0) on a real session | No test asserts the agent pod's securityContext |
 | P-03 | Default-deny egress | Cilium default deny + per-session CNP | Link + nftables + gateway | `test-default-deny` (rewrite): direct IP, non-443 port, UDP, and other-session dials all fail and are logged | Only "unlabeled pod cannot curl example.com" |
 | P-04 | Per-agent/tier/profile FQDN allowlist | `toFQDNs` on 443 | Resolver + SNI check | `test-allowlist` (rewrite of tier1/2/3 tests) against the real session allowlist | Hand-written CNPs, not generated policy |
 | P-05 | DNS-exfiltration control | Cilium L7 DNS rules | Filtering resolver | `test-dns-exfil` (new): unlisted name → NXDOMAIN; TXT and long-label queries not forwarded upstream | None (`test-dns` tests split-DNS rendering) |
@@ -1672,7 +1754,7 @@ implementations until the bash is deleted (S8, D-34).
 
 | ID | Criterion | Test |
 |---|---|---|
-| P-24 | Memory and latency budget: idle VM memory, per-session overhead (Kata guest + gateway namespace), per-dependency overhead, minimum supported workstation memory, and session start/teardown latency are measured in S1 on supported hardware and published as absolute targets. A release fails P-24 only if it exceeds the published targets. (Revision 2's "must not exceed v2" cannot pass on Linux, where v2 has no VM.) | `test-footprint` (release-gating) |
+| P-24 | Memory and latency budget: idle VM memory, per-session overhead (Kata guest + gateway namespace), per-dependency overhead, minimum supported workstation memory, and session start/teardown latency are measured in S1 on supported hardware and published as absolute targets. A release fails P-24 only if it exceeds the published targets. (Revision 2's "must not exceed v2" cannot pass on Linux, where v2 has no VM.) First S1 measurements on an Apple M6 (`docs/design/spikes/S1.md`): about 7 s to start a nested Kata microVM with a cached image, about 197 MiB host-side per idle microVM, and 1.1 s to tear down two. | `test-footprint` (release-gating) |
 | P-25 | Every v2 user-facing capability in Appendix A.5 works or has a decision-log entry naming its replacement | Release checklist |
 
 ---
@@ -1715,6 +1797,11 @@ can run in parallel:
   - Does Codex's bubblewrap sandbox work under Kata?
 - **Exit:** P-12 and P-13 (in-guest halves), P-23, P-03 and P-09 prototypes
   pass; overhead and footprint numbers recorded.
+- **Status:** partial (`docs/design/spikes/S1.md`). Runtime, mounts, coherence,
+  first footprint numbers, and the per-session network topology (P-03 and P-09
+  prototypes, CNI `ptp`) measured; Codex bubblewrap and the ≥100k-file
+  repository not yet run. Two unexplained microVM stalls need reproducing
+  before `sandboxd`'s watchdog design is fixed.
 - **Fallback:** if file-level masks don't work under virtio-fs, rely on sync
   exclusion (masked files never present) plus directory-level overlays, and
   document the change in P-12. If containerd-direct networking cannot meet
@@ -1828,7 +1915,9 @@ can run in parallel:
   endpoints. Confirm that Lima (vz and qemu) and Hyper-V accept an external
   socket as the VM's NIC. Measure throughput.
 - **Alternative:** per-driver native controls for `lima-vz`, `lima-qemu`, and
-  the Windows driver.
+  the Windows driver. Lima 2.3's `hostLoopback: false` is the first measured
+  native control for `lima-vz` (`docs/design/spikes/S7.md`); it blocks all
+  host reach, so it cannot scope declared endpoints by itself.
 - **Questions:** How is the VM kept from host addresses, host aliases, and host
   loopback, over IPv4 and IPv6, by a control VM root cannot remove? How are
   declared Tier 3 host endpoints exposed only to one session's gateway? Do VPN
@@ -2024,6 +2113,9 @@ Each step leaves the tree releasable or gated behind a flag.
 | OQ-12 | Should agent history also be separated by tier? | **Resolved (rev. 3): yes**, agent + repo + tier (D-14) |
 | OQ-13 | If S3 finds no hardware-isolated backend on Windows, does v3.0.0 wait? | **Resolved (rev. 3): no.** v3.0.0 ships on macOS and Linux; Windows stays on v2 until it passes §7 (D-29) |
 | OQ-14 | Does the in-VM policy CLI shell out to `git` or use a Go git library? | Shell out, with v2's hardening ported (§5.4.1); revisit only if S8 finds a gap |
+| OQ-15 | virtio-fs cache mode for shared working trees (§5.13): `auto` (fast, up to 1 s stale-size window) or `never` (coherent, about 19× slower on metadata in S1)? | **Resolved (rev. 5, owner): `auto`**, with atomic-rename writes in the sync tool and the 1 s window stated in the release notes; revisit only on a stale-read report: S1's 100,000-file measurement found `never` about 2× slower than `auto` for `git status` (about 23 s against 10 to 13 s; 0.07 s natively) |
+| OQ-16 | For Codex, take the two in-guest overrides that make its bubblewrap sandbox work under Kata (unmasked `/proc` and `/sys` paths, and a seccomp profile permitting user namespaces), or keep the v2 `danger-full-access` override with the full §5.5.2 posture intact? | Proposed: keep `danger-full-access` and the full posture; revisit if Codex requires its own sandbox |
+| OQ-17 | How do we keep `git status` fast on large repositories (about 10 s at 100,000 files in S1; 0.2 to 0.4 s at a few thousand)? | **Approved (owner): ship a system gitconfig in the image** (`core.untrackedCache`, `feature.manyFiles`), which S1 measured at about one third off. Defer a read-only git proxy in the appliance VM (S1.md, option 3) and a guest-local workspace (option 2) until users report repositories of about 20,000 files or more |
 
 ---
 
