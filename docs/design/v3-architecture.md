@@ -581,6 +581,16 @@ host loopback services. Therefore:
   all host reach (so it cannot scope declared Tier 3 endpoints), it does not
   exist for `lima-qemu` or Hyper-V, and IPv6 and VM-root tampering with routes
   are untested.
+- **Lima's default network is already host-side userspace (S7).** On `lima-vz`
+  the VM's NIC is served by gvisor-tap-vsock inside Lima's detached host agent,
+  which outlives the CLI. So an owner that survives a detached keep-alive
+  session exists today, and its one policy control is `hostLoopback`, which is
+  all or nothing. Per-endpoint scoping of declared Tier 3 host endpoints is
+  what stock Lima lacks, and making `sandbox netd` the VM's only NIC was not
+  found to be configurable (an external Lima driver or a vfkit-based driver of
+  our own are the untested routes). D-31 stands as the target for the
+  per-endpoint requirement; `hostLoopback: false` plus the host agent is the
+  baseline without it (`docs/design/spikes/S7.md`).
 - **Mechanism and owner (S7 evaluates first):** a host-side userspace network
   stack as the VM's only NIC (the gvisor-tap-vsock approach Lima's user-mode
   networking already uses), run by **`sandbox netd`** (D-31): a mode of the
@@ -1190,6 +1200,12 @@ gateway forwards; topology guarantees nothing bypasses it.
     extra ports, dependency ports) and resolver (53/UDP+TCP);
   - everything else dropped **and logged**; drops are recorded in the session
     audit log as bypass attempts.
+- **Root-namespace input filtering.** The uplink also connects the gateway
+  namespace to the VM root namespace, so `sandboxd` MUST install an `input`
+  rule in the root namespace on each uplink interface that drops everything
+  except what the gateway legitimately needs (and nothing from the gateway to
+  `sandboxd`, `sshd`, or any other root listener). S5 verified that such a rule
+  stops the gateway namespace reaching the VM's `sshd`.
 - Session identity is the namespace. The gateway serving it belongs to exactly
   one session, so no source-IP mapping exists to go stale.
 - Plumbing SHOULD use the standard CNI `ptp`/`bridge` and `firewall` plugins
@@ -1233,7 +1249,11 @@ answers absolute names directly, so v2's `ndots:1` workaround is unnecessary.
    in `blocked_cidrs` (deny wins; DNS-rebinding and IMDS defense), including
    IPv6 addresses (v2 checks IPv6 literals only at runtime in Cilium). The
    gateway MUST connect to exactly the address that passed this check and MUST
-   NOT re-resolve between check and connect.
+   NOT re-resolve between check and connect. S5 (`docs/design/spikes/S5.md`)
+   found no post-resolution CIDR deny in Envoy and enforced this in nftables:
+   a rule on the gateway namespace's `output` chain rejects connections to a
+   blocked address, which checks the address actually dialled. The gateway's
+   DNS queries to the upstream resolver are exempted from that rule.
 3. **Passthrough by default** (TCP splice after the SNI check).
 4. **Intercept (TLS termination)** only for destinations that carry L7 rules
    or credential injection (§5.8.5, §5.9). Re-encrypt upstream, validating
@@ -1916,6 +1936,14 @@ can run in parallel:
   works through it.
 - **Fallback:** another mature data plane; a purpose-built proxy only with a
   documented reason (D-27).
+- **Status:** started (`docs/design/spikes/S5.md`). An Envoy 1.40.2 prototype
+  in the per-session gateway namespace met the SNI allowlist, passthrough,
+  no-SNI and `CONNECT` denial, single-label wildcard, authority-versus-SNI,
+  L7 baseline, credential injection, misuse blocking, response scrubbing, and
+  log-redaction items, with a Lua filter standing in for the broker. Blocked
+  CIDRs are enforced in nftables, not in Envoy. About 65 MiB and 0.1 s per
+  gateway. The `ext_proc` broker, upstream TLS and mTLS, upgrades and streams,
+  ECH, proxy chaining, and the unprivileged posture are not tested.
 
 ### S6 — Fleet capability check
 
