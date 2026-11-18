@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft, revision 4. Revision 3 plus the dispositions of a third external review (Appendix C) and the decision to port the policy layer to Go (D-34); gating spikes not yet run |
+| **Status** | Draft, revision 5. Revision 4 (third external review, Appendix C; Go policy port, D-34) plus operator-driven agent harness updates (D-35, Appendix D); gating spikes not yet run |
 | **Target** | v3.0.0 (major version; breaking install and platform changes) |
 | **Owner** | Jase Hall |
 | **Date** | 2026-11-18 |
@@ -416,7 +416,8 @@ account in the host store.
 All v2 subcommands are proxied into the VM unchanged: `run`, `resume`,
 `list`, `logs`, `flows`, `stop`, `cleanup`, `status`, `check`, `allow`,
 `onboard`, `secret`, `mask`, `exceptions`, `vet`, `profile`, `link`,
-`rebuild`, `version`. The host binary adds its host-side half where §5.1.3
+`rebuild`, `version`. v3 adds the in-VM `agent` command (`update`, `status`,
+`rollback`; §5.7.1), also proxied. The host binary adds its host-side half where §5.1.3
 says so (`vet`, `link`, `onboard`, `setup-proxy-cert`).
 
 Host-only commands:
@@ -598,7 +599,8 @@ host loopback services. Therefore:
 - containerd (pinned), Kata Containers with Cloud Hypervisor (pinned guest
   kernel and guest image), nftables, nerdctl + buildkit (for `sandbox
   rebuild`), betterleaks, the gateway/resolver/broker binary, `sandboxd`, the
-  in-VM `sandbox` policy layer, and preloaded agent images pinned by digest.
+  in-VM `sandbox` policy layer, and preloaded agent images pinned by digest (the tested baseline;
+  harness-only updates are delivered by §5.7.1).
 - **Not included:** k3s, Cilium, CoreDNS, Helm, gVisor, Hubble, and the v2
   bash CLI (ported to Go, §5.4.1).
 - Pins remain in `setup/versions.sh` (or its successor) and are managed by
@@ -1056,6 +1058,53 @@ later session on a different repo or tier. v3 replaces it:
    history.
 6. The session-scoped MCP config stays a separate read-only mount, as in v2
    (`lib/agents.sh:252-259`).
+
+#### 5.7.1 Agent harness updates (D-35)
+
+Harness releases are frequent, and rebuilding an image for each one is the v2
+maintenance burden this section removes. The appliance image ships a **tested
+baseline** of every agent harness, pinned by digest. A harness-only update
+does not need a new image:
+
+- `sandbox agent update <agent> [--version V | --channel C]` is
+  **operator-initiated and out-of-session**; no agent and no session can
+  trigger it. `sandbox agent status` lists the baseline, installed, and
+  available versions, and `sandbox agent rollback <agent>` returns to the
+  previous one.
+- The vendor's own documented install path for a specific version (S2 records
+  it per agent, Appendix D) runs in a **short-lived updater microVM**, the
+  onboarding-microVM pattern (§5.9.6), with egress limited to that vendor's
+  download hosts. It has no workspace, no history, and no credentials.
+- `sandboxd` validates the output (regular files and directories only, no
+  symlinks leaving the tree, no setuid or setgid bits, size caps), verifies
+  integrity as the recipe allows (below), records version, source, and digest
+  in the audit log, and promotes it to a versioned, root-owned directory
+  `/var/lib/sandbox/agents/<agent>/<version>/` on the state disk.
+- Sessions mount the selected version **read-only** over the image's copy.
+  Nothing an agent writes persists in it, so an update cannot become a
+  persistence channel (N-08 still holds).
+- The in-session self-updater is turned off where the agent offers a switch
+  (S2 records it), and the session's closed egress stops it otherwise.
+
+**Integrity levels**, set per agent in its recipe (S2): **signed** (a
+verifiable signature or signed manifest from the vendor), **attested**
+(registry-level provenance or signatures), and **TLS-only** (a download over
+TLS from the vendor's host with no published checksum). Signed and attested
+updates proceed after showing the operator the old and new versions and the
+digest. A TLS-only update additionally requires `--accept-unverified-download`,
+which is audited. An org overlay may require signed-or-attested only, may
+disable self-update entirely so that only the image baseline runs
+(`agent_update: disabled`), and may set a minimum release age
+(`harness_min_age_days`) before a version is offered. Overlays can only
+tighten.
+
+**Compatibility.** The image carries a tested version range per agent (S2 and
+N-04 run against the baseline). A version outside the range prints a warning
+and needs `--allow-untested`. The broker adapters (§5.9.4) and the re-staged
+config set (§5.7 item 4) were written against tested versions, so an untested
+version is expected to fail closed (authentication errors), not to leak.
+`sandbox doctor` reports the active version per agent and whether it is in
+range.
 
 ### 5.8 Networking and egress
 
@@ -1528,7 +1577,7 @@ during the session):
 | Egress | New optional `l7_rules:` per domain (org, overlay, profile); org baseline in `config/egress-baseline.yaml`; explicit multi-label wildcard form `**.` |
 | Host reach | New `host_endpoints:` (Tier 3 only) |
 | Tier 3 | `--infra-token` requires `--infra-endpoint`; kubeconfigs handled by the broker; exec plugins supported via the host pump |
-| Overlay | `shared_tree_policy`, credential exceptions, L7 deny additions, exec-plugin allowlist, keep-alive maximums |
+| Overlay | `shared_tree_policy`, credential exceptions, L7 deny additions, exec-plugin allowlist, keep-alive maximums, `protected_branches` additions (§5.6.2), harness update policy (`agent_update`, `harness_min_age_days`; §5.7.1) |
 | Agent home | `--homedir` is replaced by the per-agent-per-repo history model (§5.7) |
 | Unchanged | Tiers, agents, catalogue, masks, exceptions, vetting keys, blocked destinations, persistent domains, profiles, links |
 
@@ -1617,6 +1666,7 @@ implementations until the bash is deleted (S8, D-34).
 | N-22 | VM-initiated browser open is bounded | `test-onboard-browser` (new): a request with no foreground `sandbox onboard`, a second request in one onboarding, a matching host with a wrong path or `client_id`, and a device code for an unlisted client are all refused |
 | N-23 | `.gitattributes` cannot select operator git drivers | `test-sync-gitattributes` (new): a guest-written `filter=`, `diff=`, or `merge=` attribute is quarantined; the git-lfs triple and driverless attributes pass |
 | N-24 | No silent image downgrade | `test-image-rollback` (new): an older, correctly signed image is refused without `--allow-downgrade`; a signature from a different identity is refused |
+| N-25 | Harness updates cannot become a persistence or egress channel | `test-agent-update` (new): a session cannot write to the installed harness store; no session can start an update; the updater microVM reaches only its vendor's hosts; a tampered artifact (symlink out of tree, setuid bit, oversized file) is rejected; a TLS-only update without `--accept-unverified-download` is refused; an out-of-range version warns and needs `--allow-untested`; rollback restores the previous version |
 
 ### 7.3 Footprint and capability criteria
 
@@ -1681,6 +1731,12 @@ can run in parallel:
   identity endpoint to bind the account at onboarding? Which config,
   instruction, and memory files does it write at runtime (the §5.7 re-staged
   set)?
+- **Harness updates (§5.7.1, Appendix D):** per agent, what is its documented
+  install-a-specific-version path, which hosts does it download from, what
+  integrity source exists (signed manifest, registry provenance, or none),
+  how is its in-session self-updater disabled, and does a new version change
+  its auth flow, endpoints, or runtime-written files (which would invalidate
+  the adapter or the re-staged set)?
 - **Exec plugins:** for every plugin proposed for the allowlist, what does its
   credential authorize (cluster-scoped vs general-purpose cloud credential)?
 - **Exit:** for each agent, either a working adapter (N-04 passes) or a
@@ -1964,7 +2020,7 @@ Each step leaves the tree releasable or gated behind a flag.
 | OQ-08 | Log retention: enforce `retention_days`, or drop the claim? | Enforce in `sandbox cleanup`, per tier; VM keeps 7 days after pull |
 | OQ-09 | Exec-plugin tokens for a keep-alive session after the operator detaches | Token expires; requests fail closed until the operator re-attaches |
 | OQ-10 | Multi-label wildcard form: `**.` or a per-entry flag? | `**.` |
-| OQ-11 | Keep `sandbox rebuild` (buildkit in the image) or ship agent images only through image releases? | Keep; buildkit GC caps from v2 carried over |
+| OQ-11 | Keep `sandbox rebuild` (buildkit in the image) or ship agent images only through image releases? | **Resolved (rev. 5): neither alone.** Harness-only updates use operator-driven `sandbox agent update` (§5.7.1, D-35); `sandbox rebuild` stays for local image changes, with buildkit GC caps from v2 carried over; image releases carry the tested baseline |
 | OQ-12 | Should agent history also be separated by tier? | **Resolved (rev. 3): yes**, agent + repo + tier (D-14) |
 | OQ-13 | If S3 finds no hardware-isolated backend on Windows, does v3.0.0 wait? | **Resolved (rev. 3): no.** v3.0.0 ships on macOS and Linux; Windows stays on v2 until it passes §7 (D-29) |
 | OQ-14 | Does the in-VM policy CLI shell out to `git` or use a Go git library? | Shell out, with v2's hardening ported (§5.4.1); revisit only if S8 finds a gap |
@@ -2009,6 +2065,7 @@ Each step leaves the tree releasable or gated behind a flag.
 | D-32 | Broker store key held in the host keychain, pushed at VM start | A stolen or backed-up state disk cannot be read; the host binary starts the VM, so normal starts add no delay | Key on the state disk (cosmetic encryption); key file under `~/.sandbox` (copied by home backups; kept only as the headless-Linux fallback) |
 | D-33 | The L7 baseline is protocol rules on every intercepted destination | A domain-keyed baseline leaves operator-added git hosts and registries with brokered credentials unprotected | Domain-keyed baseline (rev. 3) |
 | D-34 | **Port the bash policy layer to Go for v3.0.0**: one language, one module, several binaries, trust boundaries kept. The v2 bash stays in the tree as a frozen test oracle until release, and each module is differential-tested before its bash is deleted (S8) | Two languages double the maintenance surface, let the sync gate, the host rule tables, and the policy layer drift apart, and put the fail-closed gates (secret gate, vetting, blocked destinations) in the language least suited to them. The team's Go experience has grown, and Go suits staged, AI-assisted implementation. The release is not time-boxed, so the port can be validated first | Keep bash for v3.0.0 and port later (rev. 3, D-17); port after release (rejected by the owner, to avoid carrying two languages into the first v3 release) |
+| D-35 | **Agent harness updates are operator-driven and out-of-session**: a tested baseline ships in the image; `sandbox agent update` fetches a newer harness in a short-lived updater microVM, validates it, and mounts it read-only into later sessions | Harness releases are frequent. Rebuilding images per release (v2) and CI-built image releases per harness bump (a daily cadence) are both heavy. Running the vendor upgrade inside a session would create a persistence channel for a trojaned harness and widen every session's allowlist. Every supported harness documents an install path, but only some document an integrity source (Appendix D), so integrity levels and an overlay kill-switch are part of the design | Rebuild per harness change (v2); separate signed agent images built by CI on every harness bump; in-session `<agent> upgrade` with a persisted install |
 
 ---
 
@@ -2233,3 +2290,33 @@ protection together.
 | F11 | No anti-rollback for signed images | Accepted, with a failed-boot rollback exception; `limactl` is path-pinned rather than hashed, since a hash would break on every Lima upgrade | §5.1.2, §5.3.2, §10, N-24 |
 | F12 | Placeholder block possible only on intercepted connections | Accepted (wording) | §5.9.3, N-05 |
 | F13 | Document hygiene | Accepted: blocks and rows reordered without changing any ID | §5.8.10, §7.2, §14 |
+
+## Appendix D — Agent harness update paths (research notes, 2026-11-18)
+
+Gathered from public documentation and secondary sources while designing
+§5.7.1. **Not authoritative:** S2 MUST re-verify every row against the harness
+version in use. "Official" means vendor documentation that was read directly;
+"secondary" means blogs, changelog aggregators, or search-result summaries.
+
+| Agent | Update and install paths | Pin a version | In-session updater switch | Integrity source | Basis |
+|---|---|---|---|---|---|
+| claude | `claude update`; native installs auto-update in the background; npm, Homebrew, WinGet, apt, dnf, and apk installs update manually. Downloads from `claude.ai` (installer) and `downloads.claude.ai` | Installer accepts a version or channel (`install.sh \| bash -s <version>`); `minimumVersion`; `autoUpdatesChannel` (`latest`, `stable`) | `DISABLE_AUTOUPDATER=1` stops background checks only; `DISABLE_UPDATES` blocks every path including `claude update` | Per-release `manifest.json` with SHA256 per platform, GPG-signed (releases from 2.1.89); macOS and Windows code signatures; signed apt, dnf, and apk repositories | Official |
+| codex | Standalone installer (`chatgpt.com/codex/install.sh`) downloads from `releases.openai.com/codex` and falls back to GitHub Releases; npm `@openai/codex`; Homebrew cask `codex`. `codex update` (and `--check`) is described by secondary sources; the README read has no update command | npm version; GitHub release asset | None found | None documented in the README | Official for install, secondary for update |
+| copilot | npm `@github/copilot`; WinGet `GitHub.Copilot`; Homebrew cask `copilot-cli`; install script `gh.io/copilot-install` (honours `VERSION` and `PREFIX`); executables on the `github/copilot-cli` releases page. The command reference reportedly lists `/update`; `copilot update` and auto-update for script and package installs come from secondary sources | `VERSION` for the script; npm tag | None found | None documented on the install page | Official for install, secondary for update |
+| grok | `curl -fsSL https://x.ai/cli/install.sh \| bash`. `grok update` and an `auto_update` setting come from secondary sources only; the official page read does not mention them | Unknown | Unknown | None documented | Official for install; update unconfirmed |
+| opencode | `opencode upgrade [version]` per secondary documentation. Official config docs: `update` set to `"disable"`, `"notify"` (default), or `"auto"`, read from global config only (project values are ignored); older documentation and reports use `autoupdate`, and reports conflict across v1 and v2 | `opencode upgrade <version>` (secondary) | `update: "disable"` (official); an environment variable is reported by secondary sources only | None documented | Mixed |
+
+Takeaways for the design: every supported harness has a vendor-documented
+install path, and most can be pinned, so an out-of-session updater is
+feasible. Only claude documents a signed integrity source, so the other four
+start at the TLS-only integrity level until S2 finds more (§5.7.1). Several
+update commands are known only from secondary sources, so the updater runs
+the vendor's documented install-a-version path, not `<agent> update`, wherever
+possible.
+
+Sources: [Claude Code advanced setup](https://code.claude.com/docs/en/setup);
+[Copilot CLI install](https://docs.github.com/copilot/how-tos/set-up/install-copilot-cli);
+[opencode config](https://opencode.ai/docs/config);
+[Codex README](https://github.com/openai/codex);
+[Grok Build CLI announcement](https://x.ai/news/grok-build-cli);
+[codex update article](https://codex.danielvaughan.com/2026/05/08/codex-cli-codex-update-self-update-command/).
