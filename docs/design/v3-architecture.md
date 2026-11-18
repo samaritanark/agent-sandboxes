@@ -1630,8 +1630,10 @@ and does not require it.
   root key. Leaves are minted per host at session start, so a hot-added
   intercepted name needs the root helper to issue another. Nothing revokes a
   certificate before its end time, so a stolen leaf key is usable for the
-  session lifetime. Enforcement by the guests' other TLS stacks (Go, Node,
-  rustls, Python) was not tested.
+  session lifetime. All seven stacks tried enforced the critical
+  constraint (OpenSSL, curl, Python, Node, wget, git over GnuTLS, and Go's own
+  `crypto/x509`), each checked against an unconstrained control; rustls,
+  BoringSSL, Java, and the agents' bundled runtimes were not tested.
 
 ### 5.11 Dependencies (catalogue)
 
