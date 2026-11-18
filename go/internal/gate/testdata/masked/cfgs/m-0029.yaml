@@ -1,0 +1,6 @@
+  - 'z z/'
+  -	t
+  - x-openrc.sh
+masked_paths:
+- a.txt
+- dir/

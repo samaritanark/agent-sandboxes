@@ -1,0 +1,15 @@
+masked_paths:
+  - "q.txt" # n
+  - é/
+masked_paths:
+masked_paths:
+masked_paths:
+other:
+key: v
+masked_paths:
+-n
+-e
+-nE
+- ok
+-ne x
+-n

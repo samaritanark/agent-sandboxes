@@ -1,0 +1,9 @@
+masked_paths:
+  -n
+key: v
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up

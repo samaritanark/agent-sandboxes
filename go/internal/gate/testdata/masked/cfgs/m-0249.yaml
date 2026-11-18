@@ -1,0 +1,12 @@
+masked_paths:
+-e
+masked_paths:
+key: v
+  - .kube/sub
+masked_paths:
+-n
+-e
+-nE
+- ok
+-ne x
+-n

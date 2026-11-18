@@ -1,0 +1,14 @@
+masked_paths:
+masked_paths: [a.txt, b/]
+  - .kube/sub
+masked_paths:
+  - secrets.txt
+  - private/
+  - é/
+-n
+masked_paths:
+  - a.txt
+other:
+  - x
+masked_paths:
+  - b.txt

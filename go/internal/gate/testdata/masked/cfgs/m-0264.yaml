@@ -1,0 +1,17 @@
+masked_paths:
+other:
+  - x-openrc.sh
+  - /
+  - dir/
+  - "q.txt" # n
+-n
+
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up
+masked_paths:
+  - café.txt
+  - 日本/

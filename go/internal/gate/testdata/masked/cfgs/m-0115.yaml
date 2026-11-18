@@ -1,0 +1,7 @@
+masked_paths:
+  - "q.txt" # n
+key: v
+masked_paths:
+# c
+  - .kube/sub
+  -	t

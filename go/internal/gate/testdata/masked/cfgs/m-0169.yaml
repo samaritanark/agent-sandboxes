@@ -1,0 +1,6 @@
+masked_paths:
+-e
+other:
+  - "q.txt" # n
+other:
+  - dir/

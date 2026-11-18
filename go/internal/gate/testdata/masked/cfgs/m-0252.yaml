@@ -1,0 +1,9 @@
+masked_paths:
+  - x-openrc.sh
+  - .kube/sub
+masked_paths:
+  - a.txt
+  - dir/
+  -	t
+key: v
+-e

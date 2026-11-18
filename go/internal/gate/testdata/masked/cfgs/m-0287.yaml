@@ -1,0 +1,12 @@
+  - a #b
+masked_paths:
+  - '*.pem'
+  - secrets/*
+  - '[ab].txt'
+  - ?.key
+-e
+  -	t
+-e
+key: v
+  - 'z z/'
+

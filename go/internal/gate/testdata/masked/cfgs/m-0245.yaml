@@ -1,0 +1,10 @@
+masked_paths:
+  - "q.txt" # n
+  -n
+masked_paths:
+  - .env
+  - .kube/
+  - x-openrc.sh
+  - dir/
+  - 'z z/'
+  - dir/

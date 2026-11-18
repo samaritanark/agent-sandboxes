@@ -18,7 +18,7 @@ Layout so far:
 
 | Path | Port of |
 |---|---|
-| `internal/gate` | the secret gate in `lib/filesystem.sh` (`finding_is_encrypted` first) |
+| `internal/gate` | the secret gate in `lib/filesystem.sh`: `finding_is_encrypted`, `is_path_masked` (with `extract_yaml_list_from_file` from `lib/config.sh`), `_leakscan_finding_accepted` |
 
 Not yet here (see S8): the host binary, the policy CLI, `sandboxd`, and the
 import-graph check from §5.1.1.
@@ -38,6 +38,17 @@ LC_ALL=C ./oracle.sh cases-mutants.tsv  > golden-mutants.tsv
 (cd go && go test ./...)
 # and on Linux, to re-run the bash live from the Go test:
 (cd go && SBX_ORACLE=1 go test ./internal/gate -run TestLiveOracle)
+```
+
+Pilot 2 (`testdata/masked`, `testdata/accepted`) regenerates the same way:
+
+```bash
+(cd go && go run ./internal/gate/internal/genmasked -base internal/gate/testdata/masked -seed 1 -n 300)
+go/internal/gate/testdata/accepted/gen-cases.sh
+# on Linux, with LC_ALL=C:
+go/internal/gate/testdata/masked/oracle.sh masked > go/internal/gate/testdata/masked/golden-masked.tsv
+go/internal/gate/testdata/masked/oracle.sh lists  > go/internal/gate/testdata/masked/golden-lists.tsv
+GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go/internal/gate/testdata/accepted/oracle.sh > go/internal/gate/testdata/accepted/golden-accepted.tsv
 ```
 
 The committed golden files were produced with GNU awk 5.2.1 under `LC_ALL=C` on Ubuntu 24.04

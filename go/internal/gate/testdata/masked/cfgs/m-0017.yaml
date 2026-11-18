@@ -1,0 +1,13 @@
+masked_paths:
+  - a.txt
+  - a.txt
+masked_paths:
+  - a.txt
+  - lastkey: v
+  - dir/
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up

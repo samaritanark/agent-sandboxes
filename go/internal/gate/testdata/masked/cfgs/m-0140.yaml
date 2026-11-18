@@ -1,0 +1,10 @@
+masked_paths:
+
+masked_paths:
+  -n
+  - é/
+  - 'z z/'
+masked_paths:
+  - a
+_private: 1
+  - hidden

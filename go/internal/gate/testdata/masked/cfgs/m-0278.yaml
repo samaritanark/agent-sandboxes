@@ -1,0 +1,7 @@
+masked_paths:
+key: v
+-e
+  - .kube/sub
+  - dir/
+  - .kube/sub
+  - é/

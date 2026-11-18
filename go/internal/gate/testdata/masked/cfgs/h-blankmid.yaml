@@ -1,0 +1,5 @@
+masked_paths:
+
+  - a
+
+  - b/

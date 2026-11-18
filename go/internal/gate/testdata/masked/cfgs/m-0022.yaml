@@ -1,0 +1,11 @@
+  - "q.txt" # n
+- top
+  - .kube/sub
+masked_paths:
+  - secrets.txt
+  - private/
+  - é/
+  - x-openrc.sh
+-n
+  - dir/
+  - é/

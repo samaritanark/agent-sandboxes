@@ -1,0 +1,14 @@
+masked_paths:
+masked_paths:
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up
+  - /
+  - a#b
+masked_paths:
+  - é/
+  - a#b
+# c

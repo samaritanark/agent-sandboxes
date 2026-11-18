@@ -1,0 +1,32 @@
+masked_paths:
+masked_paths:
+	- tabbed.txt
+  -	tab2.txt
+
+-e
+  - a#b
+masked_paths:
+-n
+-e
+-nE
+- ok
+-ne x
+-n
+  - a #b
+  - é/
+masked_paths:
+  # a comment
+  - a.txt   # trailing
+  - b.txt #nospace
+  - c.txt#glued
+  -   d.txt	# tab
+  - # only comment
+  -
+masked_paths:
+  # a comment
+  - a.txt   # trailing
+  - b.txt #nospace
+  - c.txt#glued
+  -   d.txt	# tab
+  - # only comment
+  -

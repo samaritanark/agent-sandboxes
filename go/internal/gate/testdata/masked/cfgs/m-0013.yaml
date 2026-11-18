@@ -1,0 +1,8 @@
+-e
+  - .kube/sub
+  - "q.txt" # n
+masked_paths:
+  - a.txt
+next_key:
+  - b.txt
+  - c/

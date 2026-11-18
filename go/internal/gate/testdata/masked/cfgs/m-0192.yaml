@@ -1,0 +1,22 @@
+masked_paths:
+masked_paths:
+  -n
+  -e
+  -E
+  -neE
+  -nx
+  - n
+  -ne 
+  -  -n
+masked_paths:
+  - '*.pem'
+  - secrets/*
+  - '[ab].txt'
+  - ?.key
+key: v
+  - a #b
+  - a #b
+masked_paths:
+	- tabbed.txt
+  -	tab2.txt
+  - x-openrc.sh

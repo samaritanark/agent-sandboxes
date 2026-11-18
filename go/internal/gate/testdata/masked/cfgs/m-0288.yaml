@@ -1,0 +1,5 @@
+other:
+- top
+masked_paths:
+  - a.txt
+  - last  - dir/

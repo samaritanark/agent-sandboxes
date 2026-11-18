@@ -1,0 +1,6 @@
+masked_paths:
+  - a.txt
+other:
+  - x
+masked_paths:
+  - b.txt

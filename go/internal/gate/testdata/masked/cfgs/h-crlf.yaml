@@ -1,0 +1,3 @@
+masked_paths:
+  - a.txt
+  - dir/

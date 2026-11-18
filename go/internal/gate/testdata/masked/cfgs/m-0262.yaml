@@ -1,0 +1,12 @@
+masked_paths:
+-n
+-e
+-nE
+- ok
+-ne x
+-n
+
+-n
+  - 'z z/'
+  - a.txt
+-e

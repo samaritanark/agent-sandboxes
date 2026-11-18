@@ -1,0 +1,14 @@
+masked_paths:
+  - "q.txt" # n
+- top
+masked_paths:
+  -n
+  -e
+  -E
+  -neE
+  -nx
+  - n
+  -ne 
+  -  -n
+other:
+  - a

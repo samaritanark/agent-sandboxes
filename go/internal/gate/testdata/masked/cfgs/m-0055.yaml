@@ -1,0 +1,14 @@
+# c
+  - a #b
+other:
+key: v
+key: v
+  -n
+masked_paths:
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up
+-e

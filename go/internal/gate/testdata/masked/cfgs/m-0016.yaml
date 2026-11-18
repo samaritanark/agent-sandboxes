@@ -1,0 +1,10 @@
+masked_paths:
+# c
+Masked_paths:
+  - nope
+masked_paths:
+  - Yes.TXT
+  - a #b
+  - a.txt
+  - a #b
+  - dir/

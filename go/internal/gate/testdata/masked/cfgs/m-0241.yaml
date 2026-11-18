@@ -1,0 +1,16 @@
+masked_paths:
+  - .kube/sub
+masked_paths:
+masked_paths:
+-n
+-e
+-nE
+- ok
+-ne x
+-n
+masked_paths: [a.txt, b/]
+# c
+  -	t
+  - "q.txt" # n
+other:
+  - "q.txt" # n

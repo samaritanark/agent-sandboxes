@@ -1,0 +1,13 @@
+masked_paths:
+  - 'z z/'
+  - "q.txt" # n
+  -	t
+key: v
+Masked_paths:
+  - nope
+masked_paths:
+  - Yes.TXT
+  - a.txt
+  - a#b
+  - /
+# c

@@ -1,0 +1,27 @@
+other:
+  - "q.txt" # n
+masked_paths:
+  - café.txt
+  - 日本/
+  -	t
+masked_paths:
+  # a comment
+  - a.txt   # trailing
+  - b.txt #nospace
+  - c.txt#glued
+  -   d.txt	# tab
+  - # only comment
+  -
+masked_paths:
+  - a.txt
+other:
+  - x
+masked_paths:
+  - b.txt
+  - 'z z/'
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up

@@ -1,0 +1,6 @@
+masked_paths:
+- top
+  -	t
+key: v
+  - a #b
+- top

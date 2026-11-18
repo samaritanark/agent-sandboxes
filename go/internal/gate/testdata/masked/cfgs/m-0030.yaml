@@ -1,0 +1,6 @@
+masked_paths:
+  - a #b
+masked_paths: [a.txt, b/]
+  - é/
+  - /
+  - dir/

@@ -1,0 +1,9 @@
+masked_paths:
+  - "q.txt" # n
+# c
+-e
+other:
+  - x-openrc.sh
+  - .kube/sub
+  - x-openrc.sh
+# c

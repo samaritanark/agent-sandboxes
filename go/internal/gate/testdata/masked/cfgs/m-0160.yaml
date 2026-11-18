@@ -1,0 +1,11 @@
+masked_paths:
+- top
+masked_paths:
+-n
+-e
+-nE
+- ok
+-ne x
+-n
+  - a.txt
+  - é/

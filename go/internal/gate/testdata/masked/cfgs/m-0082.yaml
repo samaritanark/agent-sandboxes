@@ -1,0 +1,11 @@
+masked_paths:
+masked_paths_extra:
+  - nope
+masked_paths:
+  - yes
+  - x-openrc.sh
+- top
+masked_paths:
+  - /
+  -n
+masked_paths:

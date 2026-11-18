@@ -1,0 +1,9 @@
+
+  - /
+key: v
+masked_paths:
+  - a.txt
+next_key:
+  - b.txt
+  - c/
+  - a #b

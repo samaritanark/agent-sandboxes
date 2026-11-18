@@ -1,0 +1,7 @@
+masked_paths:
+-n
+-e
+-nE
+- ok
+-ne x
+-n

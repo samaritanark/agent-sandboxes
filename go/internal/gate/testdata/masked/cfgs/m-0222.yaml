@@ -1,0 +1,19 @@
+-n
+  - a#b
+
+  - dir/
+  -	t
+  -	t
+masked_paths:
+-n
+-e
+-nE
+- ok
+-ne x
+-n
+masked_paths:
+
+  - a
+
+  - b/
+  - /

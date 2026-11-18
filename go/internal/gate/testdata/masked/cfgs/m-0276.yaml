@@ -1,0 +1,9 @@
+masked_paths:
+# c
+  -n
+  - /
+masked_paths:
+  - café.txt
+  - 日本/
+  - 'z z/'
+  - dir/

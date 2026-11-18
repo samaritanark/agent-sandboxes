@@ -1,0 +1,7 @@
+masked_paths:
+masked_paths:
+
+  - a
+
+  - b/
+  - dir/

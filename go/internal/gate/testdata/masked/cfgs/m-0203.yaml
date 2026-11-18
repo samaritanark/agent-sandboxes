@@ -1,0 +1,12 @@
+masked_paths:
+  -	t
+  - "q.txt" # n
+  - .kube/sub
+key: v
+masked_paths:
+  - a
+_private: 1
+  - hidden
+masked_paths:
+  - a.txt
+  - dir/

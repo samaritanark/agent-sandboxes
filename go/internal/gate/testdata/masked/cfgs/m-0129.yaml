@@ -1,0 +1,15 @@
+masked_paths:
+# c
+Masked_paths:
+  - nope
+masked_paths:
+  - Yes.TXT
+  - a#b
+  - x-openrc.sh
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up
+-n

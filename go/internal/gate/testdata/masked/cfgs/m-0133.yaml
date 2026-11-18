@@ -1,0 +1,5 @@
+masked_paths:
+
+# c
+  - a#b
+  - a.txt

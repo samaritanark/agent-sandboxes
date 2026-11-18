@@ -1,0 +1,11 @@
+masked_paths:
+  - é/
+masked_paths:
+masked_paths:
+  - -rf
+  - --flag
+  - - nested
+  -	t
+key: v
+  - a.txt
+  - 'z z/'

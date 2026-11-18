@@ -1,0 +1,8 @@
+masked_paths:
+-e
+  - é/
+  - x-openrc.sh
+masked_paths:
+  - a.txt
+  - last-n
+- top

@@ -1,0 +1,14 @@
+masked_paths:
+masked_paths: [a.txt, b/]
+- top
+  -n
+other:
+masked_paths:
+  - '*.pem'
+  - secrets/*
+  - '[ab].txt'
+  - ?.key
+  - "q.txt" # n
+  - 'z z/'
+  - .kube/sub
+  - é/

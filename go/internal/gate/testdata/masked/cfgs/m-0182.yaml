@@ -1,0 +1,12 @@
+masked_paths:
+  - 'z z/'
+  - 'z z/'
+  - x-openrc.sh
+masked_paths:
+other:
+-e
+masked_paths_extra:
+  - nope
+masked_paths:
+  - yes
+-e

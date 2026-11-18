@@ -1,0 +1,16 @@
+masked_paths:
+  - dir/
+Masked_paths:
+  - nope
+masked_paths:
+  - Yes.TXT
+masked_paths:
+  - a.txt
+  - dir/
+  - é/
+key: v
+masked_paths:
+  - café.txt
+  - 日本/
+  - a#b
+  - 'z z/'

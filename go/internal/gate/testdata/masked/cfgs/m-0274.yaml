@@ -1,0 +1,17 @@
+masked_paths:
+  - x-openrc.sh
+masked_paths:
+  - a.txt
+next_key:
+  - b.txt
+  - c/
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up
+  - /
+
+other:
+key: v

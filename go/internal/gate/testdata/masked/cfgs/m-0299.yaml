@@ -1,0 +1,14 @@
+- top
+  - a#b
+  - dir/
+key: v
+key: v
+masked_paths:
+  - a.txt
+other:
+  - x
+masked_paths:
+  - b.txt
+- top
+  - a.txt
+  -n

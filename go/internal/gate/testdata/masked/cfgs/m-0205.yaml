@@ -1,0 +1,14 @@
+masked_paths:
+  - é/
+masked_paths:
+  - a.txt
+  - dir/
+  -n
+masked_paths:
+	- tabbed.txt
+  -	tab2.txt
+masked_paths:
+- top
+  - x-openrc.sh
+-n
+  -	t

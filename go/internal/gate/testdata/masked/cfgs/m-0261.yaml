@@ -1,0 +1,15 @@
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up
+  - a #b
+masked_paths:
+  - "a b.txt"
+  - 'dir with space/'
+  - "it's"
+-e
+  -n
+- top
+  - 'z z/'

@@ -1,0 +1,10 @@
+masked_paths:
+  - "q.txt" # n
+  - a.txt
+  - dir/
+  - a.txt
+masked_paths:
+-n
+other:
+  - 'z z/'
+# c

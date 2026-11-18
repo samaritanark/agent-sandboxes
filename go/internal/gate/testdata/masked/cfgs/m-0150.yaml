@@ -1,0 +1,18 @@
+  - 'z z/'
+masked_paths:
+  - '*.pem'
+  - secrets/*
+  - '[ab].txt'
+  - ?.key
+masked_paths:
+  - .env
+  - .kube/
+  - x-openrc.sh
+masked_paths:
+-n
+-e
+-nE
+- ok
+-ne x
+-n
+

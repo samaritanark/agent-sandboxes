@@ -1,0 +1,15 @@
+masked_paths:
+masked_paths:
+  -n
+  -e
+  -E
+  -neE
+  -nx
+  - n
+  -ne 
+  -  -n
+  - a #b
+masked_paths:
+  - café.txt
+  - 日本/
+other:

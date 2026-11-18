@@ -1,0 +1,11 @@
+masked_paths:
+masked_paths:
+  - café.txt
+  - 日本/
+
+
+masked_paths:
+  - secrets.txt
+  - private/
+  - .kube/sub
+  - /

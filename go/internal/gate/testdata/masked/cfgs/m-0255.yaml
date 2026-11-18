@@ -1,0 +1,8 @@
+masked_paths:
+  - dir/
+  - a#b
+  - x-openrc.sh
+  - dir/
+  -n
+  -	t
+key: v

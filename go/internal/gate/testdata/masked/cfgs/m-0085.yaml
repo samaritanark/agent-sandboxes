@@ -1,0 +1,14 @@
+masked_paths:
+  -n
+  -e
+  -E
+  -neE
+  -nx
+  - n
+  -ne 
+  -  -n
+key: v
+-e
+  - "q.txt" # n
+masked_paths: [a.txt, b/]
+  - /

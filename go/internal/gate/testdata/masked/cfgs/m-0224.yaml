@@ -1,0 +1,12 @@
+  - a#b
+-e
+other:
+  - x-openrc.sh
+-e
+# c
+  - a.txt
+masked_paths:
+
+  - a
+
+  - b/

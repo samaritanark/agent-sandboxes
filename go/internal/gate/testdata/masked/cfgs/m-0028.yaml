@@ -1,0 +1,7 @@
+masked_paths:
+  - a #b
+  -n
+masked_paths:
+  - "a b.txt"
+  - 'dir with space/'
+  - "it's"

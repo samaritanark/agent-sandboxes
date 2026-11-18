@@ -1,0 +1,16 @@
+masked_paths:
+  - 'z z/'
+# c
+Masked_paths:
+  - nope
+masked_paths:
+  - Yes.TXT
+  - a #b
+masked_paths:
+
+  - a
+
+  - b/
+  - .kube/sub
+-e
+  -n

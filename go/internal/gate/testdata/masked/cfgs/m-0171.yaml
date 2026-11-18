@@ -1,0 +1,20 @@
+masked_paths:
+  - 'z z/'
+masked_paths:
+	- tabbed.txt
+  -	tab2.txt
+masked_paths:
+- a.txt
+- dir/
+masked_paths:
+  # a comment
+  - a.txt   # trailing
+  - b.txt #nospace
+  - c.txt#glued
+  -   d.txt	# tab
+  - # only comment
+  -
+  - é/
+  - a#b
+-e
+  - a #b

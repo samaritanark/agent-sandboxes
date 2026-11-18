@@ -1,0 +1,13 @@
+masked_paths:
+masked_paths:
+	- tabbed.txt
+  -	tab2.txt
+  - a#b
+masked_paths:
+
+  - a
+
+  - b/
+-n
+  - /
+  - a.txt

@@ -1,0 +1,6 @@
+masked_paths:
+  - /
+other:
+  -n
+  - 'z z/'
+  - .kube/sub

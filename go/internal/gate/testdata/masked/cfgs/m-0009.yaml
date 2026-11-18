@@ -1,0 +1,13 @@
+masked_paths:
+	- tabbed.txt
+  -	tab2.txt
+masked_paths:
+  - '*.pem'
+  - secrets/*
+  - '[ab].txt'
+  - ?.key
+-n
+# c
+# c
+- top
+  - a#b

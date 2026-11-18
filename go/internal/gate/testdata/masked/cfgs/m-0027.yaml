@@ -1,0 +1,15 @@
+  -	t
+key: v
+masked_paths:
+  - a.txt
+  - dir/
+
+  - dir/
+  - .kube/sub
+masked_paths:
+  - a.txt
+next_key:
+  - b.txt
+  - c/
+key: v
+- top

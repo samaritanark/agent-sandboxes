@@ -1,0 +1,13 @@
+masked_paths:
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up
+other:
+  - /
+other:
+  - x-openrc.sh
+  - x-openrc.sh
+  -n

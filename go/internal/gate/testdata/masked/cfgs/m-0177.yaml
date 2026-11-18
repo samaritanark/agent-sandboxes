@@ -1,0 +1,4 @@
+masked_paths:
+  - x-openrc.sh
+  - a#b
+- top

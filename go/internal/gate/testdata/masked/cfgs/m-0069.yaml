@@ -1,0 +1,9 @@
+  - 'z z/'
+-e
+  - é/
+  - x-openrc.sh
+  - dir/
+  - .kube/sub
+# c
+  -	t
+masked_paths:

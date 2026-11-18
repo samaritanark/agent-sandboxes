@@ -1,0 +1,10 @@
+other:
+key: v
+  - a#b
+  - dir/
+  - a.txt
+masked_paths:
+	- tabbed.txt
+  -	tab2.txt
+  - 'z z/'
+other:

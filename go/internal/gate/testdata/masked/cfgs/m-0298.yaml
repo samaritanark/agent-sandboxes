@@ -1,0 +1,10 @@
+masked_paths:
+  - a.txt
+  -n
+masked_paths: [a.txt, b/]
+masked_paths: [a.txt, b/]
+masked_paths:
+# c
+  -	t
+  - /
+key: v

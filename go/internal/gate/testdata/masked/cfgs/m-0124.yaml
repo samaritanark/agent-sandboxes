@@ -1,0 +1,10 @@
+masked_paths:
+  -n
+-n
+masked_paths:
+  - -rf
+  - --flag
+  - - nested
+masked_paths:
+	- tabbed.txt
+  -	tab2.txt

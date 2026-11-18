@@ -1,0 +1,9 @@
+masked_paths:
+# c
+masked_paths:
+  - a.txt
+  - a#b
+  - x-openrc.sh
+  - dir/
+masked_paths:
+

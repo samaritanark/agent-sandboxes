@@ -1,0 +1,16 @@
+masked_paths:
+masked_paths_extra:
+  - nope
+masked_paths:
+  - yes
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up
+
+  - /
+-n
+- top
+  - a#b

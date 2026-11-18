@@ -1,0 +1,7 @@
+masked_paths:
+Masked_paths:
+  - nope
+masked_paths:
+  - Yes.TXT
+  - a #b
+key: v

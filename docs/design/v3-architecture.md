@@ -2063,8 +2063,11 @@ can run in parallel:
   zero divergences from the bash oracle on 35,057 cases, a corpus whose
   sensitivity was checked by planting 22 bugs, and a live Linux oracle. The
   oracle itself proved awk- and locale-dependent, and its column convention does
-  not match betterleaks 1.10.0; both are recorded. The rest of the secret gate,
-  vetting verification, and the other modules are not ported.
+  not match betterleaks 1.10.0; both are recorded. Pilot 2 adds
+  `is_path_masked`, `extract_yaml_list_from_file`, and
+  `_leakscan_finding_accepted` (zero divergences on 42,601 further cases). The
+  rest of the secret gate (`scan_repo_secrets`, `secret_gate_repos`), vetting
+  verification, and the other modules are not ported.
 
 ---
 

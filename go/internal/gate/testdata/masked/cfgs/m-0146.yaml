@@ -1,0 +1,5 @@
+masked_paths:
+other:
+masked_paths:
+  - secrets.txt
+  - private/

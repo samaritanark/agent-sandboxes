@@ -1,0 +1,9 @@
+masked_paths:
+other:
+- top
+  - 'z z/'
+masked_paths:
+- a.txt
+- dir/
+  - 'z z/'
+-e

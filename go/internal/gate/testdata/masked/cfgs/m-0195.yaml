@@ -1,0 +1,12 @@
+masked_paths:
+  - a.txt
+  - .kube/sub
+  - .kube/sub
+# c
+  -	t
+masked_paths:
+	- tabbed.txt
+  -	tab2.txt
+masked_paths:
+  - x-openrc.sh
+  - 'z z/'

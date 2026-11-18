@@ -1,0 +1,15 @@
+masked_paths:
+  - é/
+-e
+  -n
+  - .kube/sub
+  - a #b
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up
+  - é/
+  - é/
+other:

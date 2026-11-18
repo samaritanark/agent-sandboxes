@@ -1,0 +1,5 @@
+masked_paths:
+masked_paths:
+  - x-openrc.sh
+-n
+  - "q.txt" # n

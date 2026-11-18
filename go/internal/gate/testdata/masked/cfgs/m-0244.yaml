@@ -1,0 +1,17 @@
+masked_paths:
+  - a#b
+  - a #b
+  -n
+  - a#b
+Masked_paths:
+  - nope
+masked_paths:
+  - Yes.TXT
+Masked_paths:
+  - nope
+masked_paths:
+  - Yes.TXT
+Masked_paths:
+  - nope
+masked_paths:
+  - Yes.TXT

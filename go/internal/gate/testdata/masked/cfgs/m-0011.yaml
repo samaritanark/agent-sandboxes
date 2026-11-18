@@ -1,0 +1,20 @@
+masked_paths:
+masked_paths:
+masked_paths:
+other:
+  - "q.txt" # n
+masked_paths:
+  - '*.pem'
+  - secrets/*
+  - '[ab].txt'
+  - ?.key
+masked_paths:
+  - secrets.txt
+  - private/
+  - a #b
+masked_paths:
+  - '*.pem'
+  - secrets/*
+  - '[ab].txt'
+  - ?.key
+  - x-openrc.sh

@@ -1,0 +1,16 @@
+  - dir/
+  - /
+masked_paths:
+  - a.txt
+  - dir/
+-n
+  -	t
+key: v
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up
+other:
+  - dir/

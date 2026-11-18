@@ -1,0 +1,9 @@
+masked_paths:
+  - café.txt
+  - 日本/
+masked_paths:
+- top
+masked_paths:
+  - a.txt
+  - lastmasked_paths:
+  - dir/

@@ -1,0 +1,21 @@
+masked_paths:
+key: v
+masked_paths:
+  -n
+  -e
+  -E
+  -neE
+  -nx
+  - n
+  -ne 
+  -  -n
+  - /
+  - /
+other:
+  - a
+  - a.txt
+masked_paths:
+  - '*.pem'
+  - secrets/*
+  - '[ab].txt'
+  - ?.key

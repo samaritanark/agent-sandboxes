@@ -1,0 +1,15 @@
+masked_paths:
+  - dir/
+# c
+masked_paths:
+
+  - a
+
+  - b/
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up
+  - a #b

@@ -1,0 +1,14 @@
+masked_paths:
+masked_paths:
+  - .env
+  - .kube/
+  - x-openrc.sh
+  - a #b
+  - é/
+  - 'z z/'
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up

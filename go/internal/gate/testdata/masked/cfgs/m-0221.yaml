@@ -1,0 +1,7 @@
+masked_paths:
+  - 'z z/'
+-n
+# c
+-e
+-n
+  - a #b

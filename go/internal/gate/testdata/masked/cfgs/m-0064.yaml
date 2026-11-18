@@ -1,0 +1,7 @@
+masked_paths:
+
+- top
+-e
+  - 'z z/'
+  - é/
+  - é/

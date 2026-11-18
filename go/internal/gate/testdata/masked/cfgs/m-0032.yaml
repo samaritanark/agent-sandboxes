@@ -1,0 +1,13 @@
+masked_paths:
+  - dir/
+other:
+  -n
+other:
+masked_paths:
+  - "a b.txt"
+  - 'dir with space/'
+  - "it's"
+  - a.txt
+  - x-openrc.sh
+  - a.txt
+  - 'z z/'

@@ -1,0 +1,10 @@
+masked_paths:
+  -n
+masked_paths:
+  - café.txt
+  - 日本/
+masked_paths:
+  - -rf
+  - --flag
+  - - nested
+  - "q.txt" # n

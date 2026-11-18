@@ -1,0 +1,12 @@
+masked_paths:
+other:
+  - x-openrc.sh
+masked_paths:
+  # a comment
+  - a.txt   # trailing
+  - b.txt #nospace
+  - c.txt#glued
+  -   d.txt	# tab
+  - # only comment
+  -
+  - a #b

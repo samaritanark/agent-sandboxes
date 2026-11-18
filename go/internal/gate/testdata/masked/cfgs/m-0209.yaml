@@ -1,0 +1,25 @@
+masked_paths:
+  - a #b
+other:
+masked_paths:
+  - /
+  - //
+  - ./x
+  - a//b/
+  - ../up
+masked_paths:
+- a.txt
+- dir/
+masked_paths:
+  - -rf
+  - --flag
+  - - nested
+masked_paths:
+  # a comment
+  - a.txt   # trailing
+  - b.txt #nospace
+  - c.txt#glued
+  -   d.txt	# tab
+  - # only comment
+  -
+  - a#b

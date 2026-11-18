@@ -1,0 +1,11 @@
+  - é/
+- top
+  - é/
+  -n
+  - 'z z/'
+masked_paths:
+  - café.txt
+  - 日本/
+masked_paths:
+# c
+-e

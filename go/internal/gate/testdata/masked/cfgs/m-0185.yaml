@@ -1,0 +1,10 @@
+masked_paths:
+  - /
+  - .kube/sub
+  - /
+masked_paths:
+  - café.txt
+  - 日本/
+-n
+  - a #b
+  - x-openrc.sh

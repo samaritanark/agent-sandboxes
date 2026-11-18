@@ -1,0 +1,14 @@
+masked_paths:
+masked_paths:
+  - .env
+  - .kube/
+  - x-openrc.sh
+  - .kube/sub
+-e
+  - /
+key: v
+masked_paths:
+masked_paths:
+  - -rf
+  - --flag
+  - - nested

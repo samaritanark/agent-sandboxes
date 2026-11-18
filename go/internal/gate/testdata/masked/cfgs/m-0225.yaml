@@ -1,0 +1,11 @@
+masked_paths:
+  - a.txt
+Masked_paths:
+  - nope
+masked_paths:
+  - Yes.TXT
+
+  - "q.txt" # n
+  -	t
+  - a#b
+  - a.txt

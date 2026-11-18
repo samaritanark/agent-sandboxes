@@ -1,0 +1,3 @@
+masked_paths:
+  - .kube/sub
+# c

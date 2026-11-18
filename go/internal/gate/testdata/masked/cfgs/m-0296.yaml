@@ -1,0 +1,17 @@
+  -n
+masked_paths:
+  - a
+_private: 1
+  - hidden
+  - .kube/sub
+masked_paths_extra:
+  - nope
+masked_paths:
+  - yes
+  -	t
+  - a #b
+  - dir/
+masked_paths:
+  - -rf
+  - --flag
+  - - nested

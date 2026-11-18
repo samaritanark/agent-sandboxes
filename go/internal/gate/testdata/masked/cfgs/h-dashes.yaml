@@ -1,0 +1,4 @@
+masked_paths:
+  - -rf
+  - --flag
+  - - nested

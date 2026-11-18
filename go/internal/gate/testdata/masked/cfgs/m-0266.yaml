@@ -1,0 +1,13 @@
+masked_paths:
+other:
+  - a
+  - dir/
+  - a #b
+  - /
+masked_paths:
+
+  - a
+
+  - b/
+key: v
+  -	t

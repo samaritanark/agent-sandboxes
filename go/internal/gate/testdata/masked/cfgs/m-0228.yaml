@@ -1,0 +1,9 @@
+masked_paths:
+  - a#b
+  - "q.txt" # n
+Masked_paths:
+  - nope
+masked_paths:
+  - Yes.TXT
+  - "q.txt" # n
+  - .kube/sub

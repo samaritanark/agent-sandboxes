@@ -1,0 +1,17 @@
+masked_paths:
+other:
+masked_paths:
+  - a.txt
+other:
+  - x
+masked_paths:
+  - b.txt
+other:
+  - a
+masked_paths:
+  - a.txt
+  - last  - x-openrc.sh
+Masked_paths:
+  - nope
+masked_paths:
+  - Yes.TXT

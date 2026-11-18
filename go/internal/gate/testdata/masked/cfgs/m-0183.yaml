@@ -1,0 +1,10 @@
+masked_paths:
+  - /
+masked_paths:
+
+  - a
+
+  - b/
+other:
+  - /
+  - "q.txt" # n

@@ -1,0 +1,12 @@
+- top
+  - x-openrc.sh
+other:
+masked_paths:
+  -n
+  -e
+  -E
+  -neE
+  -nx
+  - n
+  -ne 
+  -  -n

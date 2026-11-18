@@ -1,0 +1,12 @@
+  - a#b
+  - a.txt
+  - a.txt
+
+masked_paths:
+  - -rf
+  - --flag
+  - - nested
+masked_paths:
+  - "a b.txt"
+  - 'dir with space/'
+  - "it's"

@@ -1,0 +1,5 @@
+masked_paths:
+other:
+  - a
+  - a.txt
+key: v

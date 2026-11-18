@@ -1,0 +1,7 @@
+masked_paths:
+# c
+masked_paths: [a.txt, b/]
+
+masked_paths:
+  - secrets.txt
+  - private/

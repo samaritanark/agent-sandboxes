@@ -1,0 +1,11 @@
+masked_paths:
+masked_paths:
+masked_paths:
+  # a comment
+  - a.txt   # trailing
+  - b.txt #nospace
+  - c.txt#glued
+  -   d.txt	# tab
+  - # only comment
+  -
+  - .kube/sub

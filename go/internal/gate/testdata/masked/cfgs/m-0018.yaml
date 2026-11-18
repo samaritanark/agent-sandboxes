@@ -1,0 +1,8 @@
+- top
+key: v
+  - a #b
+  -	t
+-n
+  - a.txt
+  - .kube/sub
+  - .kube/sub

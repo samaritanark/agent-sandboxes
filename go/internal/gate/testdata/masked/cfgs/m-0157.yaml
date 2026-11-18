@@ -1,0 +1,13 @@
+masked_paths:
+masked_paths:
+  - -rf
+  - --flag
+  - - nested
+masked_paths:
+  - a.txt
+other:
+  - x
+masked_paths:
+  - b.txt
+
+  - é/

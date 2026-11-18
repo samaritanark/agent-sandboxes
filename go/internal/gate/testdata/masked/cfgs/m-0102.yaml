@@ -1,0 +1,15 @@
+masked_paths:
+masked_paths: [a.txt, b/]
+  - x-openrc.sh
+  - x-openrc.sh
+  - 'z z/'
+masked_paths:
+  - a.txt
+other:
+  - x
+masked_paths:
+  - b.txt
+  - "q.txt" # n
+  - x-openrc.sh
+-n
+masked_paths: [a.txt, b/]
