@@ -1134,11 +1134,18 @@ does not need a new image:
 
 **Integrity levels**, set per agent in its recipe (S2): **signed** (a
 verifiable signature or signed manifest from the vendor), **attested**
-(registry-level provenance or signatures), and **TLS-only** (a download over
-TLS from the vendor's host with no published checksum). Signed and attested
-updates proceed after showing the operator the old and new versions and the
-digest. A TLS-only update additionally requires `--accept-unverified-download`,
-which is audited. An org overlay may require signed-or-attested only, may
+(registry-level provenance or signatures), **checksum** (a digest the vendor
+publishes at the same origin as the download: it catches corruption, not a
+compromised origin), and **TLS-only** (a download over TLS from the vendor's
+host with no published checksum). The updater performs the verification
+itself and does not rely on the vendor's install script: S2 found that one
+script skips its check silently when the digest file is unavailable, and two
+verify nothing. Signed, attested, and checksum updates proceed after showing
+the operator the old and new versions and the digest. A TLS-only update additionally requires `--accept-unverified-download`,
+which is audited. S2 (`docs/design/spikes/S2.md`) placed the supported
+harnesses by what their vendors publish: claude **signed** (a GPG-signed
+manifest, verified against a pinned key), codex and copilot **checksum**,
+grok and opencode **TLS-only**. An org overlay may require signed-or-attested only, may
 disable self-update entirely so that only the image baseline runs
 (`agent_update: disabled`), and may set a minimum release age
 (`harness_min_age_days`) before a version is offered. Overlays can only
@@ -1829,6 +1836,11 @@ can run in parallel:
 - **Exit:** for each agent, either a working adapter (N-04 passes) or a
   documented reason it cannot be brokered.
 - **Fallback:** per OQ-01.
+- **Status:** started (`docs/design/spikes/S2.md`). The harness-update
+  questions are answered for all five agents on Linux arm64 (install and
+  update commands, pinning, download hosts, integrity, switches to disable each
+  harness's own updater). The OAuth and brokering questions, runtime-written
+  files, and operation under the §5.5.2 posture are not started.
 
 ### S3 — Windows driver
 
@@ -1880,6 +1892,12 @@ can run in parallel:
   prototypes pass on APFS, ext4, and NTFS; the "what each side sees" table
   (§5.6.4) holds with seconds of latency; initial sync and incremental latency
   documented.
+- **Status:** started (`docs/design/spikes/S4.md`). The git behaviours behind
+  rules 6 to 8 are confirmed on git 2.56.0. A Go prototype read and rewrote
+  100,000-entry v2, v3, and v4 indexes in tens of milliseconds, git accepted the
+  output, and the decoder survived about 2.7 million fuzz inputs. The sync
+  engine, the gate, the entry-level merge, path aliasing, and the adversarial
+  cases are not built.
 - **Fallback:** an alternative engine for host → VM, with the host-side gate
   unchanged; or, for git, transactional transfer by bundle (§5.6.4).
 
@@ -2362,8 +2380,10 @@ narrowed or answered differently.
 
 The reviewer's line citations were checked against the document and match.
 The git and Lima behaviours F1, F4, and F10 rely on were reported as tested or
-read from source by the reviewer; the authors have not re-run them, and S4 and
-S7 confirm them against the versions in use. Where a fix would have removed a
+read from source by the reviewer, and have since been re-run by the authors:
+F4 on Lima 2.3.0 (`docs/design/spikes/S7.md`) and F1 and F10 on git 2.56.0
+(`docs/design/spikes/S4.md`; git 2.43.0, the reviewer's version, was not
+tested). Where a fix would have removed a
 v2 collaboration workflow, it was reshaped to keep the workflow (G9) and the
 protection together.
 
@@ -2405,6 +2425,20 @@ start at the TLS-only integrity level until S2 finds more (§5.7.1). Several
 update commands are known only from secondary sources, so the updater runs
 the vendor's documented install-a-version path, not `<agent> update`, wherever
 possible.
+
+**Verified on Linux arm64 on 2026-11-18** (`docs/design/spikes/S2.md`), which
+supersedes the "secondary" entries above: `codex update` exists but takes no
+version or channel option, and Codex's switch is `check_for_update_on_startup`;
+`copilot update [stable|prerelease]` exists, with `COPILOT_AUTO_UPDATE=false`,
+`--no-auto-update`, and an `autoUpdate` setting; `grok update` exists with
+`--check`, `--version`, and channel flags, with `GROK_DISABLE_AUTOUPDATER` and an
+`auto_update` key; opencode 1.0.180 has `opencode upgrade [target]`,
+`OPENCODE_DISABLE_AUTOUPDATE`, and an `autoupdate` key. Download hosts:
+`downloads.claude.ai`; `releases.openai.com` (GitHub fallback); `github.com` plus
+`release-assets.githubusercontent.com` for Copilot and opencode; `x.ai` for
+Grok. Of the five installers, one verifies a signed manifest's checksum
+without checking the signature, two verify a same-origin digest, and two verify
+nothing.
 
 Sources: [Claude Code advanced setup](https://code.claude.com/docs/en/setup);
 [Copilot CLI install](https://docs.github.com/copilot/how-tos/set-up/install-copilot-cli);
