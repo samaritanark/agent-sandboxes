@@ -1257,9 +1257,18 @@ answers absolute names directly, so v2's `ndots:1` workaround is unnecessary.
 3. **Passthrough by default** (TCP splice after the SNI check).
 4. **Intercept (TLS termination)** only for destinations that carry L7 rules
    or credential injection (§5.8.5, §5.9). Re-encrypt upstream, validating
-   against system roots plus the corporate CA bundle.
+   against system roots plus the corporate CA bundle. S5 found that Envoy
+   checks the certificate chain but accepts a certificate for the **wrong
+   name** from a trusted CA unless a subject-alternative-name matcher is
+   configured, so the controller MUST emit an explicit SAN match for every
+   intercepted upstream (`docs/design/spikes/S5.md`).
 5. Supports HTTP/1.1, HTTP/2, upgrades (WebSocket and SPDY for `kubectl exec`
-   and `port-forward`), long-lived streams (watches, SSE model responses).
+   and `port-forward`), long-lived streams (watches, SSE model responses). S5 found upgrades are refused
+   by default (HTTP 403) and must be enabled in the connection manager; once
+   enabled, the HTTP filter chain, including `ext_proc`, still processes the
+   upgraded stream, so injection and scrubbing apply. Only a raw handshake was
+   tested; `permessage-deflate` would hide a token from a plain-text scan and
+   MUST NOT be negotiated.
 6. Supports chaining through a corporate upstream proxy or
    TLS-intercepting proxy when configured.
 7. TCP 443 by default; other ports only when declared (parity with v2's
@@ -1435,7 +1444,20 @@ in v2; `sandbox stop` keeps v2's reminder.
   query-injected credential. Headers are always scanned. Bodies are scanned
   with a streaming matcher that spans chunk boundaries, so SSE and other
   long-lived streams are covered; S5 measures the cost and may bound body
-  scanning by size for non-streaming responses. `TRACE` and `TRACK` are denied
+  scanning by size for non-streaming responses. S5 showed why this needs
+  per-connection state: a scrubber that buffers the body delayed the first byte
+  of a 5 s event stream until the end, one that skipped event streams leaked
+  the token, and one that scrubbed chunk by chunk leaked a token split across
+  two chunks, so the matcher MUST hold back the last `len(value) - 1` bytes of
+  each chunk (the `ext_proc` streamed mode, not Lua). S5 built this as a Go
+  `ext_proc` service: holding back only a suffix that is a proper prefix of the
+  value added no delay to a live event stream, `failure_mode_allow` must be
+  `false` (a stopped broker returned HTTP 500 and forwarded nothing), and in
+  plain `STREAMED` mode the body must be returned as a per-chunk `body`
+  mutation (the `StreamedBodyResponse` form belongs to `FULL_DUPLEX_STREAMED`
+  and was silently ignored, which let the real token through while the broker
+  logged success). N-04 therefore reads what the guest receives, not the
+  broker's log. `TRACE` and `TRACK` are denied
   on every intercepted destination (§5.8.5).
 - On intercepted connections, a placeholder seen toward an unbound destination
   MUST be blocked and recorded as a `credential_misuse` audit event.
@@ -1826,9 +1848,12 @@ can run in parallel:
   pass; overhead and footprint numbers recorded.
 - **Status:** partial (`docs/design/spikes/S1.md`). Runtime, mounts, coherence,
   first footprint numbers, and the per-session network topology (P-03 and P-09
-  prototypes, CNI `ptp`) measured; Codex bubblewrap and the ≥100k-file
-  repository not yet run. Two unexplained microVM stalls need reproducing
-  before `sandboxd`'s watchdog design is fixed.
+  prototypes, CNI `ptp`), Codex bubblewrap, and a 100,000-file repository
+  measured (large-repository `git status` is slow under either cache mode,
+  OQ-17). Two unexplained microVM stalls seen early did not recur in about
+  2,000 further operations, including a 1,112-operation soak test, so they are
+  unexplained but unreproduced; `sandboxd`'s watchdog (§5.4.3) must still
+  assume a microVM can hang. Linux is untested.
 - **Fallback:** if file-level masks don't work under virtio-fs, rely on sync
   exclusion (masked files never present) plus directory-level overlays, and
   document the change in P-12. If containerd-direct networking cannot meet
@@ -1942,8 +1967,13 @@ can run in parallel:
   L7 baseline, credential injection, misuse blocking, response scrubbing, and
   log-redaction items, with a Lua filter standing in for the broker. Blocked
   CIDRs are enforced in nftables, not in Envoy. About 65 MiB and 0.1 s per
-  gateway. The `ext_proc` broker, upstream TLS and mTLS, upgrades and streams,
-  ECH, proxy chaining, and the unprivileged posture are not tested.
+  gateway. Upstream TLS needs an explicit SAN match and streaming scrubbing needs
+  hold-back across chunks (§5.8.4, §5.9.3). A Go `ext_proc` prototype of the broker's data path
+  (injection, misuse blocking, streaming scrub, fail-closed) works at about
+  0.7 ms per request and 16 MiB. HTTP upgrades (raw handshake) and mTLS
+  re-origination with an explicit server name also pass. Real WebSocket and
+  SPDY framing, ECH, proxy chaining, the encrypted store, and the unprivileged
+  posture are not tested.
 
 ### S6 — Fleet capability check
 
