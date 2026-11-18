@@ -1,0 +1,5 @@
+apiVersion: example.org/bitnami.com/x
+kind: SealedSecret 
+spec:
+  encryptedData:
+    token: ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z

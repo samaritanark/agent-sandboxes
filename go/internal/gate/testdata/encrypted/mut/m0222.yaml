@@ -1,0 +1,10 @@
+extraObjects:
+  - extra: ghp_zZ9yY8xX7wW6vV5uU4tT3sS2rR1qQ0pP9oO8n
+    apiVersion: v1
+    kind: Secret
+    metadata:
+        name: sops-secret
+    data:
+      token: ENC[AES256_GCM,data:ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z,iv:abc,tag:def,type:str]
+    sops:
+      mac: ENC[AES256_GCM,data:xyz,type:str]

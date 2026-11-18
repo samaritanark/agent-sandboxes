@@ -1,0 +1,6 @@
+extra: ghp_zZ9yY8xX7wW6vV5uU4tT3sS2rR1qQ0pP9oO8n
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+spec:
+  encryptedData:
+    token: ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z

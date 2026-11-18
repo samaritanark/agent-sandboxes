@@ -1,0 +1,9 @@
+extraObjects:
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: sops-secret
+    data:
+      token: ENC[AES256_GCM,data:ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z,iv:abc,tag:def,type:str]
+    sops:
+    mac: ENC[AES256_GCM,data:xyz,type:str]

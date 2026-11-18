@@ -2058,6 +2058,13 @@ can run in parallel:
   redesign, record why and re-decide in writing (§0): either redesign that
   module with the owner's sign-off, or keep it in bash for v3.0.0 behind the
   same session-spec seam. An unverified port does not ship.
+- **Status:** pilot 1 done (`docs/design/spikes/S8.md`). `finding_is_encrypted`
+  (about 130 lines of awk-based bash) is ported to Go in `go/internal/gate` with
+  zero divergences from the bash oracle on 35,057 cases, a corpus whose
+  sensitivity was checked by planting 22 bugs, and a live Linux oracle. The
+  oracle itself proved awk- and locale-dependent, and its column convention does
+  not match betterleaks 1.10.0; both are recorded. The rest of the secret gate,
+  vetting verification, and the other modules are not ported.
 
 ---
 

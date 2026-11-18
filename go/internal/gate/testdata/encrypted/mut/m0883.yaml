@@ -1,0 +1,5 @@
+ü ükind: Secret
+spec:
+  encryptedData:
+kind: SealedSecret
+ apiVersion: bitnami.com/v1

@@ -1,0 +1,553 @@
+fixtures/adv-bare-dash.yaml	0			1
+fixtures/adv-bare-dash.yaml	1			1
+fixtures/adv-bare-dash.yaml	2			1
+fixtures/adv-bare-dash.yaml	3			1
+fixtures/adv-bare-dash.yaml	4			1
+fixtures/adv-bare-dash.yaml	5			1
+fixtures/adv-bare-dash.yaml	6			1
+fixtures/adv-bare-dash.yaml	7			0
+fixtures/adv-bare-dash.yaml	7		5	0
+fixtures/adv-bare-dash.yaml	7	0	0	0
+fixtures/adv-bare-dash.yaml	7	1	1	0
+fixtures/adv-bare-dash.yaml	7	12	52	0
+fixtures/adv-bare-dash.yaml	7	13	51	0
+fixtures/adv-bare-dash.yaml	7	13	52	0
+fixtures/adv-bare-dash.yaml	7	13	53	0
+fixtures/adv-bare-dash.yaml	7	14	52	0
+fixtures/adv-bare-dash.yaml	7	5		0
+fixtures/adv-bare-dash.yaml	7	99999999999999999999	99999999999999999999	0
+fixtures/adv-bare-dash.yaml	8			1
+fixtures/adv-bare-dash.yaml	9			1
+fixtures/adv-comments-and-sep.yaml	0			1
+fixtures/adv-comments-and-sep.yaml	1			1
+fixtures/adv-comments-and-sep.yaml	2			1
+fixtures/adv-comments-and-sep.yaml	3			1
+fixtures/adv-comments-and-sep.yaml	4			1
+fixtures/adv-comments-and-sep.yaml	5			1
+fixtures/adv-comments-and-sep.yaml	6			1
+fixtures/adv-comments-and-sep.yaml	7			1
+fixtures/adv-comments-and-sep.yaml	8			0
+fixtures/adv-comments-and-sep.yaml	8		5	0
+fixtures/adv-comments-and-sep.yaml	8	0	0	0
+fixtures/adv-comments-and-sep.yaml	8	1	1	0
+fixtures/adv-comments-and-sep.yaml	8	12	52	0
+fixtures/adv-comments-and-sep.yaml	8	13	51	0
+fixtures/adv-comments-and-sep.yaml	8	13	52	0
+fixtures/adv-comments-and-sep.yaml	8	13	53	0
+fixtures/adv-comments-and-sep.yaml	8	14	52	0
+fixtures/adv-comments-and-sep.yaml	8	5		0
+fixtures/adv-comments-and-sep.yaml	8	99999999999999999999	99999999999999999999	0
+fixtures/adv-comments-and-sep.yaml	9			1
+fixtures/adv-comments-and-sep.yaml	10			1
+fixtures/adv-comments-and-sep.yaml	11			1
+fixtures/adv-comments-and-sep.yaml	12			1
+fixtures/adv-comments-and-sep.yaml	12		5	1
+fixtures/adv-comments-and-sep.yaml	12	0	0	1
+fixtures/adv-comments-and-sep.yaml	12	1	1	1
+fixtures/adv-comments-and-sep.yaml	12	10	50	1
+fixtures/adv-comments-and-sep.yaml	12	11	49	1
+fixtures/adv-comments-and-sep.yaml	12	11	50	1
+fixtures/adv-comments-and-sep.yaml	12	11	51	1
+fixtures/adv-comments-and-sep.yaml	12	12	50	1
+fixtures/adv-comments-and-sep.yaml	12	5		1
+fixtures/adv-comments-and-sep.yaml	12	99999999999999999999	99999999999999999999	1
+fixtures/adv-comments-and-sep.yaml	13			1
+fixtures/adv-comments-and-sep.yaml	14			1
+fixtures/adv-crlf-sealed.yaml	0			1
+fixtures/adv-crlf-sealed.yaml	1			1
+fixtures/adv-crlf-sealed.yaml	2			1
+fixtures/adv-crlf-sealed.yaml	3			1
+fixtures/adv-crlf-sealed.yaml	4			1
+fixtures/adv-crlf-sealed.yaml	5			0
+fixtures/adv-crlf-sealed.yaml	5		5	0
+fixtures/adv-crlf-sealed.yaml	5	0	0	0
+fixtures/adv-crlf-sealed.yaml	5	1	1	0
+fixtures/adv-crlf-sealed.yaml	5	12	52	0
+fixtures/adv-crlf-sealed.yaml	5	13	51	0
+fixtures/adv-crlf-sealed.yaml	5	13	52	0
+fixtures/adv-crlf-sealed.yaml	5	13	53	0
+fixtures/adv-crlf-sealed.yaml	5	14	52	0
+fixtures/adv-crlf-sealed.yaml	5	5		0
+fixtures/adv-crlf-sealed.yaml	5	99999999999999999999	99999999999999999999	0
+fixtures/adv-crlf-sealed.yaml	6			1
+fixtures/adv-crlf-sealed.yaml	7			1
+fixtures/adv-duplicate-keys.yaml	0			1
+fixtures/adv-duplicate-keys.yaml	1			1
+fixtures/adv-duplicate-keys.yaml	2			1
+fixtures/adv-duplicate-keys.yaml	3			1
+fixtures/adv-duplicate-keys.yaml	4			0
+fixtures/adv-duplicate-keys.yaml	4		5	0
+fixtures/adv-duplicate-keys.yaml	4	0	0	0
+fixtures/adv-duplicate-keys.yaml	4	1	1	0
+fixtures/adv-duplicate-keys.yaml	4	10	48	0
+fixtures/adv-duplicate-keys.yaml	4	5		0
+fixtures/adv-duplicate-keys.yaml	4	8	48	0
+fixtures/adv-duplicate-keys.yaml	4	9	47	0
+fixtures/adv-duplicate-keys.yaml	4	9	48	0
+fixtures/adv-duplicate-keys.yaml	4	9	49	0
+fixtures/adv-duplicate-keys.yaml	4	99999999999999999999	99999999999999999999	0
+fixtures/adv-duplicate-keys.yaml	5			1
+fixtures/adv-duplicate-keys.yaml	6			1
+fixtures/adv-duplicate-keys.yaml	7			1
+fixtures/adv-duplicate-keys.yaml	8			1
+fixtures/adv-kind-nested-only.yaml	0			1
+fixtures/adv-kind-nested-only.yaml	1			1
+fixtures/adv-kind-nested-only.yaml	2			1
+fixtures/adv-kind-nested-only.yaml	3			1
+fixtures/adv-kind-nested-only.yaml	4			1
+fixtures/adv-kind-nested-only.yaml	5			1
+fixtures/adv-kind-nested-only.yaml	5		5	1
+fixtures/adv-kind-nested-only.yaml	5	0	0	1
+fixtures/adv-kind-nested-only.yaml	5	1	1	1
+fixtures/adv-kind-nested-only.yaml	5	12	52	1
+fixtures/adv-kind-nested-only.yaml	5	13	51	1
+fixtures/adv-kind-nested-only.yaml	5	13	52	1
+fixtures/adv-kind-nested-only.yaml	5	13	53	1
+fixtures/adv-kind-nested-only.yaml	5	14	52	1
+fixtures/adv-kind-nested-only.yaml	5	5		1
+fixtures/adv-kind-nested-only.yaml	5	99999999999999999999	99999999999999999999	1
+fixtures/adv-kind-nested-only.yaml	6			1
+fixtures/adv-kind-nested-only.yaml	7			1
+fixtures/adv-plaintext-then-sealed.yaml	0			1
+fixtures/adv-plaintext-then-sealed.yaml	1			1
+fixtures/adv-plaintext-then-sealed.yaml	2			1
+fixtures/adv-plaintext-then-sealed.yaml	3			1
+fixtures/adv-plaintext-then-sealed.yaml	4			1
+fixtures/adv-plaintext-then-sealed.yaml	5			1
+fixtures/adv-plaintext-then-sealed.yaml	6			1
+fixtures/adv-plaintext-then-sealed.yaml	6		5	1
+fixtures/adv-plaintext-then-sealed.yaml	6	0	0	1
+fixtures/adv-plaintext-then-sealed.yaml	6	1	1	1
+fixtures/adv-plaintext-then-sealed.yaml	6	16	56	1
+fixtures/adv-plaintext-then-sealed.yaml	6	17	55	1
+fixtures/adv-plaintext-then-sealed.yaml	6	17	56	1
+fixtures/adv-plaintext-then-sealed.yaml	6	17	57	1
+fixtures/adv-plaintext-then-sealed.yaml	6	18	56	1
+fixtures/adv-plaintext-then-sealed.yaml	6	5		1
+fixtures/adv-plaintext-then-sealed.yaml	6	99999999999999999999	99999999999999999999	1
+fixtures/adv-plaintext-then-sealed.yaml	7			1
+fixtures/adv-plaintext-then-sealed.yaml	8			1
+fixtures/adv-plaintext-then-sealed.yaml	9			1
+fixtures/adv-plaintext-then-sealed.yaml	10			1
+fixtures/adv-plaintext-then-sealed.yaml	11			0
+fixtures/adv-plaintext-then-sealed.yaml	11		5	0
+fixtures/adv-plaintext-then-sealed.yaml	11	0	0	0
+fixtures/adv-plaintext-then-sealed.yaml	11	1	1	0
+fixtures/adv-plaintext-then-sealed.yaml	11	16	56	0
+fixtures/adv-plaintext-then-sealed.yaml	11	17	55	0
+fixtures/adv-plaintext-then-sealed.yaml	11	17	56	0
+fixtures/adv-plaintext-then-sealed.yaml	11	17	57	0
+fixtures/adv-plaintext-then-sealed.yaml	11	18	56	0
+fixtures/adv-plaintext-then-sealed.yaml	11	5		0
+fixtures/adv-plaintext-then-sealed.yaml	11	99999999999999999999	99999999999999999999	0
+fixtures/adv-plaintext-then-sealed.yaml	12			1
+fixtures/adv-plaintext-then-sealed.yaml	13			1
+fixtures/adv-tab-after-colon.yaml	0			1
+fixtures/adv-tab-after-colon.yaml	1			1
+fixtures/adv-tab-after-colon.yaml	2			1
+fixtures/adv-tab-after-colon.yaml	3			1
+fixtures/adv-tab-after-colon.yaml	4			1
+fixtures/adv-tab-after-colon.yaml	5			0
+fixtures/adv-tab-after-colon.yaml	5		5	0
+fixtures/adv-tab-after-colon.yaml	5	0	0	0
+fixtures/adv-tab-after-colon.yaml	5	1	1	0
+fixtures/adv-tab-after-colon.yaml	5	12	52	0
+fixtures/adv-tab-after-colon.yaml	5	13	51	0
+fixtures/adv-tab-after-colon.yaml	5	13	52	0
+fixtures/adv-tab-after-colon.yaml	5	13	53	0
+fixtures/adv-tab-after-colon.yaml	5	14	52	0
+fixtures/adv-tab-after-colon.yaml	5	5		0
+fixtures/adv-tab-after-colon.yaml	5	99999999999999999999	99999999999999999999	0
+fixtures/adv-tab-after-colon.yaml	6			1
+fixtures/adv-tab-after-colon.yaml	7			1
+fixtures/adv-wrongkind-beside-sealed.yaml	0			1
+fixtures/adv-wrongkind-beside-sealed.yaml	1			1
+fixtures/adv-wrongkind-beside-sealed.yaml	2			1
+fixtures/adv-wrongkind-beside-sealed.yaml	3			1
+fixtures/adv-wrongkind-beside-sealed.yaml	4			1
+fixtures/adv-wrongkind-beside-sealed.yaml	5			1
+fixtures/adv-wrongkind-beside-sealed.yaml	5		5	1
+fixtures/adv-wrongkind-beside-sealed.yaml	5	0	0	1
+fixtures/adv-wrongkind-beside-sealed.yaml	5	1	1	1
+fixtures/adv-wrongkind-beside-sealed.yaml	5	12	52	1
+fixtures/adv-wrongkind-beside-sealed.yaml	5	13	51	1
+fixtures/adv-wrongkind-beside-sealed.yaml	5	13	52	1
+fixtures/adv-wrongkind-beside-sealed.yaml	5	13	53	1
+fixtures/adv-wrongkind-beside-sealed.yaml	5	14	52	1
+fixtures/adv-wrongkind-beside-sealed.yaml	5	5		1
+fixtures/adv-wrongkind-beside-sealed.yaml	5	99999999999999999999	99999999999999999999	1
+fixtures/adv-wrongkind-beside-sealed.yaml	6			1
+fixtures/adv-wrongkind-beside-sealed.yaml	7			1
+fixtures/adv-wrongkind-beside-sealed.yaml	8			1
+fixtures/adv-wrongkind-beside-sealed.yaml	9			1
+fixtures/adv-wrongkind-beside-sealed.yaml	10			1
+fixtures/adv-wrongkind-beside-sealed.yaml	11			0
+fixtures/adv-wrongkind-beside-sealed.yaml	11		5	0
+fixtures/adv-wrongkind-beside-sealed.yaml	11	0	0	0
+fixtures/adv-wrongkind-beside-sealed.yaml	11	1	1	0
+fixtures/adv-wrongkind-beside-sealed.yaml	11	12	52	0
+fixtures/adv-wrongkind-beside-sealed.yaml	11	13	51	0
+fixtures/adv-wrongkind-beside-sealed.yaml	11	13	52	0
+fixtures/adv-wrongkind-beside-sealed.yaml	11	13	53	0
+fixtures/adv-wrongkind-beside-sealed.yaml	11	14	52	0
+fixtures/adv-wrongkind-beside-sealed.yaml	11	5		0
+fixtures/adv-wrongkind-beside-sealed.yaml	11	99999999999999999999	99999999999999999999	0
+fixtures/adv-wrongkind-beside-sealed.yaml	12			1
+fixtures/adv-wrongkind-beside-sealed.yaml	13			1
+fixtures/config.py	0			1
+fixtures/config.py	1			1
+fixtures/config.py	2			1
+fixtures/config.py	2		5	1
+fixtures/config.py	2	0	0	1
+fixtures/config.py	2	1	1	1
+fixtures/config.py	2	12	52	1
+fixtures/config.py	2	13	51	1
+fixtures/config.py	2	13	52	1
+fixtures/config.py	2	13	53	1
+fixtures/config.py	2	14	52	1
+fixtures/config.py	2	5		1
+fixtures/config.py	2	64	92	1
+fixtures/config.py	2	64	93	1
+fixtures/config.py	2	64	94	1
+fixtures/config.py	2	64	95	1
+fixtures/config.py	2	65	92	1
+fixtures/config.py	2	65	93	1
+fixtures/config.py	2	65	94	1
+fixtures/config.py	2	65	95	1
+fixtures/config.py	2	66	92	1
+fixtures/config.py	2	66	93	1
+fixtures/config.py	2	66	94	1
+fixtures/config.py	2	66	95	1
+fixtures/config.py	2	67	92	0
+fixtures/config.py	2	67	93	0
+fixtures/config.py	2	67	94	1
+fixtures/config.py	2	67	95	1
+fixtures/config.py	2	99999999999999999999	99999999999999999999	1
+fixtures/config.py	3			1
+fixtures/config.py	4			1
+fixtures/extra.yaml	0			1
+fixtures/extra.yaml	1			1
+fixtures/extra.yaml	2			1
+fixtures/extra.yaml	3			1
+fixtures/extra.yaml	4			1
+fixtures/extra.yaml	5			1
+fixtures/extra.yaml	6			1
+fixtures/extra.yaml	7			1
+fixtures/extra.yaml	8			0
+fixtures/extra.yaml	8		5	0
+fixtures/extra.yaml	8	0	0	0
+fixtures/extra.yaml	8	1	1	0
+fixtures/extra.yaml	8	16	56	0
+fixtures/extra.yaml	8	17	55	0
+fixtures/extra.yaml	8	17	56	0
+fixtures/extra.yaml	8	17	57	0
+fixtures/extra.yaml	8	18	56	0
+fixtures/extra.yaml	8	5		0
+fixtures/extra.yaml	8	99999999999999999999	99999999999999999999	0
+fixtures/extra.yaml	9			1
+fixtures/extra.yaml	10			1
+fixtures/extra.yaml	11			1
+fixtures/extra.yaml	12			1
+fixtures/extra.yaml	13			1
+fixtures/mixed-extra.yaml	0			1
+fixtures/mixed-extra.yaml	1			1
+fixtures/mixed-extra.yaml	2			1
+fixtures/mixed-extra.yaml	3			1
+fixtures/mixed-extra.yaml	4			1
+fixtures/mixed-extra.yaml	5			1
+fixtures/mixed-extra.yaml	6			0
+fixtures/mixed-extra.yaml	6		5	0
+fixtures/mixed-extra.yaml	6	0	0	0
+fixtures/mixed-extra.yaml	6	1	1	0
+fixtures/mixed-extra.yaml	6	16	56	0
+fixtures/mixed-extra.yaml	6	17	55	0
+fixtures/mixed-extra.yaml	6	17	56	0
+fixtures/mixed-extra.yaml	6	17	57	0
+fixtures/mixed-extra.yaml	6	18	56	0
+fixtures/mixed-extra.yaml	6	5		0
+fixtures/mixed-extra.yaml	6	99999999999999999999	99999999999999999999	0
+fixtures/mixed-extra.yaml	7			1
+fixtures/mixed-extra.yaml	8			1
+fixtures/mixed-extra.yaml	9			1
+fixtures/mixed-extra.yaml	10			1
+fixtures/mixed-extra.yaml	11			1
+fixtures/mixed-extra.yaml	11		5	1
+fixtures/mixed-extra.yaml	11	0	0	1
+fixtures/mixed-extra.yaml	11	1	1	1
+fixtures/mixed-extra.yaml	11	16	56	1
+fixtures/mixed-extra.yaml	11	17	55	1
+fixtures/mixed-extra.yaml	11	17	56	1
+fixtures/mixed-extra.yaml	11	17	57	1
+fixtures/mixed-extra.yaml	11	18	56	1
+fixtures/mixed-extra.yaml	11	5		1
+fixtures/mixed-extra.yaml	11	99999999999999999999	99999999999999999999	1
+fixtures/mixed-extra.yaml	12			1
+fixtures/mixed-extra.yaml	13			1
+fixtures/multi.yaml	0			1
+fixtures/multi.yaml	1			1
+fixtures/multi.yaml	2			1
+fixtures/multi.yaml	3			1
+fixtures/multi.yaml	4			1
+fixtures/multi.yaml	5			1
+fixtures/multi.yaml	6			1
+fixtures/multi.yaml	7			0
+fixtures/multi.yaml	7		5	0
+fixtures/multi.yaml	7	0	0	0
+fixtures/multi.yaml	7	1	1	0
+fixtures/multi.yaml	7	12	52	0
+fixtures/multi.yaml	7	13	51	0
+fixtures/multi.yaml	7	13	52	0
+fixtures/multi.yaml	7	13	53	0
+fixtures/multi.yaml	7	14	52	0
+fixtures/multi.yaml	7	5		0
+fixtures/multi.yaml	7	99999999999999999999	99999999999999999999	0
+fixtures/multi.yaml	8			1
+fixtures/multi.yaml	9			1
+fixtures/multi.yaml	10			1
+fixtures/multi.yaml	11			1
+fixtures/multi.yaml	12			1
+fixtures/multi.yaml	13			1
+fixtures/multi.yaml	14			1
+fixtures/multi.yaml	14		5	1
+fixtures/multi.yaml	14	0	0	1
+fixtures/multi.yaml	14	1	1	1
+fixtures/multi.yaml	14	10	50	1
+fixtures/multi.yaml	14	11	49	1
+fixtures/multi.yaml	14	11	50	1
+fixtures/multi.yaml	14	11	51	1
+fixtures/multi.yaml	14	12	50	1
+fixtures/multi.yaml	14	5		1
+fixtures/multi.yaml	14	99999999999999999999	99999999999999999999	1
+fixtures/multi.yaml	15			1
+fixtures/multi.yaml	16			1
+fixtures/nested.yaml	0			1
+fixtures/nested.yaml	1			1
+fixtures/nested.yaml	2			1
+fixtures/nested.yaml	3			1
+fixtures/nested.yaml	4			1
+fixtures/nested.yaml	5			1
+fixtures/nested.yaml	6			1
+fixtures/nested.yaml	7			0
+fixtures/nested.yaml	7		5	0
+fixtures/nested.yaml	7	0	0	0
+fixtures/nested.yaml	7	1	1	0
+fixtures/nested.yaml	7	11	51	0
+fixtures/nested.yaml	7	12	50	0
+fixtures/nested.yaml	7	12	51	0
+fixtures/nested.yaml	7	12	52	0
+fixtures/nested.yaml	7	13	51	0
+fixtures/nested.yaml	7	5		0
+fixtures/nested.yaml	7	99999999999999999999	99999999999999999999	0
+fixtures/nested.yaml	8			1
+fixtures/nested.yaml	9			1
+fixtures/nested.yaml	10			1
+fixtures/nested.yaml	11			1
+fixtures/nested.yaml	11		5	1
+fixtures/nested.yaml	11	0	0	1
+fixtures/nested.yaml	11	1	1	1
+fixtures/nested.yaml	11	16	56	1
+fixtures/nested.yaml	11	17	55	1
+fixtures/nested.yaml	11	17	56	1
+fixtures/nested.yaml	11	17	57	1
+fixtures/nested.yaml	11	18	56	1
+fixtures/nested.yaml	11	5		1
+fixtures/nested.yaml	11	99999999999999999999	99999999999999999999	1
+fixtures/nested.yaml	12			1
+fixtures/nested.yaml	13			1
+fixtures/sameline.yaml	0			1
+fixtures/sameline.yaml	1			1
+fixtures/sameline.yaml	2			1
+fixtures/sameline.yaml	3			1
+fixtures/sameline.yaml	4			1
+fixtures/sameline.yaml	5			1
+fixtures/sameline.yaml	6			1
+fixtures/sameline.yaml	6		5	1
+fixtures/sameline.yaml	6	0	0	1
+fixtures/sameline.yaml	6	1	1	1
+fixtures/sameline.yaml	6	10	50	1
+fixtures/sameline.yaml	6	11	49	1
+fixtures/sameline.yaml	6	11	50	1
+fixtures/sameline.yaml	6	11	51	1
+fixtures/sameline.yaml	6	12	50	1
+fixtures/sameline.yaml	6	5		1
+fixtures/sameline.yaml	6	69	100	1
+fixtures/sameline.yaml	6	69	97	1
+fixtures/sameline.yaml	6	69	98	1
+fixtures/sameline.yaml	6	69	99	1
+fixtures/sameline.yaml	6	70	100	1
+fixtures/sameline.yaml	6	70	97	1
+fixtures/sameline.yaml	6	70	98	1
+fixtures/sameline.yaml	6	70	99	1
+fixtures/sameline.yaml	6	71	100	1
+fixtures/sameline.yaml	6	71	97	1
+fixtures/sameline.yaml	6	71	98	1
+fixtures/sameline.yaml	6	71	99	1
+fixtures/sameline.yaml	6	72	100	1
+fixtures/sameline.yaml	6	72	97	0
+fixtures/sameline.yaml	6	72	98	0
+fixtures/sameline.yaml	6	72	99	1
+fixtures/sameline.yaml	6	99999999999999999999	99999999999999999999	1
+fixtures/sameline.yaml	7			1
+fixtures/sameline.yaml	8			1
+fixtures/sealed.yaml	0			1
+fixtures/sealed.yaml	1			1
+fixtures/sealed.yaml	2			1
+fixtures/sealed.yaml	3			1
+fixtures/sealed.yaml	4			1
+fixtures/sealed.yaml	5			1
+fixtures/sealed.yaml	6			1
+fixtures/sealed.yaml	7			1
+fixtures/sealed.yaml	8			0
+fixtures/sealed.yaml	8		5	0
+fixtures/sealed.yaml	8	0	0	0
+fixtures/sealed.yaml	8	1	1	0
+fixtures/sealed.yaml	8	12	52	0
+fixtures/sealed.yaml	8	13	51	0
+fixtures/sealed.yaml	8	13	52	0
+fixtures/sealed.yaml	8	13	53	0
+fixtures/sealed.yaml	8	14	52	0
+fixtures/sealed.yaml	8	5		0
+fixtures/sealed.yaml	8	99999999999999999999	99999999999999999999	0
+fixtures/sealed.yaml	9			1
+fixtures/sealed.yaml	10			1
+fixtures/sealed.yaml	11			1
+fixtures/sealed.yaml	12			1
+fixtures/sealed.yaml	13			1
+fixtures/sealed.yaml	14			1
+fixtures/sops.yaml	0			1
+fixtures/sops.yaml	1			1
+fixtures/sops.yaml	2			1
+fixtures/sops.yaml	3			1
+fixtures/sops.yaml	4			1
+fixtures/sops.yaml	5			1
+fixtures/sops.yaml	6			1
+fixtures/sops.yaml	6		5	1
+fixtures/sops.yaml	6	0	0	1
+fixtures/sops.yaml	6	1	1	1
+fixtures/sops.yaml	6	12	93	1
+fixtures/sops.yaml	6	12	94	1
+fixtures/sops.yaml	6	12	95	1
+fixtures/sops.yaml	6	12	96	1
+fixtures/sops.yaml	6	13	93	1
+fixtures/sops.yaml	6	13	94	1
+fixtures/sops.yaml	6	13	95	1
+fixtures/sops.yaml	6	13	96	1
+fixtures/sops.yaml	6	14	93	1
+fixtures/sops.yaml	6	14	94	1
+fixtures/sops.yaml	6	14	95	1
+fixtures/sops.yaml	6	14	96	1
+fixtures/sops.yaml	6	15	93	0
+fixtures/sops.yaml	6	15	94	0
+fixtures/sops.yaml	6	15	95	1
+fixtures/sops.yaml	6	15	96	1
+fixtures/sops.yaml	6	30	70	0
+fixtures/sops.yaml	6	31	69	0
+fixtures/sops.yaml	6	31	70	0
+fixtures/sops.yaml	6	31	71	0
+fixtures/sops.yaml	6	32	70	0
+fixtures/sops.yaml	6	5		1
+fixtures/sops.yaml	6	99999999999999999999	99999999999999999999	1
+fixtures/sops.yaml	7			1
+fixtures/sops.yaml	8			1
+fixtures/sops.yaml	8		5	1
+fixtures/sops.yaml	8	0	0	1
+fixtures/sops.yaml	8	1	1	1
+fixtures/sops.yaml	8	10	38	1
+fixtures/sops.yaml	8	10	39	1
+fixtures/sops.yaml	8	10	40	1
+fixtures/sops.yaml	8	10	41	1
+fixtures/sops.yaml	8	11	38	1
+fixtures/sops.yaml	8	11	39	1
+fixtures/sops.yaml	8	11	40	1
+fixtures/sops.yaml	8	11	41	1
+fixtures/sops.yaml	8	12	38	1
+fixtures/sops.yaml	8	12	39	1
+fixtures/sops.yaml	8	12	40	1
+fixtures/sops.yaml	8	12	41	1
+fixtures/sops.yaml	8	13	38	0
+fixtures/sops.yaml	8	13	39	0
+fixtures/sops.yaml	8	13	40	1
+fixtures/sops.yaml	8	13	41	1
+fixtures/sops.yaml	8	5		1
+fixtures/sops.yaml	8	99999999999999999999	99999999999999999999	1
+fixtures/sops.yaml	9			1
+fixtures/sops.yaml	10			1
+fixtures/sopsleak.yaml	0			1
+fixtures/sopsleak.yaml	1			1
+fixtures/sopsleak.yaml	2			1
+fixtures/sopsleak.yaml	3			1
+fixtures/sopsleak.yaml	4			1
+fixtures/sopsleak.yaml	5			1
+fixtures/sopsleak.yaml	6			1
+fixtures/sopsleak.yaml	6		5	1
+fixtures/sopsleak.yaml	6	0	0	1
+fixtures/sopsleak.yaml	6	1	1	1
+fixtures/sopsleak.yaml	6	12	93	1
+fixtures/sopsleak.yaml	6	12	94	1
+fixtures/sopsleak.yaml	6	12	95	1
+fixtures/sopsleak.yaml	6	12	96	1
+fixtures/sopsleak.yaml	6	13	93	1
+fixtures/sopsleak.yaml	6	13	94	1
+fixtures/sopsleak.yaml	6	13	95	1
+fixtures/sopsleak.yaml	6	13	96	1
+fixtures/sopsleak.yaml	6	14	93	1
+fixtures/sopsleak.yaml	6	14	94	1
+fixtures/sopsleak.yaml	6	14	95	1
+fixtures/sopsleak.yaml	6	14	96	1
+fixtures/sopsleak.yaml	6	15	93	0
+fixtures/sopsleak.yaml	6	15	94	0
+fixtures/sopsleak.yaml	6	15	95	1
+fixtures/sopsleak.yaml	6	15	96	1
+fixtures/sopsleak.yaml	6	30	70	0
+fixtures/sopsleak.yaml	6	31	69	0
+fixtures/sopsleak.yaml	6	31	70	0
+fixtures/sopsleak.yaml	6	31	71	0
+fixtures/sopsleak.yaml	6	32	70	0
+fixtures/sopsleak.yaml	6	5		1
+fixtures/sopsleak.yaml	6	99999999999999999999	99999999999999999999	1
+fixtures/sopsleak.yaml	7			1
+fixtures/sopsleak.yaml	7		5	1
+fixtures/sopsleak.yaml	7	0	0	1
+fixtures/sopsleak.yaml	7	1	1	1
+fixtures/sopsleak.yaml	7	13	53	1
+fixtures/sopsleak.yaml	7	14	52	1
+fixtures/sopsleak.yaml	7	14	53	1
+fixtures/sopsleak.yaml	7	14	54	1
+fixtures/sopsleak.yaml	7	15	53	1
+fixtures/sopsleak.yaml	7	5		1
+fixtures/sopsleak.yaml	7	99999999999999999999	99999999999999999999	1
+fixtures/sopsleak.yaml	8			1
+fixtures/sopsleak.yaml	9			1
+fixtures/tmpl.yaml	0			1
+fixtures/tmpl.yaml	1			1
+fixtures/tmpl.yaml	2			1
+fixtures/tmpl.yaml	3			1
+fixtures/tmpl.yaml	4			1
+fixtures/tmpl.yaml	5			1
+fixtures/tmpl.yaml	6			1
+fixtures/tmpl.yaml	7			0
+fixtures/tmpl.yaml	7		5	0
+fixtures/tmpl.yaml	7	0	0	0
+fixtures/tmpl.yaml	7	1	1	0
+fixtures/tmpl.yaml	7	11	51	0
+fixtures/tmpl.yaml	7	12	50	0
+fixtures/tmpl.yaml	7	12	51	0
+fixtures/tmpl.yaml	7	12	52	0
+fixtures/tmpl.yaml	7	13	51	0
+fixtures/tmpl.yaml	7	5		0
+fixtures/tmpl.yaml	7	99999999999999999999	99999999999999999999	0
+fixtures/tmpl.yaml	8			1
+fixtures/tmpl.yaml	9			1
+fixtures/tmpl.yaml	10			1
+fixtures/tmpl.yaml	10		5	1
+fixtures/tmpl.yaml	10	0	0	1
+fixtures/tmpl.yaml	10	1	1	1
+fixtures/tmpl.yaml	10	14	54	1
+fixtures/tmpl.yaml	10	15	53	1
+fixtures/tmpl.yaml	10	15	54	1
+fixtures/tmpl.yaml	10	15	55	1
+fixtures/tmpl.yaml	10	16	54	1
+fixtures/tmpl.yaml	10	5		1
+fixtures/tmpl.yaml	10	99999999999999999999	99999999999999999999	1
+fixtures/tmpl.yaml	11			1
+fixtures/tmpl.yaml	12			1

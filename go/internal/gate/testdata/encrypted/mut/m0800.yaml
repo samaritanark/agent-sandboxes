@@ -1,0 +1,6 @@
+kind: Secret
+spec:
+  -	encryptedData:
+é    a: ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a
+kind: SealedSecret
+apiVersion: example.org/bitnami.com/x
