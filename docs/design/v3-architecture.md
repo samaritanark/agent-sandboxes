@@ -4,10 +4,10 @@
 
 | | |
 |---|---|
-| **Status** | Draft, revision 3. Revision 2 plus the dispositions of two external reviews (Appendix C); gating spikes not yet run |
+| **Status** | Draft, revision 4. Revision 3 plus the dispositions of a third external review (Appendix C) and the decision to port the policy layer to Go (D-34); gating spikes not yet run |
 | **Target** | v3.0.0 (major version; breaking install and platform changes) |
 | **Owner** | Jase Hall |
-| **Date** | 2026-11-17 |
+| **Date** | 2026-11-18 |
 | **Supersedes** | Revision 1 of this document (k3s + Cilium + Kata inside an appliance VM) |
 
 ## 0. How to use this document
@@ -27,6 +27,12 @@ Claude Code or a human.
   Windows build.
 - **Protection may only go up.** A v3 mechanism that is weaker than the v2
   mechanism it replaces is a defect, even if it is simpler.
+- **Seamless collaboration is a requirement, not a nicety.** An operator and
+  an agent MUST be able to work on the same files, branches, and staged
+  changes with only sync latency (seconds) between them (G9). A control that
+  removes a v2 collaboration workflow is a defect unless it is replaced by an
+  equally direct one. Friction drives operators out of the sandbox, and an
+  operator outside the sandbox has no protection at all.
 - **No capability may be lost silently.** Every v2 user-facing capability, and
   every capability in the credential-brokering design (§5.9), is either carried
   forward, replaced by a named equivalent, or removed by an entry in the
@@ -84,9 +90,10 @@ Cilium, and gVisor entirely:
    policy decisions.
 
 The policy layer that implements tiers, masking, the secret gate, vetting,
-profiles, overlays, the catalogue, and audit moves **into the VM unchanged**,
-where it runs on exactly one platform and emits a **session spec** instead of
-Kubernetes YAML.
+profiles, overlays, the catalogue, and audit is **ported to Go** (D-34) and
+runs in the VM as an unprivileged process, on exactly one platform, emitting a
+**session spec** instead of Kubernetes YAML. The whole product is one Go
+module; the v2 bash stays in the tree as a frozen test oracle until release.
 
 What this buys:
 
@@ -96,7 +103,8 @@ What this buys:
   git against an untrusted repo on the host.
 - **Maintenance:** roughly 2,800 lines of Kubernetes, Cilium and gVisor code
   and roughly 1,800 lines of Lima/WSL/PowerShell platform code are deleted
-  (Appendix A.6). Security tests run once, against one platform.
+  (Appendix A.6). The remaining bash is ported, leaving one language (Go) to
+  maintain. Security tests run once, against one platform.
 - **Workstation footprint:** the host carries one binary and one VM. Nothing
   runs as root on the host outside the hypervisor.
 
@@ -128,11 +136,21 @@ What this buys:
   CNI, container runtime, or root services. Memory use has an explicit,
   measured budget (P-24). Nested virtualization may cost more memory than v2
   on Linux; security is not traded for memory.
+- **G9 — Seamless operator–agent collaboration.** File edits, commits on
+  feature branches, branch switches, staging, merges, and conflict resolution
+  made on either side appear on the other within seconds, with no manual
+  step. Protection is enforced by the host-side sync gate (§5.6.2), not by
+  asking the operator to do more.
+- **G10 — One language.** The host binary, `sandboxd`, the in-VM policy CLI,
+  and the gateway controller are one Go module (§5.4.1, D-34). Trust
+  boundaries between processes are kept; only the language split goes.
 
 ### 2.2 Non-goals for v3.0.0
 
-- Rewriting the in-VM bash policy layer in Go (F3). It moves into the VM
-  largely as-is; only the Kubernetes-coupled parts are replaced.
+- Changing policy behaviour during the Go port. The port MUST be
+  behaviour-identical to v2 (differential-tested, S8) except where this
+  document says a protection goes up (for example strict config decoding,
+  §5.4.1). New policy features wait until after the port.
 - Runtime syscall/process detection (F1).
 - Windows Home, Intel Macs, Apple M1/M2, and launching from a host that is
   itself a VM are **unsupported** (§5.2.4). The team has confirmed none of
@@ -256,7 +274,7 @@ before they are emitted.
                  │ SSH + sync only. No host mounts, no interop.
  APPLIANCE VM (signed image; immutable system disk, persistent state disk)
  ┌───────────────▼──────────────────────────────────────────────────────┐
- │ policy layer (bash, moved from v2): tiers, gates, vetting, masks,    │
+ │ policy layer (Go, ported from v2): tiers, gates, vetting, masks,     │
  │   overlays, catalogue, audit  ──►  session spec (JSON)               │
  │ sandboxd (Go): containerd + Kata shim, links, nftables, quota,       │
  │   lifecycle, reaping, revocation, transcript capture                 │
@@ -303,12 +321,17 @@ The host binary MUST be limited to:
 5. The **host operations** in §5.1.3.
 6. Verifying signatures of images and of its own updates.
 7. The version handshake (§5.1.6).
+8. Running `sandbox netd`, the host-side network process that holds the
+   host-reach control (§5.2.6, D-31).
 
 The host binary MUST NOT implement policy: tier resolution, allowlists, block
 lists, masking decisions, the secret gate, vetting *verification*, catalogue
 resolution, and session-spec generation all live in the VM. A change that
 needs policy knowledge on the host is a design change and requires updating
-this document.
+this document. In the single Go module (§5.4.1), the host binary MAY import
+only the packages designated host-safe (shared rule tables, the sync gate, the
+drivers); a CI check on the import graph fails the build if it imports the
+policy, vetting, secret-gate, or repo-parsing packages.
 
 #### 5.1.2 Platforms and build
 
@@ -318,7 +341,10 @@ this document.
   signals (no SIGHUP on Windows), path handling, browser open, trust-store
   access, file-permission checks on `~/.sandbox`.
 - The binary SHOULD shell out to `limactl` rather than import Lima's Go
-  packages, which are not a stable API.
+  packages, which are not a stable API. It MUST resolve `limactl` to an
+  absolute path at install, refuse a path in a user-writable directory, and
+  re-verify the path and its ownership on every start; `sandbox upgrade`
+  re-records the path after a Lima upgrade.
 - Unit tests MUST run on GitHub-hosted runners for all three OSes using a mock
   driver (no virtualization required).
 
@@ -331,13 +357,13 @@ except where noted.
 
 | Operation | Why it is host-side | v2 source |
 |---|---|---|
-| **Vetting attestation signing** (`sandbox vet`, inline attest at launch), **without running git against the host repo** (D-20). (1) The VM builds the canonical tag payload (`object <commit-sha>`, `type commit`, `tag agent-vetted/<sha>`, tagger, message) and the exception acknowledgement list from its synced copy. (2) The host reads HEAD's commit SHA itself by parsing `.git/HEAD`, the ref file, and `packed-refs` as plain files (no git execution) and refuses if it differs from the payload's SHA. (3) The host shows the operator the SHA, the exceptions, and the message, and asks for approval. (4) The host signs the payload bytes with `ssh-keygen -Y sign -n git` (or `gpg --detach-sign`), exactly what `git tag -s` signs. (5) The VM assembles the signed tag object (`git mktag`), verifies it against the trust roots, and the tag reaches the host repo through the sync like any other ref. Existing `agent-vetted/*` tags remain valid: the object format is unchanged | The signing key is the operator's SSH/GPG key | `lib/vetting.sh:1149-1236` |
+| **Vetting attestation signing** (`sandbox vet`, inline attest at launch), **without running git against the host repo** (D-20). (1) The VM builds the canonical tag payload (`object <commit-sha>`, `type commit`, `tag agent-vetted/<sha>`, tagger, message) and the exception acknowledgement list from its synced copy. (2) The host reads HEAD's commit SHA itself by parsing `.git/HEAD`, the ref file, and `packed-refs` as plain files (no git execution) and refuses if it differs from the payload's SHA. (3) The host shows the operator the SHA, the exceptions, and the message, plus any commits at or below `HEAD` that the sync gate's ledger records as created in a sandbox session (§5.6.2 rule 6), and asks for approval; those commits require explicit acknowledgement. (4) The host signs the payload bytes with `ssh-keygen -Y sign -n git` (or `gpg --detach-sign`), exactly what `git tag -s` signs. (5) The VM assembles the signed tag object (`git mktag`) and verifies it against the trust roots; the host binary then re-verifies the object, writes it as a loose object, and writes `refs/tags/agent-vetted/<sha>` itself, because tags never sync VM → host (§5.6.2 rule 6). Existing `agent-vetted/*` tags remain valid: the object format is unchanged | The signing key is the operator's SSH/GPG key | `lib/vetting.sh:1149-1236` |
 | **Signing-identity setup assist** (`vet` offering to configure git signing) | Edits the operator's global git config | `lib/vetting.sh:1333-1423` |
 | **Overlay clone and sync** (`sandbox link`, the run-path sync). The host fetches with the operator's git credentials, validates nothing (that is policy), and pushes the tree; the VM validates shape and pins | Private overlay repos need the operator's git credentials | `lib/link.sh:132-141, 461-515` |
 | **Leakscan config fetch** (`leakscan_config_url`) MAY run in the VM (it needs no host credentials); if the URL is only reachable from the host network, the host fetches and pushes. The VM verifies the sha256 pin either way | Network reachability only | `lib/filesystem.sh:485-563` |
 | **Proxy CA extraction** (`sandbox setup-proxy-cert`): macOS System keychain, Linux trust store, Windows `LocalMachine\Root` / `CurrentUser\Root` | Reads host trust stores | `lib/certs.sh` |
-| **Browser open / device-code display** for onboarding. This is the one VM-initiated request: the host MUST open only `https` URLs whose host is on a fixed per-agent allowlist compiled into the binary, and MUST show the URL to the operator | OAuth flows need the host browser | — |
-| **Exec-plugin token pump** for brokered exec-plugin kubeconfigs (§5.9.5): while a session is attached, the host runs the allowlisted plugin with the operator's host auth state and pushes the short-lived credential to the session broker. Only plugins classified **cluster-scoped** are pumped by default (§5.9.5) | Auth-provider state (`~/.aws`, gcloud, kubelogin caches, `~/.tsh`) MUST NOT enter the VM (PRINCIPLES.md rule 3) | new |
+| **Browser open / device-code display** for onboarding. This is the one VM-initiated request. The host accepts it only while an operator-started `sandbox onboard <agent>` is in the foreground on the host, and only once per onboarding; at any other time it is refused and logged. The host MUST open only `https` URLs that match a per-agent **URL template** compiled into the binary (host, path, and the `client_id` and `redirect_uri` the agent uses; S2 enumerates them), never a host alone, and MUST show the URL to the operator. For a device code, the host MUST show which agent and OAuth client the code belongs to, taken from its compiled-in table and not from VM text | OAuth flows need the host browser | — |
+| **Exec-plugin token pump** for brokered exec-plugin kubeconfigs (§5.9.5): while a session is attached, the host runs the allowlisted plugin with the operator's host auth state and pushes the short-lived credential to the session broker. The invocation (command, args, env, `provideClusterInfo`) is **captured by the host binary from its own copy of the operator-supplied kubeconfig at `run`** and keyed by an index; a pump request from the VM carries only that index and a session ID, and the host runs exactly the captured invocation (§5.9.5). Only plugins classified **cluster-scoped** are pumped by default (§5.9.5) | Auth-provider state (`~/.aws`, gcloud, kubelogin caches, `~/.tsh`) MUST NOT enter the VM (PRINCIPLES.md rule 3) | new |
 | **Clipboard copy**, only on explicit operator request | Host clipboard | — |
 
 #### 5.1.4 Operator state (host → VM, one-way)
@@ -348,7 +374,8 @@ command the host binary pushes a defined set to `/var/lib/sandbox/operator/`
 (root-only, never mounted into any microVM):
 
 - `config.yaml`, `profiles/`, `vetting/` trust roots,
-- `secrets/` (mode 0600),
+- only the secrets named by the session's resolved bindings (§5.9.2), as 0600
+  files, never the whole `secrets/` directory,
 - agent tokens **only during `sandbox onboard`** (import), never on later
   commands, so a token the broker has since rotated is never overwritten by a
   stale host copy (§5.9.6),
@@ -359,8 +386,10 @@ command the host binary pushes a defined set to `/var/lib/sandbox/operator/`
   session only.
 
 The pushed set MUST be enumerated in code (an allowlist), not "the whole
-directory". Secrets SHOULD be pushed only for commands that need them (`run`,
-`resume`, `onboard`), not for `list` or `status`.
+directory". Secrets are pushed only for `run` and `resume`, only those the
+session's bindings reference, and are written directly into the broker store
+(§5.9.2) or a tmpfs; the staging copy MUST be deleted once the broker has
+started. Nothing else from `secrets/` is pushed or persisted on the state disk.
 
 #### 5.1.5 VM → host data flows (host-pulled, typed, validated)
 
@@ -481,8 +510,14 @@ runtime** (D-04).
 #### 5.2.5 VM hardening requirements
 
 - No host filesystem mounts of any kind.
-- No host-exec interop; no shared clipboard; no guest-agent port forwarding
-  required for operation.
+- No host-exec interop; no shared clipboard; **no port forwarding of any kind
+  from the guest to the host**. Lima otherwise appends a fallback rule that
+  forwards every guest loopback listener to the same port on host loopback
+  (review F4; S7 confirms against the Lima version in use), which would let VM
+  root squat on host ports. The Lima drivers MUST set `plain: true` (if S7
+  confirms the appliance needs nothing plain mode removes) or, failing that, a
+  first `portForwards` rule `{guestIP: "0.0.0.0", proto: any, ignore: true}`.
+  The Hyper-V driver MUST NOT run an equivalent agent. N-02 tests it.
 - SSH, with **no trust-on-first-use**: the host binary generates both the
   per-install client key and the guest's SSH host key, delivers the host
   private key in the NoCloud seed, pins the public key before first
@@ -512,9 +547,12 @@ host loopback services. Therefore:
 - **Declared exception:** the operator MAY declare host or VPN-only endpoints
   for a Tier 3 session (`--infra-endpoint`, an `--infra-kubeconfig` whose
   server is host-local, or a `host_endpoints:` config entry). Each declared
-  endpoint passes the blocked-destination checks and is reachable **only from
-  that session's gateway**, only on the declared port, and only for the
-  session's lifetime. This replaces v2's same-node `toEntities: host` grant and
+  endpoint passes the blocked-destination checks and is reachable from the VM
+  only on the declared port and only for the session's lifetime. The host-side
+  control scopes an endpoint to **the VM**, because every session gateway
+  leaves through the VM's single uplink. Scoping it to **one session's
+  gateway** is enforced by nftables in the VM and is defense in depth against a
+  gateway compromise, not against VM root. This replaces v2's same-node `toEntities: host` grant and
   covers local k3d/podman clusters and VPN-routed clusters.
 - VPN-routed destinations reached through the host's routing table (not via a
   host address) need no exception; the gateway's NAT'd connection follows the
@@ -527,13 +565,30 @@ host loopback services. Therefore:
   resolver on Windows). It is allowed for DNS only. DNS-based exfiltration by
   VM root through it is not a new exposure, because VM root already has NAT'd
   internet access.
-- **Preferred mechanism (S7 evaluates first):** a host-side userspace network
-  stack as the VM's only NIC (the gvisor-tap-vsock / gvproxy approach Lima's
-  user-mode networking already uses). One host-controlled data path on all
-  three drivers gives host-reach filtering, VPN routing, and split DNS
-  (§5.8.9) uniformly, and corporate endpoint security sees the traffic as
-  host-process traffic. Its cost is userspace TCP throughput, which S7
-  measures. Per-driver native controls are the alternative.
+- **Mechanism and owner (S7 evaluates first):** a host-side userspace network
+  stack as the VM's only NIC (the gvisor-tap-vsock approach Lima's user-mode
+  networking already uses), run by **`sandbox netd`** (D-31): a mode of the
+  signed host binary that `sandbox vm start` launches detached and that lives
+  exactly as long as the VM, as Lima's host agent does. It needs no launchd or
+  systemd unit and is covered by the signed-binary verification (§5.1.1
+  item 6). One host-controlled data path on all three drivers gives host-reach
+  filtering, VPN routing, and split DNS (§5.8.9) uniformly, and corporate
+  endpoint security sees the traffic as host-process traffic. Its cost is
+  userspace TCP throughput, which S7 measures. If S7 shows stock Lima and
+  gvproxy meet every requirement below, that is an acceptable alternative
+  owner; per-driver native controls are the other.
+- **Requirements on the owner (MUST):**
+  - it holds the control while the `sandbox` CLI is not running (detached
+    `--keep-alive` sessions);
+  - it fails closed (no host reach) when its configuration is missing,
+    unreadable, or while it restarts;
+  - endpoints are opened only from host-parsed operator input at `run`, and
+    closed on `stop`, on reap, or, for non-keep-alive sessions, on attach-lease
+    expiry; never on a request from the VM;
+  - endpoints of a `--keep-alive` session stay open until its reap limit, so a
+    detached Tier 3 session keeps its declared cluster;
+  - `sandbox status` and `sandbox doctor` report whether it is running, and
+    any `sandbox` command restarts it if it died.
 
 ### 5.3 Appliance image
 
@@ -544,7 +599,8 @@ host loopback services. Therefore:
   kernel and guest image), nftables, nerdctl + buildkit (for `sandbox
   rebuild`), betterleaks, the gateway/resolver/broker binary, `sandboxd`, the
   in-VM `sandbox` policy layer, and preloaded agent images pinned by digest.
-- **Not included:** k3s, Cilium, CoreDNS, Helm, gVisor, Hubble.
+- **Not included:** k3s, Cilium, CoreDNS, Helm, gVisor, Hubble, and the v2
+  bash CLI (ported to Go, §5.4.1).
 - Pins remain in `setup/versions.sh` (or its successor) and are managed by
   Renovate as today. Every downloaded artifact in the image build MUST be
   checksum- or signature-verified (fixes the unpinned-download class in
@@ -560,7 +616,11 @@ host loopback services. Therefore:
 - Outputs per architecture (`amd64`, `arm64`): qcow2 (Lima qemu), raw
   (Lima vz), VHDX (Hyper-V).
 - Each artifact MUST be signed (cosign, keyless or org key) with SLSA
-  provenance and an SBOM. The host binary MUST verify before boot.
+  provenance and an SBOM. The host binary MUST verify before boot. It MUST pin
+  the signing identity (cosign certificate identity and issuer, or the org key
+  fingerprint) rather than accept any valid signature, and MUST refuse an
+  `IMAGE_VERSION` lower than the highest it has installed unless the operator
+  passes an explicit, audited `--allow-downgrade` (§10).
 - Images are large; GitHub release assets cap at 2 GiB per file. Publish as
   OCI artifacts (e.g. `ghcr.io/samaritanark/agent-sandboxes-image`) so they
   can be mirrored for air-gapped installs.
@@ -574,15 +634,39 @@ hostname. The gateway CA is generated in-VM on first boot (§5.10).
 
 ### 5.4 In-VM policy layer and `sandboxd`
 
-#### 5.4.1 Policy layer
+#### 5.4.1 Policy layer (Go)
 
-- The v2 bash CLI (`bin/sandbox`, `lib/*.sh`) moves into the image and runs
-  only on the appliance VM (GNU bash 5, GNU userland). The pure-policy code
-  carries over unchanged: tiers, agents, config, profiles, links (validation),
-  catalogue validation, masks, the secret gate, vetting verification, checks,
-  audit. These are roughly half of `bin/sandbox` and most of `lib/`
-  (Appendix A.6).
-- Removed: all `is_macos` / `is_wsl` branches, `lib/lima.sh`,
+- The v2 bash CLI (`bin/sandbox`, `lib/*.sh`) is **ported to Go** (D-34) and
+  ships in the image as the in-VM `sandbox` policy CLI, running only on the
+  appliance VM. The ported code covers tiers, agents, config, profiles, links
+  (validation), catalogue validation, masks, the secret gate, vetting
+  verification, checks, and audit: roughly half of `bin/sandbox` and most of
+  `lib/` (Appendix A.6). Behaviour is identical to v2 except where this
+  document says a protection goes up.
+- **One module, several binaries, trust boundaries kept.** The host binary,
+  the in-VM policy CLI, and `sandboxd` are separate binaries in one Go module.
+  The policy CLI runs **unprivileged**: it parses untrusted repo content
+  (`.sandbox/config.yaml`, overlays, profiles) and MUST NOT run as root or
+  inside `sandboxd`. It hands the session spec to `sandboxd` over a local
+  socket, and `sandboxd` validates it (§5.4.2). Small shared packages hold the
+  rule tables used by both the host-side sync gate and the policy CLI (mask
+  set, exec-vector list, protected-branch defaults, blocked-destination
+  rules), so there is one source of truth; the import-graph check in §5.1.1
+  keeps the host binary from importing anything else from the policy side.
+- **Strict decoding.** Profiles, overlays, config, and catalogue files decode
+  into typed structs that reject unknown fields. v2's bash parsing is looser,
+  so this is a protection gain.
+- **Argv proxy unchanged.** The host binary still forwards arguments and
+  parses no flags (§5.1.1, §5.1.6).
+- **git and betterleaks.** The policy CLI shells out to the system `git`
+  inside the VM with v2's hardening ported (OQ-14), and to the betterleaks
+  binary for the secret gate. The host runs no git against `--repo` (N-09).
+- **Oracle and differential testing (S8).** The v2 bash stays in the tree,
+  frozen, as the oracle until release. Each ported module is tested against it
+  on the same fixtures, and its bash is deleted only when outputs match on the
+  v2 corpus plus the new adversarial cases. Before v3.0.0 is cut, the bash is
+  deleted from the v3 line; v2 keeps it on its own branch (OQ-05).
+- Removed, not ported: all `is_macos` / `is_wsl` branches, `lib/lima.sh`,
   `bin/sandbox.ps1`, `setup.ps1`, `setup/macos.sh`, the host install paths,
   `lib/cluster.sh`, `lib/network.sh`, `lib/dns.sh` (CoreDNS rendering),
   `lib/policy.sh` (CNP rendering; its domain-set logic at `:42-97` moves into
@@ -595,11 +679,14 @@ hostname. The gateway CA is generated in-VM on first boot (§5.10).
 - Running the gates in the VM is itself a protection increase: v2 runs git
   against an untrusted repo **on the host** and needs extensive hardening to
   stop repo config from executing code there (`lib/vetting.sh:367-485`). In v3
-  that code runs in the VM; the hardening is kept as defense in depth.
+  that code runs in the VM; the hardening is ported to Go and kept as defense
+  in depth.
 
 #### 5.4.2 Session spec
 
-The policy layer's output is a JSON **session spec** handed to `sandboxd`. It
+The policy layer's output is a JSON **session spec** (a versioned Go type with
+strict decoding, passed over a local socket from the unprivileged policy CLI)
+handed to `sandboxd`. It
 replaces the pod YAML, CNP, Secrets, ConfigMap, and Services of v2. It MUST
 contain everything `sandboxd` and the gateway need and nothing else:
 
@@ -655,7 +742,10 @@ reachable from any microVM. It:
    microVM wrote.
 9. Reboot behaviour: on VM boot it restarts keep-alive sessions whose
    lifetime has not expired (parity with v2 `restartPolicy: Always`) and
-   reaps and revokes everything else.
+   reaps and revokes everything else. Restart needs the broker store key
+   (§5.9.2), which the host binary pushes at VM start; if the VM reboots on
+   its own with no host binary connected, those sessions wait for the next
+   `sandbox` command to reconnect.
 10. **Persistent, reconciled state machine** (D-23). Each session moves through
     `REQUESTED → ADMITTED → STARTING → RUNNING → STOPPING → TERMINATED`, with
     `FAILED` reachable from any state. State and every owned resource
@@ -747,11 +837,12 @@ Host → VM transfer MAY use any engine. The gate MUST:
 - resolve paths race-safely (open relative to a directory handle, no
   follow-symlink), write atomically, and enforce per-file and per-batch size
   limits;
-- detect conflicts and never pick a winner silently;
+- detect conflicts and never pick a winner silently (the one deliberate
+  exception, staging-only conflicts in the index, is rule 7);
 - survive interruption: a half-applied batch is resumed or rolled back.
 
 **Withheld changes are quarantined, not dropped.** A VM-origin change to a
-protected path (rules 1–3) is kept in a quarantine area, recorded in the
+protected path (rules 1–3 and 6–8) is kept in a quarantine area, recorded in the
 session audit log, and listed by `sandbox sync review` with a diff, for the
 operator to apply or discard explicitly.
 
@@ -763,7 +854,8 @@ operator to apply or discard explicitly.
 2. **Host-exec vectors never flow VM → host.** These paths are synced host →
    VM only; creation, modification, or deletion of them in the VM is never
    propagated:
-   - `.git/config`, `.git/hooks/`, `.git/info/`, `.gitmodules`;
+   - `.git/config`, `.git/hooks/`, `.git/info/`, `.git/objects/info/`
+     (alternates and http-alternates), `.gitmodules`;
    - `.git/modules/*/config`, `.git/modules/*/hooks/` (submodule git dirs);
    - `.git/worktrees/*/config.worktree`, and `.git/config.worktree` (main
      worktree, when `extensions.worktreeConfig` is set);
@@ -787,6 +879,82 @@ operator to apply or discard explicitly.
    surface conflicts in `sandbox status` and the session log.
 5. The sync tool runs as the operator on the host and as a dedicated
    non-root user in the VM. It MUST NOT be reachable from any microVM.
+
+6. **Refs, `HEAD`, and objects (VM → host).** The gate parses refs as files
+   (no git execution on the host, N-09) and applies them per ref. `packed-refs`
+   is parsed into individual updates and never copied as a file.
+   - **Objects.** A loose object's content MUST hash to its path before it is
+     written. A pack is accepted only together with its `.idx`, verified the
+     same way, or through the bundle path (§5.6.4 item 5).
+   - **Local branches.** A VM-origin update to `refs/heads/*` is applied
+     directly only when it is a **fast-forward** of the host's current value
+     (the gate walks commit objects to check) and the branch is not protected.
+     Creating a new unprotected branch is applied. Protected branches are
+     `master`, `main`, the default branch named by the host repo's
+     `refs/remotes/origin/HEAD` when present, and a `protected_branches:` list
+     (operator config; overlays may add, never remove). An update to a
+     protected branch, a non-fast-forward update (rebase, amend, reset), and a
+     branch deletion are quarantined and applied only by `sandbox sync review
+     --apply`. This keeps commits made on the operator's behalf direct, and it
+     enforces PRINCIPLES.md's "never commit to `main` / `master`" in the gate
+     instead of in a host hook the agent can skip with `--no-verify`.
+   - **`HEAD`.** Synced two-way, but a VM-origin `HEAD` is accepted only as
+     exactly `ref: refs/heads/<valid-name>` naming a branch that exists on the
+     host once the ref updates are applied (protected branches included, since
+     switching commits nothing), or as a detached SHA that exists in the host
+     object store. Anything else (tags, remotes, `..`, extra lines) is
+     refused. A `HEAD` changed on both sides since the last sync is a
+     conflict. Every VM-origin `HEAD` change is recorded and shown in
+     `sandbox status`.
+   - **Never VM → host:** `refs/tags/*`, `refs/remotes/*`, `.git/logs/`
+     (reflogs), `FETCH_HEAD`, `ORIG_HEAD`, `.git/objects/info/`, `.git/shallow`.
+     The one exception is the vetting tag, which the host binary writes itself
+     (§5.1.3).
+   - **Ledger.** The gate records every VM-origin ref and `HEAD` update (ref,
+     old and new SHA, session) in the audit log. `sandbox vet` lists the
+     commits at `HEAD` that came from the ledger and requires acknowledgement
+     (§5.1.3).
+   - Host → VM: all refs and `HEAD` flow unconditionally.
+7. **Index (two-way, merged by entry).** `.git/index` is never copied as a
+   file. The host binary parses it in Go (strict size and entry-count limits,
+   checksum trailer verified) and merges it per path and stage, three ways:
+   the last-synced snapshot, the host index, and the VM index. A path changed
+   on only one side takes that side's entry, so `git add`, `git reset`,
+   `git rm`, branch switches, and merge-conflict stages carry both ways in
+   near real time. VM-origin entries are validated like file changes:
+   - entries on masked or exec-vector paths, gitlinks, and file-type changes
+     are withheld (the host keeps its own entry);
+   - the `assume-valid` and `skip-worktree` flags are cleared, because they
+     hide changes from `git status`;
+   - an entry whose blob is not in the host object store (hash-verified) is
+     dropped;
+   - extensions (split index, untracked cache, fsmonitor token, and the rest)
+     are never accepted; the host writes a plain index with zeroed stat data,
+     which git refreshes on first use.
+
+   The gate takes `.git/index.lock` as git does, writes atomically, applies
+   batches briefly, and defers if the operator's git holds the lock. The
+   merged result is pushed to the VM, so the agent sees the operator's staging
+   and the VM index matches `HEAD` after a host branch switch or merge. If both
+   sides staged the same path differently, **the host wins and the conflict is
+   recorded in the session log**; only staging is lost, and the agent's file
+   content is untouched. This is the one deliberate exception to "never pick a
+   winner silently". In-progress operation state (`MERGE_HEAD`,
+   `rebase-merge/`) stays local, and conflict resolution still collaborates:
+   conflict stages and marker files sync, the agent's `git add` returns a
+   resolved entry, and the operator completes the merge on the host. If S4
+   cannot meet N-20 for the merge, the fallback is a **HEAD-derived
+   reconcile**: when `HEAD` or a branch tip moves, the gate sets the host index
+   entry of each changed path to the new commit's blob unless the operator
+   staged that path differently. Its cost is that agent staging without a
+   commit does not reach the host index.
+8. **`.gitattributes` (all depths).** A VM-origin change that adds or changes a
+   `filter=`, `diff=`, or `merge=` attribute is quarantined, because it routes
+   the operator's later `git diff`, checkout, or merge through a driver defined
+   in their own git configuration, with agent-chosen input. The exact git-lfs
+   triple (`filter=lfs diff=lfs merge=lfs`) and attributes that name no driver
+   (`text`, `eol`, `binary`, `-diff`, `linguist-*`) pass. `.git/info/attributes`
+   is already an exec vector (rule 2).
 
 Tooling (Mutagen or an alternative, pinned and checksum-verified), transport,
 per-path directionality, and the behaviour of concurrent git use on host and
@@ -815,13 +983,14 @@ already syncs the whole repo, `.git` included, with Mutagen `two-way-safe`
 (`lib/lima.sh:285-307`), so this risk exists today; v3 makes the contract
 explicit:
 
-1. Lock files (`*.lock`), `index`, and in-progress operation state
-   (`MERGE_HEAD`, `rebase-merge/`, `rebase-apply/`, `CHERRY_PICK_HEAD`,
-   `sequencer/`) are never synced; each side keeps its own.
+1. Lock files (`*.lock`) and in-progress operation state (`MERGE_HEAD`,
+   `rebase-merge/`, `rebase-apply/`, `CHERRY_PICK_HEAD`, `sequencer/`) are
+   never synced; each side keeps its own. The `index` is not copied as a file;
+   it is merged entry by entry (§5.6.2 rule 7).
 2. Objects and packs are synced; they are content-addressed and append-only.
-3. Refs and `HEAD` are synced with two-way-safe semantics. A ref changed on
-   both sides since the last sync is a conflict, surfaced and never resolved
-   automatically.
+3. Refs and `HEAD` sync host → VM unconditionally and VM → host under
+   §5.6.2 rule 6. A ref or `HEAD` changed on both sides since the last sync is
+   a conflict, surfaced and never resolved automatically.
 4. Concurrent mutation of the **same branch** on host and VM is unsupported.
    `sandbox status` and the session log detect and report it; `--worktree`
    (§5.13) is the supported way to work concurrently.
@@ -831,8 +1000,23 @@ explicit:
    operator's repo, which is ordinary fetch semantics, run with the host
    repo's own (protected) config.
 
-This is an intentional parity decision, recorded as D-25: v2 Linux shares one
-`.git` directly; v3 shares it through this contract.
+What each side sees (target behaviour, validated by S4 and N-12/N-19/N-20),
+with sync latency of seconds:
+
+| Operation | What the other side sees |
+|---|---|
+| File edit, create, delete (non-protected path) | The change, both directions |
+| `git add` / `git reset` / `git rm` | Index entries merge both ways (§5.6.2 rule 7) |
+| Commit on a non-protected branch (either side) | The branch tip moves; the other side's index and files follow |
+| Branch switch or `git checkout <sha>` (either side) | `HEAD` follows (§5.6.2 rule 6); files and index follow |
+| Merge or rebase finished on the host | Refs, files, and index follow in the VM |
+| Merge conflict started on the host | Marker files and conflict stages appear in the VM; the agent resolves and `git add`s; the operator completes the merge on the host |
+| Commit on a protected branch, history rewrite, branch delete, tag, or remote ref (from the VM) | Withheld; listed by `sandbox sync review` |
+| `MERGE_HEAD`, `rebase-merge/`, lock files | Stay local to each side |
+
+This is an intentional parity decision, recorded as D-25 and D-30: v2 Linux
+shares one `.git` directly; v3 shares it through this contract, with the
+host-side gate enforcing protection so that collaboration stays direct.
 
 ### 5.7 Agent home and history (decision D-14)
 
@@ -969,34 +1153,31 @@ cannot meet this section (D-27). Whether the data plane runs as one process per
 session or as one process per session namespace is decided in S5 on footprint;
 either way no process holds another session's credentials.
 
-#### 5.8.10 Enforcement layers
-
-What each layer guarantees, so no requirement silently depends on the wrong
-one:
-
-| Layer | Enforces | Does not enforce |
-|---|---|---|
-| Kata guest + per-session namespace + links | The guest has no route except its gateway; no cross-session reach | Which names or paths are allowed |
-| nftables in the session namespace | Only gateway and resolver ports reachable; drops logged | Anything above L4 |
-| Filtering resolver | Only allowlisted names resolve; no upstream query for others | Connections to literal IPs (denied by topology and the gateway) |
-| Gateway, TLS routing | SNI and authority on the allowlist; blocked CIDRs after resolution; ports | Request semantics on passthrough traffic |
-| Gateway, L7 policy (intercepted only) | Method and path rules; install-not-publish; no-push | Anything on passthrough connections |
-| Broker bindings | Real credential only toward its bound destination; misuse detection | What an authorized request does |
-| Upstream RBAC/IAM | What the bound identity may do at all | — (operator-owned; §5.9.5) |
-
 #### 5.8.5 L7 rules
 
 - Schema: per-domain rule lists of `{methods, path_patterns, action}`,
   evaluated deny-first. Domains with rules are automatically intercepted.
 - **Org baseline** (shipped in `config/egress-baseline.yaml`;
-  overlay-extensible; not removable by profiles or operators):
-  - Package registries are read-only (deny `PUT` / `POST` / `DELETE` to
-    `registry.npmjs.org`; PyPI upload hosts are not allowlisted). This closes
-    an exfiltration path v2 cannot see: `npm publish` with an attacker's own
-    npm token to the allowlisted registry.
-  - `git push` is denied: deny `POST` to `*/git-receive-pack` and `GET`
-    `info/refs?service=git-receive-pack` on allowlisted git hosts (scope:
-    OQ-02).
+  overlay-extensible; not removable by profiles or operators). The baseline is
+  stated as **protocol rules and applies to every intercepted destination,
+  whatever its domain** (D-33). A destination with a broker binding is always
+  intercepted, so it always receives it:
+  - Git smart HTTP is push-denied on every host: deny `POST` to any path ending
+    in `/git-receive-pack` and `GET` with `service=git-receive-pack`
+    (relaxation: OQ-02).
+  - Package registries are read-only on every host that serves the registry
+    API: npm-compatible (deny `PUT` / `DELETE`; this covers
+    `registry.npmjs.org` and self-hosted Verdaccio, Artifactory, and Nexus),
+    PyPI-compatible (deny `POST` to upload paths such as `/legacy/`), and the
+    equivalent for each ecosystem the catalogue supports. This closes an
+    exfiltration path v2 cannot see: `npm publish` with an attacker's own npm
+    token, or with a brokered credential, to any registry.
+  - `TRACE` and `TRACK` are denied (§5.9.3).
+  - Residual, stated so the guarantee is not overread: a destination the
+    operator allowlists with no binding and no L7 rule is passthrough and is
+    not inspected. It carries no brokered credential, so a push or publish
+    there has no brokered credential to use. An operator who wants the baseline
+    on such a host adds an L7 rule for it, which makes it intercepted.
   - GitHub API writes (non-`GET`) denied except endpoints a supported agent
     requires (for example Copilot's own API), enumerated per agent in S2/S5.
 - The additive-only invariant extends to L7: overlays MAY add deny rules and
@@ -1043,6 +1224,21 @@ detected **on the host** by the host binary and pushed into the VM resolver
 configuration. This replaces v2's Linux-only CoreDNS rendering and its
 `--dns` flag, and extends split DNS to macOS and Windows.
 
+#### 5.8.10 Enforcement layers
+
+What each layer guarantees, so no requirement silently depends on the wrong
+one:
+
+| Layer | Enforces | Does not enforce |
+|---|---|---|
+| Kata guest + per-session namespace + links | The guest has no route except its gateway; no cross-session reach | Which names or paths are allowed |
+| nftables in the session namespace | Only gateway and resolver ports reachable; drops logged | Anything above L4 |
+| Filtering resolver | Only allowlisted names resolve; no upstream query for others | Connections to literal IPs (denied by topology and the gateway) |
+| Gateway, TLS routing | SNI and authority on the allowlist; blocked CIDRs after resolution; ports | Request semantics on passthrough traffic |
+| Gateway, L7 policy (intercepted only) | Method and path rules; install-not-publish; no-push | Anything on passthrough connections |
+| Broker bindings | Real credential only toward its bound destination; misuse detection | What an authorized request does |
+| Upstream RBAC/IAM | What the bound identity may do at all | — (operator-owned; §5.9.5) |
+
 ### 5.9 Credential brokering
 
 #### 5.9.1 Requirement and source
@@ -1067,8 +1263,13 @@ R1 item in that document is a v3.0.0 requirement.
 session namespace, as the brokering design mandates. It runs as that
 session's unprivileged user under seccomp. `sandboxd` (root) decrypts only the
 session's bound credentials from `/var/lib/sandbox/broker/` (encrypted at
-rest; the key is kept separately from the store, outside the state disk where
-the driver allows) and hands them to the broker at start. The broker never has
+rest; the key lives in the operator's host keychain and is pushed by the host
+binary over the control channel at VM start, held only in `sandboxd` memory or
+a tmpfs and never written to the state disk; D-32) and hands them to the broker
+at start. A stolen or backed-up state disk is therefore not enough to read the
+store. Where no host keychain exists (headless Linux), the key is a 0600 file
+under `~/.sandbox` pushed the same way, and `sandbox doctor` reports the
+weaker protection. VM root can still read the key from memory (§5.9.8). The broker never has
 read access to the store. It is destroyed with the session (§5.4.3).
 
 Destroying a session's bindings is **local** revocation. Issuer-side
@@ -1084,9 +1285,23 @@ in v2; `sandbox stop` keeps v2's reminder.
   (never appends) the header, strips hop-by-hop headers, never follows
   redirects, guards against request smuggling, and validates upstream TLS
   against the bound host.
-- A placeholder seen toward an unbound destination MUST be blocked and
-  recorded as a `credential_misuse` audit event. A real credential value seen
-  leaving the session is recorded as a tamper signal.
+- **Responses are scrubbed.** On every intercepted connection where the broker
+  injected a value, the broker scans response headers and bodies for that value
+  and its common encodings (base64, URL-encoding, the basic-auth pair),
+  replaces matches with the placeholder, and records a `credential_reflection`
+  audit event. This covers reflecting endpoints (`TRACE`, echo and debug pages,
+  error pages that print the request) and `Location` headers that carry a
+  query-injected credential. Headers are always scanned. Bodies are scanned
+  with a streaming matcher that spans chunk boundaries, so SSE and other
+  long-lived streams are covered; S5 measures the cost and may bound body
+  scanning by size for non-streaming responses. `TRACE` and `TRACK` are denied
+  on every intercepted destination (§5.8.5).
+- On intercepted connections, a placeholder seen toward an unbound destination
+  MUST be blocked and recorded as a `credential_misuse` audit event.
+  Passthrough connections are spliced after the SNI check and cannot be
+  inspected; placeholders are worthless outside the sandbox, so this is not a
+  gap. A real credential value seen leaving the session is recorded as a
+  tamper signal.
 - Per-credential rate limits and quotas apply.
 - **Unbound secrets are withheld by default.** Readable injection into the
   guest requires a per-secret `--allow-readable` (or profile equivalent), is
@@ -1130,6 +1345,15 @@ rules. Tiers, bindings and L7 rules bound what that use can do.
   pump (§5.1.3). Credentials are short-lived, cached in broker memory with a
   TTL, `interactiveMode` is rejected, and disk caching is suppressed. Behaviour
   for a keep-alive session after the operator detaches is OQ-09.
+  **The invocation is fixed on the host, not supplied by the VM:** at `run` the
+  host binary captures each exec stanza (command, args, env,
+  `provideClusterInfo`) from its own copy of the operator-supplied kubeconfig
+  and keys it by an index. A pump request from the VM carries only that index
+  and a session ID. The host runs exactly the captured invocation, refuses any
+  index or session it did not issue, and rate-limits mints per session. The
+  per-invocation classification (role ARN, cluster, profile) is recorded in
+  the audit log, because a classification per binary alone does not bound what
+  an argument change would authorize (D-19).
 - **Every allowlisted plugin is classified by what its credential
   authorizes**, recorded in `docs/reference/credential-exceptions.md` and
   verified in S2:
@@ -1198,8 +1422,9 @@ and does not require it.
 
 - **Gateway CA:** generated in-VM on first boot (ECDSA P-256, at most one-year
   validity, rotated on rebuild or `sandbox ca rotate`). The private key is
-  root-only on the state disk and never mounted into a guest. **No CA private
-  key is ever shipped in the image or repository.**
+  root-only on the state disk and never mounted into a guest, and the gateway
+  never holds it (see below). **No CA private key is ever shipped in the image
+  or repository.**
 - **Distribution:** a combined bundle (system roots + gateway CA + corporate
   CAs) mounted read-only at the system bundle path, plus `SSL_CERT_FILE`,
   `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `PIP_CERT`, `GIT_SSL_CAINFO`.
@@ -1209,8 +1434,16 @@ and does not require it.
   (`config/extra-ca-certs/` and the overlay's `extra-ca-certs/`) are read, plus
   `~/.sandbox/extra-ca-certs/`. The pre-build TLS-intercept probe moves to
   `sandbox doctor`.
-- Optional: X.509 name constraints on the gateway CA limited to intercepted
-  domains (evaluate in S5).
+- **Per-session issuing certificates.** `sandboxd` (root) issues each
+  session's gateway a per-session intermediate certificate, name-constrained
+  to that session's intercepted names and valid for the session's maximum
+  lifetime (or per-session leaf certificates, if S5 finds the intermediate
+  unnecessary), and hands the gateway only that. The CA private key is never
+  readable by the gateway user, so a gateway compromise yields a certificate
+  good for one session's names, not for every site for a year. A hot-added
+  intercepted name (§5.8.8) gets a re-issued certificate. Clients that ignore
+  name constraints make the constraint defense in depth only; the key
+  confinement is what holds.
 
 ### 5.11 Dependencies (catalogue)
 
@@ -1268,7 +1501,8 @@ during the session):
 - **Opt-in `--worktree`:** each session gets its own `git worktree` and branch
   under the repo's VM copy, sharing the object store. Worktree metadata stays
   VM-side (`.git/worktrees/` is never synced to the host, §5.6.2). The branch
-  reaches the host through the shared object store and refs.
+  reaches the host through the shared object store and the ref rules in
+  §5.6.2 rule 6 (fast-forward-only, never a protected branch).
 - **Trust-domain warning:** launching a session that shares a tree with a
   running session of a different tier or allowlist prints a warning and
   records an audit event. An overlay MAY set `shared_tree_policy: deny`.
@@ -1323,7 +1557,9 @@ exercise the product's **real** session output (a session created by
 `sandbox run` or by `sandboxd` from a spec produced by the policy layer), not
 hand-written fixtures. The "v2 coverage" column records what the current suite
 actually verifies, from a full read of `tests/`; several v2 tests cited by
-revision 1 test something other than their row.
+revision 1 test something other than their row. Where a row says "keep", the
+test is ported to Go with the module it covers and passes against both
+implementations until the bash is deleted (S8, D-34).
 
 ### 7.1 Preserved protections
 
@@ -1358,23 +1594,29 @@ revision 1 test something other than their row.
 | ID | Protection | Acceptance test |
 |---|---|---|
 | N-01 | Appliance VM is a second boundary: VM root sees no host files and cannot exec host processes | `test-vm-boundary` (new) |
-| N-02 | VM cannot reach host services except declared endpoints (§5.2.6) | `test-host-reach` (new): host loopback and host LAN address unreachable from VM root; declared endpoint reachable only from its session gateway |
+| N-02 | VM cannot reach host services except declared endpoints (§5.2.6) | `test-host-reach` (new): host loopback and host LAN address unreachable from VM root; a listener opened by VM root on `127.0.0.1` and on `0.0.0.0` is not connectable from the host; a declared endpoint is reachable from the VM only for its session's lifetime (per-session scoping is checked VM-side and is not claimed against VM root); the same holds with the host CLI detached and after `sandbox netd` restarts; with `netd` configuration missing, the VM has no host reach |
 | N-03 | Hardware isolation between sessions | P-01 + per-session guest kernel check |
-| N-04 | No usable credential in any guest | `test-broker-no-secrets` (new): every credential-shaped value in env, files, and history fails against its real upstream from outside; includes an mTLS client-certificate kubeconfig |
-| N-05 | Placeholder misuse detected and blocked | `test-broker-misuse` (new) |
-| N-06 | Install-not-publish and no-push are structural | `test-l7-baseline` (new): `npm publish` and `git push` fail at the gateway; `npm install` and `git fetch` succeed |
+| N-04 | No usable credential in any guest | `test-broker-no-secrets` (new): every credential-shaped value in env, files, and history fails against its real upstream from outside; includes an mTLS client-certificate kubeconfig; an upstream that reflects the injected credential (header echo, `TRACE`, a `Location` carrying a query credential) returns only the placeholder to the guest |
+| N-05 | Placeholder misuse detected and blocked on intercepted connections | `test-broker-misuse` (new) |
+| N-06 | Install-not-publish and no-push are structural | `test-l7-baseline` (new): `npm publish` and `git push` fail at the gateway; `npm install` and `git fetch` succeed; the same holds for a broker binding toward a non-baseline git host (self-hosted Gitea or GitLab) and a non-baseline npm-compatible registry |
 | N-07 | VM → host flows are host-validated | `test-host-pull-validation` (new): symlinks, `..`, oversize files, and rewrites of earlier log files from a hostile VM are rejected |
 | N-08 | Agent config and global instructions cannot persist across sessions | `test-agent-config-restage` (new): hooks, settings, and agent-level instruction files written in one session are absent in the next |
 | N-09 | No git execution against the host repo | Structural (§5.1.3, §5.4.1): the host binary contains no git invocation against `--repo`; vet signing reads refs as files and signs a payload |
 | N-10 | Keep-alive sessions are reaped and revoked | `test-keepalive-reap` (new) |
 | N-11 | Host-side sync gate holds against a hostile VM | `test-sync-gate-adversarial` (new): a tampered VM-side endpoint attempts masked paths, exec-vector paths, case- and normalization-aliased paths (`.GIT/hooks`), symlinks out of the repo, hard links, type changes, and concurrent replacement; every attempt is withheld and listed by `sandbox sync review` |
 | N-12 | No silent git corruption or lost changes | `test-git-consistency` (new): concurrent commits, staging, rebase/reset, branch switches, worktrees, submodules, LFS, interrupted sync; conflicts surfaced (§5.6.4) |
-| N-13 | Gateway compromise is confined to one session | `test-gateway-confinement` (new): code execution as the gateway user cannot read the broker store, other sessions' namespaces, or VM root files |
+| N-13 | Gateway compromise is confined to one session | `test-gateway-confinement` (new): code execution as the gateway user cannot read the broker store, the gateway CA private key, other sessions' namespaces, or VM root files |
 | N-14 | Gateway protocol confusion is denied | `test-gateway-protocol` (new): no SNI, ECH with a non-allowlisted outer SNI, SNI/authority mismatch, HTTP/2 coalescing to an unbound authority, CONNECT from the guest, request smuggling, malformed ClientHello, oversized DNS |
 | N-15 | `sandboxd` recovers from crashes without leaks | `test-sandboxd-recovery` (new): kill `sandboxd` at each lifecycle state; on restart no orphaned microVM, namespace, broker, or binding survives and no new session is admitted before reconciliation |
 | N-16 | Audit suppression is detectable | `test-audit-gap` (new): dropping records in the VM produces an `audit_gap` event on the host |
-| N-18 | Agent history never crosses tiers | `test-history-tier-isolation` (new): history written by a Tier 2 session on a repo is absent from a Tier 3 session of the same agent on the same repo, and vice versa |
 | N-17 | No token substitution through the host | Structural: no VM → host token flow (§5.1.5); plus `test-token-identity` (new): a broker refresh returning a different account is rejected |
+| N-18 | Agent history never crosses tiers | `test-history-tier-isolation` (new): history written by a Tier 2 session on a repo is absent from a Tier 3 session of the same agent on the same repo, and vice versa |
+| N-19 | VM-origin refs, tags, and objects cannot reach the operator's publish path | `test-sync-refs` (new): a guest that moves `main`, adds a tag, rewrites `refs/remotes/origin/main`, writes alternates or `shallow`, or plants a corrupt loose object produces no change to those host refs or files; a fast-forward on a feature branch applies; a non-fast-forward update, a protected-branch update, and a branch deletion appear in `sandbox sync review`; a valid `HEAD` switch applies and an invalid one is refused |
+| N-20 | Index sync is seamless and safe | `test-sync-index` (new): host `git status` is clean after a VM commit, a VM branch switch, a host merge, and an agent-resolved conflict; adversarial index entries (a staged malicious blob with a benign file, `skip-worktree`, `assume-valid`, protected paths, gitlinks, a split-index pointer, crafted extensions, an oversized or truncated index) are withheld or dropped |
+| N-21 | The exec-plugin pump runs only the captured invocation | `test-pump-integrity` (new): a pump request with altered args or env, an unknown index, or an unknown session is refused; mints are rate-limited |
+| N-22 | VM-initiated browser open is bounded | `test-onboard-browser` (new): a request with no foreground `sandbox onboard`, a second request in one onboarding, a matching host with a wrong path or `client_id`, and a device code for an unlisted client are all refused |
+| N-23 | `.gitattributes` cannot select operator git drivers | `test-sync-gitattributes` (new): a guest-written `filter=`, `diff=`, or `merge=` attribute is quarantined; the git-lfs triple and driverless attributes pass |
+| N-24 | No silent image downgrade | `test-image-rollback` (new): an older, correctly signed image is refused without `--allow-downgrade`; a signature from a different identity is refused |
 
 ### 7.3 Footprint and capability criteria
 
@@ -1403,6 +1645,7 @@ can run in parallel:
 | 3 | S4 | Can a host-side gate keep sync safe and git consistent? |
 | 4 | S2 | Can every agent and credential workflow be brokered? |
 | 5 | S5 | Can a mature proxy implement the gateway contract? |
+| any, early | S8 | Can the policy layer be ported to Go with identical gate behaviour? |
 
 ### S1 — Kata without Kubernetes: storage, networking, sizing
 
@@ -1480,14 +1723,20 @@ can run in parallel:
   stage VM → host changes for the host-side gate (§5.6.2) instead of applying
   them itself? Does the Git consistency contract (§5.6.4) hold? What is
   performance on APFS, ext4, and NTFS? What is the conflict and quarantine UX?
-  Which auto-executing files belong in the exec-vector list (OQ-07)?
+  Which auto-executing files belong in the exec-vector list (OQ-07)? Can the
+  host binary parse, merge, and write the index (§5.6.2 rule 7) so that host
+  `git status` is clean after a VM commit, a VM branch switch, a host merge,
+  and an agent-resolved conflict, with no git execution on the host? If not,
+  does the HEAD-derived reconcile fallback hold?
 - **Adversarial cases (required):** a **tampered VM-side sync endpoint** (not
   just writes from inside the guest) attempting masked paths, exec-vector
   paths, case-only renames and case aliases, Unicode-normalization aliases,
   symlinks and hard links out of the repo, junctions/reparse points (NTFS),
   file-type changes, concurrent replacement, and oversized files.
-- **Exit:** P-11, P-12, P-13, N-07, N-11, and N-12 prototypes pass on APFS,
-  ext4, and NTFS; initial sync and incremental latency documented.
+- **Exit:** P-11, P-12, P-13, N-07, N-11, N-12, N-19, N-20, and N-23
+  prototypes pass on APFS, ext4, and NTFS; the "what each side sees" table
+  (§5.6.4) holds with seconds of latency; initial sync and incremental latency
+  documented.
 - **Fallback:** an alternative engine for host → VM, with the host-side gate
   unchanged; or, for git, transactional transfer by bundle (§5.6.4).
 
@@ -1518,9 +1767,10 @@ can run in parallel:
 ### S7 — Host-reach control per driver
 
 - **First option:** a host-side userspace network stack as the VM's only NIC
-  (gvisor-tap-vsock / gvproxy), with allow/deny implemented in the host binary
-  and configured only by the operator's declared endpoints. Measure
-  throughput.
+  (gvisor-tap-vsock), run by `sandbox netd` (D-31), with allow/deny
+  implemented in `netd` and configured only by the operator's declared
+  endpoints. Confirm that Lima (vz and qemu) and Hyper-V accept an external
+  socket as the VM's NIC. Measure throughput.
 - **Alternative:** per-driver native controls for `lima-vz`, `lima-qemu`, and
   the Windows driver.
 - **Questions:** How is the VM kept from host addresses, host aliases, and host
@@ -1530,18 +1780,46 @@ can run in parallel:
   the same path? How do host firewalls and corporate endpoint security see the
   traffic?
 - **Exit:** N-02 passes on macOS and Linux (and Windows, best effort) after VM root removes every
-  VM-local rule; local k3d (via `host_endpoints`) and a VPN-only endpoint both
-  work.
+  VM-local rule, including with the host CLI detached and after a `netd`
+  restart; local k3d (via `host_endpoints`) and a VPN-only endpoint both work,
+  including for a detached `--keep-alive` Tier 3 session.
+- **Also confirm:** `plain: true` (or the ignore-all `portForwards` rule)
+  stops Lima publishing VM listeners on host loopback, and removes nothing
+  the appliance needs (§5.2.5); `netd` restart behaviour (the VM fails closed
+  and recovers); and the detached `--keep-alive` case (§5.2.6).
 - **Fallback:** the other option.
+
+### S8 — Policy-layer port pilot
+
+- **Questions:** Can the secret gate (betterleaks driving, encrypted-at-rest
+  exemptions, vetted exceptions, audited overrides) and vetting verification
+  (including the hardened git handling) be ported to Go with identical
+  outcomes? What differential harness is needed (fixture repos, golden
+  outputs, a bash-versus-Go runner, structured comparison of exit codes,
+  stdout, audit records, and files written)? Which v2 tests are unit tests of
+  bash functions that must be rewritten rather than re-run? What is the real
+  size and shape of `bin/sandbox` and `lib/*.sh` (an inventory, so the port
+  order and estimate rest on evidence)?
+- **Exit:** zero differences between the bash and Go implementations on the
+  full v2 corpus for the secret gate and vetting, plus new adversarial cases
+  (hostile repo config, odd encodings, path aliasing); a harness reusable for
+  every later module; a measured port plan with order and estimate; findings
+  in `docs/design/spikes/S8.md`.
+- **Fallback:** if a module cannot be ported with identical behaviour without
+  redesign, record why and re-decide in writing (§0): either redesign that
+  module with the owner's sign-off, or keep it in bash for v3.0.0 behind the
+  same session-spec seam. An unverified port does not ship.
 
 ---
 
 ## 9. Testing strategy
 
 - **Policy layer:** the existing unit tests that do not depend on Kubernetes
-  carry over (about 62% of current test lines: secret gate, vetting, audit,
-  link, profile, config, blocked lists, catalogue, onboarding). They run on
-  GitHub-hosted Linux runners on every PR, as today.
+  (about 62% of current test lines: secret gate, vetting, audit, link,
+  profile, config, blocked lists, catalogue, onboarding) are ported to Go with
+  their modules. Until a module's bash is deleted, its tests run against both
+  implementations (differential, S8). They run on GitHub-hosted Linux runners
+  on every PR, as today.
 - **Go host binary:** unit tests with a mock driver on GitHub-hosted macOS,
   Linux, and Windows runners on every PR.
 - **Enforcement suite (the bulk of §7):** runs against real sessions inside the
@@ -1564,7 +1842,8 @@ can run in parallel:
 - **No silent skips:** a test that cannot run MUST fail in CI, not exit 0
   (today `skip()` exits 0, `tests/helpers.sh`).
 - **Independent security review** of `sandboxd`, the sync gate, the gateway,
-  and the broker is a v3.0.0 release gate (§11). They replace widely tested
+  the broker, and the ported policy gates (secret gate, vetting verification,
+  blocked-destination checks) is a v3.0.0 release gate (§11). They replace widely tested
   components (kubelet, Cilium) with new security-critical code.
 - **Parity matrix** is the release checklist; CI produces a matrix report per
   platform for every release candidate.
@@ -1578,10 +1857,15 @@ can run in parallel:
 - **Host binary:** Homebrew tap, winget, `.deb` and `.rpm` (RHEL-family users
   exist), and direct download. macOS notarization, Windows Authenticode, and
   cosign signatures on all artifacts.
-- **Image:** OCI artifact (§5.3.2), signature-verified before boot.
+- **Image:** OCI artifact (§5.3.2), signature-verified before boot, against a
+  pinned signing identity, with anti-rollback (below).
 - **`sandbox upgrade`** updates the binary, then the image: download, verify,
   stop the VM, swap the system disk (keeping the previous one for rollback),
-  boot, and run state-disk migrations. Sessions must be stopped first.
+  boot, and run state-disk migrations. Sessions must be stopped first. The host
+  binary refuses an image older than the highest installed `IMAGE_VERSION`
+  unless `--allow-downgrade` is passed, which is audited. The retained
+  previous system disk is used automatically only when the new image fails its
+  first boot or capability probe, and that is audited too.
 - **Releases MUST be signed tags.** v2 release tags are lightweight and
   unsigned and the update path only warns (`bin/sandbox:3330-3335`).
 - **Air gap:** the binary accepts an alternate artifact source (internal OCI
@@ -1598,10 +1882,15 @@ Each step leaves the tree releasable or gated behind a flag.
 2. **Merge the credential-brokering design** and the phase-5 dependency design
    from their branches to `master` (seven files on `master` already cite the
    phase-5 doc).
-3. **Spikes S1–S7.** Provision the self-hosted runners.
+3. **Spikes S1–S8.** Provision the self-hosted runners.
 4. **Image pipeline:** build, sign, and boot the appliance image with the v2
    bash CLI inside (still k3s + gVisor for this step only), on Linux and macOS
-   via Lima. Remove host mounts.
+   via Lima. Remove host mounts. The bash CLI is a temporary scaffold here.
+   **Policy-layer port** (D-34) runs in parallel from this step until release:
+   S8 pilots the secret gate and vetting, then modules are ported in the order
+   S8 records (shared rule tables, config, and checks first; the CLI and audit
+   last), each differential-tested against the frozen bash before its bash is
+   deleted.
 5. **Go host binary** with `lima-vz` / `lima-qemu` drivers, the handshake,
    operator-state push, typed pulls, and the host operations. `bin/sandbox` on
    the host becomes the Go binary.
@@ -1629,8 +1918,10 @@ Each step leaves the tree releasable or gated behind a flag.
     pages; update `docs/explanation/comparisons.md`; update PRINCIPLES.md for
     the new boundaries, brokering, agent history, and teardown guarantees.
 14. **Independent security review** of `sandboxd`, the sync gate, the
-    gateway, and the broker; findings fixed or accepted in the decision log.
-15. **Release v3.0.0** when §7 passes on macOS and Linux. Windows follows in
+    gateway, the broker, and the ported policy gates; findings fixed or
+    accepted in the decision log.
+15. **Release v3.0.0** when §7 passes on macOS and Linux and the v2 bash is
+    deleted from the v3 line. Windows follows in
     a later release when §7 passes there (D-29).
 
 ---
@@ -1642,8 +1933,8 @@ Each step leaves the tree releasable or gated behind a flag.
   that compromises the guest kernel can blind it, so it is detection, not
   containment. The gateway log is the v3 audit baseline.
 - **F2 — Lima HCS on Windows** (if S3 chose direct Hyper-V).
-- **F3 — Policy layer in Go.** Optional rewrite of `lib/*.sh` once v3 is
-  stable.
+- **F3 — Policy layer in Go.** Promoted into v3.0.0 (D-34, S8); no longer a
+  future phase.
 - **F4 — Cluster deployment.** The session spec, gateway, broker, and policy
   layer are substrate-independent, so a shared-cluster deployment (for example
   on Agent Substrate) remains possible.
@@ -1664,18 +1955,19 @@ Each step leaves the tree releasable or gated behind a flag.
 | ID | Question | Default if unanswered |
 |---|---|---|
 | OQ-01 | If S2 finds an agent cannot be brokered, is it disabled in v3.0.0 unless an org overlay explicitly allows the exception? | Disabled unless allowed; audited per session |
-| OQ-02 | Is the `git push` deny a hard org baseline, or overlay-configurable? | Org baseline; overlay may relax only for named hosts |
+| OQ-02 | Is the `git push` deny a hard org baseline, or overlay-configurable? | Org baseline, applied by protocol to every intercepted host (§5.8.5); overlay may relax only for named hosts |
 | OQ-03 | arm64 Linux and arm64 Windows hosts in scope for v3.0.0? | Linux arm64 yes; Windows arm64 no |
 | OQ-04 | Image hosting and retention | ghcr.io public + documented mirror procedure |
-| OQ-05 | v2 support window after v3.0.0 | Security fixes for one minor cycle on macOS and Linux; on Windows, until a v3 release supports Windows |
+| OQ-05 | v2 support window after v3.0.0 | Security fixes for one minor cycle on macOS and Linux; on Windows, until a v3 release supports Windows. v2 stays bash on its own branch |
 | OQ-06 | Refuse (rather than warn) Tier 3 sessions sharing a tree with lower-tier sessions? | Warn; overlay may deny |
-| OQ-07 | Final exec-vector list | §5.6.2 list plus anything S4 finds that auto-executes without a trust prompt |
+| OQ-07 | Final exec-vector list | §5.6.2 list plus anything S4 finds that auto-executes without a trust prompt; `.gitattributes` driver selection is handled by §5.6.2 rule 8 |
 | OQ-08 | Log retention: enforce `retention_days`, or drop the claim? | Enforce in `sandbox cleanup`, per tier; VM keeps 7 days after pull |
 | OQ-09 | Exec-plugin tokens for a keep-alive session after the operator detaches | Token expires; requests fail closed until the operator re-attaches |
 | OQ-10 | Multi-label wildcard form: `**.` or a per-entry flag? | `**.` |
 | OQ-11 | Keep `sandbox rebuild` (buildkit in the image) or ship agent images only through image releases? | Keep; buildkit GC caps from v2 carried over |
 | OQ-12 | Should agent history also be separated by tier? | **Resolved (rev. 3): yes**, agent + repo + tier (D-14) |
 | OQ-13 | If S3 finds no hardware-isolated backend on Windows, does v3.0.0 wait? | **Resolved (rev. 3): no.** v3.0.0 ships on macOS and Linux; Windows stays on v2 until it passes §7 (D-29) |
+| OQ-14 | Does the in-VM policy CLI shell out to `git` or use a Go git library? | Shell out, with v2's hardening ported (§5.4.1); revisit only if S8 finds a gap |
 
 ---
 
@@ -1699,7 +1991,7 @@ Each step leaves the tree releasable or gated behind a flag.
 | D-14 (amended rev. 3) | **Agent history per agent, repo, and tier; executable agent config and global instructions re-staged each launch as a discarded writable copy; tokens only in the broker** | v2's per-agent shared, writable home lets one session read tokens and plant config for another across repos and tiers. Separating by tier stops lower-tier history from steering an agent with higher-tier access; the cost (no cross-tier resume) is accepted by the owner | Per agent (v2); per agent and tier; per agent and repo (rev. 2) |
 | D-15 | **VM reaches host services only via operator-declared Tier 3 endpoints**, enforced host-side | Keeps local k3d and VPN-only clusters working without exposing host loopback to VM root | No host reach (loses v2 capabilities); unrestricted Lima host access |
 | D-16 | **VM → host flows are host-pulled, typed, validated, append-only** | VM root is in the threat model | VM writes host state directly |
-| D-17 | Keep the bash policy layer; it emits a session spec | Preserves the tested gates; only the Kubernetes-coupled parts are rewritten | Full Go rewrite for v3.0.0 (F3) |
+| D-17 (reversed by D-34) | Keep the bash policy layer; it emits a session spec | Rev. 1–3 rationale: preserves the tested gates; only the Kubernetes-coupled parts are rewritten. The session-spec boundary itself stays (§5.4.2) | Full Go rewrite for v3.0.0 (F3), now adopted as D-34 |
 | D-18 | Do not run sandboxes directly on the host as per-session microVMs | Loses the second boundary, needs three VMM integrations and three native egress stacks, and keeps untrusted-repo git on the host | — |
 | D-19 (amended rev. 3) | Exec-plugin kubeconfigs supported via a host-side token pump; only cluster-scoped plugins by default | Brokering design R1; auth-provider state must stay on the host; general-purpose cloud tokens would widen what VM root can steal | Reject exec plugins (rev. 1, and a regression from v2's `--allow-exec-plugin`); pump every plugin |
 | D-20 | Vetting attestations signed without git execution on the host: host reads refs as files and signs the canonical tag payload; VM assembles the tag | Removes the last host-side git run against an untrusted repo; tag format unchanged, so existing attestations stay valid | Host `git tag -s` with pinned programs (rev. 2; v2's approach) |
@@ -1710,8 +2002,13 @@ Each step leaves the tree releasable or gated behind a flag.
 | D-25 | Git is shared through an explicit consistency contract (§5.6.4); concurrent same-branch mutation unsupported, `--worktree` for concurrency | File sync does not preserve git transactions; v2 macOS already has this risk unmanaged | Silent best-effort sync |
 | D-26 | Each session's gateway, resolver, and broker run unprivileged in a per-session network namespace under seccomp | They are the guest's first attack surface; a shared root namespace would turn one parser bug into VM root and make cross-session isolation depend on nftables alone | Gateways in the VM root namespace (rev. 2) |
 | D-27 | Mature proxy data plane (Envoy default) with a small Go controller | Avoid writing security-critical TLS/HTTP parsing | Purpose-built proxy, unless S5 documents why |
-| D-29 | **Windows is best effort for v3.0.0**; the release gates on macOS and Linux | No work-provisioned Windows machine is available to test the least certain assumption (nested Kata on Hyper-V, under corporate VBS policy); holding the release on it would block the platforms that can be verified. Windows keeps the same security contract when it ships | Gate v3.0.0 on all three platforms (rev. 2–3); ship a weaker Windows build |
 | D-28 | mTLS client-certificate re-origination is R1 in v3 | The repo's own Teleport recipe produces client-cert kubeconfigs; deferring would ship the primary Tier 3 path as a readable exception | Defer to R2 (brokering design, rev. 2) |
+| D-29 | **Windows is best effort for v3.0.0**; the release gates on macOS and Linux | No work-provisioned Windows machine is available to test the least certain assumption (nested Kata on Hyper-V, under corporate VBS policy); holding the release on it would block the platforms that can be verified. Windows keeps the same security contract when it ships | Gate v3.0.0 on all three platforms (rev. 2–3); ship a weaker Windows build |
+| D-30 | **VM-origin refs, `HEAD`, and the index are merged by the host-side gate, not copied**: fast-forward-only on unprotected branches, validated `HEAD`, entry-level index merge; tags, remotes, reflogs, and alternates never | Closes review F1 (VM-written refs, tags, and alternates reaching the operator's publish path) while keeping commits on the operator's behalf, branch switching, staging, and conflict resolution seamless (G9). Protected-branch policy moves from a hook the agent can skip to the gate | Two-way ref sync with no gate (rev. 3); a per-session ref namespace with explicit promotion of every commit (rejected: friction); refs never sync (rejected: breaks commit workflows) |
+| D-31 | **`sandbox netd`**, a mode of the signed host binary launched detached with the VM, owns the VM's NIC and the host-reach control | The control must outlive the CLI (detached keep-alive sessions) and fail closed. A named, signed owner removes the unspecified-owner default-allow risk, and our own policy code gives exact per-endpoint scope and lifetime | Lima host agent plus gvproxy with static configuration (acceptable if S7 shows it meets §5.2.6); a launchd/systemd service (install and endpoint-security footprint); a control that exists only while the CLI runs (breaks detached Tier 3 keep-alive) |
+| D-32 | Broker store key held in the host keychain, pushed at VM start | A stolen or backed-up state disk cannot be read; the host binary starts the VM, so normal starts add no delay | Key on the state disk (cosmetic encryption); key file under `~/.sandbox` (copied by home backups; kept only as the headless-Linux fallback) |
+| D-33 | The L7 baseline is protocol rules on every intercepted destination | A domain-keyed baseline leaves operator-added git hosts and registries with brokered credentials unprotected | Domain-keyed baseline (rev. 3) |
+| D-34 | **Port the bash policy layer to Go for v3.0.0**: one language, one module, several binaries, trust boundaries kept. The v2 bash stays in the tree as a frozen test oracle until release, and each module is differential-tested before its bash is deleted (S8) | Two languages double the maintenance surface, let the sync gate, the host rule tables, and the policy layer drift apart, and put the fail-closed gates (secret gate, vetting, blocked destinations) in the language least suited to them. The team's Go experience has grown, and Go suits staged, AI-assisted implementation. The release is not time-boxed, so the port can be validated first | Keep bash for v3.0.0 and port later (rev. 3, D-17); port after release (rejected by the owner, to avoid carrying two languages into the first v3 release) |
 
 ---
 
@@ -1824,8 +2121,8 @@ config, overlay, and vetting key in `docs/reference/configuration.md` and
   `uninstall.sh`: about 2,800 lines.
 - Lima/WSL/PowerShell platform code: about 1,800 lines.
 - `bin/sandbox`: about 33–35% (≈1,800 lines) is Kubernetes/Cilium-coupled;
-  about 50% is pure policy and UX that carries over.
-- Tests: about 62% of lines are policy unit tests that carry over; about 25%
+  about 50% is pure policy and UX that is ported to Go (D-34).
+- Tests: about 62% of lines are policy unit tests, ported with their modules; about 25%
   assert Kubernetes/Cilium/gVisor mechanisms and are replaced.
 
 ## Appendix B — v2 defects found during this review
@@ -1911,3 +2208,28 @@ narrowed or answered differently.
 | F-18 | Explicit memory budget | Accepted (same as R-06) | P-24 |
 | F-19 | Agent-native sandboxes optional | Already addressed in S1; wording added | §5.5.1 |
 | Order | Spike order | Accepted | §8 |
+
+### Reviewer C (revision 3, commit `6771431`)
+
+The reviewer's line citations were checked against the document and match.
+The git and Lima behaviours F1, F4, and F10 rely on were reported as tested or
+read from source by the reviewer; the authors have not re-run them, and S4 and
+S7 confirm them against the versions in use. Where a fix would have removed a
+v2 collaboration workflow, it was reshaped to keep the workflow (G9) and the
+protection together.
+
+| ID | Finding | Disposition | Where |
+|---|---|---|---|
+| F1 | VM-origin refs, `HEAD`, tags, and objects reach the host `.git` unreviewed | Accepted, reshaped: fast-forward-only apply on unprotected branches (not a per-session namespace, which would add a manual step to every commit), validated `HEAD` switching, protected branches and non-fast-forward updates quarantined, tags, remotes, reflogs, alternates, and `shallow` never synced, object hash verification, a ledger surfaced at vet time, and entry-level index merge so collaboration stays seamless | §5.1.3, §5.6.2 rules 2 and 6–7, §5.6.4, §5.13, N-19, N-20, D-30 |
+| F2 | Push and publish baseline keyed to named domains | Accepted: protocol rules on every intercepted destination; the passthrough residual is stated | §5.8.5, N-06, OQ-02, D-33 |
+| F3 | Broker does not scrub injected values from responses | Accepted: response scanning, `credential_reflection` event, `TRACE`/`TRACK` denied; body scanning cost measured in S5 | §5.8.5, §5.9.3, N-04 |
+| F4 | Lima default port forwarding publishes VM listeners on host loopback | Accepted: `plain: true` or an ignore-all rule is normative; S7 confirms | §5.2.5, S7, N-02 |
+| F5 | Exec-plugin args and env have no stated source | Accepted: the invocation is captured on the host at `run`; the VM sends only an index | §5.1.3, §5.9.5, N-21 |
+| F6 | VM-initiated browser open and device code allow phishing | Accepted: foreground onboard only, once, URL templates, host-side client label | §5.1.3, N-22 |
+| F7 | Host-reach control has no owner and per-session scoping cannot be host-side | Accepted: `sandbox netd` named and required to fail closed; scoping wording corrected | §5.1.1, §5.2.6, S7, D-31 |
+| F8 | Operator-state push sends all of `secrets/` and persists it | Accepted: bound secrets only, staging deleted, broker key in the host keychain | §5.1.4, §5.4.3, §5.9.2, D-32 |
+| F9 | Gateway leaf-certificate source unspecified | Accepted: `sandboxd` issues a per-session name-constrained intermediate; the gateway never holds the CA key | §5.10, N-13 |
+| F10 | `.gitattributes` can select operator git drivers | Accepted: driver attributes quarantined; the git-lfs triple passes | §5.6.2 rule 8, OQ-07, N-23 |
+| F11 | No anti-rollback for signed images | Accepted, with a failed-boot rollback exception; `limactl` is path-pinned rather than hashed, since a hash would break on every Lima upgrade | §5.1.2, §5.3.2, §10, N-24 |
+| F12 | Placeholder block possible only on intercepted connections | Accepted (wording) | §5.9.3, N-05 |
+| F13 | Document hygiene | Accepted: blocks and rows reordered without changing any ID | §5.8.10, §7.2, §14 |
