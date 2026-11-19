@@ -2078,7 +2078,11 @@ can run in parallel:
   point: none ran). Pilot 7 adds the drift decision and the launch gate (zero divergences on
   2,796 cases, 922 of them on a pseudo-terminal). Pilot 8 adds the committed-exception readers, the secret
   gate's accept-list source, and the signing-key state (zero divergences on 1,056
-  cases). Attestation itself and the rest of the policy layer are not ported.
+  cases). Pilot 9 ports attestation (signing, exception acknowledgment, the inline
+  attest, signing setup; zero divergences on 997 cases with real SSH signing),
+  which completes `lib/vetting.sh`. Along the way it found that git 2.43 (Ubuntu
+  24.04) creates an unsigned tag when its SSH signer fails; see
+  `docs/design/spikes/S8.md`. The rest of the policy layer is not ported.
 
 ---
 
