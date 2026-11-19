@@ -11,6 +11,7 @@
 package gate
 
 import (
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
 	"os"
 	"regexp"
 	"strconv"
@@ -89,7 +90,10 @@ func sopsContains(lines []string, n, sc, ec float64) bool {
 		if float64(i+1) != n {
 			continue
 		}
-		s := sc - 1 // real match start (1-based)
+		s := sc - 1 // legacy: the bash assumed the scanner reports the start one past the real start
+		if deviation.Fixed(deviation.ExactColumns) {
+			s = sc // betterleaks reports exact 1-based byte columns
+		}
 		pos := 1
 		for {
 			sub := awkSubstr(rec, pos)

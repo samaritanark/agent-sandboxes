@@ -1,6 +1,7 @@
 package gate
 
 import (
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
 	"os"
 	"os/exec"
 	"strings"
@@ -35,8 +36,13 @@ func LeakscanFindingAccepted(acceptFile, realRepo, relpath, rule, line string) b
 		return false
 	}
 	// Tracked-file gate. fsmonitor and hooks are disabled so an untrusted repo config cannot exec
-	// anything on this read. relpath is a git pathspec here, exactly as in the bash.
+	// anything on this read. The bash passed relpath as a pathspec (so `d*` or `:(top)x` matched
+	// other tracked files); the LiteralPathspec fix makes it a literal path.
+	spec := relpath
+	if deviation.Fixed(deviation.LiteralPathspec) {
+		spec = ":(literal)" + relpath
+	}
 	cmd := exec.Command("git", "-C", realRepo, "-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null",
-		"ls-files", "--error-unmatch", "--", relpath)
+		"ls-files", "--error-unmatch", "--", spec)
 	return cmd.Run() == nil
 }

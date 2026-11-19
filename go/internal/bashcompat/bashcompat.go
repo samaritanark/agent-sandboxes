@@ -5,6 +5,7 @@ package bashcompat
 
 import (
 	"fmt"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -269,4 +270,17 @@ func ArithCmp(a, b, op string) bool {
 		return x > y
 	}
 	return x == y
+}
+
+// SplitTab splits a tab-separated record into exactly n fields (the last takes the rest). With the
+// TabFieldsExact fix on, every tab separates fields, so an empty field stays empty; in legacy mode
+// it is `IFS=$'\t' read`, which collapses runs of tabs and shifts later fields left.
+func SplitTab(line string, n int) []string {
+	if !deviation.Fixed(deviation.TabFieldsExact) {
+		return ReadTab(line, n)
+	}
+	out := make([]string, n)
+	parts := strings.SplitN(line, "\t", n)
+	copy(out, parts)
+	return out
 }

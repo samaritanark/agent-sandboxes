@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
 	"io"
 	"os"
 	"os/exec"
@@ -165,8 +166,15 @@ func LeakscanConfig(e config.Env, repo string) string {
 			}
 		}
 	}
-	out, _ := exec.Command("git", "-C", repo, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory").Output()
-	for _, d := range strings.Split(string(out), "\n") {
+	lsArgs := []string{"-C", repo, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory"}
+	sep := "\n"
+	if deviation.Fixed(deviation.RawPathNames) {
+		// NUL-delimited output is not C-quoted, so non-ASCII directory names match the list.
+		lsArgs = append(lsArgs, "-z")
+		sep = "\x00"
+	}
+	out, _ := exec.Command("git", lsArgs...).Output()
+	for _, d := range strings.Split(string(out), sep) {
 		d = strings.TrimSuffix(d, "/")
 		if d == "" {
 			continue
@@ -251,6 +259,9 @@ func reportIsArray(b []byte) bool {
 		return false
 	}
 	_, isArr := last.([]any)
+	if deviation.Fixed(deviation.StrictReportShape) && n != 1 {
+		return false
+	}
 	return isArr
 }
 
@@ -298,12 +309,19 @@ func tostringField(v any) string {
 // processed independently, an error abandons the rest of that value.
 func reportRows(report []byte, fields []string, stringify map[string]bool) [][]string {
 	var rows [][]string
+	first := true
 	dec := json.NewDecoder(bytes.NewReader(report))
 	dec.UseNumber()
 	for {
 		var v any
 		if err := dec.Decode(&v); err != nil {
 			break
+		}
+		if deviation.Fixed(deviation.StrictReportShape) {
+			if !first {
+				break // a report is one value; the rest is not read
+			}
+			first = false
 		}
 		var elems []any
 		switch x := v.(type) {
@@ -414,7 +432,7 @@ func ScanRepoSecrets(e config.Env, repo, acceptFile string, warn io.Writer) []st
 	data, _ := os.ReadFile(reportPath)
 	for _, r := range reportRows(data, []string{"File", "RuleID", "StartLine", "StartColumn", "EndColumn", "Match"},
 		map[string]bool{"StartLine": true, "StartColumn": true, "EndColumn": true}) {
-		f := bashcompat.ReadTab(strings.Join(r, "\t"), 6)
+		f := bashcompat.SplitTab(strings.Join(r, "\t"), 6)
 		file, ruleid, line, startcol, endcol, match := f[0], f[1], f[2], f[3], f[4], f[5]
 		if file == "" {
 			continue
@@ -445,7 +463,7 @@ func ScanRepoSecrets(e config.Env, repo, acceptFile string, warn io.Writer) []st
 		}
 		data, _ := os.ReadFile(reportPath)
 		for _, r := range reportRows(data, []string{"File", "RuleID", "StartLine", "Match"}, map[string]bool{"StartLine": true}) {
-			f := bashcompat.ReadTab(strings.Join(r, "\t"), 4)
+			f := bashcompat.SplitTab(strings.Join(r, "\t"), 4)
 			if f[0] == "" {
 				continue
 			}
@@ -454,3 +472,6 @@ func ScanRepoSecrets(e config.Env, repo, acceptFile string, warn io.Writer) []st
 	}
 	return out
 }
+
+// splitScanLine splits one line of scan_repo_secrets output (class, relpath, rule, line, match).
+func splitScanLine(line string) []string { return bashcompat.SplitTab(line, 5) }

@@ -15,10 +15,11 @@ const mod = "git.theark.cloud/acs/agent-sandboxes/go/internal/"
 
 // allowed lists, per package, the internal packages its production code may import.
 var allowed = map[string][]string{
-	"bashcompat": {},
-	"config":     {"bashcompat"},
-	"gate":       {"bashcompat", "config"},
-	"vetting":    {"bashcompat", "config"}, // the gate is injected, never imported
+	"deviation":  {},
+	"bashcompat": {"deviation"},
+	"config":     {"bashcompat", "deviation"},
+	"gate":       {"bashcompat", "config", "deviation"},
+	"vetting":    {"bashcompat", "config", "deviation"}, // the gate is injected, never imported
 }
 
 func TestImportGraph(t *testing.T) {

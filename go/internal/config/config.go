@@ -3,6 +3,7 @@
 package config
 
 import (
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -125,9 +126,10 @@ func isSpace(b byte) bool {
 // "<key>:" block list in a flat YAML file, one per element. key must not contain regex
 // metacharacters (the awk interpolates it into a regex; every caller passes a fixed word).
 //
-// Quirk kept from the original: a list line, or an item left after the leading "- " is removed,
-// that is exactly -n, -e or -E (or a combination) is swallowed, because the bash passes it to the
-// echo builtin, which reads it as an option. (A list entry named "-n" can therefore never be a mask.)
+// In legacy mode (see package deviation) a list line, or an item left after the leading "- " is
+// removed, that is exactly -n, -e or -E (or a combination) is swallowed, because the bash passes
+// it to the echo builtin, which reads it as an option; with the EchoOptionItems fix such an entry
+// is kept.
 func ExtractYAMLList(path, key string) []string {
 	st, err := os.Stat(path)
 	if err != nil || !st.Mode().IsRegular() {
@@ -156,7 +158,7 @@ func ExtractYAMLList(path, key string) []string {
 		if !strings.HasPrefix(t, "-") {
 			continue
 		}
-		if echoOption.MatchString(line) {
+		if !deviation.Fixed(deviation.EchoOptionItems) && echoOption.MatchString(line) {
 			continue
 		}
 		item := listItemLead.ReplaceAllString(line, "")
@@ -172,7 +174,7 @@ func ExtractYAMLList(path, key string) []string {
 		if item == "" || item[0] == '#' {
 			continue
 		}
-		if echoOption.MatchString(item) { // the final `echo "${item}"` swallows it the same way
+		if !deviation.Fixed(deviation.EchoOptionItems) && echoOption.MatchString(item) { // the final `echo "${item}"` swallows it the same way
 			continue
 		}
 		out = append(out, item)

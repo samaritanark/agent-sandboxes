@@ -3,6 +3,7 @@ package gate
 import (
 	"bufio"
 	"fmt"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
 	"io"
 	"os"
 	"os/exec"
@@ -29,7 +30,7 @@ type GateDeps struct {
 
 func printUnmaskedFindings(w io.Writer, entries []string) {
 	for _, e := range entries {
-		f := bashcompat.ReadTab(e, 5)
+		f := bashcompat.SplitTab(e, 5)
 		fmt.Fprintf(w, "    %s:%s:%s\n", f[1], f[2], f[3])
 		switch match := f[4]; {
 		case match == "":
@@ -44,15 +45,19 @@ func printUnmaskedFindings(w io.Writer, entries []string) {
 func printMaskAddCommands(w io.Writer, entries []string) {
 	var seenRepos []string
 	for _, e := range entries {
-		repo := bashcompat.ReadTab(e, 5)[0]
+		repo := bashcompat.SplitTab(e, 5)[0]
 		if contains(seenRepos, repo) {
 			continue
 		}
 		seenRepos = append(seenRepos, repo)
-		cmd := "        sandbox mask add --repo " + repo
+		repoArg := repo
+		if deviation.Fixed(deviation.QuoteRepoInMaskAdd) {
+			repoArg = bashcompat.QuoteQ(repo)
+		}
+		cmd := "        sandbox mask add --repo " + repoArg
 		var seenPaths []string
 		for _, e2 := range entries {
-			f := bashcompat.ReadTab(e2, 5)
+			f := bashcompat.SplitTab(e2, 5)
 			if f[0] != repo || contains(seenPaths, f[1]) {
 				continue
 			}
@@ -66,14 +71,18 @@ func printMaskAddCommands(w io.Writer, entries []string) {
 func printExceptionsAddCommands(w io.Writer, entries []string) {
 	var seenRepos []string
 	for _, e := range entries {
-		repo := bashcompat.ReadTab(e, 5)[0]
+		repo := bashcompat.SplitTab(e, 5)[0]
 		if contains(seenRepos, repo) {
 			continue
 		}
 		seenRepos = append(seenRepos, repo)
-		cmd := "        sandbox exceptions add --repo " + repo
+		repoArg := repo
+		if deviation.Fixed(deviation.QuoteRepoInMaskAdd) {
+			repoArg = bashcompat.QuoteQ(repo)
+		}
+		cmd := "        sandbox exceptions add --repo " + repoArg
 		for _, e2 := range entries {
-			f := bashcompat.ReadTab(e2, 5)
+			f := bashcompat.SplitTab(e2, 5)
 			if f[0] == repo {
 				cmd += " " + bashcompat.QuoteQ(f[1]+":"+f[2]+":"+f[3])
 			}
@@ -126,7 +135,7 @@ func SecretGateRepos(d GateDeps, accept, endpointTrusted, acceptUnvetted string,
 		af.Close()
 		lines := d.Scan(repo, af.Name())
 		for _, line := range lines {
-			f := bashcompat.ReadTab(line, 5)
+			f := bashcompat.SplitTab(line, 5)
 			m, relpath, ruleid, ln, match := f[0], f[1], f[2], f[3], f[4]
 			if relpath == "" {
 				continue

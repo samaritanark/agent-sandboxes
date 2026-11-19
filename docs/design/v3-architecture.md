@@ -2062,8 +2062,8 @@ can run in parallel:
   (about 130 lines of awk-based bash) is ported to Go in `go/internal/gate` with
   zero divergences from the bash oracle on 35,057 cases, a corpus whose
   sensitivity was checked by planting 22 bugs, and a live Linux oracle. The
-  oracle itself proved awk- and locale-dependent, and its column convention does
-  not match betterleaks 1.10.0; both are recorded. Pilot 2 adds
+  oracle itself proved awk- and locale-dependent, and its column handling assumes
+  an older scanner convention; both are recorded. Pilot 2 adds
   `is_path_masked`, `extract_yaml_list_from_file`, and
   `_leakscan_finding_accepted` (zero divergences on 42,601 further cases). The
   Pilot 3 ports `scan_repo_secrets` and its config, ignore-file, and scanner

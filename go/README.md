@@ -24,6 +24,11 @@ Layout so far:
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
 | `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |
 
+**Deliberate deviations.** Quirks of the bash found while porting are fixed as named
+deviations (`internal/deviation`). The differential tests (golden files and live
+oracle) run in legacy mode, with every fix off, so they keep proving the port matches the
+bash; each fix has its own test in `fixes_test.go`. The fixes are on in production.
+
 Not yet here (see S8): the host binary, the policy CLI, `sandboxd`, and the
 import-graph check from §5.1.1.
 
