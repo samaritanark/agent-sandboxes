@@ -284,3 +284,20 @@ func SplitTab(line string, n int) []string {
 	copy(out, parts)
 	return out
 }
+
+// Decimal parses a string of digits as a plain decimal number (leading zeros are not octal) and
+// clamps at the largest int64 instead of wrapping.
+func Decimal(s string) (int64, bool) {
+	if !digits.MatchString(s) {
+		return 0, false
+	}
+	var v uint64
+	for i := 0; i < len(s); i++ {
+		d := uint64(s[i] - '0')
+		if v > (1<<63-1-d)/10 {
+			return 1<<63 - 1, true
+		}
+		v = v*10 + d
+	}
+	return int64(v), true
+}

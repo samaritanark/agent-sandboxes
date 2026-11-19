@@ -4,9 +4,11 @@
 package vetting
 
 import (
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
 	"io"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
@@ -121,6 +123,13 @@ func (c Ctx) minCap(key string) string {
 		if !digits.MatchString(v) {
 			continue
 		}
+		if deviation.Fixed(deviation.DecimalNumbers) {
+			n, _ := bashcompat.Decimal(v)
+			if effN, _ := bashcompat.Decimal(eff); eff == "" || n < effN {
+				eff = strconv.FormatInt(n, 10)
+			}
+			continue
+		}
 		if eff == "" || bashcompat.ArithLess(v, eff) {
 			eff = v
 		}
@@ -136,7 +145,11 @@ func (c Ctx) AgeDays(epoch string) string {
 	if !digits.MatchString(epoch) {
 		return ""
 	}
-	e, ok := bashcompat.Arith(epoch)
+	arith := bashcompat.Arith
+	if deviation.Fixed(deviation.DecimalNumbers) {
+		arith = bashcompat.Decimal
+	}
+	e, ok := arith(epoch)
 	if !ok {
 		return ""
 	}

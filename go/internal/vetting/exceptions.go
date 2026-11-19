@@ -2,7 +2,9 @@ package vetting
 
 import (
 	"bytes"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
 	"os"
+	"regexp"
 	"strings"
 
 	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
@@ -15,9 +17,13 @@ const (
 	repoConfigRel  = ".sandbox/config.yaml"
 )
 
-// gitShow is `_vetting_git repo show <rev>:<path>`; ok is false when git fails.
+// gitShow is `_vetting_git repo show <rev>:<path>`; ok is false when git fails. With
+// BlobOnlyIgnoreFiles it is `cat-file blob`, which fails for a directory (show prints the tree).
 func gitShow(repo, rev, path string) ([]byte, bool) {
 	cmd := VettingGit(repo, "show", rev+":"+path)
+	if deviation.Fixed(deviation.BlobOnlyIgnoreFiles) {
+		cmd = VettingGit(repo, "cat-file", "blob", rev+":"+path)
+	}
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
@@ -125,7 +131,7 @@ func (c Ctx) VettedAcceptedFingerprints(repo, acceptUnvetted string) []string {
 		if b == "" {
 			b = "1"
 		}
-		if !bashcompat.ArithCmp(b, "0", "eq") {
+		if !numCmp(b, "0", "eq") {
 			return nil
 		}
 	}
@@ -135,11 +141,21 @@ func (c Ctx) VettedAcceptedFingerprints(repo, acceptUnvetted string) []string {
 	return LoadRepoIgnoreFingerprints(repo)
 }
 
+// literalKey matches an OpenSSH public key given literally (optionally as git's key:: form): a
+// known type, then base64.
+var literalKey = regexp.MustCompile(`^(key::)?(ssh-(ed25519|rsa|dss)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/]+=*( .*)?$`)
+
 // SSHKeyUsable is _vetting_ssh_key_usable: a literal SSH public key, or an existing key file.
 func (c Ctx) SSHKeyUsable(key string) bool {
-	for _, p := range []string{"ssh-", "sk-ssh-", "ecdsa-sha2-", "key::"} {
-		if strings.HasPrefix(key, p) {
+	if deviation.Fixed(deviation.StrictKeyLiteral) {
+		if literalKey.MatchString(key) {
 			return true
+		}
+	} else {
+		for _, p := range []string{"ssh-", "sk-ssh-", "ecdsa-sha2-", "key::"} {
+			if strings.HasPrefix(key, p) {
+				return true
+			}
 		}
 	}
 	return config.IsFile(c.tilde(key))

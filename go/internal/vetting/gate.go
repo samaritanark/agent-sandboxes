@@ -3,6 +3,7 @@ package vetting
 import (
 	"bufio"
 	"fmt"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
 	"io"
 	"strings"
 
@@ -68,8 +69,11 @@ func yes(r string) bool { return len(r) > 0 && (r[0] == 'y' || r[0] == 'Y') }
 // DriftDecision is _vetting_drift_decision: under `required`, whether a verified attestation that
 // is `behind` commits behind HEAD and/or stale may launch. It prints its reasoning.
 func (d GateDeps) DriftDecision(repo, tag, signer, behind, cap, ageDays, ageCap, acceptUnvetted, acceptDrift string) bool {
-	overCommit := cap != "" && bashcompat.ArithCmp(behind, cap, "gt")
-	overAge := ageCap != "" && ageDays != "" && bashcompat.ArithCmp(ageDays, ageCap, "gt")
+	overCommit := cap != "" && numCmp(behind, cap, "gt")
+	overAge := ageOver(ageDays, ageCap)
+	if ageDays == "" {
+		ageDays = unknownAge
+	}
 
 	if overCommit {
 		if acceptUnvetted == "true" {
@@ -177,6 +181,10 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 	if posture == "off" {
 		return 0, summary
 	}
+	shown := posture
+	if deviation.Fixed(deviation.UnknownPostureFailsClosed) && posture != "advisory" && posture != "required" {
+		posture = "required" // an unrecognised posture enforces, always
+	}
 	cfg := d.Cfg
 
 	overrideForbidden := false
@@ -207,7 +215,7 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 		return 0, fmt.Sprintf("posture=%s; no trust root — not verified", posture)
 	}
 
-	fmt.Fprintf(d.Out, "  Checking workspace vetting attestation(s) [posture: %s]...\n", posture)
+	fmt.Fprintf(d.Out, "  Checking workspace vetting attestation(s) [posture: %s]...\n", shown)
 	cap, ageCap := cfg.Cap, cfg.AgeCap
 	if cap != "" {
 		fmt.Fprintf(d.Out, "  Drift cap: attestations may be at most %s commit(s) behind HEAD.\n", cap)
@@ -225,8 +233,11 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 
 		if status == "vetted" {
 			ageDays := cfg.AgeDays(f6)
-			overAge := ageCap != "" && ageDays != "" && bashcompat.ArithCmp(ageDays, ageCap, "gt")
-			if bashcompat.ArithCmp(f5, "0", "eq") && !overAge {
+			overAge := ageOver(ageDays, ageCap)
+			if ageDays == "" {
+				ageDays = unknownAge
+			}
+			if numCmp(f5, "0", "eq") && !overAge {
 				fmt.Fprintf(d.Out, "  ✓ %s: vetted at %s (tag %s, signer %s)\n", repo, substr12(f2), f3, orUnknown(f4))
 				continue
 			}
@@ -240,7 +251,7 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 			driftDetail += repo + "(" + driftNote + ")"
 			if posture == "advisory" {
 				switch {
-				case cap != "" && bashcompat.ArithCmp(f5, cap, "gt"):
+				case cap != "" && numCmp(f5, cap, "gt"):
 					d.errln(fmt.Sprintf("  %s: vetted at %s, %s commit(s) behind HEAD — over cap %s (advisory, proceeding).", repo, substr12(f2), f5, cap))
 				case overAge:
 					d.errln(fmt.Sprintf("  %s: vetted at %s, attestation %s day(s) old — over the %s-day window (advisory, proceeding).", repo, substr12(f2), ageDays, ageCap))
@@ -318,10 +329,7 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 			return 0, fmt.Sprintf("posture=required; %d workspace(s) attested at launch; all vetted", attested)
 		}
 		unvetted = remaining
-		detail = detailOf(unvetted)
-		if attested > 0 {
-			detail += fmt.Sprintf(" (%d other(s) attested at launch)", attested)
-		}
+		detail = detailOf(unvetted) // (the bash appended an "attested at launch" note here that no path ever printed)
 	}
 
 	if accept == "true" {
@@ -367,3 +375,41 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 	d.errln("")
 	return 1, summary
 }
+
+// numCmp is `[[ a -gt b ]]` / `[[ a -eq b ]]` on numeric strings. Legacy mode is shell arithmetic
+// (octal for a leading zero, wrapping); with DecimalNumbers it is plain decimal. An empty operand
+// is 0, and an operand that is not a number makes the comparison false.
+func numCmp(a, b, op string) bool {
+	if !deviation.Fixed(deviation.DecimalNumbers) {
+		return bashcompat.ArithCmp(a, b, op)
+	}
+	val := func(s string) (int64, bool) {
+		if s == "" {
+			return 0, true
+		}
+		return bashcompat.Decimal(s)
+	}
+	x, ok1 := val(a)
+	y, ok2 := val(b)
+	if !ok1 || !ok2 {
+		return false
+	}
+	if op == "gt" {
+		return x > y
+	}
+	return x == y
+}
+
+// ageOver reports whether an attestation of the given age (days, "" when unknown) is past the
+// recency cap. With UnknownAgeIsStale an unknown age counts as past it.
+func ageOver(ageDays, ageCap string) bool {
+	if ageCap == "" {
+		return false
+	}
+	if ageDays == "" || ageDays == unknownAge {
+		return deviation.Fixed(deviation.UnknownAgeIsStale)
+	}
+	return numCmp(ageDays, ageCap, "gt")
+}
+
+const unknownAge = "unknown"

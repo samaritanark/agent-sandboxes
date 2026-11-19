@@ -30,6 +30,29 @@ const (
 	StrictReportShape ID = "strict-report-shape"
 	// QuoteRepoInMaskAdd: the sandbox mask add command printed the repo path unquoted.
 	QuoteRepoInMaskAdd ID = "quote-repo-in-mask-add"
+	// DecimalNumbers: numeric settings and comparisons were shell arithmetic, so a leading zero
+	// meant octal (08 and 09 were errors that made a comparison false, defeating "most restrictive
+	// cap wins") and an oversized value wrapped around to a negative number. They are now plain
+	// decimal and clamp at the largest integer.
+	DecimalNumbers ID = "decimal-numbers"
+	// UnknownPostureFailsClosed: a posture other than off, advisory or required enforced like
+	// required, except that with no trust root it passed like advisory. It now always enforces.
+	UnknownPostureFailsClosed ID = "unknown-posture-fails-closed"
+	// UnknownAgeIsStale: when a recency cap is set and the attestation's tag date could not be
+	// read, the cap was skipped. An attestation of unknown age is now treated as stale.
+	UnknownAgeIsStale ID = "unknown-age-is-stale"
+	// StrictKeyLiteral: any value starting ssh-, sk-ssh-, ecdsa-sha2- or key:: counted as an SSH
+	// key. A literal must now look like a public key (type, then base64).
+	StrictKeyLiteral ID = "strict-key-literal"
+	// BlobOnlyIgnoreFiles: git show of a committed ignore file that is a directory printed the tree
+	// listing, which was read as fingerprints. Only a file blob is read; a directory is skipped.
+	BlobOnlyIgnoreFiles ID = "blob-only-ignore-files"
+	// VerifyCreatedTag: git 2.43 creates an UNSIGNED tag and exits 0 when its SSH signer fails, and
+	// the bash reported success. A tag with no signature is now removed and reported as a failure.
+	VerifyCreatedTag ID = "verify-created-tag"
+	// VerifyExistingAttestation: a tag of the right name already existing counted as "already
+	// attested" without checking that it verifies. It must now verify against the trust root.
+	VerifyExistingAttestation ID = "verify-existing-attestation"
 	// ExactColumns: finding_is_encrypted assumed the scanner reported StartColumn one past the real
 	// start. betterleaks reports exact 1-based byte columns, so the start is used as given.
 	ExactColumns ID = "exact-columns"

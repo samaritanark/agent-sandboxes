@@ -3,6 +3,7 @@ package vetting
 import (
 	"bufio"
 	"fmt"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
 	"io"
 	"os"
 	"os/exec"
@@ -127,6 +128,15 @@ func (a Attester) AttestRepo(repo, msg, assumeYes string) int {
 	head := trimNL(headOut)
 	tag := a.TagPrefix + head
 	if _, ok := vgit(real, "rev-parse", "-q", "--verify", "refs/tags/"+tag); ok {
+		if deviation.Fixed(deviation.VerifyExistingAttestation) {
+			if roots := a.TrustRoots(); len(roots) > 0 && !a.verifiesAgainstAny(real, tag, roots) {
+				a.errln(fmt.Sprintf("ERROR: %s: a tag named %s already exists at HEAD but does not verify", repo, tag),
+					"       against the trust root(s), so HEAD is not attested. The tag was not created by",
+					"       this run and is left in place. Remove it (git tag -d "+tag+") and re-run, or ask a",
+					"       reviewer whose key is enrolled to re-attest.")
+				return 1
+			}
+		}
 		fmt.Fprintf(a.Out, "  %s: already attested — tag %s exists.\n", repo, tag)
 		return 0
 	}
@@ -156,7 +166,14 @@ func (a Attester) AttestRepo(repo, msg, assumeYes string) int {
 	}
 	cmd := VettingGit(real, append(opts, "tag", "-s", tag, "-m", msg)...)
 	cmd.Stdout, cmd.Stderr = a.Out, a.Err
-	if err := cmd.Run(); err == nil {
+	runErr := cmd.Run()
+	if runErr == nil && deviation.Fixed(deviation.VerifyCreatedTag) && !tagIsSigned(real, tag) {
+		// git exited 0 but the tag carries no signature (git 2.43 does this when the signer fails)
+		vgit(real, "tag", "-d", tag)
+		a.errln("ERROR: git reported success but the tag has no signature, so it was removed.")
+		runErr = fmt.Errorf("unsigned tag")
+	}
+	if runErr == nil {
 		fmt.Fprintf(a.Out, "  %s: created signed attestation tag %s\n", repo, tag)
 		fmt.Fprintln(a.Out, "  Push it so other operators can verify:")
 		fmt.Fprintf(a.Out, "        git -C %s push origin %s\n", repo, tag)
@@ -333,3 +350,21 @@ func (a Attester) SigningSetupAssist(repo string) int {
 }
 
 var _ = config.Env{}
+
+// tagIsSigned reports whether the tag object carries a signature block.
+func tagIsSigned(real, tag string) bool {
+	out, ok := vgit(real, "cat-file", "-p", "refs/tags/"+tag)
+	return ok && (strings.Contains(out, "-----BEGIN SSH SIGNATURE-----") ||
+		strings.Contains(out, "-----BEGIN PGP SIGNATURE-----") ||
+		strings.Contains(out, "-----BEGIN SIGNED MESSAGE-----"))
+}
+
+// verifiesAgainstAny reports whether the tag verifies against at least one trust root.
+func (a Attester) verifiesAgainstAny(real, tag string, roots []string) bool {
+	for _, r := range roots {
+		if _, ok := VerifyTag(real, tag, r, a.TrustFormat()); ok {
+			return true
+		}
+	}
+	return false
+}
