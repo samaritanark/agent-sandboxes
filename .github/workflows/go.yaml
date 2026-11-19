@@ -21,7 +21,9 @@ on:  # yamllint disable-line rule:truthy
       - "lib/**"
       - ".github/workflows/go.yaml"
   push:
-    branches: [master]
+    # v3 is TEMPORARY, so the live oracle runs while the port is developed on the v3 branch.
+    # Remove it before opening the v3 -> master pull request (S8.md handoff, item 3).
+    branches: [master, v3]
     paths:
       - "go/**"
       - "lib/**"
