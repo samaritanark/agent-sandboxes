@@ -1,0 +1,72 @@
+---
+# yaml-language-server:$schema=https://json.schemastore.org/github-workflow.json
+#
+# Test the Go port of the policy layer (go/, spike S8, decision D-34).
+#
+# Besides `go test`, this runs the LIVE ORACLE: SBX_ORACLE=1 makes each unit's tests re-run the v2
+# bash (lib/*.sh) over the same cases and compare it with the committed golden files and with the
+# Go port. With CI set, a live-oracle test that cannot run fails instead of skipping, so a green
+# check here means the port still matches the bash it replaces. The oracle needs Linux, bash 5,
+# git newer than Ubuntu 24.04's 2.43 (that git creates an unsigned tag when its SSH signer fails,
+# which the attestation tests would then mis-compare), ssh-keygen, jq, and python3 (the
+# pseudo-terminal runner). GitHub-hosted ubuntu runners ship all of them.
+#
+# Same file layout and action pinning as test.yaml: one workflow under .github/workflows/, actions
+# pinned by commit SHA.
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    paths:
+      - "go/**"
+      - "lib/**"
+      - ".github/workflows/go.yaml"
+  push:
+    branches: [master]
+    paths:
+      - "go/**"
+      - "lib/**"
+      - ".github/workflows/go.yaml"
+
+jobs:
+  go:
+    name: Go port (live oracle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5  # v7.1.0
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.mod
+
+      - name: Check the tools the oracle needs
+        run: |
+          set -eu
+          git --version
+          # newer than 2.43 (see the header)
+          v="$(git --version | awk '{print $3}')"
+          [ "$(printf '%s\n' 2.44.0 "${v}" | sort -V | head -n1)" = "2.44.0" ] \
+            || { echo "git ${v} is too old for the attestation tests"; exit 1; }
+          bash --version | head -n1
+          ssh-keygen -V 2>&1 | head -n1 || true
+          jq --version
+          python3 --version
+
+      - name: gofmt
+        working-directory: go
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "${out}" ]; then echo "gofmt needed:"; echo "${out}"; exit 1; fi
+
+      - name: go vet
+        working-directory: go
+        run: go vet ./...
+
+      - name: go test (golden files and live bash oracle)
+        working-directory: go
+        env:
+          SBX_ORACLE: "1"
+        run: go test -count=1 -timeout 40m ./...

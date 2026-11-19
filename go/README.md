@@ -45,8 +45,8 @@ LC_ALL=C ./oracle.sh cases-fixtures.tsv > golden-fixtures.tsv
 LC_ALL=C ./oracle.sh cases-mutants.tsv  > golden-mutants.tsv
 # then, anywhere:
 (cd go && go test ./...)
-# and on Linux, to re-run the bash live from the Go test:
-(cd go && SBX_ORACLE=1 go test ./internal/gate -run TestLiveOracle)
+# and on Linux, to re-run the bash live from the Go tests (what CI does, .github/workflows/go.yaml):
+(cd go && SBX_ORACLE=1 go test ./...)
 ```
 
 Pilot 2 (`testdata/masked`, `testdata/accepted`) regenerates the same way:
