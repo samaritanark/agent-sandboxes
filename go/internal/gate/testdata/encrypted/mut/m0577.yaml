@@ -1,6 +1,6 @@
 extraObjects:
-  - apiVersion: bitnami.com/v1alpha1
-
+extraObjects:
+  apiVersion: bitnamixcom/v1
     kind: SealedSecret
     metadata:
       name: creds
@@ -8,5 +8,4 @@ extraObjects:
       encryptedData:
         token: ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z
       template:
-          metadata:
-          name: creds
+        metadata:

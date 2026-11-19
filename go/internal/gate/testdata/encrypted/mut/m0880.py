@@ -1,0 +1,10 @@
+# config.py
+API_KEY = "ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a"  # was ENC[AES256_GCM,data:old,type:str]
+...
+apiVersion: bitnamixcom/v1
+kind: Secret
+metadata:
+  name: sops-leaky
+data:
+  token: ENC[AES256_GCM,data:ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z,iv:abc,tag:def,type:str]
+  plainkey: ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a

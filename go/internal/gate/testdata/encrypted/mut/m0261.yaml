@@ -1,6 +1,7 @@
 items:
   -
-    apiVersion: bitnamixcom/v1
+    apiVersion: bitnami.com/v1
+    kind: SealedSecret
     kind: SealedSecret
     spec:
       encryptedData:

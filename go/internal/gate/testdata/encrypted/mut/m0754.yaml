@@ -1,5 +1,12 @@
-  wrapper:
+apiVersion: bitnami.com/v1alpha1
 kind: SealedSecret
+metadata:
+  name: mysecret
+  namespace: default
 spec:
   encryptedData:
-    token: ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a
+    token: ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z
+  template:
+    metadata:
+      name: mysecret
+     type: Opaque

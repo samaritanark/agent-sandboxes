@@ -1,5 +1,6 @@
 apiVersion: bitnami.com/v1alpha1
-kind: SealedSecret	
+kind: SealedSecret
+kind: SealedSecret
 metadata:
   name: sealed-one
 spec:
@@ -8,7 +9,7 @@ spec:
 ---
 apiVersion: v1
 kind: Secret
-	metadata:
+metadata:
   name: plain-one
 stringData:
   token: ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a

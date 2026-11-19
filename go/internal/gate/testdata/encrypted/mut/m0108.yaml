@@ -1,7 +1,6 @@
-kind: Secret
-spec:
-  encryptedData:
-    a: ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a
---- # next
-kind: SealedSecret
-apiVersion: bitnami.com/v1
+items:
+  -
+    apiVersion: bitnami.com/v1
+    kind: SealedSecret # c
+      encryptedData:
+        t: ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z

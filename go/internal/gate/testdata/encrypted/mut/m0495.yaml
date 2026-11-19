@@ -1,5 +1,6 @@
-apiVersion: bitnami.com/v1alpha1
-	kind: SealedSecret
+apiVersion: bitnamixcom/v1
+kind: SealedSecret
+--- # next
 metadata:
   name: mysecret
   namespace: default

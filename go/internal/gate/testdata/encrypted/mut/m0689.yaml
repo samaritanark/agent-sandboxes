@@ -1,12 +1,6 @@
-extraObjects:
-  - apiVersion: bitnami.com/v1alpha1
-    kind: SealedSecret
-    spec:
-      encryptedData:
-        token: ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z
+wrapper:
+  kind: SealedSecret
 # note
-  - apiVersion: v1
-    kind: Secret
-    spec:
-      encryptedData:
-        token: ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a
+spec:
+  encryptedData:
+    token: ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a

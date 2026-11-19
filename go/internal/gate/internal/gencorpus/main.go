@@ -241,6 +241,10 @@ func casesFor(d doc) []c {
 						add(l, sc, ec)
 					}
 				}
+				// Only one column present, the other absent, with the present one inside the
+				// envelope: the bash takes the SOPS path only when both are numeric.
+				set[c{strconv.Itoa(l), strconv.Itoa(bopen + 1), ""}] = true
+				set[c{strconv.Itoa(l), "", strconv.Itoa(bclose - 1)}] = true
 			}
 			from += i + 1
 		}
@@ -250,6 +254,11 @@ func casesFor(d doc) []c {
 			set[c{strconv.Itoa(l), "99999999999999999999", "99999999999999999999"}] = true
 			set[c{strconv.Itoa(l), "5", ""}] = true
 			set[c{strconv.Itoa(l), "", "5"}] = true
+			// Non-canonical spellings of this line number: the bash requires digits only, while a
+			// float parse would accept them and select the same line.
+			for _, ln := range []string{"+" + strconv.Itoa(l), strconv.Itoa(l) + "e0", strconv.Itoa(l) + ".0", fmt.Sprintf("0x%x", l)} {
+				set[c{ln, "", ""}] = true
+			}
 		}
 	}
 	out := make([]c, 0, len(set))
@@ -261,7 +270,10 @@ func casesFor(d doc) []c {
 		if a.line != b.line {
 			ai, _ := strconv.Atoi(a.line)
 			bi, _ := strconv.Atoi(b.line)
-			return ai < bi
+			if ai != bi {
+				return ai < bi
+			}
+			return a.line < b.line // non-canonical spellings parse alike; keep the order deterministic
 		}
 		if a.sc != b.sc {
 			return a.sc < b.sc
@@ -308,6 +320,10 @@ func adversarial() map[string]string {
 		// Windows line endings throughout.
 		"crlf-sealed.yaml": "apiVersion: bitnami.com/v1alpha1\r\nkind: SealedSecret\r\nspec:\r\n  encryptedData:\r\n    token: " + sealed + "\r\n",
 		// A comment between the key and its value lines, and a document separator carrying trailing text.
+		// Colons inside key names: a line whose text before ": " itself contains a colon is not a key
+		// line to the bash (its key pattern is [^:]* up to the first colon), so it can neither be the
+		// encryptedData/spec parent nor the kind/apiVersion that vouches for the object.
+		"colon-in-key.yaml":     "apiVersion: bitnami.com/v1alpha1\nkind: SealedSecret\nspec:\n  encryptedData:x: y\n    token: " + sealed + "\n---\napiVersion: bitnami.com/v1alpha1\nkind:x: SealedSecret\nspec:\n  encryptedData:\n    token: " + plain + "\n---\napiVersion:x: bitnami.com/v1alpha1\nkind: SealedSecret\nspec:\n  encryptedData:\n    a:b: c\n    token: " + sealed + "\n",
 		"comments-and-sep.yaml": "# header\napiVersion: bitnami.com/v1alpha1\nkind: SealedSecret\nspec:\n  # note\n  encryptedData:\n    # note\n    token: " + sealed + "\n--- # next doc\nkind: Secret\nstringData:\n  token: " + plain + "\n",
 	}
 }

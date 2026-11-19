@@ -1,5 +1,7 @@
-wrapper:
-kind: SealedSecret
-  spec:
-encryptedData:
-	token: ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sneaky
+extra: ghp_zZ9yY8xX7wW6vV5uU4tT3sS2rR1qQ0pP9oO8n
+data:
+  token: ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a # rotated from ENC[AES256_GCMdata:old,type:str]

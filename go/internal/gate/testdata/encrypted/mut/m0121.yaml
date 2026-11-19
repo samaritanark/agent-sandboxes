@@ -1,5 +1,12 @@
 apiVersion: bitnamixcom/v1
-kind: SealedSecret
-spec:
-  encryptedData:
--     token: ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z
+- kind: SealedSecret
+metadata:
+  name: mysecret
+  namespace: default
+spec:
+  encryptedData:
+    token: ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z
+  template:
+    metadata:
+      name: mysecret
+    type: Opaque

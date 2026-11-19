@@ -1,12 +1,20 @@
 apiVersion: bitnami.com/v1alpha1
-kind: Secret 
-spec:
-  encryptedData:
--     token: ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a
----
-apiVersion: bitnami.com/v1alpha1
+
 kind: SealedSecret
 spec:
-  extra: ghp_zZ9yY8xX7wW6vV5uU4tT3sS2rR1qQ0pP9oO8n
+  encryptedData:x: y
+    token: ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z
+---
+apiVersion: bitnami.com/v1alpha1
+kind:x: SealedSecret
+extra: ghp_zZ9yY8xX7wW6vV5uU4tT3sS2rR1qQ0pP9oO8n
+spec:
   encryptedData:
+    token: ghp_bC4eF6gH8iJ0kL2mN4oP6qR8sT0uV2wX4yZ6a
+---
+apiVersion:x: bitnami.com/v1alpha1
+kind: SealedSecret
+spec:
+  encryptedData:
+    a:b: c
     token: ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z

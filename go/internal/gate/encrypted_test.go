@@ -86,7 +86,7 @@ func TestEdgeInputs(t *testing.T) {
 	if FindingIsEncrypted(filepath.Join("testdata", "encrypted"), "1", "", "") {
 		t.Error("a directory must not be exempt")
 	}
-	for _, bad := range []string{"", "x", "1x", "-1", "1.5", " 1"} {
+	for _, bad := range []string{"", "x", "1x", "-1", "1.5", " 1", "+1", "1e0", "1.0", "0x1"} {
 		if FindingIsEncrypted(fx("sealed.yaml"), bad, "", "") {
 			t.Errorf("non-numeric line %q must not be exempt", bad)
 		}
