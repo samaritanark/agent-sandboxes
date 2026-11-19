@@ -20,7 +20,7 @@ Layout so far:
 |---|---|
 | `internal/gate` | the secret gate in `lib/filesystem.sh`: `finding_is_encrypted`, `is_path_masked` (with `extract_yaml_list_from_file` from `lib/config.sh`), `_leakscan_finding_accepted`, `scan_repo_secrets` and its helpers, `secret_gate_repos` |
 
-`internal/vetting` holds the port of `lib/vetting.sh` (posture, configuration, and tag verification so far).
+`internal/vetting` holds the port of `lib/vetting.sh` (posture, configuration, tag verification, and the launch gate so far).
 
 Not yet here (see S8): the host binary, the policy CLI, `sandboxd`, and the
 import-graph check from §5.1.1.
@@ -83,6 +83,14 @@ Vetting verification (`internal/vetting/testdata/verify`; builds git repos with 
 go/internal/vetting/testdata/verify/gen-cases.sh
 # on Linux, with LC_ALL=C.UTF-8:
 LC_ALL=C.UTF-8 go/internal/vetting/testdata/verify/oracle.sh > go/internal/vetting/testdata/verify/golden-verify.txt
+```
+
+Vetting gate (`internal/vetting/testdata/gate`; scripted status lines, so no git; needs `python3` for the pty):
+
+```bash
+(cd go && go run ./internal/vetting/internal/genvgate -base internal/vetting/testdata/gate -seed 1 -n 220)
+# on Linux, with LC_ALL=C.UTF-8:
+LC_ALL=C.UTF-8 go/internal/vetting/testdata/gate/oracle.sh > go/internal/vetting/testdata/gate/golden-gate.txt
 ```
 
 The committed golden files were produced with GNU awk 5.2.1 under `LC_ALL=C` on Ubuntu 24.04

@@ -2075,8 +2075,9 @@ can run in parallel:
   (`go/internal/vetting`, zero divergences on 1,104 case groups). Pilot 6 adds
   repo classification and signed-tag verification (zero divergences on 270 cases,
   including a hostile workspace whose config names programs for every git hook
-  point: none ran). The drift decision, the vetting gate, and attestation are not
-  ported.
+  point: none ran). Pilot 7 adds the drift decision and the launch gate (zero divergences on
+  2,796 cases, 922 of them on a pseudo-terminal). Attestation and the rest of the
+  policy layer are not ported.
 
 ---
 
