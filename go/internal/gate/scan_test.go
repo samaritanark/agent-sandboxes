@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
 )
 
 var scanBase = filepath.Join("testdata", "scan")
@@ -29,7 +31,7 @@ func scanBlocks(t *testing.T) string {
 	var sb strings.Builder
 	for _, r := range rows {
 		id, repo, ov, uc, acc, scn := r[0], r[1], r[2], r[3], r[4], r[5]
-		e := ScanEnv{Home: filepath.Join(fx, "home"), TmpDir: filepath.Join(fx, "tmp"), CacheDir: filepath.Join(fx, "cache"),
+		e := config.Env{Home: filepath.Join(fx, "home"), TmpDir: filepath.Join(fx, "tmp"), CacheDir: filepath.Join(fx, "cache"),
 			UserConfig: filepath.Join(fx, "uc", "none.yaml")}
 		if uc != "-" {
 			e.UserConfig = filepath.Join(fx, "uc", uc+".yaml")
@@ -102,20 +104,5 @@ func TestScanLiveOracle(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(scanBase, "golden-scan.txt"))
 	if string(b) != string(out) {
 		t.Error("golden-scan.txt differs from the live oracle: regenerate it")
-	}
-}
-
-func TestBashGlob(t *testing.T) {
-	yes := [][2]string{{"*.egg-info", "pkg.egg-info"}, {"*", ""}, {"a?c", "abc"}, {"[ab]x", "bx"}, {"[!a]x", "bx"}, {"[^a]x", "bx"}, {"[a-c]", "b"}, {"a\\*", "a*"}, {"[", "["}, {"[]a]", "]"}}
-	no := [][2]string{{"*.egg-info", "egg-info"}, {"a?c", "ac"}, {"[ab]x", "cx"}, {"[!a]x", "ax"}, {"[a-c]", "d"}, {"a\\*", "ab"}, {"vendor", "vendor2"}}
-	for _, c := range yes {
-		if !bashGlob(c[0], c[1]) {
-			t.Errorf("glob %q should match %q", c[0], c[1])
-		}
-	}
-	for _, c := range no {
-		if bashGlob(c[0], c[1]) {
-			t.Errorf("glob %q should not match %q", c[0], c[1])
-		}
 	}
 }

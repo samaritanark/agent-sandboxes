@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
 )
 
 // GateConfig is what the gate reads from the vetting configuration (ported in config.go); it is a
@@ -28,29 +30,6 @@ type GateDeps struct {
 	SigningConfigured func(repo string) bool      // _vetting_signing_configured
 	InlineAttest      func(repo, sha string) bool // _vetting_inline_attest
 	Cfg               GateConfig
-}
-
-// arithCmp evaluates `[[ a OP b ]]` for -gt / -eq on strings the bash would treat as integers; an
-// arithmetic error is false. An empty operand is arithmetic 0, as in `[[ "" -eq 0 ]]`.
-func arithCmp(a, b, op string) bool {
-	val := func(s string) (int64, bool) {
-		if s == "" {
-			return 0, true
-		}
-		if !digits.MatchString(s) {
-			return 0, false
-		}
-		return bashArith(s)
-	}
-	x, ok1 := val(a)
-	y, ok2 := val(b)
-	if !ok1 || !ok2 {
-		return false
-	}
-	if op == "gt" {
-		return x > y
-	}
-	return x == y
 }
 
 // substr12 is ${s:0:12}, counting characters.
@@ -89,8 +68,8 @@ func yes(r string) bool { return len(r) > 0 && (r[0] == 'y' || r[0] == 'Y') }
 // DriftDecision is _vetting_drift_decision: under `required`, whether a verified attestation that
 // is `behind` commits behind HEAD and/or stale may launch. It prints its reasoning.
 func (d GateDeps) DriftDecision(repo, tag, signer, behind, cap, ageDays, ageCap, acceptUnvetted, acceptDrift string) bool {
-	overCommit := cap != "" && arithCmp(behind, cap, "gt")
-	overAge := ageCap != "" && ageDays != "" && arithCmp(ageDays, ageCap, "gt")
+	overCommit := cap != "" && bashcompat.ArithCmp(behind, cap, "gt")
+	overAge := ageCap != "" && ageDays != "" && bashcompat.ArithCmp(ageDays, ageCap, "gt")
 
 	if overCommit {
 		if acceptUnvetted == "true" {
@@ -169,7 +148,7 @@ func (d GateDeps) DriftDecision(repo, tag, signer, behind, cap, ageDays, ageCap,
 
 func (d GateDeps) printFindings(entries []string) {
 	for _, e := range entries {
-		f := readTab(e, 4)
+		f := bashcompat.ReadTab(e, 4)
 		repo, status, f2, f3 := f[0], f[1], f[2], f[3]
 		switch status {
 		case "unvetted":
@@ -186,25 +165,6 @@ func (d GateDeps) printFindings(entries []string) {
 			d.errln(fmt.Sprintf("    %s: %s %s", repo, status, f2))
 		}
 	}
-}
-
-func readTab(line string, n int) []string {
-	out := make([]string, n)
-	s := strings.TrimLeft(line, "\t")
-	for i := 0; i < n-1; i++ {
-		if s == "" {
-			return out
-		}
-		j := strings.IndexByte(s, '\t')
-		if j < 0 {
-			out[i] = s
-			return out
-		}
-		out[i] = s[:j]
-		s = strings.TrimLeft(s[j:], "\t")
-	}
-	out[n-1] = strings.TrimRight(s, "\t")
-	return out
 }
 
 // VettingGateRepos is vetting_gate_repos. rc is 0 for `return 0` and 1 for `exit 1`; summary is
@@ -260,13 +220,13 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 	driftAccepted := 0
 	driftDetail := ""
 	for _, repo := range repos {
-		f := readTab(d.Status(repo), 6)
+		f := bashcompat.ReadTab(d.Status(repo), 6)
 		status, f2, f3, f4, f5, f6 := f[0], f[1], f[2], f[3], f[4], f[5]
 
 		if status == "vetted" {
 			ageDays := cfg.AgeDays(f6)
-			overAge := ageCap != "" && ageDays != "" && arithCmp(ageDays, ageCap, "gt")
-			if arithCmp(f5, "0", "eq") && !overAge {
+			overAge := ageCap != "" && ageDays != "" && bashcompat.ArithCmp(ageDays, ageCap, "gt")
+			if bashcompat.ArithCmp(f5, "0", "eq") && !overAge {
 				fmt.Fprintf(d.Out, "  ✓ %s: vetted at %s (tag %s, signer %s)\n", repo, substr12(f2), f3, orUnknown(f4))
 				continue
 			}
@@ -280,7 +240,7 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 			driftDetail += repo + "(" + driftNote + ")"
 			if posture == "advisory" {
 				switch {
-				case cap != "" && arithCmp(f5, cap, "gt"):
+				case cap != "" && bashcompat.ArithCmp(f5, cap, "gt"):
 					d.errln(fmt.Sprintf("  %s: vetted at %s, %s commit(s) behind HEAD — over cap %s (advisory, proceeding).", repo, substr12(f2), f5, cap))
 				case overAge:
 					d.errln(fmt.Sprintf("  %s: vetted at %s, attestation %s day(s) old — over the %s-day window (advisory, proceeding).", repo, substr12(f2), ageDays, ageCap))
@@ -318,7 +278,7 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 	detailOf := func(es []string) string {
 		det := ""
 		for _, e := range es {
-			f := readTab(e, 4)
+			f := bashcompat.ReadTab(e, 4)
 			if det != "" {
 				det += ", "
 			}
@@ -344,7 +304,7 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 		var remaining []string
 		attested := 0
 		for _, e := range unvetted {
-			f := readTab(e, 4)
+			f := bashcompat.ReadTab(e, 4)
 			ir, is, if2, if3 := f[0], f[1], f[2], f[3]
 			if ((is == "unvetted" && strings.HasPrefix(if3, "no ")) || is == "drift") &&
 				d.SigningConfigured(ir) && d.InlineAttest(ir, if2) {
@@ -371,7 +331,7 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 		d.errln("")
 		var rs []string
 		for _, e := range unvetted {
-			rs = append(rs, readTab(e, 4)[0])
+			rs = append(rs, bashcompat.ReadTab(e, 4)[0])
 		}
 		d.RecordOverride("flag:--i-accept-unvetted-repo",
 			fmt.Sprintf("%d unvetted workspace(s) launched without a verified attestation", len(unvetted)), rs)
@@ -380,7 +340,7 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 
 	anyDrift := false
 	for _, e := range unvetted {
-		if readTab(e, 4)[1] == "drift" {
+		if bashcompat.ReadTab(e, 4)[1] == "drift" {
 			anyDrift = true
 			break
 		}

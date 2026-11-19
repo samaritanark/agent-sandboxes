@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
 )
 
 var gateBase = filepath.Join("testdata", "gate")
@@ -53,7 +56,7 @@ func gateBlocks(t *testing.T) string {
 			d.Stdin = bufio.NewReader(strings.NewReader(reply))
 		}
 		d.VettedAcceptedFingerprints = func(repo, unvetted string) string {
-			fmt.Fprintf(&logb, "vaf %s %s\n", bashBasename(repo), unvetted)
+			fmt.Fprintf(&logb, "vaf %s %s\n", bashcompat.Basename(repo), unvetted)
 			if accfix != "-" {
 				b, _ := os.ReadFile(filepath.Join(fx, "acc", accfix))
 				return string(b)
@@ -78,7 +81,7 @@ func gateBlocks(t *testing.T) string {
 			return ""
 		}
 		d.Warn = func(m string) { fmt.Fprintf(&logb, "warn %s\n", m) }
-		e := ScanEnv{Home: filepath.Join(fx, "home"), TmpDir: filepath.Join(fx, "tmp"), CacheDir: filepath.Join(fx, "cache"),
+		e := config.Env{Home: filepath.Join(fx, "home"), TmpDir: filepath.Join(fx, "tmp"), CacheDir: filepath.Join(fx, "cache"),
 			UserConfig: filepath.Join(fx, "uc", "none.yaml")}
 		d.Scan = func(repo, af string) []string { return ScanRepoSecrets(e, repo, af, nil) }
 
@@ -155,17 +158,5 @@ func TestGateLiveOracle(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(gateBase, "golden-gate.txt"))
 	if string(b) != string(out) {
 		t.Error("golden-gate.txt differs from the live oracle: regenerate it")
-	}
-}
-
-func TestBashQuoteQ(t *testing.T) {
-	for in, want := range map[string]string{
-		"": "''", "plain": "plain", "a b": `a\ b`, "~x": `\~x`, "a~b": "a~b", "a:~b": `a:\~b`, "#x": `\#x`, "a#b": "a#b",
-		"it's": `it\'s`, "a\tb": `$'a\tb'`, "\x7f": `$'\177'`, "é": "é", "é\t": "$'é\\t'", "a\xc3": `$'a\303'`, "\x1b[0m": `$'\E[0m'`,
-		"x,y": `x\,y`, "back\\s": `back\\s`, "\u0085": `$'\302\205'`,
-	} {
-		if got := bashQuoteQ(in); got != want {
-			t.Errorf("bashQuoteQ(%q) = %s, want %s", in, got, want)
-		}
 	}
 }

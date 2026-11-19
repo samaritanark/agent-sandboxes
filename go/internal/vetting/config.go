@@ -9,12 +9,13 @@ import (
 	"regexp"
 	"strings"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/gate"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
 )
 
 // Ctx carries what the bash reads from the environment and the clock.
 type Ctx struct {
-	gate.ScanEnv                  // Home, UserConfig, SandboxOverlay
+	config.Env                    // Home, UserConfig, SandboxOverlay
 	TrustRootDefault string       // $SANDBOX_VETTING_TRUST_ROOT_DEFAULT
 	TagPrefix        string       // $SANDBOX_VETTING_TAG_PREFIX
 	Now              func() int64 // `date +%s`
@@ -23,8 +24,8 @@ type Ctx struct {
 
 // NewCtx builds a Ctx from the process environment with the bash's defaults.
 func NewCtx(now func() int64) Ctx {
-	e := gate.ScanEnvFromOS()
-	c := Ctx{ScanEnv: e, Now: now, Stderr: os.Stderr}
+	e := config.FromOS()
+	c := Ctx{Env: e, Now: now, Stderr: os.Stderr}
 	c.TrustRootDefault = os.Getenv("SANDBOX_VETTING_TRUST_ROOT_DEFAULT")
 	if c.TrustRootDefault == "" {
 		c.TrustRootDefault = e.Home + "/.sandbox/vetting/allowed_signers"
@@ -36,24 +37,17 @@ func NewCtx(now func() int64) Ctx {
 	return c
 }
 
-func isFile(p string) bool {
-	st, err := os.Stat(p)
-	return err == nil && st.Mode().IsRegular()
-}
-
-func exists(p string) bool { _, err := os.Stat(p); return err == nil }
-
 // userGet reads a scalar from the user config; "" if the file or key is absent.
 func (c Ctx) userGet(key string) string {
-	if isFile(c.UserConfig) {
-		return gate.ExtractYAMLScalar(c.UserConfig, key)
+	if config.IsFile(c.UserConfig) {
+		return config.ExtractYAMLScalar(c.UserConfig, key)
 	}
 	return ""
 }
 
 func (c Ctx) overlayDir() string {
-	ov := gate.ResolveOverlayPath(c.ScanEnv)
-	if ov != "" && isFile(ov+"/config.yaml") {
+	ov := config.ResolveOverlayPath(c.Env)
+	if ov != "" && config.IsFile(ov+"/config.yaml") {
 		return ov
 	}
 	return ""
@@ -61,7 +55,7 @@ func (c Ctx) overlayDir() string {
 
 func (c Ctx) overlayGet(key string) string {
 	if ov := c.overlayDir(); ov != "" {
-		return gate.ExtractYAMLScalar(ov+"/config.yaml", key)
+		return config.ExtractYAMLScalar(ov+"/config.yaml", key)
 	}
 	return ""
 }
@@ -109,7 +103,7 @@ func (c Ctx) ResolvePosture() string {
 		eff = "advisory"
 	}
 	if ov := c.overlayDir(); ov != "" {
-		overlayP := c.normalize(gate.ExtractYAMLScalar(ov+"/config.yaml", "vetting"))
+		overlayP := c.normalize(config.ExtractYAMLScalar(ov+"/config.yaml", "vetting"))
 		if overlayP != "" && rank(overlayP) > rank(eff) {
 			eff = overlayP
 		}
@@ -119,31 +113,6 @@ func (c Ctx) ResolvePosture() string {
 
 var digits = regexp.MustCompile(`^[0-9]+$`)
 
-// bashArith evaluates a string of digits the way bash arithmetic does: a leading 0 means octal
-// (digits 8 and 9 are an error), and a value too large wraps modulo 2^64 into a signed integer.
-func bashArith(s string) (int64, bool) {
-	base := uint64(10)
-	if len(s) > 1 && s[0] == '0' {
-		base = 8
-	}
-	var v uint64
-	for i := 0; i < len(s); i++ {
-		d := uint64(s[i] - '0')
-		if d >= base {
-			return 0, false
-		}
-		v = v*base + d
-	}
-	return int64(v), true
-}
-
-// arithLess is `[[ a -lt b ]]` for digit strings; an arithmetic error makes it false.
-func arithLess(a, b string) bool {
-	x, ok1 := bashArith(a)
-	y, ok2 := bashArith(b)
-	return ok1 && ok2 && x < y
-}
-
 // minCap is the shared loop of vetting_max_commits_behind and vetting_max_age_days: the smallest
 // digits-only value of the user and overlay settings, found with the bash's comparison.
 func (c Ctx) minCap(key string) string {
@@ -152,7 +121,7 @@ func (c Ctx) minCap(key string) string {
 		if !digits.MatchString(v) {
 			continue
 		}
-		if eff == "" || arithLess(v, eff) {
+		if eff == "" || bashcompat.ArithLess(v, eff) {
 			eff = v
 		}
 	}
@@ -167,7 +136,7 @@ func (c Ctx) AgeDays(epoch string) string {
 	if !digits.MatchString(epoch) {
 		return ""
 	}
-	e, ok := bashArith(epoch)
+	e, ok := bashcompat.Arith(epoch)
 	if !ok {
 		return ""
 	}
@@ -232,16 +201,16 @@ func (c Ctx) TrustRoot() string {
 func (c Ctx) TrustRoots() []string {
 	var out []string
 	userRoot := c.TrustRoot()
-	if exists(userRoot) {
+	if config.Exists(userRoot) {
 		out = append(out, userRoot)
 	}
 	if ov := c.overlayDir(); ov != "" {
-		if v := gate.ExtractYAMLScalar(ov+"/config.yaml", "vetting_trust_root"); v != "" {
+		if v := config.ExtractYAMLScalar(ov+"/config.yaml", "vetting_trust_root"); v != "" {
 			v = c.tilde(v)
 			if !strings.HasPrefix(v, "/") {
 				v = ov + "/" + v
 			}
-			if exists(v) && v != userRoot {
+			if config.Exists(v) && v != userRoot {
 				out = append(out, v)
 			}
 		}

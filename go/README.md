@@ -18,9 +18,11 @@ Layout so far:
 
 | Path | Port of |
 |---|---|
-| `internal/gate` | the secret gate in `lib/filesystem.sh`: `finding_is_encrypted`, `is_path_masked` (with `extract_yaml_list_from_file` from `lib/config.sh`), `_leakscan_finding_accepted`, `scan_repo_secrets` and its helpers, `secret_gate_repos` |
-
-`internal/vetting` holds the port of `lib/vetting.sh` (all of `lib/vetting.sh`).
+| `internal/bashcompat` | the bash and tool behaviours the port reproduces (field splitting, arithmetic, globs, `printf %q`); a caller of this package is carrying a quirk |
+| `internal/config` | `lib/config.sh` and `resolve_overlay_path`: the flat YAML readers, overlay resolution, ignore-file parsing |
+| `internal/gate` | the secret gate in `lib/filesystem.sh`: `finding_is_encrypted`, `is_path_masked`, `_leakscan_finding_accepted`, `scan_repo_secrets` and its helpers, `secret_gate_repos` |
+| `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
+| `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |
 
 Not yet here (see S8): the host binary, the policy CLI, `sandboxd`, and the
 import-graph check from §5.1.1.

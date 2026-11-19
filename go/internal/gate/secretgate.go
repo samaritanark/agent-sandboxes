@@ -6,9 +6,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
-	"unicode/utf8"
+
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
 )
 
 // GateDeps are the things secret_gate_repos gets from the rest of the bash (vetting, audit,
@@ -27,94 +27,9 @@ type GateDeps struct {
 	Scan                       func(repo, acceptFile string) []string // scan_repo_secrets
 }
 
-// bashQuoteQ is printf '%q' in a UTF-8 locale (bash 5.2): backslash-escaping for shell-special
-// characters, $'...' when the string holds a control character or an invalid byte.
-func bashQuoteQ(s string) string {
-	if s == "" {
-		return "''"
-	}
-	ansi := false
-	for i := 0; i < len(s); {
-		r, n := utf8.DecodeRuneInString(s[i:])
-		if (r == utf8.RuneError && n == 1) || r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
-			ansi = true
-			break
-		}
-		i += n
-	}
-	var b strings.Builder
-	if ansi {
-		b.WriteString("$'")
-		for i := 0; i < len(s); {
-			r, n := utf8.DecodeRuneInString(s[i:])
-			if r >= 0xa0 && !(r == utf8.RuneError && n == 1) {
-				b.WriteString(s[i : i+n])
-				i += n
-				continue
-			}
-			c := s[i]
-			switch {
-			case c == '\\':
-				b.WriteString(`\\`)
-			case c == '\'':
-				b.WriteString(`\'`)
-			case c == 7:
-				b.WriteString(`\a`)
-			case c == 8:
-				b.WriteString(`\b`)
-			case c == 27:
-				b.WriteString(`\E`)
-			case c == 12:
-				b.WriteString(`\f`)
-			case c == 10:
-				b.WriteString(`\n`)
-			case c == 13:
-				b.WriteString(`\r`)
-			case c == 9:
-				b.WriteString(`\t`)
-			case c == 11:
-				b.WriteString(`\v`)
-			case c < 0x20 || c >= 0x7f:
-				fmt.Fprintf(&b, `\%03o`, c)
-			default:
-				b.WriteByte(c)
-			}
-			i++
-		}
-		b.WriteString("'")
-		return b.String()
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		special := strings.IndexByte(" !\"$&'()*,;<>?[\\]^`{|}", c) >= 0
-		if c == '~' && (i == 0 || s[i-1] == ':' || s[i-1] == '=') {
-			special = true
-		}
-		if c == '#' && i == 0 {
-			special = true
-		}
-		if special {
-			b.WriteByte('\\')
-		}
-		b.WriteByte(c)
-	}
-	return b.String()
-}
-
-func bashBasename(p string) string {
-	if p == "" {
-		return ""
-	}
-	t := strings.TrimRight(p, "/")
-	if t == "" {
-		return "/"
-	}
-	return filepath.Base(t)
-}
-
 func printUnmaskedFindings(w io.Writer, entries []string) {
 	for _, e := range entries {
-		f := readTab(e, 5)
+		f := bashcompat.ReadTab(e, 5)
 		fmt.Fprintf(w, "    %s:%s:%s\n", f[1], f[2], f[3])
 		switch match := f[4]; {
 		case match == "":
@@ -129,7 +44,7 @@ func printUnmaskedFindings(w io.Writer, entries []string) {
 func printMaskAddCommands(w io.Writer, entries []string) {
 	var seenRepos []string
 	for _, e := range entries {
-		repo := readTab(e, 5)[0]
+		repo := bashcompat.ReadTab(e, 5)[0]
 		if contains(seenRepos, repo) {
 			continue
 		}
@@ -137,12 +52,12 @@ func printMaskAddCommands(w io.Writer, entries []string) {
 		cmd := "        sandbox mask add --repo " + repo
 		var seenPaths []string
 		for _, e2 := range entries {
-			f := readTab(e2, 5)
+			f := bashcompat.ReadTab(e2, 5)
 			if f[0] != repo || contains(seenPaths, f[1]) {
 				continue
 			}
 			seenPaths = append(seenPaths, f[1])
-			cmd += " " + bashQuoteQ(f[1])
+			cmd += " " + bashcompat.QuoteQ(f[1])
 		}
 		fmt.Fprintln(w, cmd)
 	}
@@ -151,16 +66,16 @@ func printMaskAddCommands(w io.Writer, entries []string) {
 func printExceptionsAddCommands(w io.Writer, entries []string) {
 	var seenRepos []string
 	for _, e := range entries {
-		repo := readTab(e, 5)[0]
+		repo := bashcompat.ReadTab(e, 5)[0]
 		if contains(seenRepos, repo) {
 			continue
 		}
 		seenRepos = append(seenRepos, repo)
 		cmd := "        sandbox exceptions add --repo " + repo
 		for _, e2 := range entries {
-			f := readTab(e2, 5)
+			f := bashcompat.ReadTab(e2, 5)
 			if f[0] == repo {
-				cmd += " " + bashQuoteQ(f[1]+":"+f[2]+":"+f[3])
+				cmd += " " + bashcompat.QuoteQ(f[1]+":"+f[2]+":"+f[3])
 			}
 		}
 		fmt.Fprintln(w, cmd)
@@ -204,14 +119,14 @@ func SecretGateRepos(d GateDeps, accept, endpointTrusted, acceptUnvetted string,
 	for _, repo := range repos {
 		if strings.TrimRight(d.LoadRepoAcceptedSecrets(repo), "\n") != "" {
 			d.Warn(fmt.Sprintf("%s: accepted_secrets: in %s is no longer honored — run 'sandbox exceptions migrate --repo %s' to move it to %s.",
-				bashBasename(repo), repoConfigName, repo, repoIgnoreName))
+				bashcompat.Basename(repo), repoConfigName, repo, repoIgnoreName))
 		}
 		af, _ := os.CreateTemp(os.TempDir(), "sandbox-accept-")
 		af.WriteString(d.VettedAcceptedFingerprints(repo, acceptUnvetted))
 		af.Close()
 		lines := d.Scan(repo, af.Name())
 		for _, line := range lines {
-			f := readTab(line, 5)
+			f := bashcompat.ReadTab(line, 5)
 			m, relpath, ruleid, ln, match := f[0], f[1], f[2], f[3], f[4]
 			if relpath == "" {
 				continue

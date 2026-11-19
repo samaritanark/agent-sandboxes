@@ -6,11 +6,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"regexp"
 	"strings"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/gate"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
 )
 
 // Attester carries the configuration and the terminal for the attestation functions.
@@ -38,56 +37,6 @@ func (a Attester) reply() string {
 	return strings.Trim(strings.TrimSuffix(line, "\n"), " \t")
 }
 
-// UpsertYAMLScalar is upsert_yaml_scalar_in_file: replace the first "<key>:" line or append one;
-// the file is rewritten with mode 0600.
-func UpsertYAMLScalar(path, key, value string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		data = nil
-		if err := os.WriteFile(path, nil, 0o644); err != nil {
-			return err
-		}
-	}
-	var out []byte
-	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:`)
-	if re.Match(data) {
-		done := false
-		for _, line := range splitLines(data) {
-			if !done && strings.HasPrefix(line, key+":") {
-				out = append(out, []byte(key+": "+value+"\n")...)
-				done = true
-				continue
-			}
-			out = append(out, []byte(line+"\n")...)
-		}
-	} else {
-		out = append(append(out, data...), []byte(key+": "+value+"\n")...)
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, out, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0o600)
-}
-
-func splitLines(data []byte) []string {
-	if len(data) == 0 {
-		return nil
-	}
-	s := string(data)
-	parts := strings.Split(s, "\n")
-	if strings.HasSuffix(s, "\n") {
-		parts = parts[:len(parts)-1]
-	}
-	return parts
-}
-
 // AcknowledgeExceptions is _vetting_acknowledge_exceptions: before signing, show the signer which
 // recorded secret exceptions the signature would let the agent read, and get an acknowledgment.
 func (a Attester) AcknowledgeExceptions(realRepo, repo, assumeYes string) bool {
@@ -112,7 +61,7 @@ func (a Attester) AcknowledgeExceptions(realRepo, repo, assumeYes string) bool {
 	af.Close()
 	var accepted []string
 	for _, line := range a.Scan(realRepo, af.Name()) {
-		f := readTab(line, 5)
+		f := bashcompat.ReadTab(line, 5)
 		if f[0] != "accepted" {
 			continue
 		}
@@ -255,7 +204,7 @@ func (a Attester) InlineAttest(repo, headSha string) bool {
 	if a.AttestRepo(repo, "vetted for agent use (attested at launch)", "false") != 0 {
 		return false
 	}
-	f := readTab(a.StatusRepo(repo), 5)
+	f := bashcompat.ReadTab(a.StatusRepo(repo), 5)
 	if f[0] == "vetted" {
 		a.errln(fmt.Sprintf("  ✓ %s: attested and verified (signer %s)", repo, orUnknown(f[3])))
 		return true
@@ -301,7 +250,7 @@ func (a Attester) SigningSetupAssist(repo string) int {
 	}
 	var candidates []string
 	for _, k := range []string{a.Home + "/.ssh/id_ed25519.pub", a.Home + "/.ssh/id_ecdsa.pub", a.Home + "/.ssh/id_rsa.pub"} {
-		if isFile(k) {
+		if config.IsFile(k) {
 			candidates = append(candidates, k)
 		}
 	}
@@ -336,7 +285,7 @@ func (a Attester) SigningSetupAssist(repo string) int {
 				"        git config --global user.signingkey <path-to-your-key.pub>")
 			return 1
 		}
-		UpsertYAMLScalar(a.UserConfig, "vetting_signing_key", pick)
+		config.UpsertYAMLScalar(a.UserConfig, "vetting_signing_key", pick)
 		a.errln(fmt.Sprintf("  Configured: vetting_signing_key: %s (in %s);", pick, a.UserConfig),
 			"  your git signing config was not changed.")
 	} else {
@@ -383,4 +332,4 @@ func (a Attester) SigningSetupAssist(repo string) int {
 	return 0
 }
 
-var _ = gate.ScanEnv{}
+var _ = config.Env{}

@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"git.theark.cloud/acs/agent-sandboxes/go/internal/gate"
+
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
 )
 
 var attBase = filepath.Join("testdata", "attest")
@@ -96,7 +98,7 @@ func attestOutput(t *testing.T) string {
 		a.TagPrefix = "agent-vetted/"
 		a.Now = func() int64 { return 0 }
 		a.Warn = func(m string) { fmt.Fprintf(&logb, "warn %s\n", m) }
-		e := gate.ScanEnv{Home: a.Home, TmpDir: "/tmp", UserConfig: a.UserConfig, CacheDir: filepath.Join(fx, "cache")}
+		e := config.Env{Home: a.Home, TmpDir: "/tmp", UserConfig: a.UserConfig, CacheDir: filepath.Join(fx, "cache")}
 		a.Scan = func(repoPath, af string) []string { return gate.ScanRepoSecrets(e, repoPath, af, nil) }
 		rp := filepath.Join(run, repo)
 		rc := 0
@@ -213,18 +215,5 @@ func TestAttestLiveOracle(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(attBase, "golden-attest.txt"))
 	if string(b) != string(out) {
 		t.Error("golden-attest.txt differs from the live oracle: regenerate it")
-	}
-}
-
-func TestUpsertYAMLScalar(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "sub", "c.yaml")
-	if err := UpsertYAMLScalar(p, "k", "v"); err != nil {
-		t.Fatal(err)
-	}
-	UpsertYAMLScalar(p, "other", "o")
-	UpsertYAMLScalar(p, "k", `a\nb`)
-	b, _ := os.ReadFile(p)
-	if string(b) != "k: a\\nb\nother: o\n" {
-		t.Fatalf("got %q", b)
 	}
 }

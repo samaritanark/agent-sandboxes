@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
 )
 
 var (
@@ -51,7 +53,7 @@ func FindingIsEncrypted(file, line, startcol, endcol string) bool {
 	if err != nil {
 		return false
 	}
-	lines := splitRecords(data)
+	lines := bashcompat.SplitRecords(data)
 
 	// SOPS: the flagged span must lie strictly inside an ENC[AES256_GCM,...] envelope on the line.
 	if digitsOnly.MatchString(startcol) && digitsOnly.MatchString(endcol) {
@@ -72,20 +74,6 @@ func FindingIsEncrypted(file, line, startcol, endcol string) bool {
 		return false
 	}
 	return sealedSecretEncrypted(lines, awkNum(line))
-}
-
-// splitRecords splits data into awk records (RS="\n"): a trailing newline does not start a new
-// record, an empty file has none.
-func splitRecords(data []byte) []string {
-	if len(data) == 0 {
-		return nil
-	}
-	s := string(data)
-	parts := strings.Split(s, "\n")
-	if strings.HasSuffix(s, "\n") {
-		parts = parts[:len(parts)-1]
-	}
-	return parts
 }
 
 // awkNum converts a digit string the way awk -v does for comparison (a double).

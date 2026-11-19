@@ -5,7 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/gate"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
 )
 
 const (
@@ -33,7 +34,7 @@ func CommittedIgnoreFingerprints(repo, rev string) []string {
 	}
 	for _, name := range []string{ignoreName, ignoreFallback} {
 		if b, ok := gitShow(repo, rev, name); ok {
-			return gate.StripIgnoreFileComments(b)
+			return config.StripIgnoreFileComments(b)
 		}
 	}
 	return nil
@@ -50,7 +51,7 @@ func committedList(repo, key string) []string {
 		f.Write(b)
 	}
 	f.Close()
-	return gate.ExtractYAMLList(f.Name(), key)
+	return config.ExtractYAMLList(f.Name(), key)
 }
 
 // CommittedLegacyAcceptedSecrets is vetting_committed_legacy_accepted_secrets.
@@ -64,7 +65,7 @@ func CommittedAllowedDomains(repo string) []string {
 }
 
 // statusFirst is `IFS=$'\t' read -r status _ <<<"$(vetting_status_repo repo)"`.
-func (c Ctx) statusFields(repo string) []string { return readTab(c.StatusRepo(repo), 6) }
+func (c Ctx) statusFields(repo string) []string { return bashcompat.ReadTab(c.StatusRepo(repo), 6) }
 
 // VettedRepoAllowedDomains is vetted_repo_allowed_domains: the committed egress list, only for a
 // repo that is currently vetted.
@@ -87,7 +88,7 @@ func (c Ctx) RepoGrantedAllowedDomains(honorFlag, repo string) []string {
 // RepoIgnoreFile is repo_ignore_file in lib/config.sh.
 func RepoIgnoreFile(repo string) string {
 	for _, f := range []string{ignoreName, ignoreFallback} {
-		if isFile(repo + "/" + f) {
+		if config.IsFile(repo + "/" + f) {
 			return repo + "/" + f
 		}
 	}
@@ -97,14 +98,14 @@ func RepoIgnoreFile(repo string) string {
 // LoadRepoIgnoreFingerprints is load_repo_ignore_fingerprints: the working-tree view.
 func LoadRepoIgnoreFingerprints(repo string) []string {
 	f := RepoIgnoreFile(repo)
-	if !isFile(f) {
+	if !config.IsFile(f) {
 		return nil
 	}
 	b, err := os.ReadFile(f)
 	if err != nil {
 		return nil
 	}
-	return gate.StripIgnoreFileComments(b)
+	return config.StripIgnoreFileComments(b)
 }
 
 // VettedAcceptedFingerprints is vetted_accepted_fingerprints in lib/filesystem.sh: the ignore-file
@@ -124,7 +125,7 @@ func (c Ctx) VettedAcceptedFingerprints(repo, acceptUnvetted string) []string {
 		if b == "" {
 			b = "1"
 		}
-		if !arithCmp(b, "0", "eq") {
+		if !bashcompat.ArithCmp(b, "0", "eq") {
 			return nil
 		}
 	}
@@ -141,7 +142,7 @@ func (c Ctx) SSHKeyUsable(key string) bool {
 			return true
 		}
 	}
-	return isFile(c.tilde(key))
+	return config.IsFile(c.tilde(key))
 }
 
 // SSHSigningKeyState is _vetting_ssh_signingkey_state: ok, unconfigured, mismatch, or knob-bad.

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
 )
 
 var maskedBase = filepath.Join("testdata", "masked")
@@ -50,18 +52,6 @@ func TestIsPathMaskedBuiltins(t *testing.T) {
 	}
 }
 
-func TestExtractYAMLListQuirks(t *testing.T) {
-	f := filepath.Join(t.TempDir(), "c.yaml")
-	os.WriteFile(f, []byte("masked_paths:\n- a.txt # c\n-n\n  -n\n- \"b c/\"\nnext:\n  - z\n"), 0o644)
-	got := ExtractYAMLList(f, "masked_paths")
-	if fmt.Sprint(got) != "[a.txt n b c/]" {
-		t.Fatalf("got %q", got)
-	}
-	if ExtractYAMLList(filepath.Join(t.TempDir(), "nope"), "masked_paths") != nil {
-		t.Fatal("missing file must yield no items")
-	}
-}
-
 func TestMaskedGolden(t *testing.T) {
 	repos := maskedRepos(t)
 	rows := readTSV(t, filepath.Join(maskedBase, "golden-masked.tsv"), 3)
@@ -89,7 +79,7 @@ func TestListsGolden(t *testing.T) {
 	var bad []string
 	for _, f := range cfgs {
 		n := strings.TrimSuffix(filepath.Base(f), ".yaml")
-		got := ExtractYAMLList(filepath.Join(repos, n, ".sandbox", "config.yaml"), "masked_paths")
+		got := config.ExtractYAMLList(filepath.Join(repos, n, ".sandbox", "config.yaml"), "masked_paths")
 		if fmt.Sprintf("%q", got) != fmt.Sprintf("%q", orEmpty(want[n])) {
 			bad = append(bad, fmt.Sprintf("cfg=%s oracle=%q port=%q", n, want[n], got))
 		}

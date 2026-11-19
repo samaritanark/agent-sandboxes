@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/gate"
 )
 
 var cfgBase = filepath.Join("testdata", "config")
@@ -144,16 +142,4 @@ func TestConfigLiveOracle(t *testing.T) {
 	if string(b) != string(out) {
 		t.Error("golden-config.txt differs from the live oracle: regenerate it")
 	}
-}
-
-func TestBashArith(t *testing.T) {
-	for in, want := range map[string]int64{"0": 0, "7": 7, "010": 8, "007": 7, "99999999999999999999": 7766279631452241919, "9223372036854775808": -9223372036854775808} {
-		if got, ok := bashArith(in); !ok || got != want {
-			t.Errorf("bashArith(%s) = %d,%v want %d", in, got, ok, want)
-		}
-	}
-	if _, ok := bashArith("08"); ok {
-		t.Error("08 must be an arithmetic error")
-	}
-	_ = gate.ScanEnv{}
 }
