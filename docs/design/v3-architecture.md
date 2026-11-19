@@ -2076,8 +2076,9 @@ can run in parallel:
   repo classification and signed-tag verification (zero divergences on 270 cases,
   including a hostile workspace whose config names programs for every git hook
   point: none ran). Pilot 7 adds the drift decision and the launch gate (zero divergences on
-  2,796 cases, 922 of them on a pseudo-terminal). Attestation and the rest of the
-  policy layer are not ported.
+  2,796 cases, 922 of them on a pseudo-terminal). Pilot 8 adds the committed-exception readers, the secret
+  gate's accept-list source, and the signing-key state (zero divergences on 1,056
+  cases). Attestation itself and the rest of the policy layer are not ported.
 
 ---
 

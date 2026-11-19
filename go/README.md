@@ -93,6 +93,14 @@ Vetting gate (`internal/vetting/testdata/gate`; scripted status lines, so no git
 LC_ALL=C.UTF-8 go/internal/vetting/testdata/gate/oracle.sh > go/internal/vetting/testdata/gate/golden-gate.txt
 ```
 
+Exceptions and signing-key state (`internal/vetting/testdata/exc`; builds git repos with SSH-signed tags):
+
+```bash
+go/internal/vetting/testdata/exc/gen-cases.sh
+# on Linux, with LC_ALL=C.UTF-8:
+LC_ALL=C.UTF-8 go/internal/vetting/testdata/exc/oracle.sh > go/internal/vetting/testdata/exc/golden-exc.txt
+```
+
 The committed golden files were produced with GNU awk 5.2.1 under `LC_ALL=C` on Ubuntu 24.04
 (arm64). `mawk` 1.3.4 gives the same answers in both the C and C.UTF-8 locales; `gawk` under
 `C.UTF-8` differs on lines with multibyte text (see `docs/design/spikes/S8.md`).
