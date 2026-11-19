@@ -1,0 +1,4 @@
+vetting: advisory
+vetting_max_age_days: 365
+vetting_require_clean_worktree: true
+vetting_trust_format: ssh

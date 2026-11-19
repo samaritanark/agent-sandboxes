@@ -1,0 +1,7 @@
+vetting_exceptions_from_commit: false
+vetting_exceptions_require_head: 
+vetting_forbid_unvetted_override: True
+vetting_max_age_days: 18446744073709551616
+vetting_max_commits_behind: 007
+vetting_require_clean_worktree: yes
+vetting_require_clean_worktree: yes

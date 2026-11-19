@@ -1,0 +1,4 @@
+  vetting_exceptions_from_commit: true
+vetting_forbid_unvetted_override: True
+vetting_max_commits_behind: 007
+vetting_signing_key: ~/key

@@ -1,0 +1,5 @@
+vetting: Required
+vetting_max_commits_behind: 007
+vetting_max_commits_behind: 0
+vetting_signing_key: rel/k
+vetting_trust_root: rel_signers

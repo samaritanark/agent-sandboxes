@@ -1,0 +1,4 @@
+# header
+vetting: 
+vetting_exceptions_require_head: yes
+vetting_max_age_days: 1

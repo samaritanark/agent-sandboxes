@@ -1,0 +1,4 @@
+vetting_exceptions_from_commit: 1
+  vetting_exceptions_require_head: 'true'
+vetting_require_clean_worktree: 1
+vetting_signing_key: rel/k

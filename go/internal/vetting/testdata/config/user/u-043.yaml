@@ -1,0 +1,4 @@
+vetting_exceptions_from_commit: true
+vetting_trust_format: GPG
+vetting_trust_root: @T@/abs_signers # c
+vetting_trust_root: 

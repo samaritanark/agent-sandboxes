@@ -1,0 +1,6 @@
+vetting: 
+vetting_exceptions_from_commit: yes
+vetting_forbid_unvetted_override: yes
+vetting_require_clean_worktree: true
+vetting_signing_key: rel/k
+  vetting_trust_format: 'gpg'

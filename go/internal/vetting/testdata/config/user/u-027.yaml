@@ -1,0 +1,4 @@
+vetting: off
+vetting: advisory
+vetting_trust_format: GPG
+vetting_trust_root: rel_signers/

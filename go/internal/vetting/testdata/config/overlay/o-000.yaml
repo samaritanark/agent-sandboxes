@@ -1,0 +1,4 @@
+vetting: "required"
+vetting_require_clean_worktree: yes
+vetting_signing_key: /k
+vetting_trust_format: x

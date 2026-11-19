@@ -1,0 +1,4 @@
+vetting: requird
+vetting_forbid_unvetted_override: true
+vetting_max_age_days: 365
+vetting_trust_format: 

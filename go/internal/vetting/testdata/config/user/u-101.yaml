@@ -1,0 +1,6 @@
+# header
+vetting_exceptions_from_commit: 1
+vetting_forbid_unvetted_override: false
+vetting_max_age_days: 1
+vetting_require_clean_worktree: true # x
+vetting_signing_key: /k

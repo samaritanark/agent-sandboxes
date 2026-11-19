@@ -1,0 +1,6 @@
+# header
+vetting_exceptions_from_commit: true
+  vetting_exceptions_require_head: false
+vetting_exceptions_require_head: yes
+  vetting_max_age_days: 30
+vetting_signing_key: ~/key

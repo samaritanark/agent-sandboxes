@@ -1,0 +1,4 @@
+vetting_forbid_unvetted_override: 1
+vetting_require_clean_worktree: yes
+vetting_require_clean_worktree: 1
+vetting_trust_format: gpg # c

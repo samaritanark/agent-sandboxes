@@ -1,0 +1,3 @@
+vetting_exceptions_require_head: 'true'
+vetting_forbid_unvetted_override: yes
+vetting_require_clean_worktree: True

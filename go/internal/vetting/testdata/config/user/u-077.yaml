@@ -1,0 +1,5 @@
+vetting_forbid_unvetted_override: 
+vetting_max_commits_behind: '7'
+  vetting_require_clean_worktree: yes
+vetting_trust_format: ssh
+vetting_trust_root: ./rel_signers

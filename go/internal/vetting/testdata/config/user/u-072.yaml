@@ -1,0 +1,3 @@
+vetting: required#x
+vetting_exceptions_from_commit: 1
+vetting_signing_key: ~/key

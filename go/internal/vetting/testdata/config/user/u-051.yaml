@@ -1,0 +1,7 @@
+  vetting: required#x
+vetting_exceptions_from_commit: 1
+vetting_max_commits_behind: 9223372036854775808
+vetting_require_clean_worktree: true # x
+vetting_signing_key: /k
+vetting_trust_format: gpg # c
+vetting_trust_root: ~/missing

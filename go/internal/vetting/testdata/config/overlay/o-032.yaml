@@ -1,0 +1,3 @@
+# header
+vetting: required
+vetting_require_clean_worktree: True

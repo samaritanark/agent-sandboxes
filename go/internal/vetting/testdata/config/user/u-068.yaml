@@ -1,0 +1,4 @@
+# header
+vetting: Required
+vetting_exceptions_from_commit: True
+vetting_require_clean_worktree: false

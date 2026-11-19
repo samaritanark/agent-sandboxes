@@ -1,0 +1,6 @@
+vetting_exceptions_require_head: True
+vetting_forbid_unvetted_override: 
+vetting_max_age_days: 30
+vetting_max_commits_behind: 010
+vetting_require_clean_worktree: True
+vetting_trust_root: @T@/abs_signers

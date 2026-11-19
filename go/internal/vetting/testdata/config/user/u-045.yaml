@@ -1,0 +1,3 @@
+vetting_forbid_unvetted_override: 1
+vetting_max_commits_behind: 0
+vetting_trust_format: 'gpg'

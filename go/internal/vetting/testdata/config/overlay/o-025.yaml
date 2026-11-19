@@ -1,0 +1,3 @@
+# header
+vetting_max_age_days: 010
+vetting_trust_root: @T@/abs_signers # c

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# `date +%s` answers $FAKE_NOW so ages are reproducible; anything else is the real date.
+if [[ "${1:-}" == "+%s" ]]; then echo "${FAKE_NOW:?}"; else exec /bin/date "$@"; fi

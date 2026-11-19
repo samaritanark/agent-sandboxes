@@ -1,0 +1,6 @@
+vetting: off # c
+vetting_exceptions_from_commit: True
+vetting_exceptions_require_head: 
+  vetting_max_age_days: 010
+vetting_max_commits_behind: 010
+vetting_trust_format: 'gpg'

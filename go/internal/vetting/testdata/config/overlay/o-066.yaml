@@ -1,0 +1,4 @@
+# header
+vetting_require_clean_worktree: 1
+vetting_trust_format: gpg # c
+vetting_trust_root: rel_signers

@@ -1,0 +1,4 @@
+vetting: off
+vetting_exceptions_from_commit: yes
+vetting_max_commits_behind: abc
+vetting_trust_root: rel_signers/

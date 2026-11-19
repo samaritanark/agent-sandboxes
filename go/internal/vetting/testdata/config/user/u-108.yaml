@@ -1,0 +1,5 @@
+vetting: 
+vetting_exceptions_from_commit: yes
+vetting_max_age_days: 365
+vetting_max_commits_behind: 5
+vetting_require_clean_worktree: true

@@ -1,0 +1,7 @@
+vetting: Required
+vetting_exceptions_from_commit: yes
+vetting_forbid_unvetted_override: true
+vetting_forbid_unvetted_override: 
+vetting_max_commits_behind: 3 # c
+vetting_require_clean_worktree: True
+vetting_signing_key: ~/key

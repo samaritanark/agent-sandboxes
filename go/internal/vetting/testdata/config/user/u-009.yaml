@@ -1,0 +1,5 @@
+# header
+  vetting_max_commits_behind: 9223372036854775807
+  vetting_require_clean_worktree: yes
+vetting_signing_key: ~/key
+vetting_trust_format: ssh

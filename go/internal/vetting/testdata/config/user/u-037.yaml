@@ -1,0 +1,4 @@
+vetting_exceptions_from_commit: 1
+vetting_forbid_unvetted_override: 
+vetting_require_clean_worktree: 
+vetting_trust_format: 

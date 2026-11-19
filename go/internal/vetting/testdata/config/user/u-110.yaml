@@ -1,0 +1,6 @@
+  vetting: 
+vetting_exceptions_require_head: 1
+vetting_require_clean_worktree: true
+vetting_require_clean_worktree: 1
+vetting_trust_format: GPG
+vetting_trust_root: ~/home_signers

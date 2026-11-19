@@ -1,0 +1,6 @@
+vetting_exceptions_from_commit: 1
+vetting_max_age_days: 365
+vetting_max_commits_behind: -1
+vetting_require_clean_worktree: True
+vetting_signing_key: 
+vetting_trust_format: GPG

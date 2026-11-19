@@ -1,0 +1,2 @@
+vetting_require_clean_worktree: false
+vetting_trust_format: gpg

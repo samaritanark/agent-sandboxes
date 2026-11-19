@@ -1,0 +1,3 @@
+vetting: advisory
+vetting_max_age_days: 
+  vetting_max_commits_behind: 99999999999999999999

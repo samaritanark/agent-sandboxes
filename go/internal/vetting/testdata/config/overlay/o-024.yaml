@@ -1,0 +1,5 @@
+vetting_exceptions_require_head: yes
+vetting_exceptions_require_head: True
+vetting_signing_key: rel/k
+vetting_trust_format: GPG
+vetting_trust_root: @T@/abs_signers # c

@@ -1,0 +1,4 @@
+vetting_exceptions_from_commit: True
+vetting_exceptions_require_head: 1
+  vetting_max_commits_behind: 5
+vetting_trust_root: ~/home_signers

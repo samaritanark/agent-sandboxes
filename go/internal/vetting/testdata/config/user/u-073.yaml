@@ -1,0 +1,5 @@
+vetting_exceptions_require_head: 'true'
+vetting_max_age_days: 09
+vetting_signing_key: rel/k
+vetting_trust_format: ssh
+  vetting_trust_root: rel_signers/

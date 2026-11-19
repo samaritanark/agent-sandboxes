@@ -1,0 +1,5 @@
+vetting_exceptions_require_head: yes
+vetting_max_age_days: x
+  vetting_max_commits_behind: abc
+vetting_signing_key: 
+vetting_signing_key: /k

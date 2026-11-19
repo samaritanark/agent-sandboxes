@@ -1,0 +1,281 @@
+// Package vetting is the Go port of the repo-vetting gate in lib/vetting.sh (spike S8, D-34).
+// Like package gate, it reproduces the bash exactly, quirks included, because the bash is the
+// oracle until release.
+package vetting
+
+import (
+	"io"
+	"os"
+	"regexp"
+	"strings"
+
+	"git.theark.cloud/acs/agent-sandboxes/go/internal/gate"
+)
+
+// Ctx carries what the bash reads from the environment and the clock.
+type Ctx struct {
+	gate.ScanEnv                  // Home, UserConfig, SandboxOverlay
+	TrustRootDefault string       // $SANDBOX_VETTING_TRUST_ROOT_DEFAULT
+	TagPrefix        string       // $SANDBOX_VETTING_TAG_PREFIX
+	Now              func() int64 // `date +%s`
+	Stderr           io.Writer    // where the bash writes WARN lines
+}
+
+// NewCtx builds a Ctx from the process environment with the bash's defaults.
+func NewCtx(now func() int64) Ctx {
+	e := gate.ScanEnvFromOS()
+	c := Ctx{ScanEnv: e, Now: now, Stderr: os.Stderr}
+	c.TrustRootDefault = os.Getenv("SANDBOX_VETTING_TRUST_ROOT_DEFAULT")
+	if c.TrustRootDefault == "" {
+		c.TrustRootDefault = e.Home + "/.sandbox/vetting/allowed_signers"
+	}
+	c.TagPrefix = os.Getenv("SANDBOX_VETTING_TAG_PREFIX")
+	if c.TagPrefix == "" {
+		c.TagPrefix = "agent-vetted/"
+	}
+	return c
+}
+
+func isFile(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular()
+}
+
+func exists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// userGet reads a scalar from the user config; "" if the file or key is absent.
+func (c Ctx) userGet(key string) string {
+	if isFile(c.UserConfig) {
+		return gate.ExtractYAMLScalar(c.UserConfig, key)
+	}
+	return ""
+}
+
+func (c Ctx) overlayDir() string {
+	ov := gate.ResolveOverlayPath(c.ScanEnv)
+	if ov != "" && isFile(ov+"/config.yaml") {
+		return ov
+	}
+	return ""
+}
+
+func (c Ctx) overlayGet(key string) string {
+	if ov := c.overlayDir(); ov != "" {
+		return gate.ExtractYAMLScalar(ov+"/config.yaml", key)
+	}
+	return ""
+}
+
+// configGet is _vetting_config_get: the user config's value, else the overlay's.
+func (c Ctx) configGet(key string) string {
+	if v := c.userGet(key); v != "" {
+		return v
+	}
+	return c.overlayGet(key)
+}
+
+func rank(p string) int {
+	switch p {
+	case "off":
+		return 0
+	case "advisory":
+		return 1
+	case "required":
+		return 2
+	}
+	return 1
+}
+
+// normalize is _vetting_normalize; an unknown non-empty value warns and becomes advisory.
+func (c Ctx) normalize(v string) string {
+	switch v {
+	case "off", "advisory", "required":
+		return v
+	case "":
+		return ""
+	}
+	if c.Stderr != nil {
+		io.WriteString(c.Stderr, "WARN: unrecognized vetting posture '"+v+"' — treating as 'advisory'.\n")
+	}
+	return "advisory"
+}
+
+// ResolvePosture is resolve_vetting_posture: the user's choice (default advisory), which an
+// overlay can only ratchet up.
+func (c Ctx) ResolvePosture() string {
+	userP := c.normalize(c.userGet("vetting"))
+	eff := userP
+	if eff == "" {
+		eff = "advisory"
+	}
+	if ov := c.overlayDir(); ov != "" {
+		overlayP := c.normalize(gate.ExtractYAMLScalar(ov+"/config.yaml", "vetting"))
+		if overlayP != "" && rank(overlayP) > rank(eff) {
+			eff = overlayP
+		}
+	}
+	return eff
+}
+
+var digits = regexp.MustCompile(`^[0-9]+$`)
+
+// bashArith evaluates a string of digits the way bash arithmetic does: a leading 0 means octal
+// (digits 8 and 9 are an error), and a value too large wraps modulo 2^64 into a signed integer.
+func bashArith(s string) (int64, bool) {
+	base := uint64(10)
+	if len(s) > 1 && s[0] == '0' {
+		base = 8
+	}
+	var v uint64
+	for i := 0; i < len(s); i++ {
+		d := uint64(s[i] - '0')
+		if d >= base {
+			return 0, false
+		}
+		v = v*base + d
+	}
+	return int64(v), true
+}
+
+// arithLess is `[[ a -lt b ]]` for digit strings; an arithmetic error makes it false.
+func arithLess(a, b string) bool {
+	x, ok1 := bashArith(a)
+	y, ok2 := bashArith(b)
+	return ok1 && ok2 && x < y
+}
+
+// minCap is the shared loop of vetting_max_commits_behind and vetting_max_age_days: the smallest
+// digits-only value of the user and overlay settings, found with the bash's comparison.
+func (c Ctx) minCap(key string) string {
+	eff := ""
+	for _, v := range []string{c.userGet(key), c.overlayGet(key)} {
+		if !digits.MatchString(v) {
+			continue
+		}
+		if eff == "" || arithLess(v, eff) {
+			eff = v
+		}
+	}
+	return eff
+}
+
+func (c Ctx) MaxCommitsBehind() string { return c.minCap("vetting_max_commits_behind") }
+func (c Ctx) MaxAgeDays() string       { return c.minCap("vetting_max_age_days") }
+
+// AgeDays is _vetting_age_days: whole days since a unix timestamp; "" when unknown.
+func (c Ctx) AgeDays(epoch string) string {
+	if !digits.MatchString(epoch) {
+		return ""
+	}
+	e, ok := bashArith(epoch)
+	if !ok {
+		return ""
+	}
+	now := c.Now()
+	if e > now {
+		return "0"
+	}
+	return itoa((now - e) / 86400)
+}
+
+func itoa(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b [24]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
+}
+
+// strict is the shared shape of the tighten-only switches: "true" wins if either side sets it.
+func (c Ctx) strict(key string) string {
+	if c.userGet(key) == "true" || c.overlayGet(key) == "true" {
+		return "true"
+	}
+	return "false"
+}
+
+func (c Ctx) ExceptionsRequireHead() string  { return c.strict("vetting_exceptions_require_head") }
+func (c Ctx) RequireCleanWorktree() string   { return c.strict("vetting_require_clean_worktree") }
+func (c Ctx) ExceptionsFromCommit() string   { return c.strict("vetting_exceptions_from_commit") }
+func (c Ctx) ForbidUnvettedOverride() string { return c.strict("vetting_forbid_unvetted_override") }
+
+func (c Ctx) tilde(v string) string {
+	if strings.HasPrefix(v, "~") {
+		return c.Home + v[1:]
+	}
+	return v
+}
+
+// TrustRoot is vetting_trust_root: the operator's own signer trust root.
+func (c Ctx) TrustRoot() string {
+	if v := c.userGet("vetting_trust_root"); v != "" {
+		return c.tilde(v)
+	}
+	return c.TrustRootDefault
+}
+
+// TrustRoots is vetting_trust_roots: every existing trust root, operator-local first.
+func (c Ctx) TrustRoots() []string {
+	var out []string
+	userRoot := c.TrustRoot()
+	if exists(userRoot) {
+		out = append(out, userRoot)
+	}
+	if ov := c.overlayDir(); ov != "" {
+		if v := gate.ExtractYAMLScalar(ov+"/config.yaml", "vetting_trust_root"); v != "" {
+			v = c.tilde(v)
+			if !strings.HasPrefix(v, "/") {
+				v = ov + "/" + v
+			}
+			if exists(v) && v != userRoot {
+				out = append(out, v)
+			}
+		}
+	}
+	return out
+}
+
+// TrustFormat is vetting_trust_format: "ssh" (default) or "gpg".
+func (c Ctx) TrustFormat() string {
+	switch v := c.configGet("vetting_trust_format"); v {
+	case "gpg", "ssh":
+		return v
+	}
+	return "ssh"
+}
+
+// SigningKey is vetting_signing_key (user config only).
+func (c Ctx) SigningKey() string { return c.tilde(c.userGet("vetting_signing_key")) }
+
+var (
+	gpgSigner = regexp.MustCompile(`.*Good signature from "([^"]*)".*`)
+	sshSigner = regexp.MustCompile(`.*Good "[^"]*" signature for ([^ ]*).*`)
+)
+
+// ExtractSigner is _vetting_extract_signer: the signer principal from `git tag -v` output.
+func ExtractSigner(out, format string) string {
+	re := sshSigner
+	if format == "gpg" {
+		re = gpgSigner
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if m := re.FindStringSubmatchIndex(line); m != nil && m[0] == 0 && m[1] == len(line) {
+			return line[m[2]:m[3]]
+		}
+	}
+	return ""
+}

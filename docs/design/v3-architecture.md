@@ -2071,7 +2071,10 @@ can run in parallel:
   comparing stdout and the scanner's recorded arguments and generated config).
   Pilot 4 ports `secret_gate_repos` (zero divergences on 393 cases, including
   the interactive prompt on a pseudo-terminal), which completes the secret gate.
-  Vetting verification and the other modules are not ported.
+  Pilot 5 begins vetting verification with the posture and configuration layer
+  (`go/internal/vetting`, zero divergences on 1,104 case groups). Signature
+  verification, the drift decision, the vetting gate, and attestation are not
+  ported.
 
 ---
 

@@ -1,0 +1,6 @@
+# header
+vetting: off # c
+vetting_exceptions_from_commit: 1
+vetting_forbid_unvetted_override: true
+vetting_require_clean_worktree: 
+vetting_trust_format: gpg

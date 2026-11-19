@@ -1,0 +1,4 @@
+vetting: off
+vetting_max_commits_behind: 007
+  vetting_signing_key: 
+  vetting_trust_format: GPG

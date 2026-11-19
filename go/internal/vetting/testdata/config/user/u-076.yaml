@@ -1,0 +1,2 @@
+vetting_forbid_unvetted_override: true
+vetting_trust_format: gpg # c

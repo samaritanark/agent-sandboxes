@@ -1,0 +1,4 @@
+vetting: requird
+vetting_exceptions_require_head: false
+vetting_require_clean_worktree: 1
+vetting_trust_root: ~/home_signers

@@ -1,0 +1,8 @@
+# header
+vetting_exceptions_require_head: "true"
+vetting_forbid_unvetted_override: true
+vetting_max_age_days: 365
+vetting_require_clean_worktree: true # x
+vetting_signing_key: /k
+vetting_trust_root: 
+vetting_trust_root: @T@/missing

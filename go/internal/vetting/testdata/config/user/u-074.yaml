@@ -1,0 +1,5 @@
+vetting: 'off'
+vetting_require_clean_worktree: True
+vetting_require_clean_worktree: True
+vetting_signing_key: @T@/k
+vetting_trust_root: 

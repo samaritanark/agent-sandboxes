@@ -1,0 +1,9 @@
+vetting_exceptions_require_head: 
+vetting_max_age_days: 010
+vetting_max_commits_behind: '7'
+vetting_require_clean_worktree: True
+vetting_signing_key: /k
+vetting_signing_key: @T@/k
+vetting_trust_format: gpg
+vetting_trust_format: 'gpg'
+vetting_trust_root: @T@/abs_signers

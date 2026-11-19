@@ -1,0 +1,7 @@
+vetting: "required"
+vetting: requird
+vetting_exceptions_from_commit: false
+vetting_forbid_unvetted_override: True
+vetting_trust_format: gpg
+vetting_trust_root: @T@/abs_signers
+vetting_trust_root: @T@/abs_signers # c

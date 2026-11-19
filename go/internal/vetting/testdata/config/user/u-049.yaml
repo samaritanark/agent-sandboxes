@@ -1,0 +1,4 @@
+# header
+vetting: required
+vetting_exceptions_from_commit: 
+vetting_exceptions_require_head: True

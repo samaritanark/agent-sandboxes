@@ -1,0 +1,4 @@
+vetting: requird
+vetting_exceptions_from_commit: 
+vetting_max_commits_behind: -1
+vetting_trust_format: 

@@ -1,0 +1,4 @@
+# header
+vetting_max_age_days: 00
+vetting_require_clean_worktree: 
+vetting_signing_key: @T@/k

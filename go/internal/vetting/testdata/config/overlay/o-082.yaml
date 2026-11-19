@@ -1,0 +1,4 @@
+vetting_exceptions_require_head: "true"
+vetting_forbid_unvetted_override: 
+vetting_max_age_days: -2
+  vetting_trust_format: x

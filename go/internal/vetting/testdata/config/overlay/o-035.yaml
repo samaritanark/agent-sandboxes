@@ -1,0 +1,7 @@
+vetting_exceptions_from_commit: 1
+vetting_exceptions_require_head: true
+vetting_exceptions_require_head: true # x
+vetting_forbid_unvetted_override: yes
+vetting_max_commits_behind: '7'
+vetting_require_clean_worktree: 1
+vetting_trust_root: @T@/ov/signers

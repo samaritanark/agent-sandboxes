@@ -1,0 +1,5 @@
+vetting: "required"
+vetting_exceptions_from_commit: false
+vetting_exceptions_require_head: 1
+vetting_require_clean_worktree: true # x
+vetting_trust_format: 

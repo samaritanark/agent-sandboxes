@@ -1,0 +1,5 @@
+vetting_exceptions_require_head: false
+vetting_max_age_days: x
+vetting_max_age_days: 
+vetting_signing_key: 
+vetting_trust_format: x

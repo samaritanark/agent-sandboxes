@@ -1,0 +1,5 @@
+vetting: Required
+vetting_exceptions_from_commit: yes
+vetting_exceptions_from_commit: false
+vetting_exceptions_require_head: 1
+vetting_trust_root: 

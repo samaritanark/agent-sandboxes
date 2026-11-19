@@ -1,0 +1,6 @@
+vetting: requird
+vetting_max_commits_behind: 9223372036854775808
+vetting_signing_key: @T@/k
+vetting_trust_format: GPG
+vetting_trust_root: @T@/abs_signers # c
+vetting_trust_root: 

@@ -1,0 +1,6 @@
+vetting: Required
+vetting_exceptions_from_commit: false
+vetting_forbid_unvetted_override: 
+vetting_max_commits_behind: 08
+vetting_require_clean_worktree: true # x
+vetting_trust_root: ~/missing

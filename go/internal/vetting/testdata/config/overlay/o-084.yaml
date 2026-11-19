@@ -1,0 +1,4 @@
+vetting_forbid_unvetted_override: true
+vetting_signing_key: 
+vetting_trust_format: ssh
+vetting_trust_format: gpg # c

@@ -1,0 +1,28 @@
+ssh	Good "git" signature for alice@example.com with ED25519 key SHA256:abc
+gpg	Good "git" signature for alice@example.com with ED25519 key SHA256:abc
+ssh	Good "git" signature for  with key
+gpg	Good "git" signature for  with key
+ssh	gpg: Good signature from "Alice <a@x>" [ultimate]
+gpg	gpg: Good signature from "Alice <a@x>" [ultimate]
+ssh	gpg: Good signature from "A" \ngpg: Good signature from "B"
+gpg	gpg: Good signature from "A" \ngpg: Good signature from "B"
+ssh	x Good signature from "A" y Good signature from "B" z
+gpg	x Good signature from "A" y Good signature from "B" z
+ssh	Good "git" signature for a Good "git" signature for b
+gpg	Good "git" signature for a Good "git" signature for b
+ssh	BAD signature
+gpg	BAD signature
+ssh	
+gpg	
+ssh	Good "" signature for p
+gpg	Good "" signature for p
+ssh	Good signature from ""
+gpg	Good signature from ""
+ssh	line1\nGood "git" signature for first\nGood "git" signature for second
+gpg	line1\nGood "git" signature for first\nGood "git" signature for second
+ssh	Good "git" signature for\ttab
+gpg	Good "git" signature for\ttab
+ssh	Good signature from "unterminated
+gpg	Good signature from "unterminated
+ssh	Good "git" signature for me@x.y\r
+gpg	Good "git" signature for me@x.y\r

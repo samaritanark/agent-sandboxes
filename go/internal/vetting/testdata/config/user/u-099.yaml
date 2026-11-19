@@ -1,0 +1,4 @@
+vetting: off # c
+vetting_max_commits_behind: '7'
+vetting_trust_format: gpg
+vetting_trust_format: ssh

@@ -1,0 +1,4 @@
+vetting_exceptions_require_head: 1
+vetting_require_clean_worktree: false
+vetting_trust_format: ssh
+vetting_trust_root: ~/home_signers
