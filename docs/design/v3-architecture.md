@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft, revision 5. Revision 4 (third external review, Appendix C; Go policy port, D-34) plus operator-driven agent harness updates (D-35, Appendix D). Gating spikes S1, S2, S4, S5, S6, S7, and S8 have run on macOS (Apple M6) and its arm64 Lima VM only; Linux-host runs are pending (`docs/design/spikes/S8.md`, "Waiting on the Linux workstation"); S3 (Windows) not run |
+| **Status** | Draft, revision 5. Revision 4 (third external review, Appendix C; Go policy port, D-34) plus operator-driven agent harness updates (D-35, Appendix D). Gating spikes S1, S2, S4, S5, S6, S7, and S8 have run on macOS (Apple M6) and its arm64 Lima VM; S6 and S1 have also run on a Linux x86_64 host, and the other Linux-host runs are pending. For current status and next steps see `docs/design/spikes/S8.md`, "Start here"; S3 (Windows) not run |
 | **Target** | v3.0.0 (major version; breaking install and platform changes) |
 | **Owner** | Jase Hall |
 | **Date** | 2026-11-18 |

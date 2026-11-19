@@ -4,6 +4,10 @@ This module is the in-progress port of the bash policy layer (`bin/sandbox`,
 `lib/*.sh`) described in `docs/design/v3-architecture.md` §5.4.1 and spike S8
 (`docs/design/spikes/S8.md`).
 
+**Continuing this work?** Start with the "Start here" section near the end of `S8.md`. It holds
+the current status, the next steps, and what each development machine has installed. Agent
+memory does not travel between machines.
+
 The v2 bash stays in the tree, frozen, as the **oracle** until release. Each ported
 unit is checked against it two ways:
 
