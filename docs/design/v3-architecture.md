@@ -2082,7 +2082,10 @@ can run in parallel:
   attest, signing setup; zero divergences on 997 cases with real SSH signing),
   which completes `lib/vetting.sh`. Along the way it found that git 2.43 (Ubuntu
   24.04) creates an unsigned tag when its SSH signer fails; see
-  `docs/design/spikes/S8.md`. The rest of the policy layer is not ported.
+  `docs/design/spikes/S8.md`. The rest of the policy layer is not ported. Summary and recommendation
+  after nine pilots: `docs/design/spikes/S8.md`. About a quarter of the candidate
+  bash is ported; the remaining units call external tools and will cost more per
+  line, which the nine pilots do not measure.
 
 ---
 
