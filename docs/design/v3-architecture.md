@@ -2072,8 +2072,10 @@ can run in parallel:
   Pilot 4 ports `secret_gate_repos` (zero divergences on 393 cases, including
   the interactive prompt on a pseudo-terminal), which completes the secret gate.
   Pilot 5 begins vetting verification with the posture and configuration layer
-  (`go/internal/vetting`, zero divergences on 1,104 case groups). Signature
-  verification, the drift decision, the vetting gate, and attestation are not
+  (`go/internal/vetting`, zero divergences on 1,104 case groups). Pilot 6 adds
+  repo classification and signed-tag verification (zero divergences on 270 cases,
+  including a hostile workspace whose config names programs for every git hook
+  point: none ran). The drift decision, the vetting gate, and attestation are not
   ported.
 
 ---

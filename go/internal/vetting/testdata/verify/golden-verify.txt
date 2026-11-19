@@ -1,0 +1,810 @@
+### v0000
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0001
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0002
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0003
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0004
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0005
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0006
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0007
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0008
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0009
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0010
+error	<T>/r-empty has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo <T>/r-empty
+markers=
+### v0011
+error	<T>/r-empty has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo <T>/r-empty
+markers=
+### v0012
+error	<T>/r-empty has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo <T>/r-empty
+markers=
+### v0013
+error	<T>/r-empty has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo <T>/r-empty
+markers=
+### v0014
+error	<T>/r-empty has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo <T>/r-empty
+markers=
+### v0015
+error	<T>/r-empty has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo <T>/r-empty
+markers=
+### v0016
+error	<T>/r-empty has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo <T>/r-empty
+markers=
+### v0017
+error	<T>/r-empty has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo <T>/r-empty
+markers=
+### v0018
+error	<T>/r-empty has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo <T>/r-empty
+markers=
+### v0019
+error	<T>/r-empty has no commits yet (empty repository) — make an initial commit, then attest with: sandbox vet --repo <T>/r-empty
+markers=
+### v0020
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present, and this is a shallow clone — if the repo is vetted upstream, 'git fetch --unshallow --tags' may reveal the attestation
+markers=
+### v0021
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present, and this is a shallow clone — if the repo is vetted upstream, 'git fetch --unshallow --tags' may reveal the attestation
+markers=
+### v0022
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present, and this is a shallow clone — if the repo is vetted upstream, 'git fetch --unshallow --tags' may reveal the attestation
+markers=
+### v0023
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present, and this is a shallow clone — if the repo is vetted upstream, 'git fetch --unshallow --tags' may reveal the attestation
+markers=
+### v0024
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present, and this is a shallow clone — if the repo is vetted upstream, 'git fetch --unshallow --tags' may reveal the attestation
+markers=
+### v0025
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0026
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present, and this is a shallow clone — if the repo is vetted upstream, 'git fetch --unshallow --tags' may reveal the attestation
+markers=
+### v0027
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present, and this is a shallow clone — if the repo is vetted upstream, 'git fetch --unshallow --tags' may reveal the attestation
+markers=
+### v0028
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0029
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present, and this is a shallow clone — if the repo is vetted upstream, 'git fetch --unshallow --tags' may reveal the attestation
+markers=
+### v0030
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0031
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0032
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0033
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0034
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0035
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0036
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0037
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0038
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0039
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0040
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/b1	alice@example.com	1	1700100120
+markers=
+### v0041
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/b1	alice@example.com	1	1700100120
+markers=
+### v0042
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0043
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/b1	alice@example.com	1	1700100120
+markers=
+### v0044
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/b1	alice@example.com	1	1700100120
+markers=
+### v0045
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0046
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0047
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0048
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0049
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/b1	alice@example.com	1	1700100120
+markers=
+### v0050
+vetted	0b6d40aefcd27449e13ccdf8cdfb5f9762687e73	agent-vetted/b3	alice@example.com	3	1700100180
+markers=
+### v0051
+vetted	0b6d40aefcd27449e13ccdf8cdfb5f9762687e73	agent-vetted/b3	alice@example.com	3	1700100180
+markers=
+### v0052
+unvetted	0b6d40aefcd27449e13ccdf8cdfb5f9762687e73	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0053
+vetted	0b6d40aefcd27449e13ccdf8cdfb5f9762687e73	agent-vetted/b3	alice@example.com	3	1700100180
+markers=
+### v0054
+vetted	0b6d40aefcd27449e13ccdf8cdfb5f9762687e73	agent-vetted/b3	alice@example.com	3	1700100180
+markers=
+### v0055
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0056
+unvetted	0b6d40aefcd27449e13ccdf8cdfb5f9762687e73	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0057
+unvetted	0b6d40aefcd27449e13ccdf8cdfb5f9762687e73	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0058
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0059
+vetted	0b6d40aefcd27449e13ccdf8cdfb5f9762687e73	agent-vetted/b3	alice@example.com	3	1700100180
+markers=
+### v0060
+vetted	40c23272860f7f2b03c78d46a817fe84a17625fb	agent-vetted/v2	alice@example.com	1	1700100300
+markers=
+### v0061
+vetted	40c23272860f7f2b03c78d46a817fe84a17625fb	agent-vetted/v2	alice@example.com	1	1700100300
+markers=
+### v0062
+unvetted	40c23272860f7f2b03c78d46a817fe84a17625fb	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0063
+vetted	40c23272860f7f2b03c78d46a817fe84a17625fb	agent-vetted/v2	alice@example.com	1	1700100300
+markers=
+### v0064
+vetted	40c23272860f7f2b03c78d46a817fe84a17625fb	agent-vetted/v2	alice@example.com	1	1700100300
+markers=
+### v0065
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0066
+unvetted	40c23272860f7f2b03c78d46a817fe84a17625fb	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0067
+unvetted	40c23272860f7f2b03c78d46a817fe84a17625fb	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0068
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0069
+vetted	40c23272860f7f2b03c78d46a817fe84a17625fb	agent-vetted/v2	alice@example.com	1	1700100300
+markers=
+### v0070
+vetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	agent-vetted/A	alice@example.com	0	1700100660
+markers=
+### v0071
+vetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	agent-vetted/A	alice@example.com	0	1700100660
+markers=
+### v0072
+unvetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	7 reachable tag(s) but none verified against the trust root
+markers=
+### v0073
+vetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	agent-vetted/A	alice@example.com	0	1700100660
+markers=
+### v0074
+vetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	agent-vetted/A	alice@example.com	0	1700100660
+markers=
+### v0075
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0076
+unvetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	7 reachable tag(s) but none verified against the trust root
+markers=
+### v0077
+unvetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	7 reachable tag(s) but none verified against the trust root
+markers=
+### v0078
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0079
+vetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	agent-vetted/A	alice@example.com	0	1700100660
+markers=
+### v0080
+vetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	agent-vetted/m3	alice@example.com	0	1700100960
+markers=
+### v0081
+vetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	agent-vetted/m3	alice@example.com	0	1700100960
+markers=
+### v0082
+vetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	agent-vetted/m2	bob@example.com	0	1700100900
+markers=
+### v0083
+vetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	agent-vetted/m2	bob@example.com	0	1700100900
+markers=
+### v0084
+vetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	agent-vetted/m3	alice@example.com	0	1700100960
+markers=
+### v0085
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0086
+unvetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0087
+unvetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0088
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0089
+vetted	e4cb4a94ed4ed19e1073ad041ae38c5fa12beddc	agent-vetted/m2	bob@example.com	0	1700100900
+markers=
+### v0090
+unvetted	9b0f20af3e3040ad6122750f428cfa0689d73eae	1 agent-vetted/* tag(s) present but none is an ancestor of HEAD (an older checkout or a divergent branch?) — check out the vetted commit, or attest this HEAD
+markers=
+### v0091
+unvetted	9b0f20af3e3040ad6122750f428cfa0689d73eae	1 agent-vetted/* tag(s) present but none is an ancestor of HEAD (an older checkout or a divergent branch?) — check out the vetted commit, or attest this HEAD
+markers=
+### v0092
+unvetted	9b0f20af3e3040ad6122750f428cfa0689d73eae	1 agent-vetted/* tag(s) present but none is an ancestor of HEAD (an older checkout or a divergent branch?) — check out the vetted commit, or attest this HEAD
+markers=
+### v0093
+unvetted	9b0f20af3e3040ad6122750f428cfa0689d73eae	1 agent-vetted/* tag(s) present but none is an ancestor of HEAD (an older checkout or a divergent branch?) — check out the vetted commit, or attest this HEAD
+markers=
+### v0094
+unvetted	9b0f20af3e3040ad6122750f428cfa0689d73eae	1 agent-vetted/* tag(s) present but none is an ancestor of HEAD (an older checkout or a divergent branch?) — check out the vetted commit, or attest this HEAD
+markers=
+### v0095
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0096
+unvetted	9b0f20af3e3040ad6122750f428cfa0689d73eae	1 agent-vetted/* tag(s) present but none is an ancestor of HEAD (an older checkout or a divergent branch?) — check out the vetted commit, or attest this HEAD
+markers=
+### v0097
+unvetted	9b0f20af3e3040ad6122750f428cfa0689d73eae	1 agent-vetted/* tag(s) present but none is an ancestor of HEAD (an older checkout or a divergent branch?) — check out the vetted commit, or attest this HEAD
+markers=
+### v0098
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0099
+unvetted	9b0f20af3e3040ad6122750f428cfa0689d73eae	1 agent-vetted/* tag(s) present but none is an ancestor of HEAD (an older checkout or a divergent branch?) — check out the vetted commit, or attest this HEAD
+markers=
+### v0100
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0101
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0102
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0103
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0104
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0105
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0106
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0107
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0108
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0109
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0110
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0111
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0112
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/sb	bob@example.com	0	1700101140
+markers=
+### v0113
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/sb	bob@example.com	0	1700101140
+markers=
+### v0114
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0115
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0116
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0117
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0118
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0119
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/sb	bob@example.com	0	1700101140
+markers=
+### v0120
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0121
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0122
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0123
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0124
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0125
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0126
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0127
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0128
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0129
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0130
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0131
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0132
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0133
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0134
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0135
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0136
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0137
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0138
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0139
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0140
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0141
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0142
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0143
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0144
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0145
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0146
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0147
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0148
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0149
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0150
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/$x	alice@example.com	0	1700101380
+markers=
+### v0151
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/$x	alice@example.com	0	1700101380
+markers=
+### v0152
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	8 reachable tag(s) but none verified against the trust root
+markers=
+### v0153
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/$x	alice@example.com	0	1700101380
+markers=
+### v0154
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/$x	alice@example.com	0	1700101380
+markers=
+### v0155
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0156
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	8 reachable tag(s) but none verified against the trust root
+markers=
+### v0157
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	8 reachable tag(s) but none verified against the trust root
+markers=
+### v0158
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0159
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/$x	alice@example.com	0	1700101380
+markers=
+### v0160
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/s	alice@example.com	0	1700101800
+markers=
+### v0161
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/s	alice@example.com	0	1700101800
+markers=
+### v0162
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0163
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/s	alice@example.com	0	1700101800
+markers=
+### v0164
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/s	alice@example.com	0	1700101800
+markers=
+### v0165
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0166
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0167
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0168
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0169
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/s	alice@example.com	0	1700101800
+markers=
+### v0170
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700101860
+markers=
+### v0171
+dirty	dab296ed09f2554e441c82edf2ee3646bc070211
+markers=
+### v0172
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0173
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700101860
+markers=
+### v0174
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700101860
+markers=
+### v0175
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0176
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0177
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0178
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0179
+dirty	dab296ed09f2554e441c82edf2ee3646bc070211
+markers=
+### v0180
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700101920
+markers=
+### v0181
+dirty	dab296ed09f2554e441c82edf2ee3646bc070211
+markers=
+### v0182
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0183
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700101920
+markers=
+### v0184
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700101920
+markers=
+### v0185
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0186
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0187
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0188
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0189
+dirty	dab296ed09f2554e441c82edf2ee3646bc070211
+markers=
+### v0190
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700101980
+markers=
+### v0191
+dirty	dab296ed09f2554e441c82edf2ee3646bc070211
+markers=
+### v0192
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0193
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700101980
+markers=
+### v0194
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700101980
+markers=
+### v0195
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0196
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0197
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0198
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0199
+dirty	dab296ed09f2554e441c82edf2ee3646bc070211
+markers=
+### v0200
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700102040
+markers=
+### v0201
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700102040
+markers=
+### v0202
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0203
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700102040
+markers=
+### v0204
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700102040
+markers=
+### v0205
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0206
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0207
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0208
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0209
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/d	alice@example.com	0	1700102040
+markers=
+### v0210
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0211
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0212
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0213
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0214
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0215
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0216
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0217
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0218
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0219
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0220
+unvetted	926d544858de46c5c5753bfe348030f71e350e21	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0221
+unvetted	926d544858de46c5c5753bfe348030f71e350e21	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0222
+unvetted	926d544858de46c5c5753bfe348030f71e350e21	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0223
+unvetted	926d544858de46c5c5753bfe348030f71e350e21	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0224
+unvetted	926d544858de46c5c5753bfe348030f71e350e21	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0225
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0226
+unvetted	926d544858de46c5c5753bfe348030f71e350e21	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0227
+unvetted	926d544858de46c5c5753bfe348030f71e350e21	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0228
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0229
+unvetted	926d544858de46c5c5753bfe348030f71e350e21	3 reachable tag(s) but none verified against the trust root
+markers=
+### v0230
+not-git	<T>/not-a-repo is not a git repository
+markers=
+### v0231
+not-git	<T>/not-a-repo is not a git repository
+markers=
+### v0232
+not-git	<T>/not-a-repo is not a git repository
+markers=
+### v0233
+not-git	<T>/not-a-repo is not a git repository
+markers=
+### v0234
+not-git	<T>/not-a-repo is not a git repository
+markers=
+### v0235
+not-git	<T>/not-a-repo is not a git repository
+markers=
+### v0236
+not-git	<T>/not-a-repo is not a git repository
+markers=
+### v0237
+not-git	<T>/not-a-repo is not a git repository
+markers=
+### v0238
+not-git	<T>/not-a-repo is not a git repository
+markers=
+### v0239
+not-git	<T>/not-a-repo is not a git repository
+markers=
+### v0240
+error	cannot access <T>/missing-dir
+markers=
+### v0241
+error	cannot access <T>/missing-dir
+markers=
+### v0242
+error	cannot access <T>/missing-dir
+markers=
+### v0243
+error	cannot access <T>/missing-dir
+markers=
+### v0244
+error	cannot access <T>/missing-dir
+markers=
+### v0245
+error	cannot access <T>/missing-dir
+markers=
+### v0246
+error	cannot access <T>/missing-dir
+markers=
+### v0247
+error	cannot access <T>/missing-dir
+markers=
+### v0248
+error	cannot access <T>/missing-dir
+markers=
+### v0249
+error	cannot access <T>/missing-dir
+markers=
+### v0250
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0251
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0252
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0253
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0254
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0255
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0256
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0257
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	1 reachable tag(s) but none verified against the trust root
+markers=
+### v0258
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0259
+vetted	dab296ed09f2554e441c82edf2ee3646bc070211	agent-vetted/at-head	alice@example.com	0	1700100060
+markers=
+### v0260
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0261
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0262
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0263
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0264
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0265
+error	no trust root found (<T>/home-b/.sandbox/vetting/allowed_signers; none shipped by the overlay)
+markers=
+### v0266
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0267
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
+### v0268
+error	no trust root found (<T>/missing; none shipped by the overlay)
+markers=
+### v0269
+unvetted	dab296ed09f2554e441c82edf2ee3646bc070211	no agent-vetted/* tag present — if the repo is vetted upstream, 'git fetch --tags' may reveal the attestation
+markers=
