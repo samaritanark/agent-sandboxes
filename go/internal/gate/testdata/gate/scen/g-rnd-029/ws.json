@@ -1,0 +1,1 @@
+[{"EndColumn":9,"File":"@REPO@/caret^","Match":"\"REDACTED\"","RuleID":"rule-a","StartColumn":1,"StartLine":5},{"EndColumn":9,"File":"@REPO@/a=~b","Match":"R","RuleID":"rule-a","StartColumn":1,"StartLine":7}]

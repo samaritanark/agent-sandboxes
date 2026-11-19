@@ -2069,8 +2069,9 @@ can run in parallel:
   Pilot 3 ports `scan_repo_secrets` and its config, ignore-file, and scanner
   invocation helpers (zero divergences on 1,033 cases against a stub scanner,
   comparing stdout and the scanner's recorded arguments and generated config).
-  `secret_gate_repos`, vetting verification, and the other modules are not
-  ported.
+  Pilot 4 ports `secret_gate_repos` (zero divergences on 393 cases, including
+  the interactive prompt on a pseudo-terminal), which completes the secret gate.
+  Vetting verification and the other modules are not ported.
 
 ---
 

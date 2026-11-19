@@ -30,8 +30,12 @@ if [[ "$target" == */.git/config ]]; then kind=gc; repo="${target%/.git/config}"
     if [[ -d "$ign" ]]; then echo "ignore=$ign dir entries=$(ls -A "$ign" | wc -l | tr -d ' ')"; else echo "ignore=$ign file"; fi
   fi
 } | norm >> "$STUB_LOG"
-if [[ -f "$STUB_SCEN/$kind.json" ]]; then
-  sed "s|@REPO@|$repo|g" "$STUB_SCEN/$kind.json" > "$report"
+# A scenario may give one repo its own answer: <kind>.<repo-basename>.json / .rc
+b="$(basename "$repo")"; jf="$STUB_SCEN/$kind.$b.json"; rf="$STUB_SCEN/$kind.$b.rc"
+[[ -f "$jf" ]] || jf="$STUB_SCEN/$kind.json"
+if [[ ! -f "$rf" ]]; then rf="$STUB_SCEN/$kind.rc"; fi
+if [[ -f "$jf" ]]; then
+  sed "s|@REPO@|$repo|g" "$jf" > "$report"
 fi
-rc=0; [[ -f "$STUB_SCEN/$kind.rc" ]] && rc="$(cat "$STUB_SCEN/$kind.rc")"
+rc=0; [[ -f "$rf" ]] && rc="$(cat "$rf")"
 exit "$rc"

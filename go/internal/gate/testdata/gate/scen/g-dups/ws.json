@@ -1,0 +1,1 @@
+[{"EndColumn":9,"File":"@REPO@/a.txt","Match":"R","RuleID":"r","StartColumn":1,"StartLine":1},{"EndColumn":9,"File":"@REPO@/a.txt","Match":"R","RuleID":"r","StartColumn":1,"StartLine":1},{"EndColumn":9,"File":"@REPO@/u.txt","Match":"R","RuleID":"r","StartColumn":1,"StartLine":1},{"EndColumn":9,"File":"@REPO@/u.txt","Match":"R","RuleID":"r2","StartColumn":1,"StartLine":1}]
