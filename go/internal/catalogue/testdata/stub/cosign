@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stub cosign for the catalogue oracle: logs its arguments, exits with $COSIGN_RC.
+printf '%s\n' "$*" >> "$COSIGN_LOG"
+exit "${COSIGN_RC:-0}"

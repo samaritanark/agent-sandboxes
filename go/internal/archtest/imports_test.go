@@ -21,6 +21,8 @@ var allowed = map[string][]string{
 	"gate":       {"bashcompat", "config", "deviation"},
 	"vetting":    {"bashcompat", "config", "deviation"}, // the gate is injected, never imported
 	"checks":     {"config", "deviation"},
+	"tier":       {},
+	"catalogue":  {"bashcompat", "checks", "config", "deviation"},
 }
 
 func TestImportGraph(t *testing.T) {

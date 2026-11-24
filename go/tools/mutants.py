@@ -348,3 +348,42 @@ m(CK, "\tif IsIPv4Literal(ipTarget) {", "\tif false {", R_CK)
 m(CK, "\t\tif e == host {\n\t\t\treturn true", "\t\tif strings.EqualFold(e, host) {\n\t\t\treturn true", R_CK)
 m(CK, "\tif ov == \"\" || !config.IsFile(ov+\"/config.yaml\") {\n\t\treturn false\n\t}\n\tfor _, e", "\tif ov == \"\" {\n\t\treturn false\n\t}\n\tfor _, e", R_CK,
   equivalent="ExtractYAMLList returns nothing for a missing file")
+
+TR = "internal/tier/tier.go"
+R_TR = "TestTierGolden"
+m(TR, '\tcase "1", "2", "3":\n\t\treturn nil', '\tcase "1", "2":\n\t\treturn nil', R_TR)
+m(TR, '\t"raw.githubusercontent.com",\n', "", R_TR)
+m(TR, 'if tier == "2" || tier == "3" {', 'if tier == "2" {', R_TR)
+m(TR, "\tif tier == \"3\" {\n\t\treturn 180", "\tif tier == \"2\" {\n\t\treturn 180", R_TR)
+m(TR, '\t\treturn "Infra"', '\t\treturn "Infra "', R_TR)
+m(TR, "Valid tiers: 1, 2, 3.\\n \", tier)", "Valid tiers: 1, 2, 3.\", tier)", R_TR)
+
+CT = "internal/catalogue/catalogue.go"
+R_CT = "TestCatalogueGolden"
+m(CT, '!strings.Contains(name, "/") && !strings.Contains(name, "..") &&', '!strings.Contains(name, "/") &&', R_CT)
+m(CT, 'if p := c.OrgDir() + "/" + name + ".yaml"; config.IsFile(p) {', 'if p := c.OrgDir() + "/" + name + ".yaml"; false {', R_CT)
+m(CT, '\tif st, err := os.Stat(ov + "/catalogue"); err == nil && st.IsDir() {', '\tif true {', R_CT,
+  equivalent="without the overlay's catalogue directory no entry file can exist inside it, so Resolve misses either way")
+m(CT, "\tif !deviation.Fixed(deviation.EchoOptionItems) && echoOption.MatchString(v) {\n\t\treturn \"\"", "\tif false {\n\t\treturn \"\"", R_CT)
+m(CT, "\tif v == \"\" {\n\t\tv = def\n\t}", "", R_CT)
+m(CT, 'if kind != "mcp" && kind != "service" {', 'if kind != "mcp" && kind != "service" && kind != "MCP" {', R_CT)
+m(CT, "digestPinned = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)", "digestPinned = regexp.MustCompile(`@sha256:[0-9a-fA-F]{64}$`)", R_CT)
+m(CT, "digestPinned = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)", "digestPinned = regexp.MustCompile(`@sha256:[0-9a-f]{64}`)", R_CT)
+m(CT, "if v, ok := intOf(port); ok && (v < 1 || v > 65535) {", "if v, ok := intOf(port); ok && (v < 1 || v > 65536) {", R_CT)
+m(CT, "if v, ok := intOf(port); ok && (v < 1 || v > 65535) {", "if v, ok := intOf(port); !ok || (v < 1 || v > 65535) {", R_CT)
+m(CT, "\t\t\tif v, ok := intOf(uid); ok && v == 0 {", "\t\t\tif v, ok := intOf(uid); !ok || v == 0 {", R_CT)
+m(CT, '\t\tif d == "*" {\n\t\t\treturn fail(pre + "egress', '\t\tif false {\n\t\t\treturn fail(pre + "egress', R_CT)
+m(CT, "\t\tif _, err := c.CheckDomainNotBlocked(d); err != nil {", "\t\tif false {", R_CT)
+m(CT, '\t\tif s != "" && !secretName.MatchString(s) {', '\t\tif false {', R_CT)
+m(CT, "secretName   = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)", "secretName   = regexp.MustCompile(`^[A-Z0-9_]+$`)", R_CT)
+m(CT, '\tif kind == "mcp" {\n\t\tif t := Field', '\tif true {\n\t\tif t := Field', R_CT)
+m(CT, 'if t := Field(path, "mcp_transport", "http"); t != "http" && t != "sse" {', 'if t := Field(path, "mcp_transport", "http"); t != "http" {', R_CT)
+m(CT, '"cap_add", "capabilities", "privileged", "host_network", "hostPID", "hostIPC"}', '"cap_add", "capabilities", "host_network", "hostPID", "hostIPC"}', R_CT)
+m(CT, '\t\tif strings.HasPrefix(l, key+":") {\n\t\t\treturn true', '\t\tif strings.HasPrefix(strings.TrimSpace(l), key+":") {\n\t\t\treturn true', R_CT)
+m(CT, '\t\tif strings.HasPrefix(l, key+":") {\n\t\t\treturn true', '\t\tif strings.HasPrefix(l, key) {\n\t\t\treturn true', R_CT)
+m(CT, 'if class == "browser" && verify != "true" {', 'if class == "browser" && verify == "" {', R_CT)
+m(CT, '\tif verify == "true" {\n\t\treturn c.VerifyImageSignature', '\tif verify != "" {\n\t\treturn c.VerifyImageSignature', R_CT)
+m(CT, "\tif !c.HasCosign() {", "\tif false {", R_CT)
+m(CT, '\tcase key != "":\n\t\targs = append(args, "--key", key)', '\tcase key != "":\n\t\targs = append(args, "--key")', R_CT)
+m(CT, '\tcase identity != "" && issuer != "":', '\tcase identity != "":', R_CT)
+m(CT, "\tif !c.RunCosign(append(args, image)) {", "\tif !c.RunCosign(args) {", R_CT)

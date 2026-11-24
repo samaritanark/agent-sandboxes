@@ -100,6 +100,11 @@ const (
 	// domain_is_blocked still read them. A missing org list now refuses the domain (design
 	// Appendix B, item 1).
 	MissingOrgBlockListFailsClosed ID = "missing-org-block-list-fails-closed"
+	// CatalogueEgressFullCheck: catalogue_validate_entry checked a dependency's egress entries with
+	// check_domain_not_blocked only, although its comment says "exactly like --allow-domain", so a
+	// catalogue entry could grant *.com, an IP inside a blocked CIDR, or an escaped spelling of a
+	// blocked host. Each entry now gets check_egress_target_not_blocked.
+	CatalogueEgressFullCheck ID = "catalogue-egress-full-check"
 )
 
 var (

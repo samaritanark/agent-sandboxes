@@ -1,0 +1,75 @@
+### 1
+validate rc=0 err=''
+domains=
+retention=90
+description=Ephemeral
+### 2
+validate rc=0 err=''
+domains=github.com,api.github.com,codeload.github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,raw.githubusercontent.com,pypi.org,files.pythonhosted.org,registry.npmjs.org,registry.terraform.io,go.dev,dl.google.com,proxy.golang.org,sum.golang.org,
+retention=90
+description=Project
+### 3
+validate rc=0 err=''
+domains=github.com,api.github.com,codeload.github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,raw.githubusercontent.com,pypi.org,files.pythonhosted.org,registry.npmjs.org,registry.terraform.io,go.dev,dl.google.com,proxy.golang.org,sum.golang.org,
+retention=180
+description=Infra
+### 0
+validate rc=1 err=$'ERROR: Invalid tier \'0\'. Valid tiers: 1, 2, 3.\n '
+domains=
+retention=90
+description=Unknown
+### 4
+validate rc=1 err=$'ERROR: Invalid tier \'4\'. Valid tiers: 1, 2, 3.\n '
+domains=
+retention=90
+description=Unknown
+### ''
+validate rc=1 err=$'ERROR: Invalid tier \'\'. Valid tiers: 1, 2, 3.\n '
+domains=
+retention=90
+description=Unknown
+### 01
+validate rc=1 err=$'ERROR: Invalid tier \'01\'. Valid tiers: 1, 2, 3.\n '
+domains=
+retention=90
+description=Unknown
+### ' 1'
+validate rc=1 err=$'ERROR: Invalid tier \' 1\'. Valid tiers: 1, 2, 3.\n '
+domains=
+retention=90
+description=Unknown
+### '1 '
+validate rc=1 err=$'ERROR: Invalid tier \'1 \'. Valid tiers: 1, 2, 3.\n '
+domains=
+retention=90
+description=Unknown
+### x
+validate rc=1 err=$'ERROR: Invalid tier \'x\'. Valid tiers: 1, 2, 3.\n '
+domains=
+retention=90
+description=Unknown
+### -1
+validate rc=1 err=$'ERROR: Invalid tier \'-1\'. Valid tiers: 1, 2, 3.\n '
+domains=
+retention=90
+description=Unknown
+### $'1\n'
+validate rc=1 err=$'ERROR: Invalid tier \'1\n\'. Valid tiers: 1, 2, 3.\n '
+domains=
+retention=90
+description=Unknown
+### 2.0
+validate rc=1 err=$'ERROR: Invalid tier \'2.0\'. Valid tiers: 1, 2, 3.\n '
+domains=
+retention=90
+description=Unknown
+### '*'
+validate rc=1 err=$'ERROR: Invalid tier \'*\'. Valid tiers: 1, 2, 3.\n '
+domains=
+retention=90
+description=Unknown
+### 3x
+validate rc=1 err=$'ERROR: Invalid tier \'3x\'. Valid tiers: 1, 2, 3.\n '
+domains=
+retention=90
+description=Unknown
