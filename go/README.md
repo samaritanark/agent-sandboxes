@@ -28,6 +28,7 @@ Layout so far:
 | `internal/checks` | the egress side of `lib/checks.sh`: block lists (org, overlay, user), domain and CIDR matching, over-broad wildcards, the eTLD+1 apex rule, trusted inference endpoints (the manifest greps and `check_prerequisites` are not ported) |
 | `internal/tier` | `lib/tier.sh`: tier names, extra egress domains, retention days |
 | `internal/catalogue` | `lib/catalogue.sh`: resolving, reading, and validating dependency catalogue entries (cosign is injected; the oracle uses a stub) |
+| `internal/audit` | the session-record half of `lib/audit.sh`: `session.json`, override and event records, the session list, with an ordered JSON value that reproduces jq's output byte for byte (transcript capture is not ported) |
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
 | `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |
 
@@ -87,6 +88,14 @@ Tiers (`internal/tier/testdata`; every input in `inputs.txt`) and the catalogue 
 # on Linux, with LC_ALL=C:
 LC_ALL=C go/internal/tier/testdata/oracle.sh > go/internal/tier/testdata/golden-tier.txt
 LC_ALL=C go/internal/catalogue/testdata/oracle.sh > go/internal/catalogue/testdata/golden-catalogue.tsv
+```
+
+Audit session record (`internal/audit/testdata`; step sequences over one `session.json`, with a fixed clock):
+
+```bash
+(cd go && go run ./internal/audit/internal/genaudit -base internal/audit/testdata -seed 1 -n 150)
+# on Linux, with LC_ALL=C (needs jq):
+LC_ALL=C go/internal/audit/testdata/oracle.sh > go/internal/audit/testdata/golden-audit.tsv
 ```
 
 Pilot 2 (`testdata/masked`, `testdata/accepted`) regenerates the same way:

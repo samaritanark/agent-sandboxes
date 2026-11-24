@@ -23,6 +23,7 @@ var allowed = map[string][]string{
 	"checks":     {"config", "deviation"},
 	"tier":       {},
 	"catalogue":  {"bashcompat", "checks", "config", "deviation"},
+	"audit":      {"bashcompat", "deviation", "tier"},
 }
 
 func TestImportGraph(t *testing.T) {
