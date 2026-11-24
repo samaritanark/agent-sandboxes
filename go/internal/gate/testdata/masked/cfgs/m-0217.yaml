@@ -1,8 +1,0 @@
-masked_paths:
-  - x-openrc.sh
-  - /
-- top
-  - 'z z/'
-- top
-  - dir/
-

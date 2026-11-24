@@ -1,1 +1,4 @@
-vetting_signing_key: /k
+vetting_exceptions_from_commit: true
+vetting_max_commits_behind: abc
+vetting_require_clean_worktree: false
+vetting_signing_key: ~/key

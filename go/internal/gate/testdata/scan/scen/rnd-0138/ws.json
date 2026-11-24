@@ -1,1 +1,0 @@
-[{"EndColumn":31,"File":"@REPO@/.gitx/a","Match":"ghp_***","RuleID":"rule-a","StartColumn":9,"StartLine":"0"},{"EndColumn":30,"Match":"a\tb","RuleID":"x y","StartColumn":18,"StartLine":8},{"EndColumn":36,"File":"@REPO@/ünï/.venv/x","Match":"a  b","RuleID":"x y","StartColumn":0,"StartLine":999},5]

@@ -1,4 +1,4 @@
-vetting: off
-vetting_exceptions_from_commit: yes
-vetting_max_commits_behind: abc
-vetting_trust_root: rel_signers/
+vetting_max_commits_behind: 1.5
+vetting_require_clean_worktree: true # x
+vetting_signing_key: ~/key
+vetting_trust_format: x

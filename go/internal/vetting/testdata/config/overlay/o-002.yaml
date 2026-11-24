@@ -1,2 +1,4 @@
-vetting_signing_key: ~/key
-  vetting_trust_root: ~/missing
+vetting_exceptions_require_head: 
+vetting_exceptions_require_head: 1
+vetting_max_age_days: 010
+vetting_signing_key: @T@/k

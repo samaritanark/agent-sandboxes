@@ -1,1 +1,0 @@
-[{"EndColumn":22,"File":"@REPO@/.kube/config","Match":"a  b","RuleID":"generic-api-key","StartColumn":15,"StartLine":5},{"EndColumn":14,"File":"@REPO@/ünï/.venv/x","Match":"back\\slash","RuleID":"generic-api-key","StartColumn":14,"StartLine":9},{"EndColumn":71,"File":"@REPO@/sops.yaml","Match":"REDACTED","RuleID":"rule-a","StartColumn":31,"StartLine":6}]

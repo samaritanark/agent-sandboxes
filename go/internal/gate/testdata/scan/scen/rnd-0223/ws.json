@@ -1,1 +1,0 @@
-[{"EndColumn":37,"File":"@REPO@/../outside/ign.txt","Match":"\tlead","RuleID":"r\tt","StartColumn":17,"StartLine":"9"},{"EndColumn":16,"File":"@REPO@/","RuleID":"r\tt","StartColumn":12,"StartLine":7},{"EndColumn":25,"File":".env","Match":"back\\slash","RuleID":"aws-access-token","StartColumn":10,"StartLine":10}]

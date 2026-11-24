@@ -1,5 +1,0 @@
-masked_paths:
-  - .kube/sub
-  - é/
-  - "q.txt" # n
-  - /

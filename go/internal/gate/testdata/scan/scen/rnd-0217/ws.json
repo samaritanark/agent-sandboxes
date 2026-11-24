@@ -1,1 +1,0 @@
-[{"EndColumn":37,"File":"@REPO@/missing.txt","Match":"","RuleID":"r\tt","StartColumn":1,"StartLine":1},{"EndColumn":18,"File":"@REPO@/sops.yaml","Match":"é日本","RuleID":"generic-api-key","StartColumn":6,"StartLine":6}]

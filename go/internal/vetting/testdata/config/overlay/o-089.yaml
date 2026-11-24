@@ -1,6 +1,0 @@
-vetting_exceptions_from_commit: True
-vetting_exceptions_require_head: false
-vetting_max_age_days: 30
-vetting_signing_key: rel/k
-vetting_trust_format: x
-vetting_trust_format: 

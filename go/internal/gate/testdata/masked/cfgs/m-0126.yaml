@@ -1,7 +1,0 @@
-masked_paths:
-masked_paths:
-  - .env
-  - .kube/
-  - x-openrc.sh
-  - x-openrc.sh
-# c

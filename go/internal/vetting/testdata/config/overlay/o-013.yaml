@@ -1,2 +1,3 @@
-  vetting_forbid_unvetted_override: True
-vetting_max_age_days: 00
+vetting: requird
+vetting_require_clean_worktree: True
+vetting_trust_format: 'gpg'

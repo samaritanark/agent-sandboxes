@@ -1,5 +1,3 @@
-vetting_exceptions_require_head: yes
-vetting_exceptions_require_head: True
-vetting_signing_key: rel/k
-vetting_trust_format: GPG
-vetting_trust_root: @T@/abs_signers # c
+vetting_forbid_unvetted_override: 
+vetting_max_commits_behind: 007
+  vetting_signing_key: @T@/k

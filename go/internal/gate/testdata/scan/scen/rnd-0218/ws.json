@@ -1,1 +1,0 @@
-[{"EndColumn":0,"File":"@REPO@/.git/HEAD","Match":"","StartColumn":1},{"EndColumn":2,"File":"@REPO@/.git/x/y","Match":"tab\t","RuleID":"a:b","StartColumn":14,"StartLine":6},{"EndColumn":12,"File":"@REPO@/sealed.yaml","Match":"ghp_***","RuleID":"","StartColumn":15,"StartLine":1},{"EndColumn":37,"File":"@REPO@/","Match":"\\t","StartColumn":7,"StartLine":"12"}]

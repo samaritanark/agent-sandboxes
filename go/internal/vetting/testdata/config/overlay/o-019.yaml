@@ -1,7 +1,6 @@
-vetting: Required
-vetting_exceptions_from_commit: yes
-vetting_forbid_unvetted_override: true
-vetting_forbid_unvetted_override: 
-vetting_max_commits_behind: 3 # c
-vetting_require_clean_worktree: True
-vetting_signing_key: ~/key
+vetting: requird
+vetting_max_commits_behind: 9223372036854775808
+vetting_signing_key: @T@/k
+vetting_trust_format: GPG
+vetting_trust_root: @T@/abs_signers # c
+vetting_trust_root: 

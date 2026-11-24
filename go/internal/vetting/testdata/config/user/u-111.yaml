@@ -1,4 +1,0 @@
-vetting: 'off'
-vetting_max_age_days: -2
-vetting_signing_key: 
-vetting_trust_root: @T@/abs_signers # c

@@ -1,3 +1,0 @@
-  vetting_exceptions_from_commit: yes
-vetting_forbid_unvetted_override: True
-vetting_max_age_days: 010

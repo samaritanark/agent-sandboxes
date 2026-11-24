@@ -1,1 +1,0 @@
-[{"EndColumn":11,"File":"@REPO@/../outside/sealed.yaml","Match":"a\tb","RuleID":"x y","StartColumn":17,"StartLine":"6"},{"EndColumn":6,"File":"@REPO@/.gitx/a","Match":"ghp_***","RuleID":"rule-a","StartColumn":14,"StartLine":0}]

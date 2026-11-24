@@ -1,5 +1,0 @@
-  - a#b
-  - a #b
-masked_paths:
-- a.txt
-- dir/

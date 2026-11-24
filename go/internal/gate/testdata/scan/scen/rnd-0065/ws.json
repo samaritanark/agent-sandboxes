@@ -1,1 +1,0 @@
-[{"EndColumn":22,"File":"@REPO@/ign.txt","Match":"é日本","RuleID":"generic-api-key","StartColumn":16,"StartLine":999},{"EndColumn":10,"File":"@REPO@/sops.yaml","Match":"null","RuleID":"x y","StartColumn":12,"StartLine":2},{"EndColumn":33,"Match":"","RuleID":"x y","StartColumn":13,"StartLine":9}]

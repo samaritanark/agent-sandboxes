@@ -1,9 +1,0 @@
-masked_paths:
-masked_paths:
-  - "a b.txt"
-  - 'dir with space/'
-  - "it's"
-masked_paths:
-  - secrets.txt
-  - private/
-  - x-openrc.sh

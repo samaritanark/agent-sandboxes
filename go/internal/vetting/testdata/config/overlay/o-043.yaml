@@ -1,4 +1,2 @@
-vetting_exceptions_require_head: false
-vetting_max_commits_behind: 
-vetting_signing_key: rel/k
-  vetting_trust_root: rel_signers
+vetting: required#x
+vetting_max_commits_behind: 3 # c

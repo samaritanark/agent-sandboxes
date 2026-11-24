@@ -1,2 +1,3 @@
-vetting_exceptions_require_head: yes
-vetting_require_clean_worktree: true
+# header
+vetting_require_clean_worktree: true # x
+vetting_trust_format: 

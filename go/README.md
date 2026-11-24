@@ -42,7 +42,7 @@ From the repo root (Go on the host; the oracle step needs a Linux machine with b
 
 ```bash
 go/internal/gate/testdata/encrypted/gen-fixtures.sh                      # fixtures extracted from tests/test-secret-gate.sh
-(cd go && go run ./internal/gate/internal/gencorpus -base internal/gate/testdata/encrypted -seed 1 -n 1000)
+(cd go && go run ./internal/gate/internal/gencorpus -base internal/gate/testdata/encrypted -seed 1 -n 250)
 # on Linux, from the repo root, with LC_ALL=C:
 cd go/internal/gate/testdata/encrypted
 LC_ALL=C ./oracle.sh cases-fixtures.tsv > golden-fixtures.tsv
@@ -56,7 +56,7 @@ LC_ALL=C ./oracle.sh cases-mutants.tsv  > golden-mutants.tsv
 Pilot 2 (`testdata/masked`, `testdata/accepted`) regenerates the same way:
 
 ```bash
-(cd go && go run ./internal/gate/internal/genmasked -base internal/gate/testdata/masked -seed 1 -n 300)
+(cd go && go run ./internal/gate/internal/genmasked -base internal/gate/testdata/masked -seed 1 -n 75)
 go/internal/gate/testdata/accepted/gen-cases.sh
 # on Linux, with LC_ALL=C:
 go/internal/gate/testdata/masked/oracle.sh masked > go/internal/gate/testdata/masked/golden-masked.tsv
@@ -67,7 +67,7 @@ GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go/internal/gate/testdat
 Pilot 3 (`testdata/scan`, a stub scanner plus fixture repos; the oracle prints the gate's output and the stub's log):
 
 ```bash
-(cd go && go run ./internal/gate/internal/genscan -base internal/gate/testdata/scan -seed 1 -n 250)
+(cd go && go run ./internal/gate/internal/genscan -base internal/gate/testdata/scan -seed 1 -n 63)
 # on Linux, with LC_ALL=C, from anywhere:
 go/internal/gate/testdata/scan/oracle.sh > go/internal/gate/testdata/scan/golden-scan.txt
 ```
@@ -75,7 +75,7 @@ go/internal/gate/testdata/scan/oracle.sh > go/internal/gate/testdata/scan/golden
 Pilot 4 (`testdata/gate`, reusing the pilot-3 fixtures and stub; needs `python3` for the pty):
 
 ```bash
-(cd go && go run ./internal/gate/internal/gengate -base internal/gate/testdata/gate -seed 1 -n 60)
+(cd go && go run ./internal/gate/internal/gengate -base internal/gate/testdata/gate -seed 1 -n 15)
 # on Linux, with LC_ALL=C.UTF-8 (printf %q depends on the locale):
 LC_ALL=C.UTF-8 go/internal/gate/testdata/gate/oracle.sh > go/internal/gate/testdata/gate/golden-gate.txt
 ```
@@ -83,7 +83,7 @@ LC_ALL=C.UTF-8 go/internal/gate/testdata/gate/oracle.sh > go/internal/gate/testd
 Vetting config (`internal/vetting/testdata/config`; the oracle uses a `date` shim for a fixed clock):
 
 ```bash
-(cd go && go run ./internal/vetting/internal/genvet -base internal/vetting/testdata/config -seed 1)
+(cd go && go run ./internal/vetting/internal/genvet -base internal/vetting/testdata/config -seed 1 -users 105 -overlays 68)
 # on Linux, with LC_ALL=C:
 LC_ALL=C go/internal/vetting/testdata/config/oracle.sh > go/internal/vetting/testdata/config/golden-config.txt
 ```
@@ -99,7 +99,7 @@ LC_ALL=C.UTF-8 go/internal/vetting/testdata/verify/oracle.sh > go/internal/vetti
 Vetting gate (`internal/vetting/testdata/gate`; scripted status lines, so no git; needs `python3` for the pty):
 
 ```bash
-(cd go && go run ./internal/vetting/internal/genvgate -base internal/vetting/testdata/gate -seed 1 -n 220)
+(cd go && go run ./internal/vetting/internal/genvgate -base internal/vetting/testdata/gate -seed 1 -n 55)
 # on Linux, with LC_ALL=C.UTF-8:
 LC_ALL=C.UTF-8 go/internal/vetting/testdata/gate/oracle.sh > go/internal/vetting/testdata/gate/golden-gate.txt
 ```

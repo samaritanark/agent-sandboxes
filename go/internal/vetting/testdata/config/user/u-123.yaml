@@ -1,7 +1,0 @@
-# header
-vetting: 
-vetting_exceptions_from_commit: false
-vetting_require_clean_worktree: true
-vetting_signing_key: @T@/k
-vetting_trust_format: gpg # c
-vetting_trust_root: @T@/ov/signers

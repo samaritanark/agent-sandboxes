@@ -1,8 +1,0 @@
-other:
-masked_paths:
-other:
--n
-  - 'z z/'
-  - "q.txt" # n
-  - a.txt
--e

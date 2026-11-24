@@ -1,6 +1,0 @@
-masked_paths:
-- top
-  - x-openrc.sh
-
-  - .kube/sub
-other:

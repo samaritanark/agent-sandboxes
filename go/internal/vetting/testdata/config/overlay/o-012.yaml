@@ -1,2 +1,2 @@
-vetting_exceptions_require_head: 1
-vetting_max_age_days: 010
+vetting_exceptions_from_commit: false
+vetting_trust_format: 

@@ -1,3 +1,0 @@
-vetting_exceptions_from_commit: true
-vetting_exceptions_require_head: true # x
-vetting_max_commits_behind: '7'

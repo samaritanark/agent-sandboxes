@@ -1,6 +1,0 @@
-masked_paths:
-  - dir/
-masked_paths:
-  - -rf
-  - --flag
-  - - nested

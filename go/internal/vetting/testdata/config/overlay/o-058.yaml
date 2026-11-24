@@ -1,3 +1,4 @@
-vetting_signing_key: 
-vetting_trust_format: 'gpg'
-vetting_trust_root: @T@/ov/signers
+# header
+vetting_exceptions_from_commit: 1
+vetting_exceptions_require_head: "true"
+vetting_require_clean_worktree: false

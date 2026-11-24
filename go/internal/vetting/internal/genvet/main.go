@@ -1,6 +1,6 @@
 // genvet writes the corpus for the vetting config differential: user and overlay configs
 // (testdata/config/{user,overlay}/*.yaml, "@T@" is the fixture root), cases.tsv, signer.tsv.
-// Usage: go run ./internal/genvet -base internal/vetting/testdata/config -seed 1
+// Usage: go run ./internal/genvet -base internal/vetting/testdata/config -seed 1 -users 140 -overlays 90
 package main
 
 import (
@@ -29,6 +29,8 @@ var vals = map[string][]string{
 func main() {
 	base := flag.String("base", "", "testdata/config")
 	seed := flag.Int64("seed", 1, "seed")
+	nUsers := flag.Int("users", 140, "user configs")
+	nOverlays := flag.Int("overlays", 90, "overlay configs")
 	flag.Parse()
 	rng := rand.New(rand.NewSource(*seed))
 	var keys []string
@@ -73,8 +75,8 @@ func main() {
 		}
 		return names
 	}
-	users := gen("user", 140)
-	ovs := gen("overlay", 90)
+	users := gen("user", *nUsers)
+	ovs := gen("overlay", *nOverlays)
 	var rows []string
 	n := 0
 	add := func(u, o, home string) {

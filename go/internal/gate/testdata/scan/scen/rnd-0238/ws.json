@@ -1,1 +1,0 @@
-[{"EndColumn":34,"File":"@REPO@/../outside/ign.txt","Match":"line1\nline2","RuleID":"aws-access-token","StartColumn":18,"StartLine":null},{"EndColumn":6,"File":"@REPO@/secret.txt","Match":"ghp_***","RuleID":"r\tt","StartColumn":14,"StartLine":1},{"EndColumn":6,"File":"@REPO@/secret.txt","Match":"\\t","RuleID":"generic-api-key","StartColumn":0,"StartLine":4}]

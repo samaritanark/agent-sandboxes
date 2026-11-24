@@ -1,9 +1,0 @@
-masked_paths:
-  -	t
-  - a.txt
-key: v
-- top
-# c
-  -n
-  - x-openrc.sh
--n

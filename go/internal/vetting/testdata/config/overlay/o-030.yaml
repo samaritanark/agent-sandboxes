@@ -1,2 +1,2 @@
-vetting: 
-vetting_max_age_days: -2
+vetting_exceptions_require_head: 'true'
+vetting_forbid_unvetted_override: yes

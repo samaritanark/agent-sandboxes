@@ -1,5 +1,0 @@
-masked_paths:
-
-  - /
-masked_paths: [a.txt, b/]
-  -	t

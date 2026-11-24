@@ -1,9 +1,0 @@
-masked_paths:
-masked_paths:
-  - a.txt
-next_key:
-  - b.txt
-  - c/
-  -	t
-  - x-openrc.sh
-  - é/

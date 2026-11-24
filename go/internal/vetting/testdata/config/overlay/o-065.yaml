@@ -1,3 +1,2 @@
+vetting: 
 vetting_max_age_days: -2
-vetting_require_clean_worktree: yes
-vetting_trust_root: ~/home_signers

@@ -1,5 +1,1 @@
-vetting_exceptions_require_head: yes
-vetting_max_age_days: 
-vetting_require_clean_worktree: yes
-vetting_trust_format: gpg
-vetting_trust_root: ~/missing
+vetting: required

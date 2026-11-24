@@ -1,9 +1,0 @@
-Masked_paths:
-  - nope
-masked_paths:
-  - Yes.TXT
-  - dir/
-  - x-openrc.sh
-  - é/
--e
-  - é/

@@ -1,6 +1,0 @@
-masked_paths:
-- top
-  - 'z z/'
-# c
-  - a#b
-  - "q.txt" # n

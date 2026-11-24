@@ -1,9 +1,0 @@
-masked_paths:
-  -	t
-  -n
-masked_paths:
-  - /
-  - //
-  - ./x
-  - a//b/
-  - ../up

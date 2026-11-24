@@ -1,5 +1,4 @@
-vetting: Required
-vetting_exceptions_from_commit: 
-vetting_max_age_days: 09
-vetting_signing_key: ~/key
-vetting_trust_root: rel_signers/
+vetting: requird
+vetting_max_age_days: 010
+vetting_require_clean_worktree: 1
+vetting_signing_key: ~

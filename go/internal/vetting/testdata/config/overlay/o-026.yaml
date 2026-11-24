@@ -1,4 +1,2 @@
-# header
-vetting_exceptions_require_head: 1
-  vetting_max_age_days: 365
-vetting_max_commits_behind: 9223372036854775807
+  vetting_exceptions_from_commit: True
+vetting_max_age_days: 0

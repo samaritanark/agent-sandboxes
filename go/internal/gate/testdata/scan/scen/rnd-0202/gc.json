@@ -1,1 +1,0 @@
-[{"EndColumn":1,"File":"@REPO@/.git/config","Match":{"a":1},"RuleID":"generic-api-key","StartColumn":3,"StartLine":6},{"EndColumn":34,"File":"@REPO@/.git/config","Match":"REDACTED","RuleID":"x y","StartColumn":0,"StartLine":12}]

@@ -1,2 +1,2 @@
-vetting: Required
-  vetting_exceptions_from_commit: true
+vetting_exceptions_require_head: yes
+vetting_require_clean_worktree: true

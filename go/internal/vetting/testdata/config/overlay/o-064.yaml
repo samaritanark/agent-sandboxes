@@ -1,3 +1,2 @@
-# header
-vetting_require_clean_worktree: 
-vetting_trust_root: @T@/ov/signers
+vetting: "required"
+  vetting_forbid_unvetted_override: true

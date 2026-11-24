@@ -1,1 +1,0 @@
-[{"EndColumn":5,"File":"@REPO@/privdir/x","Match":"line1\nline2","RuleID":"aws-access-token","StartColumn":10,"StartLine":0},{"EndColumn":33,"File":"@REPO@/missing.txt","Match":"\\t","RuleID":"generic-api-key","StartLine":7}]

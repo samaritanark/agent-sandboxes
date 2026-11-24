@@ -1,4 +1,7 @@
 # header
-  vetting_exceptions_require_head: True
-vetting_max_commits_behind: 05
-vetting_signing_key: ~
+vetting: 
+vetting_exceptions_from_commit: false
+vetting_require_clean_worktree: true
+vetting_signing_key: @T@/k
+vetting_trust_format: gpg # c
+vetting_trust_root: @T@/ov/signers

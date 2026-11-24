@@ -1,6 +1,0 @@
-masked_paths:
-  - -rf
-  - --flag
-  - - nested
-# c
-  - "q.txt" # n

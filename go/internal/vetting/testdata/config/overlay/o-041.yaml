@@ -1,1 +1,5 @@
-vetting_signing_key: @T@/k
+vetting_max_age_days: -2
+vetting_require_clean_worktree: yes
+vetting_signing_key: ~
+  vetting_trust_format: gpg # c
+vetting_trust_root: ~

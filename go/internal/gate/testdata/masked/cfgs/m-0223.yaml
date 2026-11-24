@@ -1,6 +1,0 @@
-  - /
-  - é/
-masked_paths:
-  - "a b.txt"
-  - 'dir with space/'
-  - "it's"

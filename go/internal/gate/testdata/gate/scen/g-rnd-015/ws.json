@@ -1,1 +1,0 @@
-[{"EndColumn":9,"File":"@REPO@/secret.txt","Match":"REDACTED","RuleID":"r","StartColumn":1,"StartLine":0},{"EndColumn":9,"File":"@REPO@/.env","Match":"REDACTED","RuleID":"r","StartColumn":1,"StartLine":7},{"EndColumn":9,"File":"@REPO@/ign.txt","Match":"","RuleID":"rule-a","StartColumn":1,"StartLine":1}]

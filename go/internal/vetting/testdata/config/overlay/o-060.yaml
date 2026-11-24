@@ -1,4 +1,3 @@
-vetting_exceptions_require_head: true
-vetting_forbid_unvetted_override: yes
-vetting_max_age_days: 365
-vetting_max_age_days: 1
+# header
+vetting_max_age_days: 010
+vetting_trust_root: @T@/abs_signers # c

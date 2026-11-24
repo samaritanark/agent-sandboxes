@@ -1,4 +1,5 @@
-vetting: requird
-vetting_max_age_days: 010
-vetting_require_clean_worktree: 1
-vetting_signing_key: ~
+vetting_forbid_unvetted_override: 
+vetting_max_age_days: -2
+vetting_require_clean_worktree: 
+vetting_signing_key: @T@/k
+vetting_trust_root: rel_signers/

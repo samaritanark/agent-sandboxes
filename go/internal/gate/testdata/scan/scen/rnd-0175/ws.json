@@ -1,1 +1,0 @@
-[null,[1],{"EndColumn":0,"File":"@REPO@/missing.txt","Match":"\tlead","RuleID":"generic-api-key","StartColumn":5,"StartLine":4},{"File":"@REPO@/x-openrc.sh","Match":"\tlead","RuleID":"r\tt","StartColumn":3,"StartLine":7},{"EndColumn":31,"File":"@REPO@/sealed.yaml","RuleID":"rule-a","StartColumn":12,"StartLine":999},null]

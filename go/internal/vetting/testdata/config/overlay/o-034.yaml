@@ -1,6 +1,2 @@
-# header
-vetting_exceptions_require_head: "true"
-vetting_forbid_unvetted_override: 1
-vetting_max_commits_behind: 1.5
-vetting_require_clean_worktree: True
-vetting_trust_root: @T@/abs_signers # c
+vetting_exceptions_from_commit: yes
+  vetting_require_clean_worktree: 1

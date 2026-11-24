@@ -1,4 +1,2 @@
-vetting_exceptions_from_commit: 1
-vetting_forbid_unvetted_override: True
-vetting_max_commits_behind: 1.5
-vetting_signing_key: @T@/k
+vetting_signing_key: 
+vetting_trust_format: 'gpg'

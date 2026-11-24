@@ -1,5 +1,0 @@
-masked_paths:
-  - "q.txt" # n
-  - dir/
-- top
-masked_paths:

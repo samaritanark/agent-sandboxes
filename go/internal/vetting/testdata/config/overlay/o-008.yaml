@@ -1,2 +1,4 @@
-vetting: required#x
-vetting_max_commits_behind: 3 # c
+# header
+vetting_exceptions_from_commit: 
+vetting_max_age_days: 0
+vetting_max_commits_behind: 05

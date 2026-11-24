@@ -1,6 +1,4 @@
 # header
-vetting: off # c
-vetting_exceptions_from_commit: 1
-vetting_forbid_unvetted_override: true
-vetting_require_clean_worktree: 
-vetting_trust_format: gpg
+vetting_exceptions_require_head: 1
+  vetting_max_age_days: 365
+vetting_max_commits_behind: 9223372036854775807

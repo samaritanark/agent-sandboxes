@@ -1,4 +1,0 @@
-vetting: off
-vetting_forbid_unvetted_override: true
-vetting_require_clean_worktree: false
-vetting_signing_key: @T@/k

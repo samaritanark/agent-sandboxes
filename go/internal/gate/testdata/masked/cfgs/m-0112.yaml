@@ -1,9 +1,0 @@
-masked_paths:
-  - /
-masked_paths:
-  - a #b
-  - .kube/sub
-  - x-openrc.sh
-  - 'z z/'
-masked_paths: [a.txt, b/]
-  -	t

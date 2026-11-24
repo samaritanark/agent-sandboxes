@@ -1,2 +1,4 @@
 # header
-vetting_max_commits_behind: 08
+  vetting_exceptions_require_head: True
+vetting_max_commits_behind: 05
+vetting_signing_key: ~

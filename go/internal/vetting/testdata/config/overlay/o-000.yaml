@@ -1,4 +1,7 @@
-vetting: "required"
-vetting_require_clean_worktree: yes
-vetting_signing_key: /k
-vetting_trust_format: x
+vetting: 'off'
+vetting_exceptions_from_commit: false
+vetting_exceptions_from_commit: 1
+vetting_exceptions_require_head: 1
+vetting_forbid_unvetted_override: true
+vetting_max_age_days: -2
+vetting_trust_root: ./rel_signers

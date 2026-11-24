@@ -1,3 +1,2 @@
-# header
-vetting_max_age_days: 18446744073709551616
-vetting_trust_format: 
+vetting_signing_key: ~/key
+  vetting_trust_root: ~/missing

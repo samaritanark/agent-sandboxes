@@ -1,7 +1,0 @@
-# header
-vetting: "required"
-vetting_exceptions_require_head: true
-vetting_forbid_unvetted_override: True
-  vetting_max_commits_behind: 100
-vetting_trust_format: 'gpg'
-  vetting_trust_root: ~/home_signers

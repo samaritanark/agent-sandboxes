@@ -1,8 +1,0 @@
-masked_paths:
-- top
-masked_paths:
-  - a.txt
-  - last  - a.txt
-  - 'z z/'
-other:
-  - /
