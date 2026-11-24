@@ -30,6 +30,7 @@ Layout so far:
 | `internal/catalogue` | `lib/catalogue.sh`: resolving, reading, and validating dependency catalogue entries (cosign is injected; the oracle uses a stub) |
 | `internal/audit` | the session-record half of `lib/audit.sh`: `session.json`, override and event records, the session list, with an ordered JSON value that reproduces jq's output byte for byte (transcript capture is not ported) |
 | `internal/link` | `lib/link.sh`: link names and recorded state, path normalization, the overlay shape gate, and the run-path sync (git is executed, as in the bash) |
+| `internal/onboard` | `lib/onboard.sh`: which host login files each agent stages, the Codex and Grok config hardening, the API-key refusal, and the starter user config |
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
 | `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |
 
@@ -105,6 +106,14 @@ Team-overlay links (`internal/link/testdata`; overlay trees travel inside their 
 (cd go && go run ./internal/link/internal/genlink -base internal/link/testdata -seed 1 -n 120)
 # on Linux, with LC_ALL=C (needs git):
 LC_ALL=C go/internal/link/testdata/oracle.sh > go/internal/link/testdata/golden-link.tsv
+```
+
+Onboarding (`internal/onboard/testdata`; each case builds a home from a spec, runs one onboard step, and records the whole resulting tree):
+
+```bash
+(cd go && go run ./internal/onboard/internal/genonboard -base internal/onboard/testdata -seed 1 -n 80)
+# on Linux, with LC_ALL=C:
+LC_ALL=C go/internal/onboard/testdata/oracle.sh > go/internal/onboard/testdata/golden-onboard.tsv
 ```
 
 Pilot 2 (`testdata/masked`, `testdata/accepted`) regenerates the same way:

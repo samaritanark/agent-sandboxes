@@ -2450,6 +2450,15 @@ Fix on v2 regardless of v3 (migration step 1).
 14. `ip_in_cidr` (`lib/checks.sh:248-257`) evaluates the prefix length as shell
     arithmetic: `/08` is an error that reports "not inside" and `/010` is octal
     `/8`. Fixed in v3 (`DecimalNumbers`).
+15. `sandbox onboard` (`lib/onboard.sh:97-124`, `229-264`, `343-392`) copies
+    and rewrites files in the agent home with `cp`, shell redirects, and
+    `chmod`, all of which follow symlinks, and reads the staged configs through
+    them. The agent home is writable from inside the sandbox (a hostPath on
+    Linux; copied back with `cp -a` on macOS), so links left there by the agent
+    let a later host-side onboard write or read host files outside the agent
+    home. Found in the S8 port (2026-11-24); by the owner's decision fixed in v3
+    only (`AgentHomeNoFollow`), where agent tokens also move to the broker store
+    (5.9.6).
 
 ## Appendix C — External review dispositions (revision 3)
 

@@ -125,6 +125,11 @@ const (
 	// ZeroSignerCount: with a trust root of no signers, the link summary printed the count as
 	// "0", a newline, and "0" (grep -c prints 0 and fails, and `|| echo 0` printed another).
 	ZeroSignerCount ID = "zero-signer-count"
+	// AgentHomeNoFollow: onboard copied and rewrote files in the agent home (which the sandboxed
+	// agent can write) with cp, a shell redirect, and chmod, all of which follow symlinks, and read
+	// the staged configs through them. Onboard now refuses a path there that is not a regular file
+	// and writes through a fresh temp file renamed into place (design Appendix B).
+	AgentHomeNoFollow ID = "agent-home-no-follow"
 )
 
 var (
