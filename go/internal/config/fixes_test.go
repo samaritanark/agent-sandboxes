@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
@@ -120,5 +121,66 @@ func TestFixLiteralEnvDomains(t *testing.T) {
 	defer deviation.Force(deviation.LiteralEnvDomains)()
 	if got := UserExtraAllowedDomains(e); !eq(got, []string{"*.example.com", "a b.com", "-n", "ok.com"}) {
 		t.Fatalf("fixed: %q", got)
+	}
+}
+
+func TestFixProfileLookupStaysInDir(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "a", "home")
+	os.MkdirAll(filepath.Join(home, ".sandbox", "profiles", "team"), 0o755)
+	os.WriteFile(filepath.Join(home, "secret.yaml"), []byte("tier: 3\n"), 0o644)
+	os.WriteFile(filepath.Join(home, ".sandbox", "profiles", "team", "dev.yaml"), []byte("tier: 1\n"), 0o644)
+	e := Env{Home: home, UserConfig: filepath.Join(home, "none.yaml")}
+	if _, ok := FindProfilePath(e, "../../secret"); !ok {
+		t.Fatal("legacy: a ../ name should reach outside the profiles directory")
+	}
+	defer deviation.Force(deviation.ProfileLookupStaysInDir)()
+	for _, n := range []string{"../../secret", "team/../../../secret", "/" + filepath.Join(home, "secret")} {
+		if p, ok := FindProfilePath(e, n); ok {
+			t.Errorf("fixed: %q resolved to %s", n, p)
+		}
+	}
+	if _, ok := FindProfilePath(e, "team/dev"); !ok {
+		t.Error("fixed: a profile in a subdirectory must still resolve")
+	}
+}
+
+func TestFixWritesReadBackProfile(t *testing.T) {
+	inject := "~/r\nextra_allowed_domains:\n  - evil.com"
+	if _, err := RenderProfileYAML("n", "2", "", inject, nil); err != nil {
+		t.Fatalf("legacy: %v", err)
+	}
+	defer deviation.Force(deviation.WritesReadBack)()
+	defer deviation.Force(deviation.EchoOptionItems)()
+	for _, c := range [][5]string{
+		{"n", "2", "", inject, ""}, {"n", "2", "", "~/repos/proj #2", ""}, {"n", "2", `a"b`, "", ""},
+		{"n", "2", "", "trail ", ""}, {"n", "2 # c", "", "", ""}, {"n", "2", "", "", "a #b"}, {"n", "2", "", "", "#x"},
+		{"n", "2", "", "", " sp.com"},
+	} {
+		if _, err := RenderProfileYAML(c[0], c[1], c[2], c[3], []string{c[4]}); err == nil {
+			t.Errorf("fixed: %q accepted", c)
+		}
+	}
+	y, err := RenderProfileYAML("dev", "2", "codex", "~/repos/my proj", []string{"a.com", "", "-n"})
+	if err != nil || !strings.Contains(y, "default_repo: ~/repos/my proj\n") {
+		t.Fatalf("fixed: %q %v", y, err)
+	}
+}
+
+func TestFixDecimalNumbersVersion(t *testing.T) {
+	if !VersionGE("1.0", "18446744073709551616") { // 2^64 wraps to 0
+		t.Fatal("legacy: expected the wrapped comparison")
+	}
+	defer deviation.Force(deviation.DecimalNumbers)()
+	for _, c := range []struct {
+		a, b string
+		ge   bool
+	}{
+		{"1.0", "18446744073709551616", false}, {"18446744073709551616", "1.0", true},
+		{"1.0", "9223372036854775808", false}, {"08.1", "8.0", true}, {"007", "7", true}, {"1.10", "1.9", true},
+		{"99999999999999999999", "99999999999999999998", true}, {"99999999999999999998", "99999999999999999999", false},
+	} {
+		if got := VersionGE(c.a, c.b); got != c.ge {
+			t.Errorf("fixed: VersionGE(%q, %q) = %v", c.a, c.b, got)
+		}
 	}
 }

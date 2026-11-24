@@ -33,7 +33,9 @@ const (
 	// DecimalNumbers: numeric settings and comparisons were shell arithmetic, so a leading zero
 	// meant octal (08 and 09 were errors that made a comparison false, defeating "most restrictive
 	// cap wins") and an oversized value wrapped around to a negative number. They are now plain
-	// decimal and clamp at the largest integer.
+	// decimal and clamp at the largest integer. version_ge (overlay min_sandbox_version) had the
+	// same wraparound: a field of 2^64 read as 0, so any CLI satisfied it; fields now compare as
+	// unbounded decimals.
 	DecimalNumbers ID = "decimal-numbers"
 	// UnknownPostureFailsClosed: a posture other than off, advisory or required enforced like
 	// required, except that with no trust root it passed like advisory. It now always enforces.
@@ -62,7 +64,9 @@ const (
 	LiteralMaskedPath ID = "literal-masked-path"
 	// WritesReadBack: config_add_masked_path and ignorefile_add_fingerprint wrote values their own
 	// readers cannot read back unchanged (a masked path with a quote, " #", a leading '#', a line
-	// break, or trailing whitespace; a fingerprint with a line break or surrounding whitespace). Such an entry did
+	// break, or trailing whitespace; a fingerprint with a line break or surrounding whitespace).
+	// render_profile_yaml had the same gap: a line break in --repo injected keys such as
+	// extra_allowed_domains: into the saved profile, and "proj #2" read back as "proj". Such an entry did
 	// something other than what was asked, and was added again on every call. It is now refused.
 	WritesReadBack ID = "writes-read-back"
 	// ListRemovalMatchesReader: remove_yaml_list_from_file stopped at the first unindented line, so
@@ -76,6 +80,10 @@ const (
 	// of -n or -e vanished into echo, and inner whitespace was deleted (a b.com became ab.com).
 	// Entries are now taken literally, with only surrounding whitespace trimmed.
 	LiteralEnvDomains ID = "literal-env-domains"
+	// ProfileLookupStaysInDir: find_profile_path joined the name as given, so a --profile name with
+	// ".." components (or an absolute one) read a YAML file outside the user and overlay profile
+	// directories. Such a name is now not found. Subdirectories inside them still resolve.
+	ProfileLookupStaysInDir ID = "profile-lookup-stays-in-dir"
 )
 
 var (

@@ -280,3 +280,26 @@ m(CR, "\tsort.Strings(m)\n", "\t_ = sort.Strings\n", R_CW, pkg="config",
 m(CR, "if d != \"\" && !echoOption.MatchString(d) {", "if d != \"\" {", R_CW, pkg="config")
 m(CR, "if r < 0x80 && isSpace(byte(r)) {", "if r == ' ' {", R_CW, pkg="config")
 m(CR, 'if !strings.ContainsAny(w, "*?[") || strings.Contains(w, "/") {', 'if !strings.ContainsAny(w, "*?") || strings.Contains(w, "/") {', R_CW, pkg="config")
+
+PF = "internal/config/profile.go"
+R_PF = "TestProfileGolden"
+m(PF, 'func IsNumericProfile(name string) bool { return name == "1" || name == "2" || name == "3" }', 'func IsNumericProfile(name string) bool { return name == "1" || name == "2" }', R_PF, pkg="config")
+m(PF, '!strings.Contains(name, "..") && !strings.HasPrefix(name, ".")', '!strings.HasPrefix(name, ".")', R_PF, pkg="config")
+m(PF, 'name != "" && !IsNumericProfile(name) &&', 'name != "" &&', R_PF, pkg="config")
+m(PF, "profileNameChars = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)", "profileNameChars = regexp.MustCompile(`^[A-Za-z0-9._ -]+$`)", R_PF, pkg="config")
+m(PF, 'if p := UserProfilesDir(e) + "/" + name + ".yaml"; IsFile(p) {', 'if p := UserProfilesDir(e) + "/" + name + ".yaml"; Exists(p) {', R_PF, pkg="config")
+m(PF, 'if p := ov + "/profiles/" + name + ".yaml"; IsFile(p) {', 'if p := ov + "/profiles/" + name + ".yaml"; Exists(p) {', R_PF, pkg="config")
+m(PF, 'if p := ov + "/blocked-destinations.yaml"; IsFile(p) {', 'if p := ov + "/blocked-destinations.yaml"; Exists(p) {', R_PF, pkg="config")
+m(PF, "minVersionForm = regexp.MustCompile(`^v?[0-9]+(\\.[0-9]+)*$`)", "minVersionForm = regexp.MustCompile(`^v?[0-9]+(\\.[0-9]*)*$`)", R_PF, pkg="config")
+m(PF, 'if version == "" || version == "dev" {', 'if version == "dev" {', R_PF, pkg="config")
+m(PF, "\tif VersionGE(version, min) {\n\t\treturn \"\", nil\n\t}", "\tif VersionGE(min, version) {\n\t\treturn \"\", nil\n\t}", R_PF, pkg="config")
+m(PF, 'fa, fb := versionFields(strings.TrimPrefix(a, "v")), versionFields(strings.TrimPrefix(b, "v"))', 'fa, fb := versionFields(a), versionFields(b)', R_PF, pkg="config")
+m(PF, "\tif strings.HasSuffix(v, \".\") {\n\t\tf = f[:len(f)-1]\n\t}", "", R_PF, pkg="config",
+  equivalent="a trailing empty field reads as 0, the same as a missing one")
+m(PF, "\tif i == 0 {\n\t\treturn \"0\"\n\t}", "", R_PF, pkg="config",
+  equivalent="an empty field makes bashArith 0, the same as \"0\"")
+m(PF, "\t\tv = v*10 + uint64(d[i]-'0')", "\t\tv = v*10 + uint64(d[i]-'0')\n\t\tif v > 1<<62 {\n\t\t\tv = 1 << 62\n\t\t}", R_PF, pkg="config")
+m(PF, "\tcase ia > ib:\n\t\treturn 1", "\tcase ia >= ib:\n\t\treturn 1", R_PF, pkg="config")
+m(PF, '\tif agent != "" {\n\t\tfmt.Fprintf(&b, "agent: %s\\n", agent)', '\tif true {\n\t\tfmt.Fprintf(&b, "agent: %s\\n", agent)', R_PF, pkg="config")
+m(PF, "\t\tif d != \"\" {\n\t\t\tds = append(ds, d)", "\t\tif true {\n\t\t\tds = append(ds, d)", R_PF, pkg="config")
+m(PF, "\tif len(ds) > 0 {\n\t\tb.WriteString(\"extra_allowed_domains:\\n\")", "\tif true {\n\t\tb.WriteString(\"extra_allowed_domains:\\n\")", R_PF, pkg="config")

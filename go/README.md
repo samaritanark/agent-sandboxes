@@ -23,7 +23,7 @@ Layout so far:
 | Path | Port of |
 |---|---|
 | `internal/bashcompat` | the bash and tool behaviours the port reproduces (field splitting, arithmetic, globs, `printf %q`); a caller of this package is carrying a quirk |
-| `internal/config` | all of `lib/config.sh` (except the unused `load_user_blocked_*`) and `resolve_overlay_path`: the flat YAML readers and writers, overlay resolution, the ignore-file helpers, the extra-allowed-domains sources |
+| `internal/config` | all of `lib/config.sh` (except the unused `load_user_blocked_*`) and `lib/profile.sh`, plus `version_ge` from `lib/platform.sh`: the flat YAML readers and writers, overlay resolution, the ignore-file helpers, the extra-allowed-domains sources, profile lookup, validation and rendering, the overlay's minimum CLI version |
 | `internal/gate` | the secret gate in `lib/filesystem.sh`: `finding_is_encrypted`, `is_path_masked`, `_leakscan_finding_accepted`, `scan_repo_secrets` and its helpers, `secret_gate_repos` |
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
 | `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |
@@ -59,6 +59,14 @@ Config writers and readers (`internal/config/testdata/write`; each case's return
 (cd go && go run ./internal/config/internal/genwrite -base internal/config/testdata/write -seed 1 -n 40)
 # on Linux, with LC_ALL=C:
 LC_ALL=C go/internal/config/testdata/write/oracle.sh > go/internal/config/testdata/write/golden-write.tsv
+```
+
+Profiles and `version_ge` (`internal/config/testdata/profile`; each case's return code, stdout, and stderr):
+
+```bash
+(cd go && go run ./internal/config/internal/genprofile -base internal/config/testdata/profile -seed 1 -n 150)
+# on Linux, with LC_ALL=C:
+LC_ALL=C go/internal/config/testdata/profile/oracle.sh > go/internal/config/testdata/profile/golden-profile.tsv
 ```
 
 Pilot 2 (`testdata/masked`, `testdata/accepted`) regenerates the same way:
