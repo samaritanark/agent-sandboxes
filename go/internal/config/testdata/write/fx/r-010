@@ -1,0 +1,8 @@
+overlay: /x
+accepted_secrets:
+masked_paths:
+
+  nested: 1
+link_ref: rmasked_paths:
+accepted_secrets:
+	- tab

@@ -1,7 +1,7 @@
 package gate
 
 import (
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"os"
 	"os/exec"
 	"strings"

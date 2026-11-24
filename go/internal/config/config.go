@@ -3,13 +3,13 @@
 package config
 
 import (
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
+	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
 )
 
 // RepoConfigName is SANDBOX_REPO_CONFIG_NAME.
@@ -31,6 +31,8 @@ type Env struct {
 	Home           string // $HOME
 	CacheDir       string // $LEAKSCAN_CACHE_DIR (default $HOME/.sandbox/cache/leakscan)
 	TmpDir         string // $TMPDIR (default /tmp)
+
+	ExtraAllowedDomains string // $SANDBOX_EXTRA_ALLOWED_DOMAINS
 }
 
 // ExtractYAMLScalar is extract_yaml_scalar_from_file: the value of the first top-level "<key>:"
@@ -105,6 +107,8 @@ func FromOS() Env {
 		Home:           os.Getenv("HOME"),
 		CacheDir:       os.Getenv("LEAKSCAN_CACHE_DIR"),
 		TmpDir:         os.Getenv("TMPDIR"),
+
+		ExtraAllowedDomains: os.Getenv("SANDBOX_EXTRA_ALLOWED_DOMAINS"),
 	}
 	if e.UserConfig == "" {
 		e.UserConfig = e.Home + "/.sandbox/config.yaml"
@@ -158,28 +162,36 @@ func ExtractYAMLList(path, key string) []string {
 		if !strings.HasPrefix(t, "-") {
 			continue
 		}
-		if !deviation.Fixed(deviation.EchoOptionItems) && echoOption.MatchString(line) {
-			continue
+		if item, ok := listItem(line); ok {
+			out = append(out, item)
 		}
-		item := listItemLead.ReplaceAllString(line, "")
-		item = strings.NewReplacer(`"`, "", `'`, "").Replace(item)
-		// ${item%%[[:space:]]#*}: cut at the first whitespace character that is followed by '#'.
-		for i := 0; i+1 < len(item); i++ {
-			if isSpace(item[i]) && item[i+1] == '#' {
-				item = item[:i]
-				break
-			}
-		}
-		item = strings.TrimRight(item, " \t\n\v\f\r")
-		if item == "" || item[0] == '#' {
-			continue
-		}
-		if !deviation.Fixed(deviation.EchoOptionItems) && echoOption.MatchString(item) { // the final `echo "${item}"` swallows it the same way
-			continue
-		}
-		out = append(out, item)
 	}
 	return out
+}
+
+// listItem is what extract_yaml_list_from_file prints for one list line ("  - x"), and false
+// when it prints nothing.
+func listItem(line string) (string, bool) {
+	if !deviation.Fixed(deviation.EchoOptionItems) && echoOption.MatchString(line) {
+		return "", false
+	}
+	item := listItemLead.ReplaceAllString(line, "")
+	item = strings.NewReplacer(`"`, "", `'`, "").Replace(item)
+	// ${item%%[[:space:]]#*}: cut at the first whitespace character that is followed by '#'.
+	for i := 0; i+1 < len(item); i++ {
+		if isSpace(item[i]) && item[i+1] == '#' {
+			item = item[:i]
+			break
+		}
+	}
+	item = strings.TrimRight(item, " \t\n\v\f\r")
+	if item == "" || item[0] == '#' {
+		return "", false
+	}
+	if !deviation.Fixed(deviation.EchoOptionItems) && echoOption.MatchString(item) { // the final `echo "${item}"` swallows it the same way
+		return "", false
+	}
+	return item, true
 }
 
 // UpsertYAMLScalar is upsert_yaml_scalar_in_file: replace the first "<key>:" line or append one;

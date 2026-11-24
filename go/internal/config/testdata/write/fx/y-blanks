@@ -1,0 +1,7 @@
+accepted_secrets:
+  - x
+
+  - y
+
+
+foo: 1

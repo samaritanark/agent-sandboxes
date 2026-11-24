@@ -1,0 +1,4 @@
+accepted_secrets:
+  nested: x
+  - a
+z: 1

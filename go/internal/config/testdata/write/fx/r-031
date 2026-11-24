@@ -1,0 +1,9 @@
+accepted_secrets:
+  nested: 1
+overlay: /x
+- col0
+masked_paths:
+# c
+  # c
+other: 1
+link_ref: r

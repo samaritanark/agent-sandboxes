@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"io"
 	"os"
 	"os/exec"
@@ -14,8 +14,8 @@ import (
 	"regexp"
 	"strings"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 )
 
 // Port of scan_repo_secrets and the helpers it owns in lib/filesystem.sh, lib/config.sh and
@@ -34,10 +34,7 @@ var (
 	leakscanSkipPaths = []string{".secrets.baseline"}
 )
 
-const (
-	repoIgnoreName     = ".betterleaksignore"
-	repoIgnoreFallback = ".gitleaksignore"
-)
+const ()
 
 var (
 	reTrailComment = regexp.MustCompile(`[[:space:]]+#.*$`)
@@ -75,7 +72,7 @@ func isOffValue(v string) bool {
 }
 
 func exclusionsEnabled(e config.Env, repo string) bool {
-	v := config.ExtractYAMLScalar(repo+"/"+repoConfigName, "leakscan_dep_exclusions")
+	v := config.ExtractYAMLScalar(repo+"/"+config.RepoConfigName, "leakscan_dep_exclusions")
 	if v == "" {
 		v = config.ExtractYAMLScalar(e.UserConfig, "leakscan_dep_exclusions")
 	}
@@ -387,7 +384,7 @@ func ScanRepoSecrets(e config.Env, repo, acceptFile string, warn io.Writer) []st
 	}
 
 	// A root ignore file with a non-relative fingerprint would blind the scanner: fail closed.
-	for _, ignf := range []string{repoIgnoreName, repoIgnoreFallback} {
+	for _, ignf := range []string{config.RepoIgnoreName, config.RepoIgnoreFallback} {
 		p := realRepo + "/" + ignf
 		if !config.IsFile(p) {
 			continue

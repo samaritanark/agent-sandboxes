@@ -1,0 +1,7 @@
+  - d.com
+accepted_secrets:
+  - "q #x"
+overlay: /x
+masked_paths:
+
+extra_allowed_domains:

@@ -1,0 +1,6 @@
+masked_paths:
+	- t.txt
+accepted_secrets:
+	- a
+ 	
+	z: 1

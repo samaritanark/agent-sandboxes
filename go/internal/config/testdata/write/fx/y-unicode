@@ -1,0 +1,5 @@
+masked_paths:
+  - café
+# ü
+accepted_secrets:
+  - 日本:r:1:h

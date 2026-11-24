@@ -1,3 +1,3 @@
-module git.theark.cloud/acs/agent-sandboxes/go
+module github.com/samaritanark/agent-sandboxes/go
 
 go 1.24

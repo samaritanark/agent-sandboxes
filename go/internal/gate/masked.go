@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 )
 
 // Rule tables shared with the mask builder (MASKED_* in lib/filesystem.sh).
@@ -14,8 +14,6 @@ var (
 )
 
 const maskedOpenrcSuffix = "-openrc.sh" // MASKED_OPENRC_PATTERN='*-openrc.sh'
-
-const repoConfigName = ".sandbox/config.yaml" // SANDBOX_REPO_CONFIG_NAME
 
 var (
 	listItemLead = regexp.MustCompile(`^[[:space:]]*-[[:space:]]*`)
@@ -37,7 +35,7 @@ func IsPathMasked(repo, relpath string) bool {
 	if !strings.Contains(relpath, "/") && strings.HasSuffix(relpath, maskedOpenrcSuffix) {
 		return true
 	}
-	for _, p := range config.ExtractYAMLList(repo+"/"+repoConfigName, "masked_paths") {
+	for _, p := range config.LoadRepoMaskedPaths(repo) {
 		if strings.HasSuffix(p, "/") {
 			d := strings.TrimSuffix(p, "/")
 			if relpath == d || strings.HasPrefix(relpath, d+"/") {

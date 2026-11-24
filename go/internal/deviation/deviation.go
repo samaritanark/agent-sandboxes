@@ -56,6 +56,26 @@ const (
 	// ExactColumns: finding_is_encrypted assumed the scanner reported StartColumn one past the real
 	// start. betterleaks reports exact 1-based byte columns, so the start is used as given.
 	ExactColumns ID = "exact-columns"
+	// LiteralMaskedPath: config_add_masked_path passed the new entry through awk -v, which expands
+	// backslash escapes, so a path containing a literal \n wrote a real newline and could inject
+	// top-level keys (extra_allowed_domains:) into the repo's config. The entry is now written as is.
+	LiteralMaskedPath ID = "literal-masked-path"
+	// WritesReadBack: config_add_masked_path and ignorefile_add_fingerprint wrote values their own
+	// readers cannot read back unchanged (a masked path with a quote, " #", a leading '#', a line
+	// break, or trailing whitespace; a fingerprint with a line break or surrounding whitespace). Such an entry did
+	// something other than what was asked, and was added again on every call. It is now refused.
+	WritesReadBack ID = "writes-read-back"
+	// ListRemovalMatchesReader: remove_yaml_list_from_file stopped at the first unindented line, so
+	// column-0 "- item" entries were left behind and became part of the previous key's list (an
+	// exceptions migrate turned retired secret exceptions into masked paths); it also dropped blank
+	// lines after the block. It now removes exactly the block extract_yaml_list_from_file reads,
+	// keeping the blank and column-0 comment lines that end it.
+	ListRemovalMatchesReader ID = "list-removal-matches-reader"
+	// LiteralEnvDomains: SANDBOX_EXTRA_ALLOWED_DOMAINS was split unquoted, so an entry was
+	// glob-expanded against the current directory (*.example.com became a file's name), an entry
+	// of -n or -e vanished into echo, and inner whitespace was deleted (a b.com became ab.com).
+	// Entries are now taken literally, with only surrounding whitespace trimmed.
+	LiteralEnvDomains ID = "literal-env-domains"
 )
 
 var (

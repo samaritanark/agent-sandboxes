@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 )
 
 var gateBase = filepath.Join("testdata", "gate")

@@ -23,7 +23,7 @@ Layout so far:
 | Path | Port of |
 |---|---|
 | `internal/bashcompat` | the bash and tool behaviours the port reproduces (field splitting, arithmetic, globs, `printf %q`); a caller of this package is carrying a quirk |
-| `internal/config` | `lib/config.sh` and `resolve_overlay_path`: the flat YAML readers, overlay resolution, ignore-file parsing |
+| `internal/config` | all of `lib/config.sh` (except the unused `load_user_blocked_*`) and `resolve_overlay_path`: the flat YAML readers and writers, overlay resolution, the ignore-file helpers, the extra-allowed-domains sources |
 | `internal/gate` | the secret gate in `lib/filesystem.sh`: `finding_is_encrypted`, `is_path_masked`, `_leakscan_finding_accepted`, `scan_repo_secrets` and its helpers, `secret_gate_repos` |
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
 | `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |
@@ -51,6 +51,14 @@ LC_ALL=C ./oracle.sh cases-mutants.tsv  > golden-mutants.tsv
 (cd go && go test ./...)
 # and on Linux, to re-run the bash live from the Go tests (what CI does, .github/workflows/go.yaml):
 (cd go && SBX_ORACLE=1 go test ./...)
+```
+
+Config writers and readers (`internal/config/testdata/write`; each case's return code, output, and resulting file bytes and mode):
+
+```bash
+(cd go && go run ./internal/config/internal/genwrite -base internal/config/testdata/write -seed 1 -n 40)
+# on Linux, with LC_ALL=C:
+LC_ALL=C go/internal/config/testdata/write/oracle.sh > go/internal/config/testdata/write/golden-write.tsv
 ```
 
 Pilot 2 (`testdata/masked`, `testdata/accepted`) regenerates the same way:

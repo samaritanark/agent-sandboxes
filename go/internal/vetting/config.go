@@ -4,15 +4,15 @@
 package vetting
 
 import (
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"io"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 )
 
 // Ctx carries what the bash reads from the environment and the clock.

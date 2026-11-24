@@ -3,11 +3,11 @@ package vetting
 import (
 	"bufio"
 	"fmt"
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"io"
 	"strings"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
+	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
 )
 
 // GateConfig is what the gate reads from the vetting configuration (ported in config.go); it is a

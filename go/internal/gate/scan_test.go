@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 )
 
 var scanBase = filepath.Join("testdata", "scan")

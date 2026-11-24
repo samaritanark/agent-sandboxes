@@ -1,0 +1,9 @@
+masked_paths_x:
+  - "q #x"
+  - a.txt
+
+  
+  - "q #x"
+  - "q #x"
+  nested: 1
+  - "q #x"

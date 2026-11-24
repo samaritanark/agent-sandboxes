@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 )
 
 var excBase = filepath.Join("testdata", "exc")
@@ -48,7 +50,7 @@ func excOutput(t *testing.T) string {
 			fmt.Fprintf(&sb, "ci_prev=%s\n", joinBar2(CommittedIgnoreFingerprints(rp, "HEAD~1")))
 			fmt.Fprintf(&sb, "ci_bad=%s\n", joinBar2(CommittedIgnoreFingerprints(rp, "nonexistent")))
 			fmt.Fprintf(&sb, "legacy=%s\n", joinBar2(CommittedLegacyAcceptedSecrets(rp)))
-			fmt.Fprintf(&sb, "load=%s\n", joinBar2(LoadRepoIgnoreFingerprints(rp)))
+			fmt.Fprintf(&sb, "load=%s\n", joinBar2(config.LoadRepoIgnoreFingerprints(rp)))
 		} else {
 			fmt.Fprintf(&sb, "state=%s\n", c.SSHSigningKeyState(rp))
 			rc := 1

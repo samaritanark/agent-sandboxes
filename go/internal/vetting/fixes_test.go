@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 )
 
 func writeFile(t *testing.T, p, s string) {

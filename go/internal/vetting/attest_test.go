@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/gate"
+	"github.com/samaritanark/agent-sandboxes/go/internal/gate"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 )
 
 var attBase = filepath.Join("testdata", "attest")

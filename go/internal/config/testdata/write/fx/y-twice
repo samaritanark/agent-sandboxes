@@ -1,0 +1,6 @@
+accepted_secrets:
+  - a
+masked_paths:
+  - m
+accepted_secrets:
+  - b

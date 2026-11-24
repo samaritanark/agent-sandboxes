@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-const mod = "git.theark.cloud/acs/agent-sandboxes/go/internal/"
+const mod = "github.com/samaritanark/agent-sandboxes/go/internal/"
 
 // allowed lists, per package, the internal packages its production code may import.
 var allowed = map[string][]string{

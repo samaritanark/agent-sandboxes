@@ -1,0 +1,8 @@
+masked_paths:
+  - d.com
+masked_paths_x:
+
+  - a.txt
+	- tab
+  
+link_url: u

@@ -1,0 +1,6 @@
+# top
+accepted_secrets:
+  # why
+  - x
+# about foo
+foo: 1

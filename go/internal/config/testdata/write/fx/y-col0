@@ -1,0 +1,6 @@
+masked_paths:
+  - keep
+accepted_secrets:
+- a.txt:r:1:h
+- b.txt:r:2:h
+other: 1

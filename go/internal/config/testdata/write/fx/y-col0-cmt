@@ -1,0 +1,7 @@
+accepted_secrets:
+- a
+# note
+- b
+
+# about next
+next: 1

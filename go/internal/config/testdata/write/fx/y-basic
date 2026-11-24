@@ -1,0 +1,7 @@
+overlay: /o
+link_url: u
+masked_paths:
+  - a.txt
+  - dir/
+extra_allowed_domains:
+  - git.example.com

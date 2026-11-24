@@ -2,20 +2,16 @@ package vetting
 
 import (
 	"bytes"
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"os"
 	"regexp"
 	"strings"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 )
 
-const (
-	ignoreName     = ".betterleaksignore"
-	ignoreFallback = ".gitleaksignore"
-	repoConfigRel  = ".sandbox/config.yaml"
-)
+const repoConfigRel = config.RepoConfigName
 
 // gitShow is `_vetting_git repo show <rev>:<path>`; ok is false when git fails. With
 // BlobOnlyIgnoreFiles it is `cat-file blob`, which fails for a directory (show prints the tree).
@@ -38,7 +34,7 @@ func CommittedIgnoreFingerprints(repo, rev string) []string {
 	if rev == "" {
 		rev = "HEAD"
 	}
-	for _, name := range []string{ignoreName, ignoreFallback} {
+	for _, name := range []string{config.RepoIgnoreName, config.RepoIgnoreFallback} {
 		if b, ok := gitShow(repo, rev, name); ok {
 			return config.StripIgnoreFileComments(b)
 		}
@@ -91,29 +87,6 @@ func (c Ctx) RepoGrantedAllowedDomains(honorFlag, repo string) []string {
 	return c.VettedRepoAllowedDomains(repo)
 }
 
-// RepoIgnoreFile is repo_ignore_file in lib/config.sh.
-func RepoIgnoreFile(repo string) string {
-	for _, f := range []string{ignoreName, ignoreFallback} {
-		if config.IsFile(repo + "/" + f) {
-			return repo + "/" + f
-		}
-	}
-	return repo + "/" + ignoreName
-}
-
-// LoadRepoIgnoreFingerprints is load_repo_ignore_fingerprints: the working-tree view.
-func LoadRepoIgnoreFingerprints(repo string) []string {
-	f := RepoIgnoreFile(repo)
-	if !config.IsFile(f) {
-		return nil
-	}
-	b, err := os.ReadFile(f)
-	if err != nil {
-		return nil
-	}
-	return config.StripIgnoreFileComments(b)
-}
-
 // VettedAcceptedFingerprints is vetted_accepted_fingerprints in lib/filesystem.sh: the ignore-file
 // fingerprints the secret gate may honor, or nothing unless the repo is vetted (or the operator
 // accepted the unvetted repo outright).
@@ -122,7 +95,7 @@ func (c Ctx) VettedAcceptedFingerprints(repo, acceptUnvetted string) []string {
 	status, tag, behind := f[0], f[2], f[4]
 	if status != "vetted" || tag == "" {
 		if acceptUnvetted == "true" {
-			return LoadRepoIgnoreFingerprints(repo)
+			return config.LoadRepoIgnoreFingerprints(repo)
 		}
 		return nil
 	}
@@ -138,7 +111,7 @@ func (c Ctx) VettedAcceptedFingerprints(repo, acceptUnvetted string) []string {
 	if c.ExceptionsFromCommit() == "true" {
 		return CommittedIgnoreFingerprints(repo, tag)
 	}
-	return LoadRepoIgnoreFingerprints(repo)
+	return config.LoadRepoIgnoreFingerprints(repo)
 }
 
 // literalKey matches an OpenSSH public key given literally (optionally as git's key:: form): a

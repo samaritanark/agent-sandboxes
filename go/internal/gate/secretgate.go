@@ -3,13 +3,14 @@ package gate
 import (
 	"bufio"
 	"fmt"
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
+	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 )
 
 // GateDeps are the things secret_gate_repos gets from the rest of the bash (vetting, audit,
@@ -128,7 +129,7 @@ func SecretGateRepos(d GateDeps, accept, endpointTrusted, acceptUnvetted string,
 	for _, repo := range repos {
 		if strings.TrimRight(d.LoadRepoAcceptedSecrets(repo), "\n") != "" {
 			d.Warn(fmt.Sprintf("%s: accepted_secrets: in %s is no longer honored — run 'sandbox exceptions migrate --repo %s' to move it to %s.",
-				bashcompat.Basename(repo), repoConfigName, repo, repoIgnoreName))
+				bashcompat.Basename(repo), config.RepoConfigName, repo, config.RepoIgnoreName))
 		}
 		af, _ := os.CreateTemp(os.TempDir(), "sandbox-accept-")
 		af.WriteString(d.VettedAcceptedFingerprints(repo, acceptUnvetted))

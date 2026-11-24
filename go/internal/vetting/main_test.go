@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 )
 
 // The differential tests compare against the bash oracle, so they run with every fix off; each fix

@@ -3,14 +3,14 @@ package vetting
 import (
 	"bufio"
 	"fmt"
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/bashcompat"
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 )
 
 // Attester carries the configuration and the terminal for the attestation functions.
@@ -43,14 +43,14 @@ func (a Attester) reply() string {
 func (a Attester) AcknowledgeExceptions(realRepo, repo, assumeYes string) bool {
 	if legacy := CommittedLegacyAcceptedSecrets(repo); len(legacy) > 0 {
 		a.Warn(fmt.Sprintf("this repo still records %d secret exception(s) under accepted_secrets: in %s — that list is NO LONGER honored. Run 'sandbox exceptions migrate --repo %s' to move them to the repo-root %s, commit, and vet again.",
-			len(legacy), repoConfigRel, repo, ignoreName))
+			len(legacy), repoConfigRel, repo, config.RepoIgnoreName))
 	}
 	entries := CommittedIgnoreFingerprints(repo, "")
 	if len(entries) == 0 {
 		return true
 	}
 	if commandV("betterleaks") == "" || commandV("jq") == "" {
-		a.errln(fmt.Sprintf("ERROR: %s records secret exceptions (%s), but betterleaks/jq are not", repo, ignoreName),
+		a.errln(fmt.Sprintf("ERROR: %s records secret exceptions (%s), but betterleaks/jq are not", repo, config.RepoIgnoreName),
 			"       available to show what signing it would let the agent read. Install",
 			"       them and re-run so the attestation is not a blind sign-off.")
 		return false

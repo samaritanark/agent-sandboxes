@@ -5,7 +5,7 @@ package bashcompat
 
 import (
 	"fmt"
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"path/filepath"
 	"regexp"
 	"strings"

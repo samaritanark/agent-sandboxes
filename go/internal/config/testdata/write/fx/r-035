@@ -1,0 +1,7 @@
+  - "q #x"
+  - a.txt
+extra_allowed_domains:
+  - "q #x"
+masked_paths_x:
+  # c
+  # c

@@ -1,0 +1,4 @@
+extra_allowed_domains:
+  - a.example.com
+  - '*.b.com'
+  - -n

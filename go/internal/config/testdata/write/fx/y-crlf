@@ -1,0 +1,5 @@
+masked_paths:
+  - a.txt
+overlay: y
+accepted_secrets:
+  - a:r:1:h

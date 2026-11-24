@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/config"
-	"git.theark.cloud/acs/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 )
 
 func TestFixLiteralPathspec(t *testing.T) {
