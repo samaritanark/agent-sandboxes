@@ -18,6 +18,7 @@ def m(file, old, new, run, equivalent=None, pkg=None):
 PKG_OVERRIDE = {
     "internal/config/config.go": "gate",
     "internal/bashcompat/bashcompat.go": "gate",
+    "internal/jqjson/jqjson.go": "audit",
 }
 
 ENC = "internal/gate/encrypted.go"
@@ -389,7 +390,7 @@ m(CT, '\tcase identity != "" && issuer != "":', '\tcase identity != "":', R_CT)
 m(CT, "\tif !c.RunCosign(append(args, image)) {", "\tif !c.RunCosign(args) {", R_CT)
 
 AU = "internal/audit/audit.go"
-AJ = "internal/audit/jsonv.go"
+AJ = "internal/jqjson/jqjson.go"
 R_AU = "TestAuditGolden"
 m(AU, '\t\tif r != "" {\n\t\t\to.Repos = append(o.Repos, bashcompat.Basename(r))', '\t\tif true {\n\t\t\to.Repos = append(o.Repos, bashcompat.Basename(r))', R_AU)
 m(AU, "o.Repos = append(o.Repos, bashcompat.Basename(r))", "o.Repos = append(o.Repos, r)", R_AU)
@@ -499,3 +500,26 @@ m(OB, '\t\trewrite(cfg, []byte(catTrimmed(cfg)+"\\n\\n"+grokBlock+"\\n"), true)'
 m(OB, '\t\tos.WriteFile(cfg+".tmp", data, 0o644)\n\t\tos.Rename(cfg+".tmp", cfg)', '\t\tos.WriteFile(cfg, data, 0o644)', R_OB)
 m(OB, "\tif isRegular(dst) && !c.Force {\n\t\to.say(\"  config: %s already exists", "\tif isRegular(dst) {\n\t\to.say(\"  config: %s already exists", R_OB)
 m(OB, '\t\to.say("  config: would write starter %s", d)\n\t\treturn', '\t\to.say("  config: would write starter %s", d)', R_OB)
+
+AG = "internal/agents/agents.go"
+R_AG = "TestAgentsGolden"
+m(AG, 'var Valid = []string{"claude", "codex", "opencode", "copilot", "grok"}', 'var Valid = []string{"claude", "codex", "opencode", "copilot"}', R_AG)
+m(AG, '"console.anthropic.com", "statsig.anthropic.com", "sentry.io"},', '"console.anthropic.com", "statsig.anthropic.com"},', R_AG)
+m(AG, '"grok": {"api.x.ai", "accounts.x.ai", "auth.x.ai", "grok.com"},', '"grok": {"api.x.ai", "accounts.x.ai", "grok.com"},', R_AG)
+m(AG, "\tif i := strings.Index(h, \"://\"); i >= 0 {\n\t\th = h[i+3:]\n\t}", "", R_AG)
+m(AG, '\tif i := strings.LastIndex(h, "@"); i >= 0 {', '\tif i := strings.Index(h, "@"); i >= 0 {', R_AG)
+m(AG, "\tif i := strings.Index(h, \":\"); i >= 0 {\n\t\th = h[:i]\n\t}\n\treturn h", "\treturn h", R_AG)
+m(AG, "\tif i := strings.Index(h, \"/\"); i >= 0 {\n\t\th = h[:i]\n\t}", "", R_AG)
+m(AG, "\tif baseURL != \"\" {\n\t\treturn nil, fmt.Errorf(\"ERROR: OPENCODE_BASE_URL ('%s') has no host.", "\tif false {\n\t\treturn nil, fmt.Errorf(\"ERROR: OPENCODE_BASE_URL ('%s') has no host.", R_AG)
+m(AG, '\t\treturn "--sandbox danger-full-access"', '\t\treturn "--sandbox"', R_AG)
+m(AG, 'func SupportsMCP(agent string) bool { return agent == "claude" }', 'func SupportsMCP(agent string) bool { return agent != "" }', R_AG)
+m(AG, '\t\treturn []string{"--mcp-config", MCPConfigDir + "/" + MCPConfigFile, "--strict-mcp-config"}', '\t\treturn []string{"--mcp-config", MCPConfigDir + "/" + MCPConfigFile}', R_AG)
+m(AG, "\t\tif rec == \"\" {\n\t\t\tcontinue\n\t\t}", "", R_AG)
+m(AG, "\t\ttransport, url := rest, rest", "\t\ttransport, url := rest, \"\"", R_AG)
+m(AG, "\t\tservers, _ = servers.Set(name, entry)", "\t\tservers, _ = servers.Set(transport, entry)", R_AG)
+m(AG, '\tcase "opencode":\n\t\treturn "apikey"', '\tcase "opencode":\n\t\treturn "oauth"', R_AG)
+m(AG, '"KUBERNETES_SERVICE_PORT", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "GROK_DEPLOYMENT_KEY"}', '"KUBERNETES_SERVICE_PORT", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"}', R_AG)
+m(AG, 'HostEnvBlocklistPrefixes = []string{"OS_", "AWS_", "GOOGLE_", "AZURE_", "TELEPORT_", "TSH_", "ANTHROPIC_", "OPENAI_"}', 'HostEnvBlocklistPrefixes = []string{"OS_", "AWS_", "GOOGLE_", "AZURE_", "TELEPORT_", "ANTHROPIC_", "OPENAI_"}', R_AG)
+m(AG, '\t\tif val[v] != "" {\n\t\t\twarn(v)', '\t\tif _, ok := val[v]; ok {\n\t\t\twarn(v)', R_AG)
+m(AG, '\t\t\tfor _, line := range strings.Split(e, "\\n") {', '\t\t\tfor _, line := range []string{e} {', R_AG)
+m(AG, "\tif n > 0 {\n\t\tstdout = append(stdout,", "\tif true {\n\t\tstdout = append(stdout,", R_AG)

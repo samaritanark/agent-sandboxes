@@ -130,6 +130,11 @@ const (
 	// the staged configs through them. Onboard now refuses a path there that is not a regular file
 	// and writes through a fresh temp file renamed into place (design Appendix B).
 	AgentHomeNoFollow ID = "agent-home-no-follow"
+	// EnvCheckByName: check_host_env_not_leaked found prefix-matched variables by reading `env`
+	// output line by line, so a value containing a newline and a blocked prefix reported a variable
+	// that did not exist, and an empty prefix-matched variable counted while an empty exact-named
+	// one did not. Names now come from the environment entries, and empty values never count.
+	EnvCheckByName ID = "env-check-by-name"
 )
 
 var (

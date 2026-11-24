@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/jqjson"
 )
 
 // The differential tests compare against the bash oracle, so they run with every fix off; each fix
@@ -70,7 +71,7 @@ func runSteps(t *testing.T, c, steps string) (out string) {
 			switch r := a[4]; {
 			case r == "":
 			case strings.HasPrefix(r, "["): // the bash's JSON-array form of the repo argument
-				v, err := parseOne(r)
+				v, err := jqjson.ParseOne(r)
 				if err != nil {
 					t.Fatalf("corpus repo array %q is not JSON", r)
 				}

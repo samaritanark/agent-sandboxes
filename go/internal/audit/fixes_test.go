@@ -6,17 +6,18 @@ import (
 	"testing"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/jqjson"
 )
 
 func TestFixAuditDomainsAsData(t *testing.T) {
 	domains := []string{`x","injected.com`, `a.b.com`, "tab\there", `evil\x2ecom`}
-	record := func() (Value, error) {
+	record := func() (jqjson.Value, error) {
 		d := t.TempDir()
 		_, err := WriteSessionJSON(d, Session{ID: "s", Agent: "a", Tier: "2", Domains: domains[:2]})
 		b, _ := os.ReadFile(filepath.Join(d, "session.json"))
-		vs, perr := parseValues(string(b))
+		vs, perr := jqjson.ParseValues(string(b))
 		if err != nil || perr != nil || len(vs) != 1 {
-			return Value{}, err
+			return jqjson.Value{}, err
 		}
 		return vs[0].Get("allowed_domains"), nil
 	}
@@ -37,7 +38,7 @@ func TestFixAuditDomainsAsData(t *testing.T) {
 			t.Fatalf("fixed: %q: %v", d, err)
 		}
 		b, _ := os.ReadFile(filepath.Join(dir, "session.json"))
-		vs, err := parseValues(string(b))
+		vs, err := jqjson.ParseValues(string(b))
 		if err != nil || len(vs[0].Get("allowed_domains").Arr) != 1 || vs[0].Get("allowed_domains").Arr[0].Str != d {
 			t.Errorf("fixed: %q recorded as %s", d, b)
 		}

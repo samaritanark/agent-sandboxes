@@ -31,6 +31,8 @@ Layout so far:
 | `internal/audit` | the session-record half of `lib/audit.sh`: `session.json`, override and event records, the session list, with an ordered JSON value that reproduces jq's output byte for byte (transcript capture is not ported) |
 | `internal/link` | `lib/link.sh`: link names and recorded state, path normalization, the overlay shape gate, and the run-path sync (git is executed, as in the bash) |
 | `internal/onboard` | `lib/onboard.sh`: which host login files each agent stages, the Codex and Grok config hardening, the API-key refusal, and the starter user config |
+| `internal/agents` | `lib/agents.sh` (per-agent domains, flags, MCP config, credential type, the opencode endpoint) and the host-environment check of `lib/credentials.sh` |
+| `internal/jqjson` | the part of jq the bash's JSON writers rely on: ordered values, jq's input rules, and its pretty output (used by `audit` and `agents`) |
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
 | `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |
 
@@ -114,6 +116,14 @@ Onboarding (`internal/onboard/testdata`; each case builds a home from a spec, ru
 (cd go && go run ./internal/onboard/internal/genonboard -base internal/onboard/testdata -seed 1 -n 80)
 # on Linux, with LC_ALL=C:
 LC_ALL=C go/internal/onboard/testdata/oracle.sh > go/internal/onboard/testdata/golden-onboard.tsv
+```
+
+Agents (`internal/agents/testdata`; each case runs under `env -i` with only its own variables):
+
+```bash
+(cd go && go run ./internal/agents/internal/genagents -base internal/agents/testdata)
+# on Linux, with LC_ALL=C (needs jq):
+LC_ALL=C go/internal/agents/testdata/oracle.sh > go/internal/agents/testdata/golden-agents.tsv
 ```
 
 Pilot 2 (`testdata/masked`, `testdata/accepted`) regenerates the same way:

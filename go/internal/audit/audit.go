@@ -13,6 +13,7 @@ import (
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
+	. "github.com/samaritanark/agent-sandboxes/go/internal/jqjson"
 	"github.com/samaritanark/agent-sandboxes/go/internal/tier"
 )
 
@@ -58,7 +59,7 @@ func update(logDir string, f func(Value) (Value, error)) {
 	if err != nil {
 		return
 	}
-	vs, err := parseValues(string(b))
+	vs, err := ParseValues(string(b))
 	if err != nil {
 		return
 	}
@@ -68,7 +69,7 @@ func update(logDir string, f func(Value) (Value, error)) {
 		if err != nil {
 			return
 		}
-		out.WriteString(encode(nv))
+		out.WriteString(Encode(nv))
 	}
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, []byte(out.String()), 0o600); err != nil {
@@ -81,7 +82,7 @@ func update(logDir string, f func(Value) (Value, error)) {
 // appendEvent is jq's `.events += [e]`.
 func appendEvent(v Value, e Value) (Value, error) {
 	if v.Kind != Object && v.Kind != Null {
-		return v, fmt.Errorf("cannot index %s", kindName(v.Kind))
+		return v, fmt.Errorf("cannot index %s", KindName(v.Kind))
 	}
 	ev := v.Get("events")
 	switch ev.Kind {
@@ -90,7 +91,7 @@ func appendEvent(v Value, e Value) (Value, error) {
 	case Array:
 		ev = Arr(append(append([]Value{}, ev.Arr...), e)...)
 	default:
-		return v, fmt.Errorf("%s and array cannot be added", kindName(ev.Kind))
+		return v, fmt.Errorf("%s and array cannot be added", KindName(ev.Kind))
 	}
 	return v.Set("events", ev)
 }
@@ -158,12 +159,12 @@ func WriteSessionJSON(logDir string, s Session) (string, error) {
 			raw += `"` + d + `"`
 		}
 		var err error
-		if domains, err = parseOne(raw + "]"); err != nil {
+		if domains, err = ParseOne(raw + "]"); err != nil {
 			os.WriteFile(p, nil, 0o666)
 			return line, err
 		}
 	}
-	tierV, err := parseOne(s.Tier) // --argjson tier
+	tierV, err := ParseOne(s.Tier) // --argjson tier
 	if err != nil {
 		os.WriteFile(p, nil, 0o666)
 		return line, err
@@ -181,7 +182,7 @@ func WriteSessionJSON(logDir string, s Session) (string, error) {
 		"kube_host_entity", Str(s.KubeHostEntity), "infra_token", BoolV(s.InfraToken),
 		"infra_kubeconfig", BoolV(s.InfraKubeconfig), "allowed_domains", domains,
 		"retention_days", Int(tier.RetentionDays(s.Tier)))
-	return line, os.WriteFile(p, []byte(encode(v)), 0o666)
+	return line, os.WriteFile(p, []byte(Encode(v)), 0o666)
 }
 
 func setter(k string, x Value) func(Value) (Value, error) {
@@ -211,7 +212,7 @@ func RecordAgentSessionID(logDir, id string) { update(logDir, setter("agent_sess
 // RecordDependencies is audit_record_dependencies; depsJSON is a JSON array (it is not checked to
 // be one, as in the bash); invalid JSON records nothing.
 func RecordDependencies(logDir, depsJSON string) {
-	deps, err := parseOne(depsJSON)
+	deps, err := ParseOne(depsJSON)
 	if err != nil {
 		return
 	}
@@ -223,7 +224,7 @@ func RecordDependencies(logDir, depsJSON string) {
 func RecordDependenciesDown(logDir, downTime string) {
 	update(logDir, func(v Value) (Value, error) {
 		if v.Kind != Object && v.Kind != Null {
-			return v, fmt.Errorf("cannot index %s", kindName(v.Kind))
+			return v, fmt.Errorf("cannot index %s", KindName(v.Kind))
 		}
 		deps := v.Get("dependencies")
 		if deps.Kind != Array {

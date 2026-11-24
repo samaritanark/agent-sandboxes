@@ -1,4 +1,8 @@
-package audit
+// Package jqjson is the part of jq (1.7) the bash's JSON writers rely on: an ordered JSON value
+// (keys in insertion order, number literals kept as written), jq's parsing rules for the inputs
+// the bash reads, and jq's default pretty output. The audit record and the agent MCP config are
+// built with it, so they come out byte-identical to the bash's.
+package jqjson
 
 import (
 	"errors"
@@ -6,10 +10,6 @@ import (
 	"strconv"
 	"strings"
 )
-
-// The audit record is written and edited with jq in the bash, and jq keeps an object's keys in
-// insertion order, keeps a number's literal text, and pretty-prints in its own style. Value,
-// parseValues and encode reproduce exactly that much of jq (1.7), so the record is byte-identical.
 
 // Kind is a JSON value's type.
 type Kind int
@@ -59,7 +59,7 @@ func (v Value) Set(k string, x Value) (Value, error) {
 		}
 		v.Props, v.Keys = p, append([]string(nil), v.Keys...)
 	default:
-		return v, fmt.Errorf("cannot index %s with %q", kindName(v.Kind), k)
+		return v, fmt.Errorf("cannot index %s with %q", KindName(v.Kind), k)
 	}
 	if _, ok := v.Props[k]; !ok {
 		v.Keys = append(v.Keys, k)
@@ -77,7 +77,7 @@ func (v Value) Merge(b Value) Value {
 	return out
 }
 
-func kindName(k Kind) string {
+func KindName(k Kind) string {
 	return [...]string{"null", "boolean", "number", "string", "array", "object"}[k]
 }
 
@@ -90,8 +90,8 @@ type parser struct {
 
 var errSyntax = errors.New("invalid JSON")
 
-// parseValues parses every JSON text in s, as jq reads its input file.
-func parseValues(s string) ([]Value, error) {
+// ParseValues parses every JSON text in s, as jq reads its input file.
+func ParseValues(s string) ([]Value, error) {
 	p := &parser{s: s}
 	var out []Value
 	for {
@@ -107,9 +107,9 @@ func parseValues(s string) ([]Value, error) {
 	}
 }
 
-// parseOne parses exactly one JSON text (jq's --argjson).
-func parseOne(s string) (Value, error) {
-	vs, err := parseValues(s)
+// ParseOne parses exactly one JSON text (jq's --argjson).
+func ParseOne(s string) (Value, error) {
+	vs, err := ParseValues(s)
 	if err != nil || len(vs) != 1 {
 		return Value{}, errSyntax
 	}
@@ -278,7 +278,8 @@ func (p *parser) str() (string, error) {
 
 // ---- encoding (jq's default pretty output) ----
 
-func encode(v Value) string {
+// Encode is jq's default pretty output of v, with a final newline.
+func Encode(v Value) string {
 	var b strings.Builder
 	enc(&b, v, 0)
 	b.WriteByte('\n')
