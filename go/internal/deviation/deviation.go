@@ -111,6 +111,20 @@ const (
 	// checked); a domain that did not make valid JSON left session.json empty. Domains are now
 	// recorded as given.
 	AuditDomainsAsData ID = "audit-domains-as-data"
+	// DefaultRepoSensitiveTightened: a linked overlay's profile default_repo (mounted when a run
+	// passes no --repo) was refused only for the home directory itself, /, hidden paths, and
+	// /etc, /root, /proc, /sys and /boot. An ancestor of the home directory (/home, /Users, which
+	// hold every ~/.ssh), /run, /var/run (the container socket), /dev, macOS's /private (the real
+	// /etc), a case variant on a case-insensitive volume (/ETC), and the home directory written
+	// with a trailing slash in $HOME all passed. They are now refused.
+	DefaultRepoSensitiveTightened ID = "default-repo-sensitive-tightened"
+	// StrictSymlinkScan: link_validate_shape read `find -type l` output line by line, so a symlink
+	// whose name contained a newline was looked up by its fragments and an escaping one was not
+	// reported. Each symlink is now checked by its real name.
+	StrictSymlinkScan ID = "strict-symlink-scan"
+	// ZeroSignerCount: with a trust root of no signers, the link summary printed the count as
+	// "0", a newline, and "0" (grep -c prints 0 and fails, and `|| echo 0` printed another).
+	ZeroSignerCount ID = "zero-signer-count"
 )
 
 var (

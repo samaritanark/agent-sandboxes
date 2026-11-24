@@ -29,6 +29,7 @@ Layout so far:
 | `internal/tier` | `lib/tier.sh`: tier names, extra egress domains, retention days |
 | `internal/catalogue` | `lib/catalogue.sh`: resolving, reading, and validating dependency catalogue entries (cosign is injected; the oracle uses a stub) |
 | `internal/audit` | the session-record half of `lib/audit.sh`: `session.json`, override and event records, the session list, with an ordered JSON value that reproduces jq's output byte for byte (transcript capture is not ported) |
+| `internal/link` | `lib/link.sh`: link names and recorded state, path normalization, the overlay shape gate, and the run-path sync (git is executed, as in the bash) |
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
 | `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |
 
@@ -96,6 +97,14 @@ Audit session record (`internal/audit/testdata`; step sequences over one `sessio
 (cd go && go run ./internal/audit/internal/genaudit -base internal/audit/testdata -seed 1 -n 150)
 # on Linux, with LC_ALL=C (needs jq):
 LC_ALL=C go/internal/audit/testdata/oracle.sh > go/internal/audit/testdata/golden-audit.tsv
+```
+
+Team-overlay links (`internal/link/testdata`; overlay trees travel inside their cases, and `setup-sync.sh` builds each git sync scenario with fixed identities and dates, so commit IDs match everywhere):
+
+```bash
+(cd go && go run ./internal/link/internal/genlink -base internal/link/testdata -seed 1 -n 120)
+# on Linux, with LC_ALL=C (needs git):
+LC_ALL=C go/internal/link/testdata/oracle.sh > go/internal/link/testdata/golden-link.tsv
 ```
 
 Pilot 2 (`testdata/masked`, `testdata/accepted`) regenerates the same way:
