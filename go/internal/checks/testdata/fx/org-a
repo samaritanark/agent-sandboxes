@@ -1,0 +1,18 @@
+blocked_domains:
+  - evil.com
+  - "*.prod.example.com"
+  - smtp.*
+  - "*corp.internal"
+  - EXACT.UPPER.COM
+  - trailing.dot.com.
+  - metadata.google.internal
+  # a comment
+  - "*.github.io"
+blocked_cidrs:
+  - 10.0.0.0/8
+  - 169.254.0.0/16
+  - fd00::/8
+  - 192.168.1.0/24
+  - 172.16.0.0/012
+  - 100.64.0.0/08
+  - 10.0.0.0/8

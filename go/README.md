@@ -25,6 +25,7 @@ Layout so far:
 | `internal/bashcompat` | the bash and tool behaviours the port reproduces (field splitting, arithmetic, globs, `printf %q`); a caller of this package is carrying a quirk |
 | `internal/config` | all of `lib/config.sh` (except the unused `load_user_blocked_*`) and `lib/profile.sh`, plus `version_ge` from `lib/platform.sh`: the flat YAML readers and writers, overlay resolution, the ignore-file helpers, the extra-allowed-domains sources, profile lookup, validation and rendering, the overlay's minimum CLI version |
 | `internal/gate` | the secret gate in `lib/filesystem.sh`: `finding_is_encrypted`, `is_path_masked`, `_leakscan_finding_accepted`, `scan_repo_secrets` and its helpers, `secret_gate_repos` |
+| `internal/checks` | the egress side of `lib/checks.sh`: block lists (org, overlay, user), domain and CIDR matching, over-broad wildcards, the eTLD+1 apex rule, trusted inference endpoints (the manifest greps and `check_prerequisites` are not ported) |
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
 | `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |
 
@@ -67,6 +68,14 @@ Profiles and `version_ge` (`internal/config/testdata/profile`; each case's retur
 (cd go && go run ./internal/config/internal/genprofile -base internal/config/testdata/profile -seed 1 -n 150)
 # on Linux, with LC_ALL=C:
 LC_ALL=C go/internal/config/testdata/profile/oracle.sh > go/internal/config/testdata/profile/golden-profile.tsv
+```
+
+Egress checks (`internal/checks/testdata`; return code, stdout, and stderr per case):
+
+```bash
+(cd go && go run ./internal/checks/internal/genchecks -base internal/checks/testdata -seed 1 -n 200)
+# on Linux, with LC_ALL=C:
+LC_ALL=C go/internal/checks/testdata/oracle.sh > go/internal/checks/testdata/golden-checks.tsv
 ```
 
 Pilot 2 (`testdata/masked`, `testdata/accepted`) regenerates the same way:

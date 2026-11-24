@@ -1,0 +1,5 @@
+trusted_inference_endpoints:
+  - llm.internal
+  - LLM2.internal
+  - "*.wild"
+  - 10.1.2.3

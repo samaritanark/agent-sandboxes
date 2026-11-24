@@ -1,0 +1,7 @@
+extra_allowed_domains:
+  - fine.com
+blocked_domains:
+  - user-blocked.org
+  - "*.EVIL.org."
+blocked_cidrs:
+  - 198.51.100.0/24

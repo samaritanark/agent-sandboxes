@@ -84,6 +84,22 @@ const (
 	// ".." components (or an absolute one) read a YAML file outside the user and overlay profile
 	// directories. Such a name is now not found. Subdirectories inside them still resolve.
 	ProfileLookupStaysInDir ID = "profile-lookup-stays-in-dir"
+	// StrictEgressSyntax: check_egress_target_not_blocked accepted any string. The block check
+	// compared it literally, but the policy rendered it into a YAML double-quoted scalar, which
+	// interprets backslash escapes, so an escaped spelling of a blocked host passed the check and
+	// reached the policy as that host. An egress target must now be a host name (labels of
+	// letters, digits, '-' and '_', optionally after "*.", not ending in an all-digit label) or an
+	// IP address; the IPv4 blocked-CIDR check runs on the normalized target.
+	StrictEgressSyntax ID = "strict-egress-syntax"
+	// StrictCIDRs: validate_cidr was a shape check that accepted 10.0.0.0/33, 999.1.1.1/8 and
+	// :::/8, which the enforcement layer rejects (a block that does not block). A blocked CIDR
+	// must now parse as an IPv4 or IPv6 prefix.
+	StrictCIDRs ID = "strict-cidrs"
+	// MissingOrgBlockListFailsClosed: with the org blocked-destinations.yaml missing,
+	// check_domain_not_blocked warned and skipped the overlay and user lists too, while
+	// domain_is_blocked still read them. A missing org list now refuses the domain (design
+	// Appendix B, item 1).
+	MissingOrgBlockListFailsClosed ID = "missing-org-block-list-fails-closed"
 )
 
 var (

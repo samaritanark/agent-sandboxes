@@ -2437,6 +2437,19 @@ Fix on v2 regardless of v3 (migration step 1).
     (`bin/sandbox:3330-3335`).
 11. `.pre-commit-config.yaml`, `lefthook.yml`, `.git/config.worktree`, and
     `.lfsconfig` are not in the read-only set either (same class as item 7).
+12. Egress targets are not syntax-checked before the block check
+    (`lib/checks.sh:388-402`), which compares them as literal strings, while
+    `lib/policy.sh:300-320` renders them into YAML double-quoted scalars that
+    interpret backslash escapes. An escaped spelling of a blocked host passes the
+    check and reaches the policy as that host. Found in the S8 port
+    (2026-11-24); by the owner's decision this one is fixed in v3 only, as the
+    `StrictEgressSyntax` deviation, not on v2.
+13. `validate_cidr` (`lib/checks.sh:180-190`) is a shape check: it accepts
+    `10.0.0.0/33`, octets over 255, and `:::/8`, which the enforcement layer
+    rejects. Fixed in v3 (`StrictCIDRs`).
+14. `ip_in_cidr` (`lib/checks.sh:248-257`) evaluates the prefix length as shell
+    arithmetic: `/08` is an error that reports "not inside" and `/010` is octal
+    `/8`. Fixed in v3 (`DecimalNumbers`).
 
 ## Appendix C — External review dispositions (revision 3)
 
