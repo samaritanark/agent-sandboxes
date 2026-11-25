@@ -45,7 +45,7 @@ var allowed = map[string][]string{
 	// The host binary's packages (design 5.1). They import only each other.
 	"host/driver":    {},
 	"host/release":   {},
-	"host/app":       {"host/driver", "host/release", "host/sizing"},
+	"host/app":       {"host/driver", "host/release", "host/sizing", "host/syncgate"},
 	"host/sizing":    {},
 	"host/syncgate":  {"tables"},
 	"host/gitobj":    {},

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/syncgate"
 )
 
 type fakeTransport struct {
@@ -166,5 +167,46 @@ func TestVMShellRecorded(t *testing.T) {
 	tr.runs = nil
 	if r := run(t, d, tr, bad, "vm", "shell"); r.rc != 1 || len(tr.runs) != 0 || !strings.Contains(r.err, "unrecorded") {
 		t.Fatalf("unrecordable shell: %+v %q", r, tr.runs)
+	}
+}
+
+func TestSyncReview(t *testing.T) {
+	state, repo := t.TempDir(), t.TempDir()
+	os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("one\n"), 0o644)
+	store := &syncgate.Store{Dir: filepath.Join(state, "quarantine")}
+	fileID, _ := store.Put(repo, syncgate.Change{Path: ".vscode/tasks.json", Data: []byte("{\"x\":1}\n")}, "protected path (quarantine)")
+	conflictID, _ := store.Put(repo, syncgate.Change{Path: "notes.txt", Data: []byte("one\ntwo\n"), Base: "file:x"}, "changed on the host since the last sync (conflict)")
+	refID, _ := store.Put(repo, syncgate.Change{Path: ".git/refs/heads/main", Data: []byte(strings.Repeat("b", 40) + "\n")}, "protected branch")
+	d := &driver.Mock{}
+	r := run(t, d, &fakeTransport{}, state, "sync", "review")
+	if r.rc != 0 || !strings.Contains(r.out, "+ two") || !strings.Contains(r.out, "update-ref refs/heads/main") || !strings.Contains(r.out, ".vscode/tasks.json (write)") {
+		t.Fatalf("%+v", r)
+	}
+	if r := run(t, d, &fakeTransport{}, state, "sync", "review", "--apply", conflictID); r.rc != 0 {
+		t.Fatalf("%+v", r)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "notes.txt")); string(b) != "one\ntwo\n" {
+		t.Errorf("not applied: %q", b)
+	}
+	if r := run(t, d, &fakeTransport{}, state, "sync", "review", "--apply", refID); r.rc != 0 || !strings.Contains(r.out, "does not move your branches") {
+		t.Errorf("%+v", r)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, ".git/refs/heads/main")); len(b) != 0 {
+		t.Error("review wrote a ref")
+	}
+	if r := run(t, d, &fakeTransport{}, state, "sync", "review", "--discard", fileID); r.rc != 0 {
+		t.Errorf("%+v", r)
+	}
+	if held, _ := store.List(); len(held) != 1 || held[0].ID != refID {
+		t.Errorf("left %v", held)
+	}
+	if r := run(t, d, &fakeTransport{}, state, "sync", "review", "--apply", "nope"); r.rc != 1 {
+		t.Errorf("%+v", r)
+	}
+	if r := run(t, d, &fakeTransport{}, t.TempDir(), "sync", "review"); r.out != "No withheld workspace changes.\n" {
+		t.Errorf("%+v", r)
+	}
+	if len(d.Calls) != 0 {
+		t.Errorf("review touched the VM: %v", d.Calls)
 	}
 }
