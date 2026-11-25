@@ -6,16 +6,19 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/release"
+	"github.com/samaritanark/agent-sandboxes/go/internal/opstate"
 )
 
 // Transport runs commands in the VM over the driver's SSH endpoint.
@@ -155,9 +158,29 @@ func (a *app) handshake(ep driver.SSHEndpoint) release.Info {
 	return info
 }
 
+// pushState sends the operator state (design 5.1.4) before a proxied command.
+func (a *app) pushState(ep driver.SSHEndpoint) {
+	archive, warnings, err := opstate.Build(a.env.StateDir)
+	if err != nil {
+		a.die("cannot collect the operator state in ~/.sandbox: %v", err)
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(a.env.Stderr, "WARNING: %s\n", w)
+	}
+	var errb strings.Builder
+	rc, err := a.env.Transport.Run(a.ctx, ep, []string{VMCommand, ReceiveOperatorState}, bytes.NewReader(archive), io.Discard, &errb, false)
+	if err != nil || rc != 0 {
+		a.die("could not push the operator state to the sandbox VM: %v %s", err, strings.TrimSpace(errb.String()))
+	}
+}
+
+// ReceiveOperatorState is the in-VM entry point that takes the pushed state.
+const ReceiveOperatorState = "__receive-operator-state"
+
 func (a *app) proxy(args []string) int {
 	ep := a.running()
 	a.handshake(ep)
+	a.pushState(ep)
 	rc, err := a.env.Transport.Run(a.ctx, ep, append([]string{VMCommand}, args...), a.env.Stdin, a.env.Stdout, a.env.Stderr, a.env.StdinTTY)
 	if err != nil {
 		a.die("cannot run the command in the sandbox VM: %v", err)

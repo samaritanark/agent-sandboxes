@@ -21,7 +21,9 @@ var allowed = map[string][]string{
 	"config":     {"bashcompat", "deviation"},
 	"gate":       {"bashcompat", "config", "deviation", "tables"},
 	// rule tables shared by the policy layer and the host's sync gate: data only
-	"tables":    {},
+	"tables": {},
+	// the operator-state push (5.1.4): the host builds it, the in-VM binary receives it
+	"opstate":   {},
 	"vetting":   {"bashcompat", "config", "deviation"}, // the gate is injected, never imported
 	"checks":    {"config", "deviation"},
 	"tier":      {},
@@ -45,7 +47,7 @@ var allowed = map[string][]string{
 	// The host binary's packages (design 5.1). They import only each other.
 	"host/driver":    {},
 	"host/release":   {},
-	"host/app":       {"host/driver", "host/release", "host/sizing", "host/syncgate"},
+	"host/app":       {"host/driver", "host/release", "host/sizing", "host/syncgate", "opstate"},
 	"host/sizing":    {},
 	"host/syncgate":  {"tables"},
 	"host/gitobj":    {},
@@ -57,7 +59,9 @@ var allowed = map[string][]string{
 
 // hostSafe is every internal package the host binary may depend on, directly or not (5.1.1).
 // Adding a policy package here is a design change, not a code change.
-func hostSafe(name string) bool { return strings.HasPrefix(name, "host/") || name == "tables" }
+func hostSafe(name string) bool {
+	return strings.HasPrefix(name, "host/") || name == "tables" || name == "opstate"
+}
 
 // TestHostBinaryClosure checks the host binary's whole dependency closure, so a host package
 // cannot reach a policy package through another package either.

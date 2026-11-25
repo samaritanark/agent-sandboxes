@@ -12,6 +12,7 @@ import (
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/cli"
 	"github.com/samaritanark/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/opstate"
 )
 
 // Set at build time with -ldflags "-X main.version=...".
@@ -33,7 +34,23 @@ func currentUser() string {
 	return ""
 }
 
+// receiveOperatorState is the VM half of the operator-state push (design 5.1.4): the host binary
+// runs it over SSH, with the archive on stdin, before each proxied command. It is not a CLI command,
+// so the in-VM CLI's own commands and texts stay as v2 had them.
+const receiveOperatorState = "__receive-operator-state"
+
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == receiveOperatorState {
+		dest := os.Getenv("SANDBOX_OPERATOR_DIR")
+		if dest == "" {
+			dest = "/var/lib/sandbox/operator"
+		}
+		if err := opstate.Receive(os.Stdin, dest); err != nil {
+			os.Stderr.WriteString("ERROR: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
 	logs := os.Getenv("SANDBOX_LOGS_DIR")
 	if logs == "" {
 		logs = os.Getenv("HOME") + "/.sandbox/logs"

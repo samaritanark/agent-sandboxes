@@ -9,6 +9,10 @@ rm -f /etc/ssh/ssh_host_*
 systemctl enable sandbox-seed.path
 # The in-VM sandbox (staged by build.sh) is the command the host binary proxies to.
 ln -sf /usr/lib/sandbox/bin/sandbox /usr/bin/sandbox
+# The operator state the host pushes before each command (design 5.1.4) lands in
+# /var/lib/sandbox/operator; the in-VM CLI reads ~/.sandbox, as v2 did, so root's points there.
+install -d -m 0700 /var/lib/sandbox /var/lib/sandbox/operator
+ln -sfn /var/lib/sandbox/operator /root/.sandbox
 # Ubuntu's arm64 kernel is a gzip-compressed Image, which systemd-stub (systemd 255) cannot load
 # from a unified kernel image ("Bad kernel image"); store it uncompressed before the UKI is built.
 for k in /boot/vmlinuz-* /usr/lib/modules/*/vmlinuz; do

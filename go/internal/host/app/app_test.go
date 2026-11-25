@@ -21,10 +21,16 @@ type fakeTransport struct {
 	relErr  error
 	rc      int
 	runs    [][]string
+	pushes  [][]byte
 	ttys    []bool
 }
 
-func (f *fakeTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []string, _ io.Reader, stdout, _ io.Writer, tty bool) (int, error) {
+func (f *fakeTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []string, stdin io.Reader, stdout, _ io.Writer, tty bool) (int, error) {
+	if len(argv) == 2 && argv[1] == ReceiveOperatorState {
+		b, _ := io.ReadAll(stdin)
+		f.pushes = append(f.pushes, b)
+		return 0, nil
+	}
 	f.runs = append(f.runs, argv)
 	f.ttys = append(f.ttys, tty)
 	io.WriteString(stdout, "ran\n")
@@ -62,6 +68,9 @@ func TestProxy(t *testing.T) {
 	}
 	if want := []string{"sandbox", "run", "--repo", "a b", "--name", "it's"}; !reflect.DeepEqual(tr.runs[0], want) || !tr.ttys[0] {
 		t.Fatalf("proxied %q tty=%v", tr.runs[0], tr.ttys[0])
+	}
+	if len(tr.pushes) != 1 {
+		t.Fatalf("%d operator-state pushes before one command", len(tr.pushes))
 	}
 	// unknown commands and no arguments are the in-VM CLI's to answer
 	run(t, d, tr, "", "bogus")
