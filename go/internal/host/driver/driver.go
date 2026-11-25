@@ -99,3 +99,25 @@ type Driver interface {
 
 // ErrNotCreated is returned by operations that need an existing VM.
 var ErrNotCreated = errors.New("the sandbox VM has not been created (run 'sandbox install')")
+
+// Absent stands in when no VM has been installed: it reports NotCreated and refuses the rest.
+type Absent struct{ Reason string }
+
+func (a Absent) err() error {
+	if a.Reason != "" {
+		return errors.New(a.Reason)
+	}
+	return ErrNotCreated
+}
+
+func (a Absent) Name() string                                        { return "none" }
+func (a Absent) Probe(context.Context) (Capabilities, error)         { return Capabilities{}, a.err() }
+func (a Absent) Start(context.Context) error                         { return a.err() }
+func (a Absent) Stop(context.Context) error                          { return a.err() }
+func (a Absent) Delete(context.Context) error                        { return a.err() }
+func (a Absent) Status(context.Context) (State, error)               { return NotCreated, nil }
+func (a Absent) Endpoint(context.Context) (SSHEndpoint, error)       { return SSHEndpoint{}, a.err() }
+func (a Absent) HostReach(context.Context) (HostReachControl, error) { return HostReachControl{}, nil }
+func (a Absent) Create(context.Context, ImageRef, Resources, SeedConfig) error {
+	return errors.New("this driver cannot create a VM")
+}
