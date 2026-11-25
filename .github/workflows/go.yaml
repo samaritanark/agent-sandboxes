@@ -79,3 +79,40 @@ jobs:
         env:
           SBX_ORACLE: "1"
         run: go test -count=1 -timeout 40m ./...
+
+  host:
+    # The v3 host binary (design 5.1.2): its unit tests run on all three host OSes against a mock
+    # driver (no virtualization), and it must build for every release target.
+    name: Host binary (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5  # v7.1.0
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.mod
+
+      - name: go vet
+        working-directory: go
+        run: go vet ./internal/host/... ./cmd/sandbox/...
+
+      - name: go test
+        working-directory: go
+        run: go test -count=1 ./internal/host/... ./cmd/sandbox/...
+
+      - name: Build every release target
+        working-directory: go
+        shell: bash
+        run: |
+          set -eu
+          for t in darwin/arm64 linux/amd64 linux/arm64 windows/amd64; do
+            GOOS="${t%/*}" GOARCH="${t#*/}" go build -o /dev/null ./cmd/sandbox
+          done

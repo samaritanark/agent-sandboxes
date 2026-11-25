@@ -1,7 +1,6 @@
 // Package archtest holds the import-graph rules of design section 5.1.1: which packages may
-// import which. Today it covers the policy packages; the host-safe set and the host binary are
-// added with them, and the rule "the host binary imports no policy, vetting, secret-gate, or
-// repo-parsing package" becomes one more row here.
+// import which, and the rule that the host binary (cmd/sandbox) depends, directly or not, only on
+// host-safe packages: no policy, vetting, secret-gate, or repo-parsing package.
 package archtest
 
 import (
@@ -40,6 +39,40 @@ var allowed = map[string][]string{
 	// the in-VM CLI is the policy layer's front end, so it may use every policy package
 	"cli": {"agents", "audit", "bashcompat", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
 		"link", "mounts", "onboard", "secrets", "tier", "vetting", "workspace"},
+
+	// The host binary's packages (design 5.1). They import only each other.
+	"host/driver":  {},
+	"host/release": {},
+	"host/app":     {"host/driver", "host/release"},
+}
+
+// hostSafe is every internal package the host binary may depend on, directly or not (5.1.1).
+// Adding a policy package here is a design change, not a code change.
+func hostSafe(name string) bool { return strings.HasPrefix(name, "host/") }
+
+// TestHostBinaryClosure checks the host binary's whole dependency closure, so a host package
+// cannot reach a policy package through another package either.
+func TestHostBinaryClosure(t *testing.T) {
+	if _, err := os.Stat("../../cmd/sandbox"); err != nil {
+		t.Skip("no host binary yet")
+	}
+	out, err := exec.Command("go", "list", "-deps", "../../cmd/sandbox").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, p := range strings.Fields(string(out)) {
+		if !strings.HasPrefix(p, mod) {
+			continue
+		}
+		n++
+		if name := strings.TrimPrefix(p, mod); !hostSafe(name) {
+			t.Errorf("the host binary depends on %s, which is not host-safe (design 5.1.1)", name)
+		}
+	}
+	if n == 0 {
+		t.Error("the host binary depends on no host package; is the closure test looking at the right binary?")
+	}
 }
 
 func TestImportGraph(t *testing.T) {

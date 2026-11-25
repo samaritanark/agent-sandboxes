@@ -39,7 +39,8 @@ Layout so far:
 | `internal/cli`, `cmd/sandbox-vm` | the in-VM `sandbox` command (design 5.1.6): dispatch, usage texts, and the subcommands ported so far (`version`, `profile`, `check`, `mask`, `exceptions`, `vet`, `link`, `list`, `logs`, `cleanup`, `secret`, `onboard`, and the policy halves of `run`, `allow`, and `resume`, which then stop because sandboxd does not exist yet); the others print their v2 help and say they are not yet ported |
 | `internal/workspace` | `validate_repo_path` and `workspace_prescan` from `lib/filesystem.sh` (which directories may be a workspace; the warn-only filename heuristics), tested through the CLI corpus; and the workspace baseline and diff (`capture_workspace_baseline`, `capture_workspace_diff`, `files.log`), with their own corpus |
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
-| `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |
+| `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows; the host binary's whole dependency closure stays within `internal/host/`) |
+| `internal/host/...`, `cmd/sandbox` | the v3 host binary (design 5.1, 5.2), new code with no bash to port: `driver` (the VM driver interface and a mock), `release` (the version handshake on `/etc/sandbox/release`), `app` (the dispatcher: `vm start\|stop\|status\|shell`, removed commands, and proxying every other command to the in-VM `sandbox`). Its tests run on Linux, macOS, and Windows in CI |
 
 **Deliberate deviations.** Quirks of the bash found while porting are fixed as named
 deviations (`internal/deviation`). The differential tests (golden files and live
