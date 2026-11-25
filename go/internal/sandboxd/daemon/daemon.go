@@ -4,18 +4,20 @@
 // keep-alive limits expire, and on start reconciles the journal against what exists before it
 // accepts new sessions.
 //
-// This first increment gives each microVM a network namespace with no link, so sessions have no
-// network yet; links, nftables, and the gateway (5.8.2), the broker (5.9), and attaching a
-// terminal come next. Keep-alive sessions are not yet restarted after a VM reboot: they are torn
+// The agent's network is its link to the session's gateway namespace (5.8.2): its resolver and
+// Envoy are the only things it can reach. Dependencies still get a namespace with no link; their
+// links, the broker (5.9), and attaching a terminal come next. Keep-alive sessions are not yet restarted after a VM reboot: they are torn
 // down like the rest (item 9 needs the broker store key).
 package daemon
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,6 +28,7 @@ import (
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/journal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/limits"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/netsetup"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/runtime"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
@@ -45,6 +48,31 @@ type Namespaces interface {
 	List(ctx context.Context) ([]string, error)
 }
 
+// Network builds a session's network (netsetup in production).
+type Network interface {
+	Root(ctx context.Context) error // the VM root namespace's rules, once at start
+	Up(ctx context.Context, s netsetup.Session) error
+}
+
+// GatewayRunner runs a session's gateway process in its gateway namespace.
+type GatewayRunner interface {
+	// Start writes policy into dir, starts the gateway, and waits until it serves; it returns the
+	// process id.
+	Start(ctx context.Context, id, gatewayNS, dir string, policy []byte) (int, error)
+	// Stop ends it (pid as Start returned it).
+	Stop(ctx context.Context, id string, pid int) error
+}
+
+// GatewayPolicy is what the gateway process reads (cmd/sandbox-gateway's Policy).
+type GatewayPolicy struct {
+	Listen       netip.Addr   `json:"listen"`
+	Ports        []int        `json:"ports"`
+	Allow        []string     `json:"allow"`
+	BlockDomains []string     `json:"block_domains"`
+	Dependencies []string     `json:"dependencies"`
+	Resolvers    []netip.Addr `json:"resolvers"`
+}
+
 // Paths: where a namespace is bound, given its name.
 type Paths func(name string) string
 
@@ -52,7 +80,9 @@ type Paths func(name string) string
 const (
 	KindContainer = "container"
 	KindNetNS     = "netns"
-	KindMasks     = "masks" // the session's directory of empty mask files and directories
+	KindMasks     = "masks"   // the session's directory of empty mask files and directories
+	KindUplink    = "uplink"  // an uplink index (its interfaces go with the gateway namespace)
+	KindGateway   = "gateway" // the gateway process (its id in the resource's note)
 )
 
 // StopGrace is how long a microVM gets between SIGTERM and SIGKILL.
@@ -63,6 +93,9 @@ type Daemon struct {
 	Journal     *journal.Store
 	Runtime     Runtime
 	NetNS       Namespaces
+	Network     Network
+	Gateways    GatewayRunner
+	Resolvers   []netip.Addr // the VM's upstream resolvers, for each gateway
 	NetNSPath   Paths
 	Budget      limits.Budget
 	Expiry      limits.Expiry
@@ -92,6 +125,7 @@ func (d *Daemon) logf(f string, a ...any) {
 var ErrNotReady = errors.New("sandboxd is reconciling its sessions; try again")
 
 func agentNetNS(id string) string        { return "sbx-" + id + "-a" }
+func gatewayNetNS(id string) string      { return "sbx-" + id + "-g" }
 func depNetNS(id, dep string) string     { return "sbx-" + id + "-d-" + dep }
 func depContainer(id, dep string) string { return id + "--" + dep }
 
@@ -244,10 +278,45 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 			return err
 		}
 	}
-	ns := agentNetNS(id)
-	if err := d.step(id, KindNetNS, ns, func() error { return d.NetNS.Create(ctx, ns) }); err != nil {
+	ns, gns := agentNetNS(id), gatewayNetNS(id)
+	for _, n := range []string{ns, gns} {
+		if err := d.step(id, KindNetNS, n, func() error { return d.NetNS.Create(ctx, n) }); err != nil {
+			return err
+		}
+	}
+	uplink, err := d.freeUplink()
+	if err != nil {
 		return err
 	}
+	ports := append([]int{443}, spec.Egress.ExtraPorts...)
+	if err := d.step(id, KindUplink, strconv.Itoa(uplink), func() error {
+		return d.Network.Up(ctx, netsetup.Session{ID: id, GatewayNS: gns, AgentNS: ns, Uplink: uplink,
+			Ports: ports, BlockCIDRs: spec.Egress.BlockCIDRs, Resolvers: d.Resolvers})
+	}); err != nil {
+		return err
+	}
+	var deps []string
+	for _, dep := range spec.Dependencies {
+		deps = append(deps, dep.Name)
+	}
+	policy, _ := json.Marshal(GatewayPolicy{Listen: netsetup.GatewayAddr, Ports: ports, Allow: spec.Egress.Allow,
+		BlockDomains: spec.Egress.BlockDomains, Dependencies: deps, Resolvers: d.Resolvers})
+	if err := d.Journal.Intend(id, KindGateway, "gateway"); err != nil {
+		return err
+	}
+	pid, err := d.Gateways.Start(ctx, id, gns, filepath.Join(d.SessionRoot, id, "gateway"), policy)
+	if err != nil {
+		return fmt.Errorf("gateway: %w", err)
+	}
+	if err := d.Journal.Mark(id, KindGateway, "gateway", journal.Created, strconv.Itoa(pid)); err != nil {
+		return err
+	}
+	// the agent's resolver is its gateway
+	resolv := filepath.Join(d.maskDir(id), "resolv.conf")
+	if err := os.WriteFile(resolv, []byte("nameserver "+netsetup.GatewayAddr.String()+"\n"), 0o444); err != nil {
+		return err
+	}
+	mounts = append(mounts, runtime.Mount{Source: resolv, Target: "/etc/resolv.conf", ReadOnly: true})
 	agent := runtime.MicroVM{ID: id, Image: spec.Image, Args: spec.Command, Env: env(spec.Env),
 		UID: 1000, GID: 1000, Mounts: mounts, NetNS: d.NetNSPath(ns),
 		CPUs: spec.Resources.CPUs, MemoryMiB: spec.Resources.MemoryMiB, Hostname: "sandbox"}
@@ -257,6 +326,30 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 		}
 		return d.Runtime.Start(ctx, id)
 	})
+}
+
+// freeUplink is the lowest uplink index no live session holds.
+func (d *Daemon) freeUplink() (int, error) {
+	all, err := d.Journal.List()
+	if err != nil {
+		return 0, err
+	}
+	used := map[int]bool{}
+	for _, s := range all {
+		for _, r := range s.Live() {
+			if r.Kind == KindUplink {
+				if n, err := strconv.Atoi(r.Name); err == nil {
+					used[n] = true
+				}
+			}
+		}
+	}
+	for n := 0; n < netsetup.MaxUplinks; n++ {
+		if !used[n] {
+			return n, nil
+		}
+	}
+	return 0, errors.New("no free uplink: too many sessions")
 }
 
 // Stop ends a session (operator stop, or the reaper).
@@ -295,7 +388,7 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 	if s, err = d.Journal.Load(id); err != nil {
 		return err
 	}
-	order := map[string]int{KindContainer: 0, KindNetNS: 1, KindMasks: 2}
+	order := map[string]int{KindContainer: 0, KindGateway: 1, KindNetNS: 2, KindUplink: 3, KindMasks: 4}
 	live := s.Live()
 	sort.SliceStable(live, func(i, j int) bool { return order[live[i].Kind] < order[live[j].Kind] })
 	for _, r := range live {
@@ -308,8 +401,14 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 			err = d.Runtime.Destroy(ctx, r.Name, StopGrace)
 		case KindNetNS:
 			err = d.NetNS.Delete(ctx, r.Name)
+		case KindGateway:
+			pid, _ := strconv.Atoi(r.Note)
+			err = d.Gateways.Stop(ctx, id, pid)
+		case KindUplink:
+			// its interfaces went with the gateway namespace; the index is free again
 		case KindMasks:
 			err = os.RemoveAll(d.maskDir(id))
+			os.RemoveAll(filepath.Join(d.SessionRoot, id, "gateway"))
 		default:
 			err = fmt.Errorf("unknown resource kind %q", r.Kind)
 		}
@@ -375,6 +474,9 @@ func (d *Daemon) Reap(ctx context.Context) {
 func (d *Daemon) Reconcile(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if err := d.Network.Root(ctx); err != nil {
+		return fmt.Errorf("the VM's network rules: %w", err)
+	}
 	all, err := d.Journal.List()
 	if err != nil {
 		return fmt.Errorf("reading the journal: %w", err)

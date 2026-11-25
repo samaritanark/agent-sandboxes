@@ -102,8 +102,17 @@ func serve() error {
 	if err != nil {
 		return err
 	}
+	resolvers, err := upstreamResolvers()
+	if err != nil {
+		return err
+	}
+	gws, err := newGateways()
+	if err != nil {
+		return fmt.Errorf("the gateway user: %w", err)
+	}
 	d := &daemon.Daemon{
 		Journal: &journal.Store{Dir: JournalDir}, Runtime: kata{rt}, NetNS: netns.Manager{},
+		Network: network{}, Gateways: gws, Resolvers: resolvers,
 		NetNSPath: netns.Path, Budget: limits.Budget{VMMemoryMiB: mem},
 		SessionRoot: sessionspec.SessionStore, Log: l,
 	}

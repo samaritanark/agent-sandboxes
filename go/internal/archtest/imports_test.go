@@ -36,7 +36,7 @@ var allowed = map[string][]string{
 	"sandboxd/runtime":  {},
 	"sandboxd/netns":    {},
 	"sandboxd/netsetup": {},
-	"sandboxd/daemon":   {"sandboxd/journal", "sandboxd/limits", "sandboxd/runtime", "sessionspec"},
+	"sandboxd/daemon":   {"sandboxd/journal", "sandboxd/limits", "sandboxd/netsetup", "sandboxd/runtime", "sessionspec"},
 	// the sync protocol (host engine and in-VM agent) and the in-VM agent itself
 	"syncproto": {},
 	"syncagent": {"syncproto"},

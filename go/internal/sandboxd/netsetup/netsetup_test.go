@@ -30,7 +30,8 @@ func TestUplinkAddrs(t *testing.T) {
 func TestGatewayRules(t *testing.T) {
 	r := GatewayRules(session())
 	for _, want := range []string{"policy drop", "tcp dport { 443, 8443 } accept", "ip saddr != 10.200.0.2", "ip daddr != 10.200.0.1",
-		"ip daddr 10.0.2.3 meta l4proto { tcp, udp } th dport 53 accept", "ip daddr @blocked4", "ip6 daddr @blocked6", "sbx-forward"} {
+		"ip daddr 10.0.2.3 meta l4proto { tcp, udp } th dport 53 accept", "ip daddr @blocked4", "ip6 daddr @blocked6",
+		`log prefix "sbx s-net forward "`, `log prefix "sbx s-net drop "`} {
 		if !strings.Contains(r, want) {
 			t.Errorf("rules lack %q:\n%s", want, r)
 		}

@@ -99,6 +99,16 @@ func joinInts(ps []int) string {
 }
 
 // GatewayRules is a session's gateway namespace table.
+// logPrefix tags a session's drops in the kernel log ("sbx <session> <what> "), so each bypass
+// attempt can be traced to its session (nftables allows 127 bytes).
+func logPrefix(s Session, what string) string {
+	p := "sbx " + s.ID + " " + what + " "
+	if len(p) > 120 {
+		p = p[:120]
+	}
+	return p
+}
+
 func GatewayRules(s Session) string {
 	ports := append([]int(nil), s.Ports...)
 	sort.Ints(ports)
@@ -125,27 +135,28 @@ func GatewayRules(s Session) string {
 		type filter hook input priority filter; policy drop;
 		iif lo accept
 		iifname %q ct state established,related accept
-		%s ip saddr != %s counter log prefix "sbx-spoof " drop
-		%s ip daddr != %s counter log prefix "sbx-weakhost " drop
+		%s ip saddr != %s counter log prefix %q drop
+		%s ip daddr != %s counter log prefix %q drop
 		%s tcp dport { %s } accept
 		%s meta l4proto { tcp, udp } th dport 53 accept
-		counter log prefix "sbx-drop " drop
+		counter log prefix %q drop
 	}
 	chain forward {
 		type filter hook forward priority filter; policy drop;
-		counter log prefix "sbx-forward " drop
+		counter log prefix %q drop
 	}
 	chain output {
 		type filter hook output priority filter; policy accept;
-`, UplinkIf, links, AgentAddr, links, GatewayAddr, links, joinInts(ports), links)
+`, UplinkIf, links, AgentAddr, logPrefix(s, "spoof"), links, GatewayAddr, logPrefix(s, "weakhost"), links, joinInts(ports), links,
+		logPrefix(s, "drop"), logPrefix(s, "forward"))
 	for _, r := range s.Resolvers {
 		fmt.Fprintf(&b, "\t\tip daddr %s meta l4proto { tcp, udp } th dport 53 accept\n", r)
 	}
 	if strings.Contains(b.String(), "set blocked4") {
-		b.WriteString("\t\tip daddr @blocked4 counter log prefix \"sbx-blocked \" reject\n")
+		fmt.Fprintf(&b, "\t\tip daddr @blocked4 counter log prefix %q reject\n", logPrefix(s, "blocked"))
 	}
 	if strings.Contains(b.String(), "set blocked6") {
-		b.WriteString("\t\tip6 daddr @blocked6 counter log prefix \"sbx-blocked \" reject\n")
+		fmt.Fprintf(&b, "\t\tip6 daddr @blocked6 counter log prefix %q reject\n", logPrefix(s, "blocked"))
 	}
 	b.WriteString("\t}\n}\n")
 	return b.String()

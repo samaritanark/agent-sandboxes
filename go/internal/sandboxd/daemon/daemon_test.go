@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/journal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/limits"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/netsetup"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/runtime"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
@@ -86,7 +88,52 @@ func (f *fakeNS) List(context.Context) ([]string, error) {
 	return out, nil
 }
 
+type fakeNet struct {
+	root    int
+	uplinks []int
+	fail    bool
+}
+
+func (f *fakeNet) Root(context.Context) error { f.root++; return nil }
+func (f *fakeNet) Up(_ context.Context, s netsetup.Session) error {
+	if f.fail {
+		return errors.New("nft failed")
+	}
+	f.uplinks = append(f.uplinks, s.Uplink)
+	return nil
+}
+
+type fakeGW struct {
+	running  map[string]int
+	policies map[string]GatewayPolicy
+	stopped  []string
+	calls    *[]string
+}
+
+func (f *fakeGW) Start(_ context.Context, id, ns, dir string, policy []byte) (int, error) {
+	var p GatewayPolicy
+	if err := json.Unmarshal(policy, &p); err != nil {
+		return 0, err
+	}
+	f.policies[id] = p
+	f.running[id] = 4000 + len(f.running)
+	*f.calls = append(*f.calls, "gateway "+id)
+	return f.running[id], nil
+}
+
+func (f *fakeGW) Stop(_ context.Context, id string, pid int) error {
+	if f.running[id] != pid {
+		return errors.New("wrong pid")
+	}
+	delete(f.running, id)
+	f.stopped = append(f.stopped, id)
+	*f.calls = append(*f.calls, "stop gateway "+id)
+	return nil
+}
+
 type rig struct {
+	net *fakeNet
+	gw  *fakeGW
 	d   *Daemon
 	rt  *fakeRuntime
 	ns  *fakeNS
@@ -96,9 +143,11 @@ type rig struct {
 func newRig(t *testing.T) *rig {
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
-	r := &rig{rt: &fakeRuntime{vms: map[string]runtime.MicroVM{}, started: map[string]bool{}}, ns: &fakeNS{names: map[string]bool{}}, now: &now}
+	r := &rig{rt: &fakeRuntime{vms: map[string]runtime.MicroVM{}, started: map[string]bool{}}, ns: &fakeNS{names: map[string]bool{}}, now: &now, net: &fakeNet{}}
+	r.gw = &fakeGW{running: map[string]int{}, policies: map[string]GatewayPolicy{}, calls: &r.rt.calls}
 	r.d = &Daemon{
-		Journal: &journal.Store{Dir: filepath.Join(dir, "journal")}, Runtime: r.rt, NetNS: r.ns,
+		Journal: &journal.Store{Dir: filepath.Join(dir, "journal")}, Runtime: r.rt, NetNS: r.ns, Network: r.net, Gateways: r.gw,
+		Resolvers: []netip.Addr{netip.MustParseAddr("192.168.127.1")},
 		NetNSPath: func(n string) string { return "/var/run/netns/" + n },
 		Budget:    limits.Budget{VMMemoryMiB: 16384}, SessionRoot: filepath.Join(dir, "sessions"),
 		Now: func() time.Time { return *r.now },
@@ -138,8 +187,15 @@ func TestStartAndStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, _ := r.d.Journal.Load(id)
-	if s.State != journal.Running || len(s.Live()) != 5 {
+	// masks, dependency netns and microVM, agent and gateway netns, uplink, gateway, agent microVM
+	if s.State != journal.Running || len(s.Live()) != 8 {
 		t.Fatalf("state %s, resources %+v", s.State, s.Resources)
+	}
+	if p := r.gw.policies[id]; p.Listen.String() != "10.200.0.1" || p.Allow[0] != "api.anthropic.com" || p.Dependencies[0] != "db" || p.Resolvers[0].String() != "192.168.127.1" {
+		t.Errorf("gateway policy %+v", p)
+	}
+	if len(r.net.uplinks) != 1 || r.net.uplinks[0] != 0 || r.net.root != 1 {
+		t.Errorf("network: %+v", r.net)
 	}
 	agent := r.rt.vms["s-one"]
 	if agent.UID != 1000 || agent.NetNS != "/var/run/netns/sbx-s-one-a" || !r.rt.started["s-one"] || !r.rt.started["s-one--db"] {
@@ -147,6 +203,11 @@ func TestStartAndStop(t *testing.T) {
 	}
 	if r.rt.vms["s-one--db"].UID != 999 || len(r.rt.vms["s-one--db"].Mounts) != 0 {
 		t.Errorf("dependency %+v", r.rt.vms["s-one--db"])
+	}
+	if last := agent.Mounts[len(agent.Mounts)-1]; last.Target != "/etc/resolv.conf" || !last.ReadOnly {
+		t.Errorf("resolv.conf mount %+v", last)
+	} else if b, _ := os.ReadFile(last.Source); string(b) != "nameserver 10.200.0.1\n" {
+		t.Errorf("resolv.conf %q", b)
 	}
 	// the workspace is mounted first, then the masks on top, read-only, from empty files
 	if agent.Mounts[0].Target != "/home/agent/workspace" || !agent.Mounts[1].ReadOnly || !agent.Mounts[2].ReadOnly {
@@ -169,10 +230,14 @@ func TestStartAndStop(t *testing.T) {
 	if len(r.rt.vms) != 0 || len(r.ns.names) != 0 {
 		t.Errorf("left behind: %v %v", r.rt.vms, r.ns.names)
 	}
-	// microVMs go before their namespaces
+	// microVMs go first, then the gateway, then the namespaces
 	last := strings.Join(r.rt.calls, ",")
-	if !strings.HasSuffix(last, "destroy s-one--db,destroy s-one") && !strings.HasSuffix(last, "destroy s-one,destroy s-one--db") {
+	if !strings.HasSuffix(last, "destroy s-one--db,destroy s-one,stop gateway s-one") && !strings.HasSuffix(last, "destroy s-one,destroy s-one--db,stop gateway s-one") {
 		t.Errorf("calls %s", last)
+	}
+	// the uplink is free again
+	if _, err := r.d.Start(ctx, spec("s-two", 2048)); err != nil || r.net.uplinks[1] != 0 {
+		t.Errorf("uplink reuse: %v %v", r.net.uplinks, err)
 	}
 	if _, err := os.Stat(r.d.maskDir(id)); !os.IsNotExist(err) {
 		t.Error("mask directory left behind")
@@ -265,6 +330,7 @@ func TestReconcile(t *testing.T) {
 	r.rt.vms["stray"] = runtime.MicroVM{ID: "stray"}
 	r.ns.names["sbx-stray-a"] = true
 	d2 := &Daemon{Journal: &journal.Store{Dir: r.d.Journal.Dir}, Runtime: r.rt, NetNS: r.ns, NetNSPath: r.d.NetNSPath,
+		Network: r.net, Gateways: r.gw, Resolvers: r.d.Resolvers,
 		Budget: r.d.Budget, SessionRoot: r.d.SessionRoot, Now: r.d.Now}
 	if _, err := d2.Start(ctx, spec("s-two", 2048)); !errors.Is(err, ErrNotReady) {
 		t.Errorf("accepted before reconciling: %v", err)
@@ -349,5 +415,26 @@ func TestServer(t *testing.T) {
 	denied.Store(true)
 	if resp, _ := Call(ctx, sock, Request{Op: "list"}); resp.OK || !strings.Contains(resp.Error, "not allowed") {
 		t.Errorf("unauthorized: %+v", resp)
+	}
+}
+
+func TestUplinksDistinctAndNetworkFailure(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.d.Start(ctx, spec("s-a", 1024))
+	r.d.Start(ctx, spec("s-b", 1024))
+	if r.net.uplinks[0] == r.net.uplinks[1] {
+		t.Errorf("two sessions share uplink %d", r.net.uplinks[0])
+	}
+	r.net.fail = true
+	if _, err := r.d.Start(ctx, spec("s-c", 1024)); err == nil {
+		t.Fatal("started without a network")
+	}
+	s, _ := r.d.Journal.Load("s-c")
+	if s.State != journal.Terminated || len(s.Live()) != 0 {
+		t.Errorf("%+v", s)
+	}
+	if _, ok := r.gw.running["s-c"]; ok {
+		t.Error("a gateway was started for a session whose network failed")
 	}
 }

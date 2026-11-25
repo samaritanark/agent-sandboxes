@@ -37,6 +37,9 @@ install -d "${lib}/bin" "${lib}/setup" "${stage}/etc/sandbox"
 # sandboxd, the session supervisor (design 5.4.3), a root systemd service.
 (cd go && CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" "${GO}" build -trimpath -buildvcs=false \
   -ldflags "-s -w" -o "${lib}/bin/sandboxd" ./cmd/sandboxd)
+# Each session's egress gateway (design 5.8): the resolver, the connection check, and Envoy's parent.
+(cd go && CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" "${GO}" build -trimpath -buildvcs=false \
+  -ldflags "-s -w" -o "${lib}/bin/sandbox-gateway" ./cmd/sandbox-gateway)
 # What it reads from its install root (two levels above the binary).
 cp -a config "${lib}/config"
 cp -a setup/versions.sh "${lib}/setup/versions.sh"
