@@ -210,6 +210,7 @@ func (c *cmdCtx) recreateSession(sessionID string, acceptUnmasked, acceptUnvette
 				c.out("%s", l)
 			}
 		}
+		c.maskTypeCheck(repos)
 		var overrides []audit.Override
 		vs, ss, _ := c.workspaceGates(agent, c.env.OpencodeBaseURL, repos, acceptUnmasked, acceptUnvetted, acceptDrift, &overrides)
 		if vs != "" {

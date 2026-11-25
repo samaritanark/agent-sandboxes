@@ -4,7 +4,7 @@
 #   k3s_image_present             answers $STUB_IMAGE_RC (default 2, "cannot tell")
 #   ensure_cluster_ready          with STOP_AT=b1, prints the launch decisions and exits;
 #                                 otherwise nothing (there is no cluster)
-#   ensure_network_config_current, prepare_agent_home, prepare_workspace, check_masking_paths
+#   ensure_network_config_current, prepare_agent_home, prepare_workspace
 #                                 nothing: v3 removes them (VM-local paths, no gVisor mounts)
 #   date                          the clock is fixed at $FAKE_NOW unless a date is given
 #   head                          /dev/urandom reads answer fixed bytes (session ID, UUID)
@@ -77,7 +77,6 @@ k3s_image_present() { return "${STUB_IMAGE_RC:-2}"; }
 ensure_network_config_current() { :; }
 prepare_agent_home() { :; }
 prepare_workspace() { :; }
-check_masking_paths() { :; }
 
 _q() { printf '%s=%s\n' "$1" "${2//$'\n'/\\n}"; }  # one line per value, bytes as given
 _dump_b1() {

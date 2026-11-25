@@ -125,6 +125,15 @@ const (
 	// always followed the count ("Workspace diff: 2" then "0 line(s) changed."). The count is
 	// now printed once.
 	DiffCountOnce ID = "diff-count-once"
+	// MaskMismatchNoGVisor: check_masking_paths refused a mask of the wrong type saying it "would
+	// crash gVisor at container start". v3 runs no gVisor and keeps the refusal as policy, so the
+	// message says the mask would not cover the path.
+	MaskMismatchNoGVisor ID = "mask-mismatch-no-gvisor"
+	// InfraEndpointHost: run passed each --infra-endpoint to the policy builder verbatim, so an
+	// endpoint given as a URL (https://host:6443/path) became a policy name holding the whole URL,
+	// which matched nothing, while the block check looked only at its host. The allowlist now
+	// takes the host the block check saw.
+	InfraEndpointHost ID = "infra-endpoint-host"
 	// AuditDomainsAsData: audit_write_session_json pasted each allowed domain between quotes into
 	// JSON text, so a quote in a domain added entries to the session record and an escape was
 	// recorded as the character it names (the record could show a different domain from the one

@@ -520,6 +520,10 @@ func main() {
 			f(req, "overlay: ~/ov\n").f("ov/config.yaml", "trusted_inference_endpoints:\n  - api.anthropic.com\n")},
 		{args: R("--tier", "2", "--repo", "~/vr"), tree: vvet.f("vr/.env", "A=1").f("vr/k.pem", "k")},
 		{args: R("--tier", "2", "--repo", "~/vr"), tree: vvet, env: []string{"NOSTUB=1"}},
+		// a mask of the wrong type refuses the launch (check_masking_paths, kept as policy in v3)
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: vvet.d("vr/.env").f("vr/.kube", "k")},
+		{args: R("--tier", "2", "--repo", "~/vr", "--repo", "~/r"), tree: append(append(tree{}, vvet...), rg...).
+			f("r/.sandbox/config.yaml", "masked_paths:\n  - d/\n").f("r/d", "x").d("vr/z-openrc.sh")},
 		{args: R("--tier", "2", "--repo", "~/vr", "--repo", "~/r"), tree: append(append(tree{}, vvet...), rg...)},
 		{args: R("--tier", "3", "--repo", "~/vr", "--infra-token", "~/tok"), tree: vvet.f("tok", "t")},
 		{args: R("--tier", "2", "--repo", "~/vr", "--i-accept-vetting-drift"), tree: vvet.f("vr/b.txt", "b").c("vr").f(req, "vetting: required\n")},
@@ -633,6 +637,7 @@ func main() {
 		{args: RS("ses-1", "--i-accept-unmasked-secrets"), tree: withSess(vvet.f("scen/ws.json", "["+finding("a.txt", "rule-a", 1)+"]"), vrRec("")), env: stubEnv()},
 		{args: RS("ses-1", "--i-accept-vetting-drift"), tree: withSess(vvet.f("vr/b.txt", "b").c("vr").f(req, "vetting: required\n"), vrRec("")), env: stubEnv()},
 		{args: RS("ses-1"), tree: withSess(vvet, vrRec("")), env: []string{}},
+		{args: RS("ses-1"), tree: withSess(vvet.d("vr/.npmrc"), vrRec("")), env: stubEnv()},
 		{args: RS("ses-1"), tree: withSess(vvet, `{"agent":"claude","tier":2,"repos":[]}`)},
 		{args: RS("ses-1"), tree: withSess(tree{}, `{"agent":"codex","tier":1,"allowed_domains":["api.openai.com","x.example.org"]}`)},
 		{args: RS("ses-1"), tree: withSess(tree{}, `{"agent":"claude","tier":3,"repos":[null,false,true,7,"<HOME>/r",""]}`)},

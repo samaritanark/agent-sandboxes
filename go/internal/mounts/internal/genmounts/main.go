@@ -29,6 +29,7 @@ func (t tree) add(op string, f ...string) tree {
 func (t tree) f(p, c string) tree  { return t.add("f", p, c) }
 func (t tree) d(p string) tree     { return t.add("d", p) }
 func (t tree) l(p, to string) tree { return t.add("l", p, to) }
+func (t tree) p(p string) tree     { return t.add("p", p) }
 
 func main() {
 	base := flag.String("base", "internal/mounts/testdata", "testdata directory")
@@ -61,6 +62,12 @@ func main() {
 		{[]string{"r/", "s"}, tree{}.f("r/.env", "x").f("s/.env", "y")},
 		{[]string{"my repo"}, tree{}.f("my repo/.env", "x")},
 		{[]string{"x", "y"}, tree{}.d("x").d("y")},
+		{[]string{"z-openrc.sh"}, tree{}.d("z-openrc.sh").f("z-openrc.sh/.env", "x")},
+		{one, tree{}.d("r").l("r/q-openrc.sh", "nowhere").l("r/.kube", "nowhere")},
+		{one, cfg("r", "  - two//\n  - lnk\n  - lnkd/\n  - \"sp ace/\"\n").f("r/two", "x").d("r/real").l("r/lnk", "real").l("r/lnkd", ".env").f("r/.env", "e").f("r/sp ace", "s")},
+		{one, tree{}.d("r").p("r/.env").p("r/.kube").p("r/f-openrc.sh")},
+		{one, cfg("r", "  - fifo\n  - fifod/\n").p("r/fifo").p("r/fifod")},
+		{[]string{"a/r/", "b/s"}, tree{}.d("a/r/x-openrc.sh").d("b/s/.npmrc").f("b/s/.kube", "k")},
 	} {
 		cases = append(cases, c)
 	}

@@ -129,3 +129,84 @@ func MountPath(repo string, total int) string {
 	}
 	return "/workspace/" + bashcompat.Basename(repo)
 }
+
+// Mismatch is a path a mask would cover that exists as a type the mask cannot cover: Expected is
+// "file" or "directory", Actual what _path_type printed ("symlink", "directory", "file", "other").
+type Mismatch struct {
+	Path, Expected, Actual string
+}
+
+func exists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// pathType is _path_type: a symlink first (whatever it points to), then what stat sees.
+func pathType(p string) string {
+	if st, err := os.Lstat(p); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		return "symlink"
+	}
+	switch {
+	case isDir(p):
+		return "directory"
+	case isFile(p):
+		return "file"
+	}
+	return "other"
+}
+
+// Mismatches is the type check of _classify_one_repo_for_masking (lib/filesystem.sh), which
+// check_masking_paths turns into a refused launch. v2 needed it because gVisor crashed on a mount
+// of the wrong type; v3 keeps it as policy (the owner's decision, 2026-11-25), since a mask of the
+// wrong type covers nothing. Its other half, root-owned leftover mountpoints from a kubelet, has no
+// v3 counterpart and is not ported.
+//
+// Order follows the bash: the fixed sensitive files, .kube, the *-openrc.sh names, then the
+// configured masked_paths. The openrc names come from `find REPO -maxdepth 1 -name PATTERN`, which
+// tests the repo itself first and then every entry of any type, a dangling link included; find
+// lists entries in directory order, and the port sorts them by name (the same order whenever at
+// most one of them mismatches).
+func Mismatches(repo string) []Mismatch {
+	var out []Mismatch
+	check := func(full, want string) {
+		ok := isFile(full)
+		if want == "directory" {
+			ok = isDir(full)
+		}
+		if !ok {
+			out = append(out, Mismatch{full, want, pathType(full)})
+		}
+	}
+	for _, p := range gate.MaskedFilePaths {
+		if full := repo + "/" + p; exists(full) {
+			check(full, "file")
+		}
+	}
+	if full := repo + "/" + gate.MaskedDirPath; exists(full) {
+		check(full, "directory")
+	}
+	if bashcompat.Glob(gate.MaskedOpenrcPattern, bashcompat.Basename(repo)) && exists(repo) {
+		check(repo, "file")
+	}
+	if ents, err := os.ReadDir(repo); err == nil {
+		sep := "/"
+		if strings.HasSuffix(repo, "/") {
+			sep = "" // find joins "dir/" and "x" as "dir/x"
+		}
+		for _, e := range ents {
+			if bashcompat.Glob(gate.MaskedOpenrcPattern, e.Name()) {
+				check(repo+sep+e.Name(), "file")
+			}
+		}
+	}
+	for _, rel := range config.LoadRepoMaskedPaths(repo) {
+		if rel == "" {
+			continue
+		}
+		want, bare := "file", rel
+		if strings.HasSuffix(rel, "/") {
+			want, bare = "directory", strings.TrimSuffix(rel, "/")
+		}
+		if full := repo + "/" + bare; exists(full) {
+			check(full, want)
+		}
+	}
+	return out
+}

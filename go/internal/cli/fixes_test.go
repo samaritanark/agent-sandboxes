@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -279,5 +280,45 @@ func TestQuoteC(t *testing.T) {
 		if got := quoteC(in); got != want {
 			t.Errorf("quoteC(%q) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+func TestFixMaskMismatchNoGVisor(t *testing.T) {
+	run := func() (int, string) {
+		home := t.TempDir()
+		os.MkdirAll(home+"/r/.env", 0o755)
+		if b, err := exec.Command("git", "init", "-q", "--template=", home+"/r").CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v %s", err, b)
+		}
+		root, _ := filepath.Abs(filepath.Join("..", "..", ".."))
+		env := fixtureEnv("none", home, root, nil)
+		var out, errb bytes.Buffer
+		handoffOut, handoffErr = &out, &errb
+		rc := Run([]string{"run", "--tier", "2", "--repo", home + "/r"}, env, &out, &errb)
+		return rc, strings.ReplaceAll(errb.String(), home, "<HOME>")
+	}
+	want := func(why string) string {
+		return "\nERROR: workspace paths exist with a type the mask cannot safely apply\n       " + why + "\n" +
+			"    <HOME>/r/.env\n      mask expects file, found directory\n\n" +
+			"  Either remove these paths or convert them to the expected type.\n \n"
+	}
+	if rc, e := run(); rc != 1 || !strings.HasSuffix(e, want("(would crash gVisor at container start):")) {
+		t.Fatalf("legacy: rc=%d stderr %q", rc, e)
+	}
+	defer deviation.Force(deviation.MaskMismatchNoGVisor)()
+	if rc, e := run(); rc != 1 || !strings.HasSuffix(e, want("(the mask would not cover them):")) {
+		t.Fatalf("fixed: rc=%d stderr %q", rc, e)
+	}
+}
+
+func TestFixInfraEndpointHost(t *testing.T) {
+	eps := []string{"https://k8s.example.org:6443/api", "k8s2.example.org", "10.0.0.5:6443", "https:///x"}
+	if got := infraPolicyNames(eps); !reflect.DeepEqual(got, eps) {
+		t.Fatalf("legacy: %q, want the endpoints as given", got)
+	}
+	defer deviation.Force(deviation.InfraEndpointHost)()
+	want := []string{"k8s.example.org", "k8s2.example.org", "10.0.0.5"}
+	if got := infraPolicyNames(eps); !reflect.DeepEqual(got, want) {
+		t.Fatalf("fixed: %q, want %q", got, want)
 	}
 }

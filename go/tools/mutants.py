@@ -756,7 +756,15 @@ m(AL, '\t\tif !drop[x] {', '\t\tif true {', R_CL)
 m(AL, '\t\tc.errOut("jq: error (at <unknown>): Cannot iterate over null (null)")\n\t\tpanic(exit(5))', '', R_CL)
 m(AL, '\tif v.Kind == jqjson.String {\n\t\treturn v.Str\n\t}\n\treturn strings.TrimSuffix', '\treturn strings.TrimSuffix', R_CL)
 
+m(RP, '\t\tc.maskTypeCheck(s.Repos)\n', '', R_CL)
+m(RP, '\tif len(all) == 0 {\n\t\treturn\n\t}\n\twhy', '\tif len(all) <= 1 {\n\t\treturn\n\t}\n\twhy', R_CL)
+m(RP, '\t\twhy = "(the mask would not cover them):"', '\t\twhy = "(would crash gVisor at container start):"', "TestFixMaskMismatchNoGVisor")
+m(RP, '\tfmt.Fprint(c.stderr, "\\n  Either remove these paths or convert them to the expected type.\\n \\n")\n\tpanic(exit(1))', '\tfmt.Fprint(c.stderr, "\\n  Either remove these paths or convert them to the expected type.\\n \\n")', R_CL)
+m(RP, '\t\t} else if h := urlHost(ep); h != "" {', '\t\t} else if h := urlHost(ep); true {', "TestFixInfraEndpointHost")
+m(RP, '\t\t\tout = append(out, h)', '\t\t\tout = append(out, ep)', "TestFixInfraEndpointHost")
+m(RP, '\t\t\tout = append(out, ep)\n\t\t} else', '\t\t\tout = append(out, urlHost(ep))\n\t\t} else', R_CL)
 RS = "internal/cli/resume.go"
+m(RS, '\t\tc.maskTypeCheck(repos)\n', '', R_CL)
 m(RS, '\t\tcase sessionID == "":\n\t\t\tsessionID = a\n\t\tdefault:', '\t\tcase true:\n\t\t\tsessionID = a\n\t\tdefault:', R_CL)
 m(RS, '\tif sessionID == "" {\n\t\tc.die("Usage: sandbox resume', '\tif false {\n\t\tc.die("Usage: sandbox resume', R_CL)
 m(RS, '\tif !config.IsFile(sj) {\n\t\tc.die("Session not found', '\tif false {\n\t\tc.die("Session not found', R_CL)
@@ -838,7 +846,7 @@ m(AW, 'all := append(append(append([]string(nil), agentDomains...), tierDomains.
 m(RP, '\tif t, _ := strconv.Atoi(s.Tier); t >= 2 && len(s.Repos) > 0 {\n\t\tc.out("==> Capturing', '\tif t, _ := strconv.Atoi(s.Tier); t >= 3 && len(s.Repos) > 0 {\n\t\tc.out("==> Capturing', R_CL)
 m(RP, 'workspace.CaptureBaseline(rec.LogDir, s.Repos, workspace.PruneDirs(c.env.SandboxRoot))', 'workspace.CaptureBaseline(rec.LogDir, s.Repos, nil)', R_CL)
 m(RP, '\tif s.Tier == "3" {\n\t\timage += "-infra"', '\tif s.Tier == "2" {\n\t\timage += "-infra"', R_CL)
-m(RP, 'Extras: append(append([]string(nil), s.InfraEndpoints...), s.Domains...)}', 'Extras: append([]string(nil), s.Domains...)}', R_CL)
+m(RP, 'Extras: append(infraPolicyNames(s.InfraEndpoints), s.Domains...)}', 'Extras: append([]string{}, s.Domains...)}', R_CL)
 
 BL = "internal/workspace/baseline.go"
 R_BL = "TestBaselineGolden"
@@ -885,4 +893,19 @@ m(MO, '\t\tcase p.Dir && isDir(full):', '\t\tcase p.Dir:', R_MO)
 m(MO, '\tif isFile(repo + "/.git") {', '\tif isDir(repo + "/.git") {', R_MO)
 m(MO, 'Kind: ReadonlyFile, Index: len(ReadonlyPaths)})', 'Kind: ReadonlyFile, Index: len(ReadonlyPaths) - 1})', R_MO)
 m(MO, '\tif total == 1 {\n\t\treturn "/workspace"', '\tif total <= 2 {\n\t\treturn "/workspace"', R_MO)
-m(MO, '\tfor _, p := range gate.MaskedFilePaths {', '\tfor _, p := range gate.MaskedFilePaths[1:] {', R_MO)
+m(MO, '\tfor _, p := range gate.MaskedFilePaths {\n\t\tif isFile(', '\tfor _, p := range gate.MaskedFilePaths[1:] {\n\t\tif isFile(', R_MO)
+# the type check of check_masking_paths (Mismatches)
+m(MO, '\tfor _, p := range gate.MaskedFilePaths {\n\t\tif full', '\tfor _, p := range gate.MaskedFilePaths[1:] {\n\t\tif full', R_MO)
+m(MO, '\t\tif full := repo + "/" + p; exists(full) {', '\t\tif full := repo + "/" + p; isDir(full) {', R_MO)
+m(MO, '\tif full := repo + "/" + gate.MaskedDirPath; exists(full) {\n\t\tcheck(full, "directory")', '\tif full := repo + "/" + gate.MaskedDirPath; isFile(full) {\n\t\tcheck(full, "directory")', R_MO)
+m(MO, '\tif bashcompat.Glob(gate.MaskedOpenrcPattern, bashcompat.Basename(repo)) && exists(repo) {', '\tif false {', R_MO)
+m(MO, '\t\t\tsep = "" // find joins "dir/" and "x" as "dir/x"\n\t\t}\n\t\tfor _, e := range ents {', '\t\t}\n\t\tfor _, e := range ents {', R_MO)
+m(MO, '\t\t\t\tcheck(repo+sep+e.Name(), "file")', '\t\t\t\tif exists(repo + sep + e.Name()) {\n\t\t\t\t\tcheck(repo+sep+e.Name(), "file")\n\t\t\t\t}', R_MO)
+m(MO, '\t\t\twant, bare = "directory", strings.TrimSuffix(rel, "/")', '\t\t\twant, bare = "directory", strings.TrimRight(rel, "/")', R_MO)
+m(MO, '\t\tok := isFile(full)\n\t\tif want == "directory" {', '\t\tok := isFile(full)\n\t\tif want != "file" {', R_MO,
+  equivalent="want is only ever file or directory")
+m(MO, '\tif st, err := os.Lstat(p); err == nil && st.Mode()&os.ModeSymlink != 0 {', '\tif st, err := os.Stat(p); err == nil && st.Mode()&os.ModeSymlink != 0 {', R_MO)
+m(MO, '\tcase isDir(p):\n\t\treturn "directory"\n\tcase isFile(p):\n\t\treturn "file"', '\tcase isFile(p):\n\t\treturn "file"\n\tcase isDir(p):\n\t\treturn "directory"', R_MO,
+  equivalent="a path is never both a directory and a regular file")
+m(MO, '\t\tif rel == "" {\n\t\t\tcontinue', '\t\tif rel == "-" {\n\t\t\tcontinue', R_MO,
+  equivalent="LoadRepoMaskedPaths never returns an empty entry (the \"  -\" case in the corpus shows it)")

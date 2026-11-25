@@ -39,7 +39,7 @@ var allowed = map[string][]string{
 	"mounts": {"bashcompat", "config", "gate"},
 	// the in-VM CLI is the policy layer's front end, so it may use every policy package
 	"cli": {"agents", "audit", "bashcompat", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
-		"link", "onboard", "secrets", "tier", "vetting", "workspace"},
+		"link", "mounts", "onboard", "secrets", "tier", "vetting", "workspace"},
 }
 
 func TestImportGraph(t *testing.T) {

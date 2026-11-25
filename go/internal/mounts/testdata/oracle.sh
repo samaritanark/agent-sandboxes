@@ -3,7 +3,8 @@
 #   LC_ALL=C oracle.sh > golden-mounts.tsv
 # One line per case in cases.tsv (see internal/genmounts): "id stdout stderr", as "=" + base64:
 # build_volume_mounts_block for tier 2 over the case's repos, then each repo's
-# _readonly_workspace_entries. The case home prints as <HOME>.
+# _readonly_workspace_entries, then classify_masking_paths' type mismatches (as the test user, so
+# its root-owned-detritus half never applies). The case home prints as <HOME>.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 src="$(cd "$here/../../../.." && pwd)"
@@ -20,6 +21,7 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id erepos etree; do
       f) mkdir -p "$(dirname "$H/$p")"; printf '%s' "$t" > "$H/$p" ;;
       d) mkdir -p "$H/$p" ;;
       l) mkdir -p "$(dirname "$H/$p")"; ln -s "$t" "$H/$p" ;;
+      p) mkdir -p "$(dirname "$H/$p")"; mkfifo "$H/$p" ;;
     esac
   done <<<"$tree"
   repos=()
@@ -30,6 +32,8 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id erepos etree; do
     set +e +u
     build_volume_mounts_block 2 "" "" "" "${repos[@]}"
     for r in "${repos[@]}"; do echo "### readonly $(basename "$r")"; _readonly_workspace_entries "$r"; done
+    classify_masking_paths "${repos[@]}"
+    for m in "${MASKING_MISMATCH[@]}"; do echo "### mismatch $m"; done
   ) > "$H.out" 2> "$H.err"
   printf '%s\t=%s\t=%s\n' "$id" "$(sed "s|$H|<HOME>|g" "$H.out" | base64 -w0)" "$(sed "s|$H|<HOME>|g" "$H.err" | base64 -w0)"
   rm -rf "$H" "$H.out" "$H.err"

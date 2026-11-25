@@ -17,7 +17,9 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
 	"github.com/samaritanark/agent-sandboxes/go/internal/catalogue"
 	"github.com/samaritanark/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"github.com/samaritanark/agent-sandboxes/go/internal/gate"
+	"github.com/samaritanark/agent-sandboxes/go/internal/mounts"
 	"github.com/samaritanark/agent-sandboxes/go/internal/tier"
 	"github.com/samaritanark/agent-sandboxes/go/internal/vetting"
 	"github.com/samaritanark/agent-sandboxes/go/internal/workspace"
@@ -230,6 +232,7 @@ func runPrepare(c *cmdCtx, s *LaunchSpec) SessionRecord {
 				c.out("%s", l)
 			}
 		}
+		c.maskTypeCheck(s.Repos)
 		vettingSummary, secretSummary, rec.EndpointTrusted = c.workspaceGates(s.Agent, s.BaseURL, s.Repos,
 			s.AcceptUnmasked, s.AcceptUnvetted, s.AcceptDrift, &overrides)
 	}
@@ -308,8 +311,24 @@ func runPrepare(c *cmdCtx, s *LaunchSpec) SessionRecord {
 	c.out("==> Building network policy...")
 	rec.Image = image
 	rec.Policy = PolicyRequest{SessionID: rec.ID, Agent: s.Agent, Tier: s.Tier,
-		Extras: append(append([]string(nil), s.InfraEndpoints...), s.Domains...)}
+		Extras: append(infraPolicyNames(s.InfraEndpoints), s.Domains...)}
 	return rec
+}
+
+// infraPolicyNames is what each --infra-endpoint contributes to the session's allowlist. v2 handed
+// the value to the policy builder as given, so a URL became a name that matched nothing, while the
+// block check had looked at its host; with InfraEndpointHost the allowlist takes the host the
+// block check saw (url_host), and an endpoint with no host adds nothing.
+func infraPolicyNames(eps []string) []string {
+	out := []string{}
+	for _, ep := range eps {
+		if !deviation.Fixed(deviation.InfraEndpointHost) {
+			out = append(out, ep)
+		} else if h := urlHost(ep); h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // workspaceGates is the tier 2/3 gate sequence cmd_run Step 2 and recreate_session_pod share:
@@ -371,4 +390,26 @@ func (c *cmdCtx) workspaceGates(agent, baseURL string, repos []string, acceptUnm
 	}
 	secretSummary = sum
 	return vettingSummary, secretSummary, trusted
+}
+
+// maskTypeCheck is the refusal of check_masking_paths: a path a mask would cover that exists as
+// the other type stops the launch (kept as policy in v3; see mounts.Mismatches).
+func (c *cmdCtx) maskTypeCheck(repos []string) {
+	var all []mounts.Mismatch
+	for _, r := range repos {
+		all = append(all, mounts.Mismatches(r)...)
+	}
+	if len(all) == 0 {
+		return
+	}
+	why := "(would crash gVisor at container start):"
+	if deviation.Fixed(deviation.MaskMismatchNoGVisor) {
+		why = "(the mask would not cover them):"
+	}
+	fmt.Fprintf(c.stderr, "\nERROR: workspace paths exist with a type the mask cannot safely apply\n       %s\n", why)
+	for _, m := range all {
+		fmt.Fprintf(c.stderr, "    %s\n      mask expects %s, found %s\n", m.Path, m.Expected, m.Actual)
+	}
+	fmt.Fprint(c.stderr, "\n  Either remove these paths or convert them to the expected type.\n \n")
+	panic(exit(1))
 }

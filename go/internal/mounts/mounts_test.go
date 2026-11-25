@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
@@ -93,6 +94,11 @@ func render(repos []string) string {
 			fmt.Fprintf(&b, "%d\t%s\t%s\n", m.Index, m.Rel, kind)
 		}
 	}
+	for _, r := range repos {
+		for _, m := range Mismatches(r) {
+			fmt.Fprintf(&b, "### mismatch %s|%s|%s\n", m.Path, m.Expected, m.Actual)
+		}
+	}
 	return b.String()
 }
 
@@ -112,6 +118,9 @@ func build(t *testing.T, home, spec string) {
 		case "l":
 			os.MkdirAll(filepath.Dir(p), 0o755)
 			os.Symlink(dec(t, w[2]), p)
+		case "p":
+			os.MkdirAll(filepath.Dir(p), 0o755)
+			syscall.Mkfifo(p, 0o644)
 		}
 	}
 }
