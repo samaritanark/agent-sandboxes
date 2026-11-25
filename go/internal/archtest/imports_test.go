@@ -44,16 +44,17 @@ var allowed = map[string][]string{
 	// domain matching shared by the policy layer and the gateway and resolver: pure functions
 	"egressmatch": {},
 	// the gateway (design 5.8): each session's resolver, gateway controller, and broker
-	"gateway/resolver": {"egressmatch"},
-	"gateway/authz":    {"egressmatch"},
-	"tier":             {},
-	"catalogue":        {"bashcompat", "checks", "config", "deviation"},
-	"jqjson":           {},
-	"audit":            {"bashcompat", "deviation", "jqjson", "tier"},
-	"link":             {"bashcompat", "config", "deviation"},
-	"onboard":          {"bashcompat", "config", "deviation"},
-	"agents":           {"deviation", "jqjson"},
-	"workspace":        {"bashcompat", "config", "deviation"},
+	"gateway/resolver":  {"egressmatch"},
+	"gateway/authz":     {"egressmatch"},
+	"gateway/envoyconf": {"egressmatch"},
+	"tier":              {},
+	"catalogue":         {"bashcompat", "checks", "config", "deviation"},
+	"jqjson":            {},
+	"audit":             {"bashcompat", "deviation", "jqjson", "tier"},
+	"link":              {"bashcompat", "config", "deviation"},
+	"onboard":           {"bashcompat", "config", "deviation"},
+	"agents":            {"deviation", "jqjson"},
+	"workspace":         {"bashcompat", "config", "deviation"},
 	// the host-side secret store: files only, no policy
 	"secrets": {},
 	// the session allowlist: built-in and extra domains through the block lists
