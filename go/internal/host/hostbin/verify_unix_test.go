@@ -63,15 +63,15 @@ func TestVerify(t *testing.T) {
 }
 
 func TestVerifyFile(t *testing.T) {
-	f := filepath.Join(t.TempDir(), "fw.fd")
-	os.WriteFile(f, []byte("x"), 0o644)
-	if err := VerifyFile("firmware", f, os.Getuid()); err != nil {
-		t.Errorf("own 0644 file: %v", err)
+	// A root-owned system file (a test's own temporary directory may sit under the world-writable
+	// /tmp, which the check rightly refuses).
+	if err := VerifyFile("firmware", "/etc/hosts", os.Getuid()); err != nil {
+		t.Errorf("/etc/hosts: %v", err)
 	}
-	if err := Verify("qemu", f, os.Getuid()); err == nil {
+	if err := Verify("qemu", "/etc/hosts", os.Getuid()); err == nil {
 		t.Error("a non-executable passed Verify")
 	}
-	if err := VerifyFile("firmware", filepath.Dir(f), os.Getuid()); err == nil {
+	if err := VerifyFile("firmware", "/etc", os.Getuid()); err == nil {
 		t.Error("a directory passed")
 	}
 }

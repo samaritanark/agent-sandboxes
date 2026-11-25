@@ -2,8 +2,8 @@
 # Build the v3 appliance image (design 5.3). Run on Linux as root, from the repository:
 #   sudo image/build.sh [IMAGE_VERSION]
 # Needs mkosi v27.1 (MKOSI, default /opt/mkosi/bin/mkosi: Ubuntu 24.04's packaged 20.2 cannot build
-# a noble initrd, and v24.3's initrd differed between builds), systemd-ukify, dosfstools, mtools,
-# qemu-utils, and Go:
+# a noble initrd, and v24.3's initrd differed between builds), systemd-ukify, systemd-boot
+# (bootctl), dosfstools, mtools, qemu-utils, dpkg, Python 3, and Go:
 #   python3 -m venv /opt/mkosi && /opt/mkosi/bin/pip install "git+https://github.com/systemd/mkosi@v27.1"
 # Writes image/mkosi.output/sandbox-appliance.raw (the vfkit and qemu drivers) and .qcow2 (Lima).
 set -euo pipefail

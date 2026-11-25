@@ -9,8 +9,8 @@ On Linux, as root, from the repository (the output is for the build machine's ar
 
     sudo image/build.sh [IMAGE_VERSION]
 
-It needs mkosi v27.1 at `/opt/mkosi` (or `MKOSI=`), systemd-ukify, dosfstools, mtools, qemu-utils,
-dpkg, Python 3, and Go. It writes `mkosi.output/sandbox-appliance.raw` (the vfkit and qemu drivers)
+It needs mkosi v27.1 at `/opt/mkosi` (or `MKOSI=`), systemd-ukify, systemd-boot (bootctl),
+dosfstools, mtools, qemu-utils, dpkg, Python 3, and Go. It writes `mkosi.output/sandbox-appliance.raw` (the vfkit and qemu drivers)
 and `.qcow2` (Lima).
 
 ## The package lock

@@ -55,7 +55,7 @@ jobs:
         run: |
           set -eu
           sudo apt-get update -qq
-          sudo apt-get install -y -qq systemd-ukify systemd-boot-efi mtools dosfstools zstd cpio \
+          sudo apt-get install -y -qq systemd-ukify systemd-boot systemd-boot-efi mtools dosfstools zstd cpio \
             qemu-utils python3-venv bubblewrap dpkg-dev
           sudo python3 -m venv /opt/mkosi
           sudo /opt/mkosi/bin/pip install -q "git+https://github.com/systemd/mkosi@${MKOSI_COMMIT}"
