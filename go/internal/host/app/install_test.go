@@ -69,11 +69,14 @@ func TestInstall(t *testing.T) {
 		t.Errorf("reinstall: rc=%d %q", rc, errb)
 	}
 
-	// uninstall removes the VM and its keys, nothing else
+	// uninstall without a terminal removes the VM and its keys, nothing else
 	os.WriteFile(filepath.Join(env.StateDir, "config.yaml"), []byte("x"), 0o600)
 	env.Driver = d
 	if rc := Run(context.Background(), []string{"uninstall"}, env); rc != 0 || d.State != driver.NotCreated {
 		t.Fatalf("uninstall rc=%d state=%v", rc, d.State)
+	}
+	if !strings.Contains(out.String(), "Kept your settings and profiles in ~/.sandbox.") {
+		t.Errorf("out %q", out)
 	}
 	if _, err := os.Stat(filepath.Join(env.StateDir, "vm")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("vm state left: %v", err)
@@ -123,5 +126,54 @@ func TestInstallRefusals(t *testing.T) {
 	}
 	if rc := Run(context.Background(), []string{"uninstall", "--keep-lima"}, env); rc != 1 || !strings.Contains(errb.String(), "use --keep-vm") {
 		t.Errorf("--keep-lima: %q", errb)
+	}
+}
+
+func TestUninstallState(t *testing.T) {
+	setup := func() Env {
+		env, _, _ := installEnv(t, &driver.Mock{}, &fakeTransport{})
+		for _, p := range []string{"secrets/GH_TOKEN", "logs/ses-1/session.json", "profiles/p.yaml", "quarantine/r/x/meta.json", "cache/x"} {
+			os.MkdirAll(filepath.Dir(filepath.Join(env.StateDir, p)), 0o700)
+			os.WriteFile(filepath.Join(env.StateDir, p), []byte("x"), 0o600)
+		}
+		os.WriteFile(filepath.Join(env.StateDir, "config.yaml"), []byte("x"), 0o600)
+		return env
+	}
+	exists := func(env Env, p string) bool { _, err := os.Lstat(filepath.Join(env.StateDir, p)); return err == nil }
+
+	// on a terminal: asked per category, default no
+	env := setup()
+	env.StdinTTY = true
+	env.Stdin = strings.NewReader("y\n\nyes\nn\n") // secrets yes, quarantine no, logs yes, settings no
+	var out bytes.Buffer
+	env.Stdout = &out
+	if rc := Run(context.Background(), []string{"uninstall"}, env); rc != 0 {
+		t.Fatal(out.String())
+	}
+	if exists(env, "secrets") || !exists(env, "quarantine") || exists(env, "logs") || !exists(env, "profiles") || !exists(env, "config.yaml") || !exists(env, "cache/x") {
+		t.Errorf("after prompts: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "Remove your secrets and agent tokens (~/.sandbox/secrets)? [y/N] ") {
+		t.Errorf("prompt %q", out.String())
+	}
+	// --purge removes every category, and only those
+	env = setup()
+	if rc := Run(context.Background(), []string{"uninstall", "--purge"}, env); rc != 0 {
+		t.Fatal()
+	}
+	for _, p := range []string{"secrets", "quarantine", "logs", "profiles", "config.yaml"} {
+		if exists(env, p) {
+			t.Errorf("--purge left %s", p)
+		}
+	}
+	if !exists(env, "cache/x") {
+		t.Error("--purge removed state outside its categories")
+	}
+	// --keep-vm keeps the VM; without a terminal nothing else goes
+	env = setup()
+	d := &driver.Mock{State: driver.Stopped}
+	env.Driver = d
+	if rc := Run(context.Background(), []string{"uninstall", "--keep-vm"}, env); rc != 0 || d.State != driver.Stopped || !exists(env, "secrets") {
+		t.Errorf("--keep-vm: state %v", d.State)
 	}
 }

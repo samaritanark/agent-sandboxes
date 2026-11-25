@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -229,17 +230,31 @@ func (a *app) caBundle() string {
 	return b.String()
 }
 
-const uninstallUsage = `Usage: sandbox uninstall [--keep-vm]
+const uninstallUsage = `Usage: sandbox uninstall [--keep-vm] [--purge]
 
-Delete the sandbox VM and its SSH keys. Your settings, profiles, logs, and
-secrets in ~/.sandbox are kept.
+Delete the sandbox VM and its SSH keys. On a terminal, ask whether to remove
+each kind of state in ~/.sandbox as well; otherwise keep it.
 
 Options:
-  --keep-vm   Keep the VM; remove nothing
+  --keep-vm   Keep the VM and its keys
+  --purge     Remove every kind of state below without asking
 `
 
+// stateCategory is one kind of operator state uninstall offers to remove (design 5.1.6).
+type stateCategory struct {
+	what  string
+	paths []string // relative to ~/.sandbox
+}
+
+var stateCategories = []stateCategory{
+	{"secrets and agent tokens", []string{"secrets", "agent-home"}},
+	{"withheld workspace changes", []string{"quarantine"}},
+	{"logs", []string{"logs"}},
+	{"settings and profiles", []string{"config.yaml", "profiles", "vetting", "extra-ca-certs", "overlays"}},
+}
+
 func (a *app) uninstall(args []string) int {
-	keepVM := false
+	keepVM, purge := false, false
 	for _, f := range args {
 		switch f {
 		case "-h", "--help":
@@ -247,6 +262,8 @@ func (a *app) uninstall(args []string) int {
 			return 0
 		case "--keep-vm":
 			keepVM = true
+		case "--purge":
+			purge = true
 		case "--keep-lima", "--keep-kubetools":
 			a.die("'sandbox uninstall %s' was removed in v3: use --keep-vm.", f)
 		default:
@@ -254,10 +271,24 @@ func (a *app) uninstall(args []string) int {
 			a.die("uninstall: unknown option '%s'", f)
 		}
 	}
-	if keepVM {
-		fmt.Fprintln(a.env.Stdout, "Kept the sandbox VM; nothing was removed.")
-		return 0
+	if !keepVM {
+		a.removeVM()
 	}
+	kept := a.removeState(purge)
+	switch {
+	case keepVM && len(kept) == 0:
+		fmt.Fprintln(a.env.Stdout, "Kept the sandbox VM.")
+	case keepVM:
+		fmt.Fprintf(a.env.Stdout, "Kept the sandbox VM and your %s in ~/.sandbox.\n", strings.Join(kept, ", "))
+	case len(kept) == 0:
+		fmt.Fprintln(a.env.Stdout, "The sandbox VM is removed.")
+	default:
+		fmt.Fprintf(a.env.Stdout, "The sandbox VM is removed. Kept your %s in ~/.sandbox.\n", strings.Join(kept, ", "))
+	}
+	return 0
+}
+
+func (a *app) removeVM() {
 	st, err := a.env.Driver.Status(a.ctx)
 	if err != nil {
 		a.die("cannot read the sandbox VM's state: %v", err)
@@ -282,8 +313,41 @@ func (a *app) uninstall(args []string) int {
 		}
 	}
 	os.Remove(vmState) // only if now empty
-	fmt.Fprintln(a.env.Stdout, "The sandbox VM is removed. Your settings, profiles, logs, and secrets in ~/.sandbox were kept.")
-	return 0
+}
+
+// removeState offers each category that exists; it returns the ones kept.
+func (a *app) removeState(purge bool) []string {
+	var kept []string
+	in := bufio.NewReader(a.env.Stdin)
+	for _, c := range stateCategories {
+		var present []string
+		for _, p := range c.paths {
+			if _, err := os.Lstat(filepath.Join(a.env.StateDir, p)); err == nil {
+				present = append(present, p)
+			}
+		}
+		if len(present) == 0 {
+			continue
+		}
+		remove := purge
+		if !purge && a.env.StdinTTY && a.env.Stdin != nil {
+			fmt.Fprintf(a.env.Stdout, "Remove your %s (~/.sandbox/%s)? [y/N] ", c.what, strings.Join(present, ", ~/.sandbox/"))
+			reply, _ := in.ReadString('\n')
+			r := strings.TrimSpace(reply)
+			remove = r == "y" || r == "Y" || r == "yes" || r == "YES"
+		}
+		if !remove {
+			kept = append(kept, c.what)
+			continue
+		}
+		for _, p := range present {
+			if err := os.RemoveAll(filepath.Join(a.env.StateDir, p)); err != nil {
+				a.die("could not remove ~/.sandbox/%s: %v", p, err)
+			}
+		}
+		fmt.Fprintf(a.env.Stdout, "Removed your %s.\n", c.what)
+	}
+	return kept
 }
 
 // checkDiskImage refuses a file that is plainly not a VM disk before anything is created: it must
