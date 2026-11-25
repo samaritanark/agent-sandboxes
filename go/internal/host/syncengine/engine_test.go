@@ -55,16 +55,16 @@ func TestSyncBothWays(t *testing.T) {
 	store := &syncgate.Store{Dir: filepath.Join(state, "quarantine")}
 	e := &Engine{Repo: host, StateFile: filepath.Join(state, "sync.json"), Store: store, VM: pipeVM(t, vmdir)}
 
-	// 1. first sync: everything but masked paths (and .git, left to the git rules) reaches the VM
+	// 1. first sync: everything but masked paths reaches the VM (HEAD through the git rules)
 	rep, err := e.Sync()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := sorted(rep.ToVM); got != ".sandbox/config.yaml,c.txt,src/a.go,x.txt" {
+	if got := sorted(rep.ToVM); got != ".git/HEAD,.sandbox/config.yaml,c.txt,src/a.go,x.txt" {
 		t.Fatalf("to VM: %s", got)
 	}
-	if exists(vmdir, ".env") || exists(vmdir, "conf/db.yml") || exists(vmdir, ".git/HEAD") {
-		t.Fatal("a masked path or git state reached the VM")
+	if exists(vmdir, ".env") || exists(vmdir, "conf/db.yml") {
+		t.Fatal("a masked path reached the VM")
 	}
 
 	// 2-4. the agent works in the VM; the operator edits x.txt on the host meanwhile

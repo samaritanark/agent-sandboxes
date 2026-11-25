@@ -48,6 +48,7 @@ func (s *StreamVM) Call(h syncproto.Header, body []byte) (syncproto.Header, []by
 type State struct {
 	Base     map[string]string `json:"base"`     // path -> fingerprint both sides had at the last sync
 	Withheld map[string]string `json:"withheld"` // path -> the VM fingerprint already quarantined
+	Git      GitState          `json:"git"`
 }
 
 // Engine syncs one repository.
@@ -63,6 +64,8 @@ type Engine struct {
 type Report struct {
 	ToVM, ToHost, Quarantined, Conflicts []string
 	Refused                              []string // VM-reported paths that were not valid
+	Ledger                               []string // VM-origin ref and HEAD updates applied (audit)
+	Notes                                []string
 }
 
 func (e *Engine) load() (State, error) {
@@ -275,6 +278,17 @@ func (e *Engine) Sync() (Report, error) {
 			state.Withheld[p] = got
 			rep.Conflicts = append(rep.Conflicts, p)
 		}
+	}
+	// git state, by the ref, HEAD, index, and object rules
+	hostGit := hostGitScan(root)
+	vmGit := map[string]string{}
+	for p, f := range vm {
+		if inGit(p, e.Host) && strings.HasPrefix(p, ".git/") {
+			vmGit[p] = f
+		}
+	}
+	if err := e.syncGit(root, &state, hostGit, vmGit, rules, &rep); err != nil {
+		return rep, err
 	}
 	if len(batch) > 0 {
 		ap := &syncgate.Applier{Repo: e.Repo, Host: e.Host, Rules: rules,

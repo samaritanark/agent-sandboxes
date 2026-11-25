@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // Limits.
@@ -116,4 +117,15 @@ func Read(r io.Reader) (Header, []byte, error) {
 		return h, nil, err
 	}
 	return h, body, nil
+}
+
+// ObjectFP is the fingerprint of any file under .git/objects: git objects and packs are named by
+// their content, so a scan reports their presence without reading them (the host verifies what it
+// fetches).
+const ObjectFP = "object"
+
+// IsObjectPath reports whether p is under .git/objects/ (loose objects and packs, not info/).
+func IsObjectPath(p string) bool {
+	rest, ok := strings.CutPrefix(p, ".git/objects/")
+	return ok && !strings.HasPrefix(rest, "info/")
 }

@@ -185,9 +185,12 @@ func scan(root *os.Root) ([]syncproto.Entry, error) {
 		if strings.HasSuffix(p, ".sandbox-sync-incoming") {
 			return nil
 		}
-		fp, _, err := fingerprint(root, p)
-		if err != nil {
-			return nil
+		fp := syncproto.ObjectFP
+		if !syncproto.IsObjectPath(p) { // objects are content-addressed: their name is their identity
+			var err error
+			if fp, _, err = fingerprint(root, p); err != nil {
+				return nil
+			}
 		}
 		out = append(out, syncproto.Entry{Path: p, FP: fp})
 		if len(out) > syncproto.MaxEntries {
