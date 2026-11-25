@@ -19,7 +19,8 @@ import (
 //   - a file-type change (regular, symlink, gitlink) against the host's entry;
 //   - an object id the host object store does not hold (hasObject), so nothing the host has not
 //     verified becomes stageable.
-// Hiding flags are never carried: WriteIndex clears them.
+// Hiding flags (assume-valid, skip-worktree) are cleared on every entry taken from the VM; the
+// host's own entries keep theirs (the operator's sparse checkout or update-index settings).
 
 // MergeNote is one path the merge could not take from the VM.
 type MergeNote struct {
@@ -82,7 +83,11 @@ func MergeIndex(base, host, vm []Entry, h Host, repo Repo, hasObject func(id []b
 				take(hs)
 				continue
 			}
-			take(vs)
+			// a VM-origin entry never carries the flags that hide changes from git status
+			for _, e := range vs {
+				e.AssumeValid, e.SkipWorktree = false, false
+				res.Entries = append(res.Entries, e)
+			}
 		default:
 			res.Conflicts = append(res.Conflicts, MergeNote{p, "staged differently on the host and in the VM; the host's staging was kept"})
 			take(hs)

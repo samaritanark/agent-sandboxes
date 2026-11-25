@@ -1,7 +1,6 @@
 package syncengine
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -9,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -494,15 +494,17 @@ func (e *Engine) syncIndex(root *os.Root, st *State, host, vm map[string]string,
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(merged, hostB) {
+	newHost := hFP
+	if !syncgate.SameEntries(res.Entries, parse(hostB)) || hostB == nil && len(res.Entries) > 0 {
 		if err := writeFileAtomic(root, ".git/index", merged, 0o644); err != nil {
 			rep.Notes = append(rep.Notes, "the host index is in use; staging sync deferred")
 			return nil
 		}
+		newHost = fp(merged)
 		rep.ToHost = append(rep.ToHost, ".git/index")
 	}
 	newVM := vFP
-	if !bytes.Equal(merged, vmB) {
+	if !syncgate.SameEntries(res.Entries, parse(vmB)) || vmB == nil && len(res.Entries) > 0 {
 		f, conflict, err := e.vmWrite(".git/index", merged, vFP)
 		if err != nil {
 			return err
@@ -513,9 +515,12 @@ func (e *Engine) syncIndex(root *os.Root, st *State, host, vm map[string]string,
 		newVM = f
 		rep.ToVM = append(rep.ToVM, ".git/index")
 	}
+	if err := os.MkdirAll(filepath.Dir(baseFile), 0o700); err != nil {
+		return err
+	}
 	if err := os.WriteFile(baseFile, merged, 0o600); err != nil {
 		return err
 	}
-	g.IndexHostFP, g.IndexVMFP = fp(merged), newVM
+	g.IndexHostFP, g.IndexVMFP = newHost, newVM
 	return nil
 }

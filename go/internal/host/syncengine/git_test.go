@@ -34,11 +34,20 @@ func TestSyncGit(t *testing.T) {
 	git(t, host, "commit", "-q", "-m", "one")
 	git(t, host, "branch", "feature")
 	store := &syncgate.Store{Dir: filepath.Join(state, "quarantine")}
-	e := &Engine{Repo: host, StateFile: filepath.Join(state, "sync.json"), Store: store, VM: pipeVM(t, vmdir)}
+	// a state directory that does not exist yet, as on a repository's first sync
+	e := &Engine{Repo: host, StateFile: filepath.Join(state, "new", "sync.json"), Store: store, VM: pipeVM(t, vmdir)}
 
-	// first sync: the VM copy is a working clone
-	if _, err := e.Sync(); err != nil {
+	// the operator's own index settings must survive the sync
+	git(t, host, "update-index", "--skip-worktree", "a.txt")
+	// first sync: the VM copy is a working clone, and the host's index is left alone
+	rep0, err := e.Sync()
+	if err != nil {
 		t.Fatal(err)
+	}
+	for _, p := range rep0.ToHost {
+		if p == ".git/index" {
+			t.Error("the first sync rewrote the host's index")
+		}
 	}
 	if git(t, vmdir, "rev-parse", "HEAD") != git(t, host, "rev-parse", "HEAD") || git(t, vmdir, "status", "--porcelain") != "" {
 		t.Fatal("the VM copy does not match the host")
@@ -77,6 +86,9 @@ func TestSyncGit(t *testing.T) {
 	}
 	git(t, host, "cat-file", "-e", agentMain) // the objects arrived, even for the withheld branch
 	git(t, host, "fsck", "--strict", "--no-dangling")
+	if !strings.Contains(git(t, host, "ls-files", "-v", "a.txt"), "S a.txt") {
+		t.Error("the operator's skip-worktree flag was lost")
+	}
 	held, _ := store.List()
 	var refHeld bool
 	for _, h := range held {

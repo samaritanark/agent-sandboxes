@@ -225,11 +225,11 @@ func varint(b []byte) (uint64, int) {
 	return v, i
 }
 
-// WriteIndex writes a plain index: no extensions, stat data zeroed, and the assume-valid and
-// skip-worktree flags cleared (rule 7: they hide changes from git status). Intent-to-add is kept,
-// since clearing it would stage an empty file where the operator only announced one; it needs
-// extended flags, so the index is version 3 when an entry has it and version 2 otherwise. Entries
-// are sorted here and must be valid.
+// WriteIndex writes a plain index: no extensions, stat data zeroed (git refreshes it on first use),
+// and each entry's flags as given: the merge clears the hiding flags on entries from the VM, while
+// the host's own keep theirs. Skip-worktree and intent-to-add need extended flags, so the index is
+// version 3 when an entry has one and version 2 otherwise. Entries are sorted here and must be
+// valid.
 func WriteIndex(entries []Entry, idLen int) ([]byte, error) {
 	es := append([]Entry(nil), entries...)
 	sort.SliceStable(es, func(i, j int) bool {
@@ -240,7 +240,7 @@ func WriteIndex(entries []Entry, idLen int) ([]byte, error) {
 	})
 	ver := uint32(2)
 	for _, e := range es {
-		if e.IntentToAdd {
+		if e.IntentToAdd || e.SkipWorktree {
 			ver = 3
 		}
 	}
@@ -265,12 +265,22 @@ func WriteIndex(entries []Entry, idLen int) ([]byte, error) {
 			l = 0x0fff
 		}
 		flags := uint16(e.Stage)<<12 | uint16(l)
+		if e.AssumeValid {
+			flags |= 0x8000
+		}
+		ext := uint16(0)
 		if e.IntentToAdd {
+			ext |= 0x2000
+		}
+		if e.SkipWorktree {
+			ext |= 0x4000
+		}
+		if ext != 0 {
 			flags |= 0x4000
 		}
 		binary.Write(&b, binary.BigEndian, flags)
-		if e.IntentToAdd {
-			binary.Write(&b, binary.BigEndian, uint16(0x2000))
+		if ext != 0 {
+			binary.Write(&b, binary.BigEndian, ext)
 		}
 		b.WriteString(e.Path)
 		pad := (b.Len() - start + 8) &^ 7
@@ -280,4 +290,20 @@ func WriteIndex(entries []Entry, idLen int) ([]byte, error) {
 	h.Write(b.Bytes())
 	b.Write(h.Sum(nil))
 	return b.Bytes(), nil
+}
+
+// SameEntries reports whether two indexes hold the same entries (path, stage, mode, object id, and
+// flags), ignoring stat data and extensions, so an index is rewritten only when its content changes.
+func SameEntries(a, b []Entry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, y := a[i], b[i]
+		if x.Path != y.Path || x.Stage != y.Stage || x.Mode != y.Mode || !bytes.Equal(x.ID, y.ID) ||
+			x.AssumeValid != y.AssumeValid || x.SkipWorktree != y.SkipWorktree || x.IntentToAdd != y.IntentToAdd {
+			return false
+		}
+	}
+	return true
 }

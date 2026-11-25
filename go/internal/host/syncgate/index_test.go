@@ -114,7 +114,19 @@ func TestIndexAgainstGit(t *testing.T) {
 				}
 				// Round trip: git reads the gate's index with the same entries and no hiding flags.
 				before := lsFiles(t, d)
-				out, err := WriteIndex(idx.Entries, idLen)
+				// what the merge does to entries from the VM: clear the hiding flags
+				cleared := append([]Entry(nil), idx.Entries...)
+				for i := range cleared {
+					cleared[i].AssumeValid, cleared[i].SkipWorktree = false, false
+				}
+				kept, err := WriteIndex(idx.Entries, idLen)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if again, err := ParseIndex(kept, idLen); err != nil || !SameEntries(again.Entries, idx.Entries) {
+					t.Fatalf("the host's own flags did not survive a rewrite: %v", err)
+				}
+				out, err := WriteIndex(cleared, idLen)
 				if err != nil {
 					t.Fatal(err)
 				}
