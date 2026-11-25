@@ -72,9 +72,9 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
     extra+=("${kv//<HOME>/$H}")
   done <<<"$envs"
   out="$c/.out" err="$c/.err"
-  # `run` stops where the cluster work begins (see run-stub.sh).
+  # `run`, `allow`, and `resume` stop where the cluster work begins (see cmd-stub.sh).
   runner=("$T/$ver/bin/sandbox")
-  [[ "${args[0]:-}" == run ]] && runner=(bash "$here/run-stub.sh" "$T/$ver")
+  case "${args[0]:-}" in run|allow|resume) runner=(bash "$here/cmd-stub.sh" "$T/$ver") ;; esac
   cd "$H"
   printf '%s' "$input" | env -i PATH="$src/go/internal/vetting/testdata/config/shim:$path" FAKE_NOW=1800000000 \
     GIT_CONFIG_NOSYSTEM=1 GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x GIT_COMMITTER_DATE="@1700000200 +0000" \

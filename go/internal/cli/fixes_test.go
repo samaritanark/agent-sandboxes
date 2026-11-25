@@ -198,3 +198,42 @@ func TestFixLiteralProfileLists(t *testing.T) {
 		t.Errorf("fixed: %q", got)
 	}
 }
+
+func TestFixAllowEgressFullCheck(t *testing.T) {
+	run := func(domain string) (int, string) {
+		home := t.TempDir()
+		os.MkdirAll(home+"/logs/ses-1", 0o755)
+		os.WriteFile(home+"/logs/ses-1/session.json", []byte(`{"agent":"claude","tier":1,"allowed_domains":[]}`), 0o644)
+		root, _ := filepath.Abs(filepath.Join("..", "..", ".."))
+		env := fixtureEnv("none", home, root, nil)
+		var out, errb bytes.Buffer
+		handoffOut, handoffErr = &out, &errb
+		rc := Run([]string{"allow", "ses-1", "--add-domain", domain}, env, &out, &errb)
+		return rc, errb.String()
+	}
+	esc := "smtp" + "\\" + "u002eexample.org" // smtp<backslash>u002eexample.org, a YAML escape of smtp.example.org
+	// Legacy: only the block lists are consulted, so these reach the liveness test (and stop there,
+	// the fixture's session not being live).
+	for _, d := range []string{"*.com", "a b", esc} {
+		if _, e := run(d); !strings.Contains(e, "not running") {
+			t.Fatalf("legacy: %q stopped at %q; the bash passed it to the liveness test", d, e)
+		}
+	}
+	refused := func(ds ...string) {
+		t.Helper()
+		for _, d := range ds {
+			if rc, e := run(d); rc == 0 || strings.Contains(e, "not running") {
+				t.Errorf("fixed: %q was not refused (rc=%d %q)", d, rc, e)
+			}
+		}
+	}
+	defer deviation.Force(deviation.AllowEgressFullCheck)()
+	refused("*.com") // the over-broad wildcard refusal, which --allow-domain always had
+	// With the syntax fix the full check also applies (both are on in production), a space and a
+	// YAML escape are refused too.
+	defer deviation.Force(deviation.StrictEgressSyntax)()
+	refused("*.com", "a b", esc)
+	if _, e := run("a.example.org"); !strings.Contains(e, "not running") {
+		t.Errorf("fixed: a plain domain was refused: %q", e)
+	}
+}

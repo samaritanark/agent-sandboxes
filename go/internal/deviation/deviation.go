@@ -105,6 +105,11 @@ const (
 	// catalogue entry could grant *.com, an IP inside a blocked CIDR, or an escaped spelling of a
 	// blocked host. Each entry now gets check_egress_target_not_blocked.
 	CatalogueEgressFullCheck ID = "catalogue-egress-full-check"
+	// AllowEgressFullCheck: `sandbox allow --add-domain` checked each domain with
+	// check_domain_not_blocked only, so it granted a live session what `run --allow-domain`
+	// refuses: *.com, an IP inside a blocked CIDR, or an escaped spelling of a blocked host (design
+	// Appendix B, item 12). Each domain now gets check_egress_target_not_blocked.
+	AllowEgressFullCheck ID = "allow-egress-full-check"
 	// AuditDomainsAsData: audit_write_session_json pasted each allowed domain between quotes into
 	// JSON text, so a quote in a domain added entries to the session record and an escape was
 	// recorded as the character it names (the record could show a different domain from the one

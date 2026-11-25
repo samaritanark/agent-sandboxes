@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# run-stub.sh <install> run [ARGS...] — `sandbox run` from oracle.sh, stopped where the cluster
-# work begins. bin/sandbox is sourced and these functions replaced:
+# cmd-stub.sh <install> <run|allow|resume> [ARGS...] — a cluster-facing command from oracle.sh,
+# stopped where the cluster work begins. bin/sandbox is sourced and these functions replaced:
 #   k3s_image_present             answers $STUB_IMAGE_RC (default 2, "cannot tell")
 #   ensure_cluster_ready          with STOP_AT=b1, prints the launch decisions and exits;
 #                                 otherwise nothing (there is no cluster)
@@ -9,8 +9,13 @@
 #   audit_flush_overrides         runs, then prints the decisions and exits (the end of Step 4)
 #   date                          the clock is fixed at $FAKE_NOW unless a date is given
 #   head                          /dev/urandom reads answer fixed bytes (session ID, UUID)
+#   kubectl                       `get pod` succeeds when $STUB_POD is set (a live session),
+#                                 printing $STUB_POD as the phase for a jsonpath query;
+#                                 `apply` reads and drops its input
+#   build_cilium_policy           prints its inputs to stderr (what v3 hands the gateway)
 # Everything else is the v2 code.
 source "$1/bin/sandbox"
+cmd="$2"
 shift 2
 export USER=t
 
@@ -25,6 +30,28 @@ head() {
     "-c 16 /dev/urandom") printf '\x01\x23\x45\x67\x89\xab\xcd\xef\xfe\xdc\xba\x98\x76\x54\x32\x10' ;;
     *) command head "$@" ;;
   esac
+}
+kubectl() {
+  local a
+  case "$*" in
+    *" apply "*|apply*) cat >/dev/null; return 0 ;;
+  esac
+  for a in "$@"; do
+    if [[ "$a" == get ]]; then
+      [[ -n "${STUB_POD:-}" ]] || return 1
+      [[ "$*" == *jsonpath* ]] && printf '%s' "$STUB_POD"
+      return 0
+    fi
+  done
+  echo "stub kubectl: unexpected: $*" >&2
+  return 99
+}
+build_cilium_policy() {
+  local x
+  echo "### policy" >&2
+  for x in "$@"; do printf 'arg=%s\n' "$x" >&2; done
+  for x in "${SESSION_DEP_ENDPOINTS[@]+"${SESSION_DEP_ENDPOINTS[@]}"}"; do printf 'dep_endpoint=%s\n' "$x" >&2; done
+  printf 'host_entity=%s\n' "${SESSION_KUBE_HOST_ENTITY:-}" >&2
 }
 k3s_image_present() { return "${STUB_IMAGE_RC:-2}"; }
 ensure_network_config_current() { :; }
@@ -70,4 +97,4 @@ audit_flush_overrides() {
   for i in "${SESSION_MCP_SERVER_RECORDS[@]+"${SESSION_MCP_SERVER_RECORDS[@]}"}"; do _q mcp "$i"; done
   exit 0
 }
-cmd_run "$@"
+"cmd_$cmd" "$@"

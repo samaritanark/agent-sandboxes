@@ -2443,7 +2443,12 @@ Fix on v2 regardless of v3 (migration step 1).
     interpret backslash escapes. An escaped spelling of a blocked host passes the
     check and reaches the policy as that host. Found in the S8 port
     (2026-11-24); by the owner's decision this one is fixed in v3 only, as the
-    `StrictEgressSyntax` deviation, not on v2.
+    `StrictEgressSyntax` deviation, not on v2. Two more paths skip even the
+    wildcard and CIDR parts of `check_egress_target_not_blocked`, using
+    `check_domain_not_blocked` alone: catalogue egress entries
+    (`CatalogueEgressFullCheck`) and `sandbox allow --add-domain`
+    (`bin/sandbox:3803-3805`, `AllowEgressFullCheck`, found 2026-11-25), which
+    widens a live session's policy with `*.com` or an escaped blocked host.
 13. `validate_cidr` (`lib/checks.sh:180-190`) is a shape check: it accepts
     `10.0.0.0/33`, octets over 255, and `:::/8`, which the enforcement layer
     rejects. Fixed in v3 (`StrictCIDRs`).

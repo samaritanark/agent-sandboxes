@@ -190,6 +190,9 @@ func setter(k string, x Value) func(Value) (Value, error) {
 }
 
 // UpdateEndTime is audit_update_end_time.
+// SetField is jq's `.KEY = $v` on session.json, written back as the bash's `> tmp && mv` does.
+func SetField(logDir, key string, v Value) { update(logDir, setter(key, v)) }
+
 func UpdateEndTime(logDir, endTime string) { update(logDir, setter("end_time", Str(endTime))) }
 
 // RecordEndReason is audit_record_end_reason; an empty reason records nothing.

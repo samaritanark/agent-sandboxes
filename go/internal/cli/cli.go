@@ -52,6 +52,11 @@ type Env struct {
 	// runtime is not available yet; the differential test prints them instead.
 	RunHandoff      func(LaunchSpec, *SessionRecord)
 	StopAtDecisions bool // hand off after the launch decisions (the test's STOP_AT=b1)
+	// SessionLive answers whether a session's workload is running (v2: kubectl get pod), and
+	// ApplyPolicy replaces a live session's egress policy (v2: build_cilium_policy | kubectl
+	// apply). Both are sandboxd's in v3; while nil, `allow` stops before touching the session.
+	SessionLive func(sessionID, pod string) bool
+	ApplyPolicy func(PolicyRequest) error
 
 	Version   VersionInfo // Version "" means "dev"
 	Root      string      // the install root (SANDBOX_ROOT)
@@ -177,7 +182,7 @@ func (c *cmdCtx) usage(name string) {
 
 // commands maps each v2 subcommand to its port, or nil while it is not yet ported.
 var commands = map[string]func(*cmdCtx, []string){
-	"run": cmdRun, "resume": nil, "allow": nil, "list": cmdList, "logs": cmdLogs, "flows": nil, "stop": nil,
+	"run": cmdRun, "resume": nil, "allow": cmdAllow, "list": cmdList, "logs": cmdLogs, "flows": nil, "stop": nil,
 	"cleanup": cmdCleanup, "check": cmdCheck, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
 	"upgrade": nil, "onboard": nil, "secret": nil, "mask": cmdMask, "exceptions": cmdExceptions, "vet": cmdVet,
 	"profile": cmdProfile, "link": cmdLink, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,

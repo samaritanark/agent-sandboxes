@@ -128,7 +128,7 @@ Agents (`internal/agents/testdata`; each case runs under `env -i` with only its 
 LC_ALL=C go/internal/agents/testdata/oracle.sh > go/internal/agents/testdata/golden-agents.tsv
 ```
 
-The in-VM CLI (`internal/cli`; the oracle runs `bin/sandbox` itself from a copy of the install, and the usage texts are captured from it; for `run`, `testdata/run-stub.sh` sources the script with the cluster calls, the removed v2 host workarounds, the clock, and `/dev/urandom` stubbed, so a case ends with its session record written, where the cluster work would begin):
+The in-VM CLI (`internal/cli`; the oracle runs `bin/sandbox` itself from a copy of the install, and the usage texts are captured from it; for `run`, `testdata/cmd-stub.sh` sources the script with the cluster calls, the removed v2 host workarounds, the clock, and `/dev/urandom` stubbed, so a case ends with its session record written, where the cluster work would begin):
 
 ```bash
 # on Linux:

@@ -53,7 +53,20 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 	e.ImagePresent = func(string) int { return 2 }
 	e.RunHandoff = func(s LaunchSpec, r *SessionRecord) { fmt.Fprint(handoffOut, dumpSpec(s, r)) }
 	e.User = "t"
-	// run-stub.sh answers /dev/urandom reads with these bytes.
+	// cmd-stub.sh: a session is live when STUB_POD is set; the policy inputs go to stderr.
+	e.SessionLive = func(string, string) bool { return false }
+	e.ApplyPolicy = func(r PolicyRequest) error {
+		fmt.Fprintln(handoffErr, "### policy")
+		for _, a := range append([]string{r.SessionID, r.Agent, r.Tier, r.KubeAPICIDR, r.KubeAPIPort}, r.Extras...) {
+			fmt.Fprintf(handoffErr, "arg=%s\n", a)
+		}
+		for _, d := range r.DependencyEndpoints {
+			fmt.Fprintf(handoffErr, "dep_endpoint=%s\n", d)
+		}
+		fmt.Fprintf(handoffErr, "host_entity=%s\n", r.KubeHostEntity)
+		return nil
+	}
+	// cmd-stub.sh answers /dev/urandom reads with these bytes.
 	e.RandBytes = func(n int) []byte {
 		if n == 2 {
 			return []byte{0xbe, 0xef}
@@ -83,6 +96,9 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 		case "FAKE_NOW":
 			n, _ := strconv.ParseInt(v, 10, 64)
 			e.Now = func() int64 { return n }
+		case "STUB_POD":
+			live := v != ""
+			e.SessionLive = func(string, string) bool { return live }
 		case "STOP_AT":
 			e.StopAtDecisions = v == "b1"
 		case "SANDBOX_MAX_DEPS_PER_SESSION":
@@ -96,8 +112,8 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 	return e
 }
 
-// handoffOut is where the current case's RunHandoff writes.
-var handoffOut io.Writer
+// handoffOut and handoffErr are the current case's stdout and stderr, for the stubs.
+var handoffOut, handoffErr io.Writer
 
 // dumpSpec prints launch decisions the way the oracle's ensure_cluster_ready stub does.
 func dumpSpec(s LaunchSpec, r *SessionRecord) string {
@@ -347,7 +363,7 @@ func TestCLIGolden(t *testing.T) {
 		env.SandboxRoot = root // the catalogue is read from it; output paths under it print as <ROOT>
 		env.Stdin = strings.NewReader(dec64(t, row[4]))
 		var out, errb bytes.Buffer
-		handoffOut = &out
+		handoffOut, handoffErr = &out, &errb
 		wd, _ := os.Getwd()
 		os.Chdir(home) // the oracle runs each case from its home
 		rc := Run(args, env, &out, &errb)

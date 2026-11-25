@@ -543,6 +543,43 @@ func main() {
 		addRun(cc)
 	}
 
+	// allow: the checks, the liveness test (STUB_POD), the merge, and the session record.
+	A := func(a ...string) []string { return append([]string{"allow"}, a...) }
+	sess := func(body string) tree { return tree{}.f("logs/ses-1/session.json", body) }
+	sbase := `{"id":"ses-1","agent":"claude","tier":2,"pod_name":"sandbox-r-claude-beef","allowed_domains":["claude.ai","x.example.org"],"events":[]}`
+	live := []string{"STUB_POD=Running"}
+	for _, cc := range []cs{
+		{args: A()}, {args: A("--help")}, {args: A("-h")}, {args: A("--bogus")}, {args: A("ses-1")},
+		{args: A("--add-domain", "a.example.org")}, {args: A("ses-1", "ses-2", "--add-domain", "a.example.org")},
+		{args: A("ses-1", "--add-domain")}, {args: A("ses-1", "--add-domain=")}, {args: A("ses-1", "--add-domain", "a.example.org", "-x")},
+		{args: A("ses-nope", "--add-domain", "a.example.org")},
+		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(sbase)},
+		{args: A("ses-1", "--add-domain", "smtp.example.org"), tree: sess(sbase), env: live},
+		{args: A("ses-1", "--add-domain", "*.com"), tree: sess(sbase), env: live},
+		{args: A("ses-1", "--add-domain", "a b"), tree: sess(sbase), env: live},
+		{args: A("ses-1", "--add-domain", "10.1.2.3"), tree: sess(sbase).f(".sandbox/config.yaml", "blocked_cidrs:\n  - 10.0.0.0/8\n"), env: live},
+		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(sbase).f(".sandbox/config.yaml", "blocked_cidrs:\n  - nope\n"), env: live},
+		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(sbase).f(".sandbox/config.yaml", "blocked_domains:\n  - \"*.example.org\"\n"), env: live},
+		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(sbase), env: live},
+		{args: A("ses-1", "--add-domain=b.example.org", "--add-domain", "a.example.org", "--add-domain", "b.example.org"), tree: sess(sbase), env: live},
+		{args: A("ses-1", "--add-domain", "x.example.org"), tree: sess(sbase), env: live},
+		{args: A("ses-1", "--add-domain", "x.example.org", "--add-domain", "api.anthropic.com"), tree: sess(sbase), env: live},
+		{args: A("ses-1", "--add-domain", "api.anthropic.com"), tree: sess(sbase), env: live},
+		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(`{"id":"ses-1","agent":"codex","tier":1,"allowed_domains":["b.example.org","a.example.org","b.example.org"]}`), env: live},
+		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(`{"id":"ses-1","agent":"claude","tier":3}`), env: live},
+		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(`{"id":"ses-1","agent":"claude","tier":3,"kube_api_cidr":"10.9.0.1/32","kube_api_port":"6443","kube_host_entity":"true","allowed_domains":[],` +
+			`"dependencies":[{"name":"db","resource_name":"dep-db-ses-1","port":5432},{"name":"m","resource_name":"dep-m-ses-1","port":"3001"}],"events":[{"time":"t","type":"x","message":"m"}]}`), env: live},
+		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(`{"id":"ses-1","agent":"opencode","tier":1,"allowed_domains":[]}`), env: live},
+		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(`{"id":"ses-1","agent":"opencode","tier":1,"allowed_domains":[]}`),
+			env: []string{"STUB_POD=Running", "OPENCODE_BASE_URL=https://llm.example.org/v1"}},
+		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(`{"id":"ses-1","agent":"claude","tier":1,"pod_name":"","allowed_domains":[]}`)},
+		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(`{"id":"ses-1","agent":"claude","tier":1,"pod_name":null}`), env: live},
+		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(`{"id":"ses-1","agent":"claude","tier":1,"allowed_domains":[]}`),
+			env: []string{"STUB_POD=Running", "BLOCKED_DESTINATIONS_CONFIG=<HOME>/missing.yaml"}},
+	} {
+		add(cc)
+	}
+
 	var rows []string
 	for i, c := range cases {
 		args := ""
