@@ -38,6 +38,31 @@ if [[ -n "${ca}" ]]; then
   update-ca-certificates >/dev/null
 fi
 
+# Lima's guest user: cloud-init gives it passwordless sudo for everything, which would let Lima's
+# own SSH key reach root beside the pinned one. Keep only what Lima runs (its readiness check reads
+# param.env; its graceful stop shuts down). cloud-init rewrites its file each boot (Lima changes
+# the instance id), so this runs each boot, before sshd starts.
+limit_lima_sudo() {
+  local f=/etc/sudoers.d/90-cloud-init-users users u
+  [[ -f "${f}" ]] || return 0
+  users="$(awk '!/^#/ && NF && $1 != "root" {print $1}' "${f}" | sort -u)"
+  rm -f "${f}"
+  {
+    echo "# Written by sandbox-seed: Lima's user may run only what Lima itself needs."
+    for u in ${users}; do
+      [[ "${u}" =~ ^[a-z_][a-z0-9_.-]*$ ]] || continue
+      echo "${u} ALL=(root) NOPASSWD: /usr/bin/cat /mnt/lima-cidata/param.env, /bin/cat /mnt/lima-cidata/param.env, /sbin/shutdown -h now, /usr/sbin/shutdown -h now"
+    done
+  } > /etc/sudoers.d/50-lima-limited.new
+  chmod 0440 /etc/sudoers.d/50-lima-limited.new
+  if visudo -cqf /etc/sudoers.d/50-lima-limited.new; then
+    mv -f /etc/sudoers.d/50-lima-limited.new /etc/sudoers.d/50-lima-limited
+  else
+    rm -f /etc/sudoers.d/50-lima-limited.new # fail closed: no sudo at all
+  fi
+}
+limit_lima_sudo
+
 # Until now every start of sshd failed for want of its host key (cloud-init restarts it during
 # boot), which may have tripped systemd's start limit; clear it before the real start.
 systemctl reset-failed ssh.service || true
