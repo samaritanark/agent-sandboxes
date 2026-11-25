@@ -48,6 +48,7 @@ var allowed = map[string][]string{
 	"host/app":       {"host/driver", "host/release", "host/sizing"},
 	"host/sizing":    {},
 	"host/syncgate":  {"tables"},
+	"host/gitobj":    {},
 	"host/lima":      {"host/driver"},
 	"host/sshx":      {"host/driver"},
 	"host/gitref":    {},
