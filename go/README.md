@@ -33,7 +33,7 @@ Layout so far:
 | `internal/onboard` | `lib/onboard.sh`: which host login files each agent stages, the Codex and Grok config hardening, the API-key refusal, and the starter user config |
 | `internal/agents` | `lib/agents.sh` (per-agent domains, flags, MCP config, credential type, the opencode endpoint) and the host-environment check of `lib/credentials.sh` |
 | `internal/jqjson` | the part of jq the bash's JSON writers rely on: ordered values, jq's input rules, and its pretty output (used by `audit` and `agents`) |
-| `internal/cli`, `cmd/sandbox-vm` | the in-VM `sandbox` command (design 5.1.6): dispatch, usage texts, and the subcommands ported so far (`version`, `profile`, `check`, `mask`, `exceptions`); the others print their v2 help and say they are not yet ported |
+| `internal/cli`, `cmd/sandbox-vm` | the in-VM `sandbox` command (design 5.1.6): dispatch, usage texts, and the subcommands ported so far (`version`, `profile`, `check`, `mask`, `exceptions`, `vet`); the others print their v2 help and say they are not yet ported |
 | `internal/workspace` | `validate_repo_path` and `workspace_prescan` from `lib/filesystem.sh` (which directories may be a workspace; the warn-only filename heuristics), tested through the CLI corpus |
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
 | `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |

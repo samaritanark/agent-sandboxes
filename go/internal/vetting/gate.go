@@ -69,7 +69,7 @@ func yes(r string) bool { return len(r) > 0 && (r[0] == 'y' || r[0] == 'Y') }
 // DriftDecision is _vetting_drift_decision: under `required`, whether a verified attestation that
 // is `behind` commits behind HEAD and/or stale may launch. It prints its reasoning.
 func (d GateDeps) DriftDecision(repo, tag, signer, behind, cap, ageDays, ageCap, acceptUnvetted, acceptDrift string) bool {
-	overCommit := cap != "" && numCmp(behind, cap, "gt")
+	overCommit := cap != "" && NumCmp(behind, cap, "gt")
 	overAge := ageOver(ageDays, ageCap)
 	if ageDays == "" {
 		ageDays = unknownAge
@@ -237,7 +237,7 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 			if ageDays == "" {
 				ageDays = unknownAge
 			}
-			if numCmp(f5, "0", "eq") && !overAge {
+			if NumCmp(f5, "0", "eq") && !overAge {
 				fmt.Fprintf(d.Out, "  ✓ %s: vetted at %s (tag %s, signer %s)\n", repo, substr12(f2), f3, orUnknown(f4))
 				continue
 			}
@@ -251,7 +251,7 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 			driftDetail += repo + "(" + driftNote + ")"
 			if posture == "advisory" {
 				switch {
-				case cap != "" && numCmp(f5, cap, "gt"):
+				case cap != "" && NumCmp(f5, cap, "gt"):
 					d.errln(fmt.Sprintf("  %s: vetted at %s, %s commit(s) behind HEAD — over cap %s (advisory, proceeding).", repo, substr12(f2), f5, cap))
 				case overAge:
 					d.errln(fmt.Sprintf("  %s: vetted at %s, attestation %s day(s) old — over the %s-day window (advisory, proceeding).", repo, substr12(f2), ageDays, ageCap))
@@ -376,10 +376,12 @@ func (d GateDeps) VettingGateRepos(posture, accept, acceptDrift string, repos []
 	return 1, summary
 }
 
-// numCmp is `[[ a -gt b ]]` / `[[ a -eq b ]]` on numeric strings. Legacy mode is shell arithmetic
+// NumCmp is `[[ a -gt b ]]` / `[[ a -eq b ]]` on numeric strings. Legacy mode is shell arithmetic
 // (octal for a leading zero, wrapping); with DecimalNumbers it is plain decimal. An empty operand
 // is 0, and an operand that is not a number makes the comparison false.
-func numCmp(a, b, op string) bool {
+// NumCmp is the bash's `[[ a -gt/-eq b ]]` on numeric settings: shell arithmetic in legacy mode,
+// plain decimal with DecimalNumbers.
+func NumCmp(a, b, op string) bool {
 	if !deviation.Fixed(deviation.DecimalNumbers) {
 		return bashcompat.ArithCmp(a, b, op)
 	}
@@ -409,7 +411,7 @@ func ageOver(ageDays, ageCap string) bool {
 	if ageDays == "" || ageDays == unknownAge {
 		return deviation.Fixed(deviation.UnknownAgeIsStale)
 	}
-	return numCmp(ageDays, ageCap, "gt")
+	return NumCmp(ageDays, ageCap, "gt")
 }
 
 const unknownAge = "unknown"

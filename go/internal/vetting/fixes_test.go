@@ -65,7 +65,7 @@ func TestFixDecimalNumbers(t *testing.T) {
 	if got := age.AgeDays("0100"); got != "9" { // 100 seconds before now
 		t.Errorf("fixed age: got %q", got)
 	}
-	if !numCmp("010", "9", "gt") || numCmp("08", "9", "gt") {
+	if !NumCmp("010", "9", "gt") || NumCmp("08", "9", "gt") {
 		t.Error("fixed: comparisons are decimal")
 	}
 }

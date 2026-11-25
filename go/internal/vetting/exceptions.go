@@ -104,7 +104,7 @@ func (c Ctx) VettedAcceptedFingerprints(repo, acceptUnvetted string) []string {
 		if b == "" {
 			b = "1"
 		}
-		if !numCmp(b, "0", "eq") {
+		if !NumCmp(b, "0", "eq") {
 			return nil
 		}
 	}

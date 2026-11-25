@@ -5,13 +5,19 @@
 # "=" + base64): args are NUL-separated words; tree builds $HOME from lines "f path content",
 # "d path", "l path target", "g path" (git init), "c path" (commit everything in that repo),
 # "r path" (remove), "p path" (a FIFO) (base64 words); env is NAME=VALUE lines added to a
-# clean environment (PATH, HOME, LC_ALL, SANDBOX_LOGS_DIR); the line STUB=1 instead puts the gate's
-# stub scanner on PATH as betterleaks, answering from <HOME>/scen. version is none | full (a .version file in the copied
+# clean environment (PATH, HOME, LC_ALL, SANDBOX_LOGS_DIR, GIT_CONFIG_NOSYSTEM, a fixed git committer
+# identity and date, and a `date` shim
+# answering `date +%s` with FAKE_NOW=1800000000); the line STUB=1 instead puts the gate's stub
+# scanner on PATH as betterleaks, answering from <HOME>/scen. Commits ("c") have fixed dates, and
+# "v path" signs agent-vetted/<HEAD> there with the key at <HOME>/.testkey/k, so commit and tag
+# names are the same on every machine. version is none | full (a .version file in the copied
 # install). Output: "id rc stdout stderr home", "=" + base64 each, home a sorted listing of $HOME
 # (paths as printf %q prints them; file contents with the case home written as <HOME>; .git
 # directories left out, since git versions populate them differently).
 # Normalized: the install root as <ROOT>, the case home as <HOME>, the bash version as <RT>, the
 # JSON "bash" key as "runtime", and bash's own "<script>: line N:" prefix as "sandbox: line 0:".
+# bash's arithmetic error for an octal-invalid number ("value too great for base") is dropped: it
+# is interpreter noise, and its effect shows in the output (DecimalNumbers fixes it).
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 src="$(cd "$here/../../../.." && pwd)"
@@ -39,11 +45,16 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
       g) mkdir -p "$H/$p"; GIT_CONFIG_GLOBAL=/dev/null git init -q "$H/$p" ;;
       c) GIT_CONFIG_GLOBAL=/dev/null git -C "$H/$p" add -A
          GIT_CONFIG_GLOBAL=/dev/null GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x \
-           git -C "$H/$p" commit -q -m c ;;
+           GIT_AUTHOR_DATE="@1700000000 +0000" GIT_COMMITTER_DATE="@1700000000 +0000" git -C "$H/$p" commit -q -m c ;;
+      v) chmod 600 "$H/.testkey/k"
+         GIT_CONFIG_GLOBAL=/dev/null GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x GIT_COMMITTER_DATE="@1700000100 +0000" \
+           git -C "$H/$p" -c gpg.format=ssh -c user.signingkey="$H/.testkey/k" tag -s -m "vetted for agent use" \
+           "agent-vetted/$(git -C "$H/$p" rev-parse HEAD)" ;;
       r) rm -rf "$H/$p" ;;
       p) mkdir -p "$(dirname "$H/$p")"; mkfifo "$H/$p" ;;
     esac
   done <<<"$tree"
+  [[ -f "$H/.testkey/k" ]] && chmod 600 "$H/.testkey/k"
   extra=() path=/usr/bin:/bin
   while IFS= read -r kv; do
     [[ -n "$kv" ]] || continue
@@ -55,11 +66,14 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
     extra+=("${kv//<HOME>/$H}")
   done <<<"$envs"
   out="$c/.out" err="$c/.err"
-  printf '%s' "$input" | env -i PATH="$path" HOME="$H" LC_ALL=C SANDBOX_LOGS_DIR="$H/logs" "${extra[@]}" \
+  printf '%s' "$input" | env -i PATH="$src/go/internal/vetting/testdata/config/shim:$path" FAKE_NOW=1800000000 \
+    GIT_CONFIG_NOSYSTEM=1 GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x GIT_COMMITTER_DATE="@1700000200 +0000" \
+    HOME="$H" LC_ALL=C SANDBOX_LOGS_DIR="$H/logs" "${extra[@]}" \
     "$T/$ver/bin/sandbox" "${args[@]}" > "$out" 2> "$err"
   rc=$?
   norm() {
-    sed -e "s|$T/$ver/bin/sandbox: line [0-9]*:|sandbox: line 0:|g" -e "s|$T/$ver|<ROOT>|g" -e "s|$H|<HOME>|g" \
+    sed -e '/value too great for base/d' \
+        -e "s|$T/$ver/bin/sandbox: line [0-9]*:|sandbox: line 0:|g" -e "s|$T/$ver|<ROOT>|g" -e "s|$H|<HOME>|g" \
         -e "s|bash $bv|<RT>|g" -e "s|\"bash\":\"$bv\"|\"runtime\":\"<RT>\"|g" "$1" | base64 -w0
   }
   listing="$(cd "$H" && find . -mindepth 1 -name .git -prune -o -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' p; do

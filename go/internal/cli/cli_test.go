@@ -39,7 +39,7 @@ func enc64(s string) string { return "=" + base64.StdEncoding.EncodeToString([]b
 // fixtureEnv is the environment the oracle gives bin/sandbox: ver is none or full, home the case's
 // home directory, root the repository (the oracle's copied install), envs its extra variables.
 func fixtureEnv(ver, home, root string, envs []string) Env {
-	e := Env{Root: "<ROOT>", LogsDir: home + "/logs", Runtime: "<RT>"}
+	e := Env{Root: "<ROOT>", LogsDir: home + "/logs", Runtime: "<RT>", Now: func() int64 { return 1800000000 }}
 	if ver == "full" {
 		e.Version = VersionInfo{"v3.0.0-test", "0123456789ab", "2026-11-24", "2026-11-25", "clean"}
 	}
@@ -90,10 +90,24 @@ func buildTree(t *testing.T, home, spec string) {
 			for _, a := range [][]string{{"add", "-A"}, {"commit", "-q", "-m", "c"}} {
 				cmd := exec.Command("git", append([]string{"-C", full}, a...)...)
 				cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x",
-					"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x")
+					"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x",
+					"GIT_AUTHOR_DATE=@1700000000 +0000", "GIT_COMMITTER_DATE=@1700000000 +0000")
 				if b, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("git %v in %s: %v %s", a, full, err, b)
 				}
+			}
+		case "v":
+			os.Chmod(home+"/.testkey/k", 0o600)
+			head, err := exec.Command("git", "-C", full, "rev-parse", "HEAD").Output()
+			if err != nil {
+				t.Fatalf("rev-parse in %s: %v", full, err)
+			}
+			cmd := exec.Command("git", "-C", full, "-c", "gpg.format=ssh", "-c", "user.signingkey="+home+"/.testkey/k",
+				"tag", "-s", "-m", "vetted for agent use", "agent-vetted/"+strings.TrimSpace(string(head)))
+			cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x",
+				"GIT_COMMITTER_DATE=@1700000100 +0000")
+			if b, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("signed tag in %s: %v %s", full, err, b)
 			}
 		case "r":
 			os.RemoveAll(full)
@@ -194,6 +208,16 @@ func TestCLIGolden(t *testing.T) {
 			}
 		}
 		t.Setenv("PATH", path)
+		t.Setenv("HOME", home) // git and ssh-keygen read the case's home, as under the oracle
+		t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+		t.Setenv("GIT_COMMITTER_NAME", "t")
+		t.Setenv("GIT_COMMITTER_EMAIL", "t@x")
+		t.Setenv("GIT_COMMITTER_DATE", "@1700000200 +0000")
+		os.Chmod(home+"/.testkey/k", 0o600)
+		t.Setenv("GIT_CONFIG_GLOBAL", "")
+		os.Unsetenv("GIT_CONFIG_GLOBAL")
+		os.Unsetenv("SSH_AUTH_SOCK")
+		// The tree is built with the test's own environment; the command then runs in the case's.
 		env := fixtureEnv(row[1], home, root, envs)
 		env.SandboxRoot = "/nonexistent-sandbox-root" // the oracle's install copy, outside every case home
 		env.Stdin = strings.NewReader(dec64(t, row[4]))

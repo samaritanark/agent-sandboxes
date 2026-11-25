@@ -16,7 +16,7 @@ import (
 
 func (c *cmdCtx) vetting() vetting.Ctx {
 	v := vetting.Ctx{Env: c.env.Env, TrustRootDefault: c.env.Home + "/.sandbox/vetting/allowed_signers",
-		TagPrefix: "agent-vetted/", Stderr: c.stderr}
+		TagPrefix: "agent-vetted/", Stderr: c.stderr, Now: c.env.Now}
 	if c.env.VettingTrustRootDefault != "" {
 		v.TrustRootDefault = c.env.VettingTrustRootDefault
 	}

@@ -31,7 +31,8 @@ type Env struct {
 	SandboxRoot  string    // the install root the workspace overlap check protects
 	IsWSL        bool      // the host is WSL (Windows-drive paths are refused)
 
-	VettingTrustRootDefault string // SANDBOX_VETTING_TRUST_ROOT_DEFAULT
+	VettingTrustRootDefault string       // SANDBOX_VETTING_TRUST_ROOT_DEFAULT
+	Now                     func() int64 // `date +%s`
 
 	Version   VersionInfo // Version "" means "dev"
 	Root      string      // the install root (SANDBOX_ROOT)
@@ -140,6 +141,9 @@ func (c *cmdCtx) warn(f string, a ...interface{}) {
 
 func (c *cmdCtx) out(f string, a ...interface{}) { fmt.Fprintf(c.stdout, f+"\n", a...) }
 
+// errOut writes a line to stderr without the ERROR prefix or color.
+func (c *cmdCtx) errOut(f string, a ...interface{}) { fmt.Fprintf(c.stderr, f+"\n", a...) }
+
 // usage prints one of bin/sandbox's usage texts (captured by testdata/gen-usage.sh) and ends with
 // status 0, as every usage function there does.
 func (c *cmdCtx) usage(name string) {
@@ -156,7 +160,7 @@ func (c *cmdCtx) usage(name string) {
 var commands = map[string]func(*cmdCtx, []string){
 	"run": nil, "resume": nil, "allow": nil, "list": nil, "logs": nil, "flows": nil, "stop": nil,
 	"cleanup": nil, "check": cmdCheck, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
-	"upgrade": nil, "onboard": nil, "secret": nil, "mask": cmdMask, "exceptions": cmdExceptions, "vet": nil,
+	"upgrade": nil, "onboard": nil, "secret": nil, "mask": cmdMask, "exceptions": cmdExceptions, "vet": cmdVet,
 	"profile": cmdProfile, "link": nil, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,
 	"version": cmdVersion,
 }

@@ -17,13 +17,18 @@ func enc(s string) string { return "=" + base64.StdEncoding.EncodeToString([]byt
 
 type tree []string
 
-func (t tree) f(p, body string) tree { return append(t, enc("f")+" "+enc(p)+" "+enc(body)) }
-func (t tree) d(p string) tree       { return append(t, enc("d")+" "+enc(p)) }
-func (t tree) l(p, to string) tree   { return append(t, enc("l")+" "+enc(p)+" "+enc(to)) }
-func (t tree) g(p string) tree       { return append(t, enc("g")+" "+enc(p)) }
-func (t tree) c(p string) tree       { return append(t, enc("c")+" "+enc(p)) }
-func (t tree) r(p string) tree       { return append(t, enc("r")+" "+enc(p)) }
-func (t tree) p(p string) tree       { return append(t, enc("p")+" "+enc(p)) }
+// clone copies t, so that every builder step returns a new slice: appending to a shared base
+// with spare capacity would let sibling cases overwrite one another's last steps.
+func (t tree) clone() tree { return append(tree(nil), t...) }
+
+func (t tree) f(p, body string) tree { return append(t.clone(), enc("f")+" "+enc(p)+" "+enc(body)) }
+func (t tree) d(p string) tree       { return append(t.clone(), enc("d")+" "+enc(p)) }
+func (t tree) l(p, to string) tree   { return append(t.clone(), enc("l")+" "+enc(p)+" "+enc(to)) }
+func (t tree) g(p string) tree       { return append(t.clone(), enc("g")+" "+enc(p)) }
+func (t tree) c(p string) tree       { return append(t.clone(), enc("c")+" "+enc(p)) }
+func (t tree) r(p string) tree       { return append(t.clone(), enc("r")+" "+enc(p)) }
+func (t tree) p(p string) tree       { return append(t.clone(), enc("p")+" "+enc(p)) }
+func (t tree) v(p string) tree       { return append(t.clone(), enc("v")+" "+enc(p)) }
 
 type cs struct {
 	ver   string
@@ -190,6 +195,39 @@ func main() {
 		{"exceptions", "migrate", "--repo", "~/ex"}, {"exceptions", "migrate", "--repo", "~/ex", "--x"}, {"exceptions", "migrate"}} {
 		add(cs{args: a, tree: ex})
 		add(cs{args: a, tree: ex.f("ex/.betterleaksignore", "# c\na.txt:rule-a:3\n\n b.txt:r:2 \n").f("ex/.sandbox/config.yaml", legacy)})
+	}
+
+	// vet
+	const key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACDibY918+MT8DF7TUm/hnkyDxbO69tvcJYhrdgRygK30wAAAIhs26KabNui\nmgAAAAtzc2gtZWQyNTUxOQAAACDibY918+MT8DF7TUm/hnkyDxbO69tvcJYhrdgRygK30w\nAAAEC43XLViLHpSHRdQGkJYBOCGVnuXYE0UagmHMOQTTAVBOJtj3Xz4xPwMXtNSb+GeTIP\nFs7r229wliGt2BHKArfTAAAAA3RAeAEC\n-----END OPENSSH PRIVATE KEY-----\n"
+	const pub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOJtj3Xz4xPwMXtNSb+GeTIPFs7r229wliGt2BHKArfT t@x"
+	signer := tree{}.f(".testkey/k", key).f(".testkey/k.pub", pub+"\n").
+		f(".sandbox/vetting/allowed_signers", "t@x namespaces=\"git\" "+pub+"\n")
+	vr := append(append(tree{}, signer...), tree{}.g("vr").f("vr/a.txt", "a").c("vr")...)
+	vetted := append(append(tree{}, vr...), tree{}.v("vr")...)
+	for _, cc := range []cs{
+		{args: []string{"vet"}}, {args: []string{"vet", "-h"}}, {args: []string{"vet", "help"}}, {args: []string{"vet", "--bogus"}},
+		{args: []string{"vet", "stray"}}, {args: []string{"vet", "--status"}}, {args: []string{"vet", "--repo", "~/nope", "--status"}},
+		{args: []string{"vet", "--status", "--repo", "~/vr"}, tree: vr},
+		{args: []string{"vet", "--status", "--repo", "~/vr"}, tree: tree{}.g("vr")},
+		{args: []string{"vet", "--status", "--repo", "~/vr"}, tree: vetted},
+		{args: []string{"vet", "--status", "--repo=~/vr"}, tree: vetted.f(".sandbox/config.yaml", "vetting_max_age_days: 30\n")},
+		{args: []string{"vet", "--status", "--repo", "~/vr"}, tree: vetted.f(".sandbox/config.yaml", "vetting_max_age_days: 5000\n")},
+		{args: []string{"vet", "--status", "--repo", "~/vr"}, tree: vetted.f(".sandbox/config.yaml", "vetting_max_age_days: 08\n")},
+		{args: []string{"vet", "--status", "--repo", "~/vr"}, tree: vetted.f("vr/b.txt", "b").c("vr")},
+		{args: []string{"vet", "--status", "--repo", "~/vr"}, tree: vetted.f("vr/b.txt", "b").c("vr").f(".sandbox/config.yaml", "vetting_max_commits_behind: 0\n")},
+		{args: []string{"vet", "--status", "--repo", "~/vr"}, tree: vetted.f("vr/untracked", "u").f(".sandbox/config.yaml", "vetting_require_clean_worktree: true\n")},
+		{args: []string{"vet", "--status", "--repo", "~/vr"}, tree: vetted.r(".sandbox/vetting/allowed_signers")},
+		{args: []string{"vet", "--status", "--repo", "~/vr"}, tree: vetted.f(".sandbox/vetting/allowed_signers", "other@x namespaces=\"git\" "+pub+"\n")},
+		{args: []string{"vet", "--status", "--repo", "~/vr"}, tree: vetted.f(".sandbox/config.yaml", "vetting: off\n")},
+		// Not covered here: attesting with no signing key configured, where the failure text is
+		// git's own and differs between git versions (the vetting package's corpus, run against
+		// Linux git only, covers it).
+		{args: []string{"vet", "--repo", "~/vr", "--yes"}, tree: vr.f(".sandbox/config.yaml", "vetting_signing_key: ~/.testkey/k\n").f("scen/ws.json", "[]"), env: stub},
+		{args: []string{"vet", "--repo", "~/vr", "--message", "release 1"}, tree: vr.f(".sandbox/config.yaml", "vetting_signing_key: ~/.testkey/k\n").f("scen/ws.json", "[]"), env: stub},
+		{args: []string{"vet", "--repo", "~/vr"}, tree: vetted.f(".sandbox/config.yaml", "vetting_signing_key: ~/.testkey/k\n").f("scen/ws.json", "[]"), env: stub},
+		{args: []string{"vet", "--repo", "~/vr", "--message"}, tree: vr},
+	} {
+		add(cc)
 	}
 
 	var rows []string

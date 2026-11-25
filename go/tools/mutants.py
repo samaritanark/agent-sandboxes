@@ -180,7 +180,7 @@ m(VF, "for _, sub := range []string{\"clean\", \"smudge\", \"process\", \"requir
 
 GT = "internal/vetting/gate.go"
 R_GT = "TestVettingGateGolden"
-m(GT, 'overCommit := cap != "" && numCmp(behind, cap, "gt")', 'overCommit := cap != "" && numCmp(behind, cap, "gt") && false', R_GT)
+m(GT, 'overCommit := cap != "" && NumCmp(behind, cap, "gt")', 'overCommit := cap != "" && NumCmp(behind, cap, "gt") && false', R_GT)
 m(GT, 'if cap != "" && !overAge {', 'if cap != "" {', R_GT)
 m(GT, 'if acceptUnvetted == "true" || acceptDrift == "true" {\n\t\t\td.errln(fmt.Sprintf("  %s: attestation is', 'if acceptDrift == "true" {\n\t\t\td.errln(fmt.Sprintf("  %s: attestation is', R_GT)
 m(GT, 'if acceptUnvetted == "true" {\n\t\t\td.errln(fmt.Sprintf("  %s: vetted but %s commit(s) behind HEAD — over cap', 'if acceptUnvetted == "true" || acceptDrift == "true" {\n\t\t\td.errln(fmt.Sprintf("  %s: vetted but %s commit(s) behind HEAD — over cap', R_GT)
@@ -189,7 +189,7 @@ m(GT, 'if cfg.ForbidOverride == "true" {', 'if cfg.ForbidOverride != "false" {',
 m(GT, 'accept = "false"\n\t\t}', "", R_GT)
 m(GT, 'if posture == "off" {', 'if posture == "off" || posture == "" {', R_GT)
 m(GT, 'if posture == "required" {\n\t\t\td.errln("",\n\t\t\t\t"ERROR: vetting is required but no signer', 'if posture != "advisory" {\n\t\t\td.errln("",\n\t\t\t\t"ERROR: vetting is required but no signer', R_GT)
-m(GT, 'if numCmp(f5, "0", "eq") && !overAge {', 'if numCmp(f5, "0", "eq") {', R_GT)
+m(GT, 'if NumCmp(f5, "0", "eq") && !overAge {', 'if NumCmp(f5, "0", "eq") {', R_GT)
 m(GT, 'if posture == "advisory" {\n\t\t\t\tswitch {', 'if posture != "required" {\n\t\t\t\tswitch {', R_GT)
 m(GT, 'if accept != "true" && d.TTY {', "if d.TTY {", R_GT)
 m(GT, 'if ((is == "unvetted" && strings.HasPrefix(if3, "no ")) || is == "drift") &&', 'if (is == "unvetted" || is == "drift") &&', R_GT)
@@ -607,3 +607,15 @@ m(EXC, '\tif len(entries) == 0 {\n\t\tc.out("No accepted_secrets: entries', '\ti
 m("internal/gate/scan.go", '\t\tif file == target && r == rule && isNum && n == float64(want) {', '\t\tif file == target && r == rule && isNum {', R_CL, pkg="cli")
 m("internal/gate/scan.go", '\t\tif file == target && r == rule && isNum && n == float64(want) {', '\t\tif file == target && isNum && n == float64(want) {', R_CL, pkg="cli")
 m("internal/gate/scan.go", '\tif okRun, _ := betterleaksRun(e, realRepo, reportPath, cfgPath, ignore, ""); !okRun {\n\t\treturn nil, 2', '\tif okRun, _ := betterleaksRun(e, realRepo, reportPath, cfgPath, ignore, ""); false && !okRun {\n\t\treturn nil, 2', R_CL, pkg="cli")
+
+VT = "internal/cli/vet.go"
+m(VT, '\t\tcase a == "--status":\n\t\t\tstatus = true', '\t\tcase a == "--status":\n\t\t\tstatus = false', R_CL)
+m(VT, '\t\tcase a == "--yes" || a == "-y":\n\t\t\tyes = "true"', '\t\tcase a == "--yes" || a == "-y":\n\t\t\tyes = "false"', R_CL)
+m(VT, '\t\tc.out("  signer: %s", or(f4, "unknown"))', '\t\tc.out("  signer: %s", f4)', R_CL)
+m(VT, '\t\tif vetting.NumCmp(or(f5, "0"), "0", "eq") {', '\t\tif vetting.NumCmp(or(f5, "0"), "1", "eq") {', R_CL)
+m(VT, '\t\tif age != "" {', '\t\tif age == "" {', R_CL)
+m(VT, '\t\t\tcase vetting.NumCmp(age, cap, "gt"):', '\t\t\tcase vetting.NumCmp(age, cap, "eq"):', R_CL)
+m(VT, '\tcase "dirty":\n\t\tc.out("DIRTY:    %s (HEAD %s)", repo, f2)', '\tcase "dirtyx":\n\t\tc.out("DIRTY:    %s (HEAD %s)", repo, f2)', R_CL)
+m(VT, '\t\tc.errOut("ERROR:    %s", f2)\n\t\tpanic(exit(1))', '\t\tc.errOut("ERROR:    %s", f2)', R_CL)
+m(VT, '\tif a.SigningSetupAssist(repo) != 0 {\n\t\tpanic(exit(1))\n\t}', '', R_CL)
+m(VT, '\tif rc := a.AttestRepo(repo, msg, yes); rc != 0 {', '\tif rc := a.AttestRepo(repo, "vetted for agent use", yes); rc != 0 {', R_CL)

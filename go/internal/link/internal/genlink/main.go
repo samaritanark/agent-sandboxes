@@ -19,9 +19,13 @@ func enc(s string) string { return "=" + base64.StdEncoding.EncodeToString([]byt
 // tree builds an overlay spec: "f path content" / "d path" / "l path target" lines.
 type tree []string
 
-func (t tree) f(p, body string) tree { return append(t, enc("f")+" "+enc(p)+" "+enc(body)) }
-func (t tree) d(p string) tree       { return append(t, enc("d")+" "+enc(p)) }
-func (t tree) l(p, to string) tree   { return append(t, enc("l")+" "+enc(p)+" "+enc(to)) }
+// clone copies t, so that every builder step returns a new slice (appending to a shared base with
+// spare capacity would let sibling cases overwrite one another's last steps).
+func (t tree) clone() tree { return append(tree(nil), t...) }
+
+func (t tree) f(p, body string) tree { return append(t.clone(), enc("f")+" "+enc(p)+" "+enc(body)) }
+func (t tree) d(p string) tree       { return append(t.clone(), enc("d")+" "+enc(p)) }
+func (t tree) l(p, to string) tree   { return append(t.clone(), enc("l")+" "+enc(p)+" "+enc(to)) }
 func (t tree) spec() string          { return strings.Join(t, "\n") }
 
 const home = "/home/u"
