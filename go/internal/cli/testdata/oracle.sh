@@ -3,10 +3,12 @@
 #   LC_ALL=C oracle.sh > golden-cli.tsv
 # Each case in cases.tsv is "id version args tree stdin env" (all but id and version are
 # "=" + base64): args are NUL-separated words; tree builds $HOME from lines "f path content",
-# "d path", "l path target" (base64 words); env is NAME=VALUE lines added to a clean environment
-# (PATH, HOME, LC_ALL, SANDBOX_LOGS_DIR). version is none | full (a .version file in the copied
+# "d path", "l path target", "g path" (git init) (base64 words); env is NAME=VALUE lines added to a
+# clean environment (PATH, HOME, LC_ALL, SANDBOX_LOGS_DIR); the line STUB=1 instead puts the gate's
+# stub scanner on PATH as betterleaks, answering from <HOME>/scen. version is none | full (a .version file in the copied
 # install). Output: "id rc stdout stderr home", "=" + base64 each, home a sorted listing of $HOME
-# (file contents with the case home written as <HOME>).
+# (file contents with the case home written as <HOME>; .git directories left out, since git
+# versions populate them differently).
 # Normalized: the install root as <ROOT>, the case home as <HOME>, the bash version as <RT>, the
 # JSON "bash" key as "runtime", and bash's own "<script>: line N:" prefix as "sandbox: line 0:".
 set -u
@@ -33,19 +35,28 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
       f) mkdir -p "$(dirname "$H/$p")"; printf '%s' "$t" > "$H/$p" ;;
       d) mkdir -p "$H/$p" ;;
       l) mkdir -p "$(dirname "$H/$p")"; ln -s "$t" "$H/$p" ;;
+      g) mkdir -p "$H/$p"; GIT_CONFIG_GLOBAL=/dev/null git init -q "$H/$p" ;;
     esac
   done <<<"$tree"
-  extra=()
-  while IFS= read -r kv; do [[ -n "$kv" ]] && extra+=("${kv//<HOME>/$H}"); done <<<"$envs"
+  extra=() path=/usr/bin:/bin
+  while IFS= read -r kv; do
+    [[ -n "$kv" ]] || continue
+    if [[ "$kv" == STUB=1 ]]; then  # the gate's stub scanner as betterleaks, answering from <HOME>/scen
+      path="$src/go/internal/gate/testdata/scan/stub:$path"
+      extra+=("STUB_SCEN=$H/scen" "STUB_LOG=$c/stub.log" "STUB_ROOT=$H")
+      continue
+    fi
+    extra+=("${kv//<HOME>/$H}")
+  done <<<"$envs"
   out="$c/.out" err="$c/.err"
-  printf '%s' "$input" | env -i PATH=/usr/bin:/bin HOME="$H" LC_ALL=C SANDBOX_LOGS_DIR="$H/logs" "${extra[@]}" \
+  printf '%s' "$input" | env -i PATH="$path" HOME="$H" LC_ALL=C SANDBOX_LOGS_DIR="$H/logs" "${extra[@]}" \
     "$T/$ver/bin/sandbox" "${args[@]}" > "$out" 2> "$err"
   rc=$?
   norm() {
     sed -e "s|$T/$ver/bin/sandbox: line [0-9]*:|sandbox: line 0:|g" -e "s|$T/$ver|<ROOT>|g" -e "s|$H|<HOME>|g" \
         -e "s|bash $bv|<RT>|g" -e "s|\"bash\":\"$bv\"|\"runtime\":\"<RT>\"|g" "$1" | base64 -w0
   }
-  listing="$(cd "$H" && find . -mindepth 1 | LC_ALL=C sort | while IFS= read -r p; do
+  listing="$(cd "$H" && find . -mindepth 1 -name .git -prune -o -print | LC_ALL=C sort | while IFS= read -r p; do
     if [[ -L "$p" ]]; then printf 'l %s -> %s\n' "$p" "$(readlink "$p")"
     elif [[ -d "$p" ]]; then printf 'd %s %s\n' "$p" "$(stat -c %a "$p")"
     else printf 'f %s %s %s\n' "$p" "$(stat -c %a "$p")" "$(sed "s|$H|<HOME>|g" "$p" | base64 -w0)"; fi

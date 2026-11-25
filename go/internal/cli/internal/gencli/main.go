@@ -20,6 +20,7 @@ type tree []string
 func (t tree) f(p, body string) tree { return append(t, enc("f")+" "+enc(p)+" "+enc(body)) }
 func (t tree) d(p string) tree       { return append(t, enc("d")+" "+enc(p)) }
 func (t tree) l(p, to string) tree   { return append(t, enc("l")+" "+enc(p)+" "+enc(to)) }
+func (t tree) g(p string) tree       { return append(t, enc("g")+" "+enc(p)) }
 
 type cs struct {
 	ver   string
@@ -92,6 +93,46 @@ func main() {
 	// Not covered: a filesystem refusal (e.g. a file where ~/.sandbox should be a directory), where
 	// the bash dies with coreutils' own error text; the port prints its own ERROR line.
 	add(cs{args: []string{"profile", "save", "--tier", "1", "--allow-domain", "x.slack.com"}, env: []string{"BLOCKED_DESTINATIONS_CONFIG=<HOME>/none.yaml"}})
+
+	// check
+	finding := func(file, rule string, line int) string {
+		return fmt.Sprintf(`{"EndColumn":5,"File":"@REPO@/%s","Match":"R","RuleID":"%s","StartColumn":1,"StartLine":%d}`, file, rule, line)
+	}
+	ws := tree{}.g("repos/app")
+	stub := []string{"STUB=1"}
+	for _, cc := range []cs{
+		{args: []string{"check"}}, {args: []string{"check", ""}}, {args: []string{"check", "--help"}},
+		{args: []string{"check", "~/nope"}}, {args: []string{"check", "~/plain"}, tree: tree{}.d("plain")},
+		{args: []string{"check", "~/repos/app"}, tree: ws},
+		{args: []string{"check", "~/repos/app", "extra"}, tree: ws},
+		{args: []string{"check", "~"}, tree: tree{}.g(".")},
+		{args: []string{"check", "~/.ssh"}, tree: tree{}.g(".ssh")},
+		{args: []string{"check", "~/.ssh/keys"}, tree: tree{}.g(".ssh/keys")},
+		{args: []string{"check", "~/.SSH"}, tree: tree{}.g(".SSH")},
+		{args: []string{"check", "~/.config/gcloud"}, tree: tree{}.g(".config/gcloud")},
+		{args: []string{"check", "~/.sandbox/overlays/x"}, tree: tree{}.g(".sandbox/overlays/x")},
+		{args: []string{"check", "~/work"}, tree: tree{}.g("work").d("work/.sandbox")},
+		{args: []string{"check", "~/work"}, tree: tree{}.g("work").d("work/ov"), env: []string{"SANDBOX_OVERLAY=<HOME>/work/ov"}},
+		{args: []string{"check", "~/ov"}, tree: tree{}.g("ov"), env: []string{"SANDBOX_OVERLAY=<HOME>/ov/inner"}},
+		{args: []string{"check", "~/link"}, tree: tree{}.g(".kube").l("link", ".kube")},
+		{args: []string{"check", "~/repos/app"}, tree: ws.f("repos/app/.env", "A=1").f("repos/app/sub/clouds.yaml", "x").
+			f("repos/app/a/b/c/deep.pem", "x").f("repos/app/a/b/x.key", "k").f("repos/app/.git/x.pem", "x")},
+		{args: []string{"check", "~/repos/app"}, tree: ws.f("repos/app/prod.env", "x").f("repos/app/x-openrc.sh", "x").f("repos/app/id_rsa", "x")},
+		{args: []string{"check", "~/repos/app/"}, tree: ws.f("repos/app/.npmrc", "x")},
+		{args: []string{"check", "~/repos/app"}, tree: ws, env: stub},
+		{args: []string{"check", "~/repos/app"}, tree: ws.f("scen/ws.json", "[]"), env: stub},
+		{args: []string{"check", "~/repos/app"}, tree: ws.f("repos/app/a.txt", "s").f("repos/app/b c.txt", "s").
+			f("scen/ws.json", "["+finding("a.txt", "rule-a", 3)+","+finding("b c.txt", "generic-api-key", 7)+","+finding("a.txt", "other", 9)+"]"), env: stub},
+		{args: []string{"check", "~/repos/app"}, tree: ws.f("repos/app/.env", "A=1").f("scen/ws.json", "["+finding(".env", "r", 1)+"]"), env: stub},
+		{args: []string{"check", "~/repos/app"}, tree: ws.f("scen/ws.json", "[]").f("scen/gc.json", "["+finding(".git/config", "url-cred", 8)+"]"), env: stub},
+		{args: []string{"check", "~/repos/app"}, tree: ws.f("scen/ws.json", "{}").f("scen/ws.rc", "1"), env: stub},
+		{args: []string{"check", "~/repos/app"}, tree: ws.f("scen/ws.rc", "2"), env: stub},
+		{args: []string{"check", "~/repos/app"}, tree: ws.f("repos/app/.sandbox/config.yaml", "accepted_secrets:\n  - a.txt:r:1:h\n").f("scen/ws.json", "[]"), env: stub},
+		{args: []string{"check", "~/repos/app"}, tree: ws.f("repos/app/sealed.yaml", "apiVersion: bitnami.com/v1alpha1\nkind: SealedSecret\nspec:\n  encryptedData:\n    k: AgB\n").
+			f("scen/ws.json", `[{"EndColumn":0,"File":"@REPO@/sealed.yaml","Match":"REDACTED","RuleID":"generic-api-key","StartColumn":0,"StartLine":5}]`), env: stub},
+	} {
+		add(cc)
+	}
 
 	var rows []string
 	for i, c := range cases {

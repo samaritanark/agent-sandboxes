@@ -78,6 +78,13 @@ func buildTree(t *testing.T, home, spec string) {
 		case "l":
 			os.MkdirAll(parent, 0o755)
 			os.Symlink(dec64(t, w[2]), full)
+		case "g":
+			os.MkdirAll(full, 0o755)
+			cmd := exec.Command("git", "init", "-q", full)
+			cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+			if b, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git init %s: %v %s", full, err, b)
+			}
 		}
 	}
 }
@@ -86,9 +93,16 @@ func buildTree(t *testing.T, home, spec string) {
 func listing(home string) string {
 	var paths []string
 	filepath.WalkDir(home, func(p string, d fs.DirEntry, err error) error {
-		if p != home && err == nil {
-			paths = append(paths, "./"+strings.TrimPrefix(p, home+"/"))
+		if err != nil || p == home {
+			return nil
 		}
+		if d.Name() == ".git" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		paths = append(paths, "./"+strings.TrimPrefix(p, home+"/"))
 		return nil
 	})
 	sort.Strings(paths)
@@ -148,7 +162,20 @@ func TestCLIGolden(t *testing.T) {
 		if e := dec64(t, row[5]); e != "" {
 			envs = strings.Split(e, "\n")
 		}
+		// The process environment the oracle gives bin/sandbox: a fixed PATH, and with STUB=1 the
+		// gate's stub scanner first on it.
+		path := "/usr/bin:/bin"
+		for _, kv := range envs {
+			if kv == "STUB=1" {
+				path = filepath.Join(root, "go/internal/gate/testdata/scan/stub") + ":" + path
+				t.Setenv("STUB_SCEN", home+"/scen")
+				t.Setenv("STUB_LOG", filepath.Join(dir, row[0], "stub.log"))
+				t.Setenv("STUB_ROOT", home)
+			}
+		}
+		t.Setenv("PATH", path)
 		env := fixtureEnv(row[1], home, root, envs)
+		env.SandboxRoot = "/nonexistent-sandbox-root" // the oracle's install copy, outside every case home
 		env.Stdin = strings.NewReader(dec64(t, row[4]))
 		var out, errb bytes.Buffer
 		rc := Run(args, env, &out, &errb)

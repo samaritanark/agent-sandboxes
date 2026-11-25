@@ -96,7 +96,7 @@ func TestFixQuoteRepoInMaskAdd(t *testing.T) {
 	entries := []string{"/work/my repo\ta.txt\tr\t1\tR"}
 	render := func() string {
 		var b bytes.Buffer
-		printMaskAddCommands(&b, entries)
+		PrintMaskAddCommands(&b, entries)
 		return b.String()
 	}
 	if !strings.Contains(render(), "--repo /work/my repo a.txt") {

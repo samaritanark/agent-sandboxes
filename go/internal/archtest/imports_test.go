@@ -29,9 +29,10 @@ var allowed = map[string][]string{
 	"link":       {"bashcompat", "config", "deviation"},
 	"onboard":    {"bashcompat", "config", "deviation"},
 	"agents":     {"deviation", "jqjson"},
+	"workspace":  {"bashcompat", "config", "deviation"},
 	// the in-VM CLI is the policy layer's front end, so it may use every policy package
 	"cli": {"agents", "audit", "bashcompat", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
-		"link", "onboard", "tier", "vetting"},
+		"link", "onboard", "tier", "vetting", "workspace"},
 }
 
 func TestImportGraph(t *testing.T) {

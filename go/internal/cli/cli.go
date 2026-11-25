@@ -28,6 +28,10 @@ type Env struct {
 	config.Env             // HOME, USER_SANDBOX_CONFIG, SANDBOX_OVERLAY, and the rest
 	OrgBlockList string    // BLOCKED_DESTINATIONS_CONFIG (default <root>/config/blocked-destinations.yaml)
 	Stdin        io.Reader // answers to y/N prompts
+	SandboxRoot  string    // the install root the workspace overlap check protects
+	IsWSL        bool      // the host is WSL (Windows-drive paths are refused)
+
+	VettingTrustRootDefault string // SANDBOX_VETTING_TRUST_ROOT_DEFAULT
 
 	Version   VersionInfo // Version "" means "dev"
 	Root      string      // the install root (SANDBOX_ROOT)
@@ -97,6 +101,15 @@ func (c *cmdCtx) needValue(args []string, i int, flag string) string {
 	panic(exit(1))
 }
 
+// missingArg is "${N:?message}" for a missing or empty positional argument: as needValue.
+func (c *cmdCtx) missingArg(n, msg string) {
+	if deviation.Fixed(deviation.FlagValueErrors) {
+		c.die("%s", msg)
+	}
+	fmt.Fprintf(c.stderr, "sandbox: line 0: %s: %s\n", n, msg)
+	panic(exit(1))
+}
+
 // padRight is printf's %-Ns under LC_ALL=C: pad to n bytes, not runes.
 func padRight(s string, n int) string {
 	if len(s) >= n {
@@ -142,7 +155,7 @@ func (c *cmdCtx) usage(name string) {
 // commands maps each v2 subcommand to its port, or nil while it is not yet ported.
 var commands = map[string]func(*cmdCtx, []string){
 	"run": nil, "resume": nil, "allow": nil, "list": nil, "logs": nil, "flows": nil, "stop": nil,
-	"cleanup": nil, "check": nil, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
+	"cleanup": nil, "check": cmdCheck, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
 	"upgrade": nil, "onboard": nil, "secret": nil, "mask": nil, "exceptions": nil, "vet": nil,
 	"profile": cmdProfile, "link": nil, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,
 	"version": cmdVersion,

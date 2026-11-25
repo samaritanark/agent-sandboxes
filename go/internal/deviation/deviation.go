@@ -140,6 +140,14 @@ const (
 	// 4951: 2: --tier requires a value") rather than an ERROR line. It now prints
 	// "ERROR: --tier requires a value".
 	FlagValueErrors ID = "flag-value-errors"
+	// RepoPathCaseInsensitive: validate_repo_path compared a workspace with the forbidden
+	// credential directories, the home directory, and the sandbox's own state by exact string, but
+	// macOS volumes ignore case and realpath keeps the case as typed, so --repo ~/.SSH passed and
+	// mounted ~/.ssh. The comparisons now ignore case.
+	RepoPathCaseInsensitive ID = "repo-path-case-insensitive"
+	// CheckHelp: `sandbox check --help` took --help as the workspace path and failed ("Repo path
+	// does not exist"). It now prints the usage line.
+	CheckHelp ID = "check-help"
 )
 
 var (

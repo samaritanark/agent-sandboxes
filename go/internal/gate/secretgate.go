@@ -43,7 +43,8 @@ func printUnmaskedFindings(w io.Writer, entries []string) {
 	}
 }
 
-func printMaskAddCommands(w io.Writer, entries []string) {
+// PrintMaskAddCommands is _print_mask_add_commands: one `sandbox mask add` line per repo.
+func PrintMaskAddCommands(w io.Writer, entries []string) {
 	var seenRepos []string
 	for _, e := range entries {
 		repo := bashcompat.SplitTab(e, 5)[0]
@@ -69,7 +70,8 @@ func printMaskAddCommands(w io.Writer, entries []string) {
 	}
 }
 
-func printExceptionsAddCommands(w io.Writer, entries []string) {
+// PrintExceptionsAddCommands is _print_exceptions_add_commands.
+func PrintExceptionsAddCommands(w io.Writer, entries []string) {
 	var seenRepos []string
 	for _, e := range entries {
 		repo := bashcompat.SplitTab(e, 5)[0]
@@ -253,12 +255,12 @@ func SecretGateRepos(d GateDeps, accept, endpointTrusted, acceptUnvetted string,
 			"    - Mask the file(s) so the agent sees an empty overlay (adds them to",
 			"      <repo>/.sandbox/config.yaml masked_paths:):",
 			"")
-		printMaskAddCommands(errw, unmasked)
+		PrintMaskAddCommands(errw, unmasked)
 		e("",
 			"    - Or, if a finding is a reviewed false positive, record it as an",
 			"      exception (honored once a reviewer vets the repo — 'sandbox vet'):",
 			"")
-		printExceptionsAddCommands(errw, unmasked)
+		PrintExceptionsAddCommands(errw, unmasked)
 	}
 	if len(gitconfig) > 0 {
 		e("", "  Secret(s) in .git/config (the agent can read .git in the workspace):")
