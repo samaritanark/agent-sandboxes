@@ -237,3 +237,35 @@ func TestFixAllowEgressFullCheck(t *testing.T) {
 		t.Errorf("fixed: a plain domain was refused: %q", e)
 	}
 }
+
+func TestFixFromEnvNameChecked(t *testing.T) {
+	run := func() (int, string) {
+		var out, errb bytes.Buffer
+		env := fixtureEnv("none", t.TempDir(), "/nonexistent", nil)
+		rc := Run([]string{"secret", "set", "GH_TOKEN", "--from-env=a-b"}, env, &out, &errb)
+		return rc, errb.String()
+	}
+	if rc, e := run(); rc != 1 || e != "<ROOT>/lib/secrets.sh: line 116: a-b: invalid variable name\n" {
+		t.Fatalf("legacy: rc=%d %q", rc, e)
+	}
+	defer deviation.Force(deviation.FromEnvNameChecked)()
+	if rc, e := run(); rc != 1 || e != "ERROR: --from-env: 'a-b' is not an environment variable name.\n" {
+		t.Errorf("fixed: rc=%d %q", rc, e)
+	}
+}
+
+// The macOS recreate blocker cannot be reached by the Linux oracle; v2's test-resume.sh checks it.
+func TestResumeBlockerMacOS(t *testing.T) {
+	home := t.TempDir()
+	sj := home + "/s.json"
+	os.WriteFile(sj, []byte(`{"agent":"claude","tier":1,"profile":"","repos":[]}`), 0o644)
+	env := fixtureEnv("none", home, "/nonexistent", nil)
+	c := &cmdCtx{env: env}
+	if b := c.resumeBlocker(sj); b != "" {
+		t.Fatalf("linux: a simple session is blocked: %q", b)
+	}
+	c.env.IsMacOS = true
+	if b := c.resumeBlocker(sj); !strings.Contains(b, "macOS") {
+		t.Errorf("macOS: %q", b)
+	}
+}

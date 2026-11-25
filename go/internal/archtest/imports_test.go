@@ -31,9 +31,11 @@ var allowed = map[string][]string{
 	"onboard":    {"bashcompat", "config", "deviation"},
 	"agents":     {"deviation", "jqjson"},
 	"workspace":  {"bashcompat", "config", "deviation"},
+	// the host-side secret store: files only, no policy
+	"secrets": {},
 	// the in-VM CLI is the policy layer's front end, so it may use every policy package
 	"cli": {"agents", "audit", "bashcompat", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
-		"link", "onboard", "tier", "vetting", "workspace"},
+		"link", "onboard", "secrets", "tier", "vetting", "workspace"},
 }
 
 func TestImportGraph(t *testing.T) {

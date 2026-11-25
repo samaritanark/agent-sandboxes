@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/checks"
 	"github.com/samaritanark/agent-sandboxes/go/internal/config"
@@ -63,6 +64,11 @@ type Env struct {
 	SessionPhase    func(sessionID, pod string) (exists bool, phase string)
 	RecreateSession func(PolicyRequest, ManifestRequest) error
 	Attach          func(AttachRequest)
+	// Getenv is the process environment as the bash's ${!var} sees it (secret set --from-env,
+	// onboard's forbidden-variable warning); nil reads nothing. Location is the local time zone
+	// file times print in (nil: the system's).
+	Getenv   func(string) string
+	Location *time.Location
 
 	Version   VersionInfo // Version "" means "dev"
 	Root      string      // the install root (SANDBOX_ROOT)
@@ -141,6 +147,14 @@ func (c *cmdCtx) missingArg(n, msg string) {
 	panic(exit(1))
 }
 
+// getenv reads the environment the command sees.
+func (c *cmdCtx) getenv(k string) string {
+	if c.env.Getenv == nil {
+		return ""
+	}
+	return c.env.Getenv(k)
+}
+
 // padRight is printf's %-Ns under LC_ALL=C: pad to n bytes, not runes.
 func padRight(s string, n int) string {
 	if len(s) >= n {
@@ -190,7 +204,7 @@ func (c *cmdCtx) usage(name string) {
 var commands = map[string]func(*cmdCtx, []string){
 	"run": cmdRun, "resume": cmdResume, "allow": cmdAllow, "list": cmdList, "logs": cmdLogs, "flows": nil, "stop": nil,
 	"cleanup": cmdCleanup, "check": cmdCheck, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
-	"upgrade": nil, "onboard": nil, "secret": nil, "mask": cmdMask, "exceptions": cmdExceptions, "vet": cmdVet,
+	"upgrade": nil, "onboard": cmdOnboard, "secret": cmdSecret, "mask": cmdMask, "exceptions": cmdExceptions, "vet": cmdVet,
 	"profile": cmdProfile, "link": cmdLink, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,
 	"version": cmdVersion,
 }

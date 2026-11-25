@@ -29,12 +29,16 @@ func (t tree) F(p, body string) tree { return append(t.clone(), enc("F")+" "+enc
 func (t tree) d(p string) tree       { return append(t.clone(), enc("d")+" "+enc(p)) }
 func (t tree) l(p, to string) tree   { return append(t.clone(), enc("l")+" "+enc(p)+" "+enc(to)) }
 func (t tree) g(p string) tree       { return append(t.clone(), enc("g")+" "+enc(p)) }
+func (t tree) a(p string) tree       { return append(t.clone(), enc("a")+" "+enc(p)) }
 func (t tree) c(p string) tree       { return append(t.clone(), enc("c")+" "+enc(p)) }
 func (t tree) r(p string) tree       { return append(t.clone(), enc("r")+" "+enc(p)) }
 func (t tree) p(p string) tree       { return append(t.clone(), enc("p")+" "+enc(p)) }
 func (t tree) v(p string) tree       { return append(t.clone(), enc("v")+" "+enc(p)) }
 func (t tree) t(p string, days int) tree {
 	return append(t.clone(), enc("t")+" "+enc(p)+" "+enc(fmt.Sprint(days)))
+}
+func (t tree) T(p string, epoch int64) tree {
+	return append(t.clone(), enc("T")+" "+enc(p)+" "+enc(fmt.Sprint(epoch)))
 }
 func (t tree) L(name, origin string) tree {
 	return append(t.clone(), enc("L")+" "+enc(name)+" "+enc(origin))
@@ -298,6 +302,7 @@ func main() {
 		sj("ses-4", `{"agent":{"a":[1,2]},"tier":1.50,"name":"ünïcode name that is long enough","end_time":true}`),
 		sj("ses-5", ``), sj("ses-6", `not json`), sj("ses-7", `null`), sj("ses-8", `[1]`),
 		sj("ses-9", "{\"agent\":\"a\"}\n{\"agent\":\"b\"}\n"),
+		sj("ses-11", "null\n{\"agent\":\"b\",\"tier\":2}\n"), sj("ses-12", "{\"agent\":\"a\"}\n[1]\n"),
 		tree{}.d(L + "ses-10"), tree{}.d(L + "other"), tree{}.f(L+"ses-file", "x"),
 		tree{}.d(L + "ses-a-very-long-session-identifier-over-36-characters"),
 		tree{}.d("elsewhere").l(L+"ses-link", "../elsewhere"),
@@ -632,6 +637,100 @@ func main() {
 		{args: RS("ses-1"), tree: withSess(tree{}, `{"agent":"claude","tier":3,"repos":[null,false,true,7,"<HOME>/r",""]}`)},
 	} {
 		add(cc)
+	}
+
+	// secret: the host-side store. TZ is fixed where file times are printed.
+	SC := func(a ...string) []string { return append([]string{"secret"}, a...) }
+	SD := ".sandbox/secrets/"
+	utc := []string{"TZ=UTC"}
+	listed := tree{}.f(SD+"B_TOKEN", "bee").T(SD+"B_TOKEN", 1700000000).f(SD+"A", "").T(SD+"A", 1700003600).
+		f(SD+".hidden", "x").d(SD+"SUBDIR").f(SD+"lower", "abc").T(SD+"lower", 1600000000).
+		f(SD+"ünï", "u").T(SD+"ünï", 1600000000)
+	for _, cc := range []cs{
+		{args: SC()}, {args: SC("--help")}, {args: SC("-h")}, {args: SC("help")}, {args: SC("bogus")},
+		{args: SC("set")}, {args: SC("set", "")}, {args: SC("set", "lower")}, {args: SC("set", "1A")}, {args: SC("set", "A-B")},
+		{args: SC("set", strings.Repeat("A", 65))}, {args: SC("set", strings.Repeat("A", 64)), stdin: "v"},
+		{args: SC("set", "ÄB")},
+		{args: SC("set", "HAS SPACE")}, {args: SC("set", "HAS.DOT")}, {args: SC("set", "Mixed_Case")},
+		{args: SC("set", "_LEADING_UNDERSCORE"), stdin: "v"}, {args: SC("set", "B12"), stdin: "v"},
+		{args: SC("set", "GH_TOKEN"), stdin: "ghp_value\n"}, {args: SC("set", "GH_TOKEN"), stdin: ""},
+		{args: SC("set", "GH_TOKEN", "extra")}, {args: SC("set", "GH_TOKEN", "--bogus")}, {args: SC("set", "GH_TOKEN", "--help")},
+		{args: SC("set", "GH_TOKEN", "--from-file", "~/src"), tree: tree{}.f("src", "file value\n")},
+		{args: SC("set", "GH_TOKEN", "--from-file=<HOME>/src"), tree: tree{}.f("src", "file value")},
+		{args: SC("set", "GH_TOKEN", "--from-file", "~/missing")},
+		{args: SC("set", "GH_TOKEN", "--from-file", "~/dir"), tree: tree{}.d("dir")},
+		{args: SC("set", "GH_TOKEN", "--from-file")}, {args: SC("set", "GH_TOKEN", "--from-file", "")},
+		{args: SC("set", "GH_TOKEN", "--from-file="), stdin: "from stdin"},
+		{args: SC("set", "GH_TOKEN", "--from-file", "~/src", "--from-env"), tree: tree{}.f("src", "x")},
+		{args: SC("set", "lower", "--from-file", "~/src", "--from-env"), tree: tree{}.f("src", "x")},
+		{args: SC("set", "GH_TOKEN", "--from-env"), env: []string{"GH_TOKEN=env value"}},
+		{args: SC("set", "GH_TOKEN", "--from-env=MY_VAR"), env: []string{"MY_VAR=other value"}},
+		{args: SC("set", "GH_TOKEN", "--from-env=MY_VAR")},
+		{args: SC("set", "GH_TOKEN", "--from-env="), stdin: "from stdin"},
+		{args: SC("set", "GH_TOKEN", "--from-env"), env: []string{"GH_TOKEN="}},
+		{args: SC("set", "lower", "--from-env")},
+		{args: SC("set", "GH_TOKEN", "--from-env=a-b")}, {args: SC("set", "GH_TOKEN", "--from-env=1X")},
+		{args: SC("set", "GH_TOKEN", "--from-env=_USE_DEFAULT"), env: []string{"GH_TOKEN=via sentinel"}},
+		{args: SC("set", "GH_TOKEN"), stdin: "new", tree: tree{}.f(SD+"GH_TOKEN", "a much longer old value").d(SD + "keep")},
+		{args: SC("set", "GH_TOKEN"), stdin: "v", tree: tree{}.d(".sandbox")},
+		{args: SC("set", "GH_TOKEN"), stdin: "through", tree: tree{}.f("target", "t").l(SD+"GH_TOKEN", "../../target")},
+		{args: SC("set", "GH_TOKEN"), stdin: "v", env: []string{"SANDBOX_SECRETS_DIR=<HOME>/alt"}},
+		{args: SC("list")}, {args: SC("list"), tree: tree{}.d(SD)}, {args: SC("list", "extra"), tree: tree{}.d(SD)},
+		{args: SC("list"), tree: listed, env: utc}, {args: SC("list"), tree: listed, env: []string{"TZ=Asia/Kolkata"}},
+		{args: SC("list"), tree: listed.f(SD+strings.Repeat("é", 20), "x").T(SD+strings.Repeat("é", 20), 1600000000), env: utc},
+		{args: SC("list"), tree: listed.f("alt/X", "1").T("alt/X", 1700000000), env: []string{"TZ=UTC", "SANDBOX_SECRETS_DIR=<HOME>/alt"}},
+		{args: SC("list"), env: []string{"SANDBOX_SECRETS_DIR=/nonexistent/secrets"}},
+		{args: SC("delete")}, {args: SC("delete", "lower")}, {args: SC("delete", "GH_TOKEN")},
+		{args: SC("delete", "GH_TOKEN"), tree: tree{}.f(SD+"GH_TOKEN", "v")},
+		{args: SC("rm", "GH_TOKEN", "extra"), tree: tree{}.f(SD+"GH_TOKEN", "v")},
+		{args: SC("remove", "GH_TOKEN"), tree: tree{}.f("target", "t").l(SD+"GH_TOKEN", "../../target")},
+		{args: SC("delete", "GH_TOKEN"), tree: tree{}.l(SD+"GH_TOKEN", "../../nowhere")},
+	} {
+		add(cc)
+	}
+
+	// onboard: the command around the onboard package (whose own corpus covers the staging).
+	OB := func(a ...string) []string { return append([]string{"onboard"}, a...) }
+	for _, cc := range []cs{
+		{args: OB("--help")}, {args: OB("-h")}, {args: OB("--bogus")}, {args: OB("stray")}, {args: OB("--agent")},
+		{args: OB("--agent", "bogus")}, {args: OB("--agent=")}, {args: OB("--agent=all", "--dry-run")},
+		{args: OB("--dry-run")}, {args: OB()}, {args: OB("--skip-config", "--agent", "opencode")},
+		{args: OB("--agent", "claude"), tree: tree{}.f(".claude/.credentials.json", "{}").f(".claude/settings.json", "{}")},
+		{args: OB("--agent", "claude", "--dry-run"), tree: tree{}.f(".claude/.credentials.json", "{}")},
+		{args: OB("--agent", "codex", "--force"), tree: tree{}.f(".codex/auth.json", "{}").f(".sandbox/config.yaml", "x: 1\n")},
+		{args: OB("--agent", "grok"), env: []string{"ANTHROPIC_API_KEY=k", "GH_TOKEN=t"}},
+		{args: OB("--agent", "copilot", "--skip-config"), env: []string{"OPENAI_API_KEY=k"}},
+	} {
+		add(cc)
+	}
+
+	// Cases added when the corrected mutation runner (which copies the whole repository) showed
+	// what the CLI corpus could not see.
+	hist := tree{}.g("h").f("h/old.txt", "o").f("h/keep.txt", "k").c("h").r("h/old.txt").c("h").f("h/staged.txt", "s").a("h")
+	vrX := vr.f("vr/.betterleaksignore", "a.txt:rule-a:1\n").c("vr").f(".sandbox/config.yaml", "vetting_signing_key: ~/.testkey/k\n").
+		f("scen/ws.json", "["+finding("a.txt", "rule-a", 1)+"]")
+	honorDel := append(append(tree{}, vrDomVetted.r("vr/.sandbox/config.yaml")...), honorOv...)
+	for _, cc := range []cs{
+		{args: []string{"profile", "save", "--name", "p", "--tierx", "1"}}, {args: R("--tierx", "1")},
+		{args: []string{"profile", "save", "--name", "p", "--tier", "2", "--repo", "~/file"}, tree: tree{}.f("file", "x")},
+		{args: []string{"profile", "save", "--name", "p", "--tier", "1"}, tree: tree{}.d(".sandbox/profiles/p.yaml")},
+		{args: []string{"check", "~/.sshkeys"}, tree: tree{}.d(".ssh").g(".sshkeys").f(".sshkeys/a", "a").c(".sshkeys")},
+		{args: []string{"check", "~/r"}, tree: rg.f("scen/ws.json", "["+finding("", "rule-x", 2)+"]"), env: stub},
+		{args: []string{"mask", "add", "--repo", "~/h", "old.txt"}, tree: hist},
+		{args: []string{"mask", "add", "--repo", "~/h", "staged.txt"}, tree: hist},
+		{args: []string{"exceptions", "migrate", "--repo", "~/ex"}, tree: ex.f("ex/.sandbox/config.yaml", "accepted_secrets:\n  - e.txt:r:3:h  # first # second\n")},
+		{args: []string{"vet", "--repo", "~/vr", "--yes"}, tree: vrX, env: stub},
+		{args: []string{"vet", "--repo", "~/vr"}, tree: vrX, env: stub},
+		{args: []string{"cleanup", "--older-than", "30"}, tree: tree{}.d(L+"ses-b").t(L+"ses-b", 30).d(L+"ses-c").t(L+"ses-c", 31)},
+		{args: []string{"cleanup", "--older-than", "-5"}, tree: tree{}.d(L+"ses-new").t(L+"ses-new", 2)},
+		{args: []string{"cleanup", "--older-than", "5"}, tree: tree{}.f(L+"ses-file", "x").t(L+"ses-file", 40).d(L+"ses-d").t(L+"ses-d", 40)},
+		{args: R("--tier", "3", "--infra-token", "~/tok"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "<HOME>/to=k"), tree: tok.f("to=k", "t")},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "~/tok", "--infra-endpoint", "https://smtp.example.org/x:1"), tree: tok},
+		{args: R(), tree: tree{}.f(".sandbox/config.yaml", "blocked_cidrs:\n  - nope\n")},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: honorDel, env: ov},
+	} {
+		addRun(cc)
 	}
 
 	var rows []string

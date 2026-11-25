@@ -49,6 +49,7 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
          mkdir -p "$H/.sandbox"
          printf 'overlay: %s\nlink_url: %s\nlink_ref: main\nlink_commit: %s\n' "$H/.sandbox/overlays/$p" "$H/$t" \
            "$(git -C "$H/.sandbox/overlays/$p" rev-parse HEAD)" >> "$H/.sandbox/config.yaml" ;;
+      a) GIT_CONFIG_GLOBAL=/dev/null git -C "$H/$p" add -A ;;  # staged, not committed
       c) GIT_CONFIG_GLOBAL=/dev/null git -C "$H/$p" add -A
          GIT_CONFIG_GLOBAL=/dev/null GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x \
            GIT_AUTHOR_DATE="@1700000000 +0000" GIT_COMMITTER_DATE="@1700000000 +0000" git -C "$H/$p" commit -q -m c ;;
@@ -59,6 +60,7 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
       r) rm -rf "$H/$p" ;;
       p) mkdir -p "$(dirname "$H/$p")"; mkfifo "$H/$p" ;;
       t) touch -h -d "@$(( $(date +%s) - t * 86400 ))" "$H/$p" ;;
+      T) touch -d "@$t" "$H/$p" ;;  # an absolute mtime (epoch seconds; not for a symlink)
     esac
   done <<<"$tree"
   [[ -f "$H/.testkey/k" ]] && chmod 600 "$H/.testkey/k"

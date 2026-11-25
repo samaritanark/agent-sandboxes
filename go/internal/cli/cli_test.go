@@ -53,6 +53,17 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 	e.ImagePresent = func(string) int { return 2 }
 	e.RunHandoff = func(s LaunchSpec, r *SessionRecord) { fmt.Fprint(handoffOut, dumpSpec(s, r)) }
 	e.User = "t"
+	// The environment oracle.sh gives bin/sandbox (PATH aside, which differs by machine), plus the
+	// case's own variables.
+	vars := map[string]string{"FAKE_NOW": "1800000000", "GIT_CONFIG_NOSYSTEM": "1", "GIT_COMMITTER_NAME": "t",
+		"GIT_COMMITTER_EMAIL": "t@x", "GIT_COMMITTER_DATE": "@1700000200 +0000", "HOME": home, "LC_ALL": "C",
+		"SANDBOX_LOGS_DIR": home + "/logs"}
+	for _, kv := range envs {
+		if k, v, ok := strings.Cut(strings.ReplaceAll(kv, "<HOME>", home), "="); ok && k != "STUB" {
+			vars[k] = v
+		}
+	}
+	e.Getenv = func(k string) string { return vars[k] }
 	// cmd-stub.sh: a session is live when STUB_POD is set; the policy inputs go to stderr.
 	e.SessionLive = func(string, string) bool { return false }
 	e.SessionPhase = func(string, string) (bool, string) { return false, "" }
@@ -116,6 +127,13 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 			live := v != ""
 			e.SessionLive = func(string, string) bool { return live }
 			e.SessionPhase = func(string, string) (bool, string) { return live, v }
+		case "TZ":
+			loc, err := time.LoadLocation(v)
+			if err == nil {
+				e.Location = loc
+			}
+		case "SANDBOX_SECRETS_DIR":
+			e.SecretsDir = v
 		case "STOP_AT":
 			e.StopAtDecisions = v == "b1"
 		case "SANDBOX_MAX_DEPS_PER_SESSION":
@@ -225,8 +243,12 @@ func buildTree(t *testing.T, home, spec string) {
 			if b, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("git init %s: %v %s", full, err, b)
 			}
-		case "c":
-			for _, a := range [][]string{{"add", "-A"}, {"commit", "-q", "-m", "c"}} {
+		case "a", "c":
+			steps := [][]string{{"add", "-A"}, {"commit", "-q", "-m", "c"}}
+			if k == "a" {
+				steps = steps[:1] // staged, not committed
+			}
+			for _, a := range steps {
 				cmd := exec.Command("git", append([]string{"-C", full}, a...)...)
 				cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x",
 					"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x",
@@ -260,6 +282,12 @@ func buildTree(t *testing.T, home, spec string) {
 			f, _ := os.OpenFile(home+"/.sandbox/config.yaml", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
 			fmt.Fprintf(f, "overlay: %s\nlink_url: %s\nlink_ref: main\nlink_commit: %s\n", dst, origin, strings.TrimSpace(string(head)))
 			f.Close()
+		case "T":
+			var epoch int64
+			fmt.Sscan(dec64(t, w[2]), &epoch)
+			if err := os.Chtimes(full, time.Unix(epoch, 0), time.Unix(epoch, 0)); err != nil {
+				t.Fatal(err)
+			}
 		case "t":
 			var days int64
 			fmt.Sscan(dec64(t, w[2]), &days)

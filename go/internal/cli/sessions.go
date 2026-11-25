@@ -37,7 +37,8 @@ func jqAlt(path, key, def string) string {
 			x = v.Get(key)
 		case jqjson.Null:
 		default:
-			return strings.Join(append(out, def), "\n")
+			// $(...) strips trailing newlines on this exit too (an empty DEF leaves none)
+			return strings.TrimRight(strings.Join(append(out, def), "\n"), "\n")
 		}
 		switch {
 		case x.Kind == jqjson.Null || (x.Kind == jqjson.Bool && !x.B):

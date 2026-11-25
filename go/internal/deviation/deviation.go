@@ -110,6 +110,10 @@ const (
 	// refuses: *.com, an IP inside a blocked CIDR, or an escaped spelling of a blocked host (design
 	// Appendix B, item 12). Each domain now gets check_egress_target_not_blocked.
 	AllowEgressFullCheck ID = "allow-egress-full-check"
+	// FromEnvNameChecked: `sandbox secret set --from-env=VAR` with a VAR that is not a variable
+	// name died with bash's own "lib/secrets.sh: line 116: VAR: invalid variable name" (and a
+	// digits-only VAR read a positional parameter instead). It is now refused with an ERROR line.
+	FromEnvNameChecked ID = "from-env-name-checked"
 	// AuditDomainsAsData: audit_write_session_json pasted each allowed domain between quotes into
 	// JSON text, so a quote in a domain added entries to the session record and an escape was
 	// recorded as the character it names (the record could show a different domain from the one

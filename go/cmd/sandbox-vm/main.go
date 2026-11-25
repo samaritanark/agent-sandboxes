@@ -57,6 +57,7 @@ func main() {
 		Runtime:                 "go " + strings.TrimPrefix(runtime.Version(), "go"),
 		StdoutTTY:               isTTY(os.Stdout),
 		StdinTTY:                isTTY(os.Stdin),
+		Getenv:                  os.Getenv,
 		User:                    currentUser(),
 		MaxDeps:                 os.Getenv("SANDBOX_MAX_DEPS_PER_SESSION"),
 		StderrTTY:               isTTY(os.Stderr),
