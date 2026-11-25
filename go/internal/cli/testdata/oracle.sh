@@ -41,6 +41,7 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
     dec k "${w[0]}"; dec p "${w[1]}"; t=""; [[ ${#w[@]} -gt 2 ]] && dec t "${w[2]}"
     case "$k" in
       f) mkdir -p "$(dirname "$H/$p")"; printf '%s' "$t" > "$H/$p" ;;
+      F) mkdir -p "$(dirname "$H/$p")"; printf '%s' "${t//<HOME>/$H}" > "$H/$p" ;;  # <HOME> filled in
       d) mkdir -p "$H/$p" ;;
       l) mkdir -p "$(dirname "$H/$p")"; ln -s "$t" "$H/$p" ;;
       g) mkdir -p "$H/$p"; GIT_CONFIG_GLOBAL=/dev/null git init -q -b main "$H/$p" ;;

@@ -57,6 +57,12 @@ type Env struct {
 	// apply). Both are sandboxd's in v3; while nil, `allow` stops before touching the session.
 	SessionLive func(sessionID, pod string) bool
 	ApplyPolicy func(PolicyRequest) error
+	// SessionPhase reports whether a session's workload exists and its phase (v2: kubectl get pod);
+	// RecreateSession rebuilds a torn-down one from its record; Attach reconnects the terminal.
+	// sandboxd's in v3; while nil, `resume` stops before touching the session.
+	SessionPhase    func(sessionID, pod string) (exists bool, phase string)
+	RecreateSession func(PolicyRequest, ManifestRequest) error
+	Attach          func(AttachRequest)
 
 	Version   VersionInfo // Version "" means "dev"
 	Root      string      // the install root (SANDBOX_ROOT)
@@ -182,7 +188,7 @@ func (c *cmdCtx) usage(name string) {
 
 // commands maps each v2 subcommand to its port, or nil while it is not yet ported.
 var commands = map[string]func(*cmdCtx, []string){
-	"run": cmdRun, "resume": nil, "allow": cmdAllow, "list": cmdList, "logs": cmdLogs, "flows": nil, "stop": nil,
+	"run": cmdRun, "resume": cmdResume, "allow": cmdAllow, "list": cmdList, "logs": cmdLogs, "flows": nil, "stop": nil,
 	"cleanup": cmdCleanup, "check": cmdCheck, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
 	"upgrade": nil, "onboard": nil, "secret": nil, "mask": cmdMask, "exceptions": cmdExceptions, "vet": cmdVet,
 	"profile": cmdProfile, "link": cmdLink, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,

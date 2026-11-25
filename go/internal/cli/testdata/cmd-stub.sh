@@ -6,13 +6,17 @@
 #                                 otherwise nothing (there is no cluster)
 #   ensure_network_config_current, prepare_agent_home, prepare_workspace, check_masking_paths
 #                                 nothing: v3 removes them (VM-local paths, no gVisor mounts)
-#   audit_flush_overrides         runs, then prints the decisions and exits (the end of Step 4)
+#   audit_flush_overrides         runs; for run, then prints the decisions and exits (Step 4 ends)
 #   date                          the clock is fixed at $FAKE_NOW unless a date is given
 #   head                          /dev/urandom reads answer fixed bytes (session ID, UUID)
 #   kubectl                       `get pod` succeeds when $STUB_POD is set (a live session),
 #                                 printing $STUB_POD as the phase for a jsonpath query;
 #                                 `apply` reads and drops its input
 #   build_cilium_policy           prints its inputs to stderr (what v3 hands the gateway)
+#   build_pod_manifest            prints its inputs to stderr (what v3 hands sandboxd)
+#   wait_for_pod                  succeeds
+#   _arm_teardown_trap            (resume, just before attaching) prints the agent command and
+#                                 exits
 # Everything else is the v2 code.
 source "$1/bin/sandbox"
 cmd="$2"
@@ -53,6 +57,20 @@ build_cilium_policy() {
   for x in "${SESSION_DEP_ENDPOINTS[@]+"${SESSION_DEP_ENDPOINTS[@]}"}"; do printf 'dep_endpoint=%s\n' "$x" >&2; done
   printf 'host_entity=%s\n' "${SESSION_KUBE_HOST_ENTITY:-}" >&2
 }
+build_pod_manifest() {
+  local x
+  echo "### manifest" >&2
+  for x in "$@"; do printf 'arg=%s\n' "$x" >&2; done
+}
+wait_for_pod() { return 0; }
+_arm_teardown_trap() {
+  local x
+  echo "### attach"
+  printf 'pod=%s\n' "$pod_name"
+  for x in "${agent_cmd[@]}"; do printf 'arg=%s\n' "$x"; done
+  printf 'keep_alive=%s\n' "$opt_keep_alive"
+  exit 0
+}
 k3s_image_present() { return "${STUB_IMAGE_RC:-2}"; }
 ensure_network_config_current() { :; }
 prepare_agent_home() { :; }
@@ -87,6 +105,7 @@ eval "_v2_$(declare -f audit_flush_overrides)"
 # cmd_run's locals (session_id, pod_name, _endpoint_trusted) are visible here: bash scoping is dynamic.
 audit_flush_overrides() {
   _v2_audit_flush_overrides "$@"
+  [[ "$cmd" == run ]] || return 0  # resume re-gates and flushes too, then goes on
   _dump_b1
   echo "### session"
   _q session_id "$session_id"; _q pod_name "$pod_name"; _q endpoint_trusted "${_endpoint_trusted:-}"

@@ -22,6 +22,10 @@ type tree []string
 func (t tree) clone() tree { return append(tree(nil), t...) }
 
 func (t tree) f(p, body string) tree { return append(t.clone(), enc("f")+" "+enc(p)+" "+enc(body)) }
+
+// F is f with <HOME> in the content replaced by the case's home (never for a committed file:
+// the path would differ between machines and so would the commit).
+func (t tree) F(p, body string) tree { return append(t.clone(), enc("F")+" "+enc(p)+" "+enc(body)) }
 func (t tree) d(p string) tree       { return append(t.clone(), enc("d")+" "+enc(p)) }
 func (t tree) l(p, to string) tree   { return append(t.clone(), enc("l")+" "+enc(p)+" "+enc(to)) }
 func (t tree) g(p string) tree       { return append(t.clone(), enc("g")+" "+enc(p)) }
@@ -576,6 +580,56 @@ func main() {
 		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(`{"id":"ses-1","agent":"claude","tier":1,"pod_name":null}`), env: live},
 		{args: A("ses-1", "--add-domain", "a.example.org"), tree: sess(`{"id":"ses-1","agent":"claude","tier":1,"allowed_domains":[]}`),
 			env: []string{"STUB_POD=Running", "BLOCKED_DESTINATIONS_CONFIG=<HOME>/missing.yaml"}},
+	} {
+		add(cc)
+	}
+
+	// resume: liveness and phase (STUB_POD), the recreate blockers and the guide command, the
+	// re-run gates, and the policy, workload, and agent command handed on.
+	RS := func(a ...string) []string { return append([]string{"resume"}, a...) }
+	scen := tree{}.f("scen/ws.json", "[]").f("scen/gc.json", "[]")
+	withSess := func(t tree, body string) tree {
+		return append(append(tree{}, scen...), t.F("logs/ses-1/session.json", body)...)
+	}
+	rec := func(fields string) string {
+		return `{"id":"ses-1","agent":"claude","tier":1,"user":"t","name":"claude","pod_name":"sandbox-claude-beef",` + fields + `"allowed_domains":["claude.ai","api.anthropic.com","x.example.org"]}`
+	}
+	sess1 := rec(`"agent_session_id":"01234567-89ab-4def-bedc-ba9876543210",`)
+	vrRec := func(extra string) string {
+		return `{"id":"ses-1","agent":"claude","tier":2,"user":"t","name":"vr/claude","pod_name":"sandbox-vr-claude-beef","repos":["<HOME>/vr"],` + extra + `"allowed_domains":["claude.ai"]}`
+	}
+	stubEnv := func(kv ...string) []string { return append([]string{"STUB=1"}, kv...) }
+	for _, cc := range []cs{
+		{args: RS()}, {args: RS("--help")}, {args: RS("-h")}, {args: RS("--bogus")}, {args: RS("ses-1", "ses-2")},
+		{args: RS("ses-1", "--help")}, {args: RS("ses-nope")}, {args: RS("")},
+		// live
+		{args: RS("ses-1"), tree: withSess(tree{}, sess1), env: []string{"STUB_POD=Running"}},
+		{args: RS("ses-1", "--keep-alive"), tree: withSess(tree{}, sess1), env: []string{"STUB_POD=Running"}},
+		{args: RS("ses-1"), tree: withSess(tree{}, sess1), env: []string{"STUB_POD=Pending"}},
+		{args: RS("ses-1"), tree: withSess(tree{}, `{"agent":"codex","agent_session_id":"abc"}`), env: []string{"STUB_POD=Running"}},
+		{args: RS("ses-1"), tree: withSess(tree{}, `{"agent":"copilot"}`), env: []string{"STUB_POD=Running"}},
+		{args: RS("ses-1"), tree: withSess(tree{}, `{}`), env: []string{"STUB_POD=Running"}},
+		{args: RS("ses-1"), tree: withSess(tree{}, `{"agent":null,"pod_name":null}`), env: []string{"STUB_POD=Running"}},
+		// torn down: blockers and the guide command
+		{args: RS("ses-1"), tree: withSess(tree{}, rec(`"tier":3,"repos":["<HOME>/r","<HOME>/b c"],`))},
+		{args: RS("ses-1"), tree: withSess(tree{}, rec(`"profile":"dev","repos":["<HOME>/r"],`))},
+		{args: RS("ses-1"), tree: withSess(tree{}, `{"agent":"opencode","tier":1,"name":"it's","allowed_domains":["llm.example.org","z.example.org"]}`)},
+		{args: RS("ses-1"), tree: withSess(tree{}, `{"agent":"opencode","tier":1,"allowed_domains":["llm.example.org"]}`), env: []string{"OPENCODE_BASE_URL=https://llm.example.org/v1"}},
+		{args: RS("ses-1"), tree: withSess(tree{}, `{"agent":"codex","tier":"3","profile":"","repos":[]}`)},
+		// torn down: recreated
+		{args: RS("ses-1"), tree: withSess(tree{}, sess1)},
+		{args: RS("ses-1"), tree: withSess(tree{}, `{"id":"ses-1","tier":1,"kube_api_cidr":"10.0.0.1/32","kube_api_port":"6443","kube_host_entity":"true"}`)},
+		{args: RS("ses-1"), tree: withSess(vvet, vrRec("")), env: stubEnv()},
+		{args: RS("ses-1"), tree: withSess(vrep, vrRec("")), env: stubEnv()},
+		{args: RS("ses-1"), tree: withSess(vrep.f(req, "vetting: required\n"), vrRec("")), env: stubEnv()},
+		{args: RS("ses-1", "--i-accept-unvetted-repo"), tree: withSess(vrep.f(req, "vetting: required\n"), vrRec(`"events":[],`)), env: stubEnv()},
+		{args: RS("ses-1"), tree: withSess(vvet.f("scen/ws.json", "["+finding("a.txt", "rule-a", 1)+"]"), vrRec("")), env: stubEnv()},
+		{args: RS("ses-1", "--i-accept-unmasked-secrets"), tree: withSess(vvet.f("scen/ws.json", "["+finding("a.txt", "rule-a", 1)+"]"), vrRec("")), env: stubEnv()},
+		{args: RS("ses-1", "--i-accept-vetting-drift"), tree: withSess(vvet.f("vr/b.txt", "b").c("vr").f(req, "vetting: required\n"), vrRec("")), env: stubEnv()},
+		{args: RS("ses-1"), tree: withSess(vvet, vrRec("")), env: []string{}},
+		{args: RS("ses-1"), tree: withSess(vvet, `{"agent":"claude","tier":2,"repos":[]}`)},
+		{args: RS("ses-1"), tree: withSess(tree{}, `{"agent":"codex","tier":1,"allowed_domains":["api.openai.com","x.example.org"]}`)},
+		{args: RS("ses-1"), tree: withSess(tree{}, `{"agent":"claude","tier":3,"repos":[null,false,true,7,"<HOME>/r",""]}`)},
 	} {
 		add(cc)
 	}

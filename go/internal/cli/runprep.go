@@ -216,15 +216,6 @@ func (c *cmdCtx) printErr(err error) { fmt.Fprintln(c.stderr, err.Error()) }
 func runPrepare(c *cmdCtx, s *LaunchSpec) SessionRecord {
 	var rec SessionRecord
 	var overrides []audit.Override
-	recordOverride := func(m, what string, repos []string) {
-		overrides = append(overrides, audit.RecordOverride(m, what, repos...))
-	}
-	tf := func(b bool) string {
-		if b {
-			return "true"
-		}
-		return "false"
-	}
 	var vettingSummary, secretSummary string
 
 	// Step 2: the workspace check and the two gates.
@@ -235,49 +226,8 @@ func runPrepare(c *cmdCtx, s *LaunchSpec) SessionRecord {
 				c.out("%s", l)
 			}
 		}
-		v := c.vetting()
-		a := vetting.Attester{Ctx: v, Out: c.stdout, Err: c.stderr, Stdin: c.stdin,
-			Warn: func(m string) { c.warn("%s", m) },
-			Scan: func(r, accept string) []string { return gate.ScanRepoSecrets(c.env.Env, r, accept, c.stderr) }}
-		vd := vetting.GateDeps{Out: c.stdout, Err: c.stderr, Stdin: c.stdin, TTY: c.env.StdinTTY && c.env.StdoutTTY,
-			Status: v.StatusRepo, RecordOverride: recordOverride, SigningConfigured: v.SigningConfigured,
-			InlineAttest: a.InlineAttest,
-			Cfg: vetting.GateConfig{ForbidOverride: v.ForbidUnvettedOverride(), TrustRoots: v.TrustRoots(),
-				TrustRoot: v.TrustRoot(), Cap: v.MaxCommitsBehind(), AgeCap: v.MaxAgeDays(), AgeDays: v.AgeDays}}
-		rc, sum := vd.VettingGateRepos(v.ResolvePosture(), tf(s.AcceptUnvetted), tf(s.AcceptDrift), s.Repos)
-		if rc != 0 {
-			panic(exit(rc))
-		}
-		vettingSummary = sum
-		rec.EndpointTrusted = "false"
-		if ep := agents.InferenceEndpoint(s.Agent, s.BaseURL); ep != "" && c.checks().InferenceEndpointIsTrusted(ep) {
-			rec.EndpointTrusted = "true"
-		}
-		acceptUnvetted := s.AcceptUnvetted && v.ForbidUnvettedOverride() != "true"
-		var stdin *bufio.Reader
-		if c.env.StdinTTY {
-			stdin = c.stdin
-		}
-		gd := gate.GateDeps{Out: c.stdout, Err: c.stderr, Stdin: stdin, IsTTY: c.env.StdinTTY,
-			VettedAcceptedFingerprints: func(repo, unvetted string) string {
-				var b strings.Builder
-				for _, l := range v.VettedAcceptedFingerprints(repo, unvetted) {
-					b.WriteString(l + "\n")
-				}
-				return b.String()
-			},
-			ExceptionsFromCommit: func() bool { return v.ExceptionsFromCommit() == "true" },
-			RecordOverride:       recordOverride,
-			LoadRepoAcceptedSecrets: func(repo string) string {
-				return strings.Join(config.LoadRepoAcceptedSecrets(repo), "\n")
-			},
-			Warn: func(m string) { c.warn("%s", m) },
-			Scan: func(r, accept string) []string { return gate.ScanRepoSecrets(c.env.Env, r, accept, c.stderr) }}
-		rc, sum = gate.SecretGateRepos(gd, tf(s.AcceptUnmasked), rec.EndpointTrusted, tf(acceptUnvetted), s.Repos)
-		if rc != 0 {
-			panic(exit(rc))
-		}
-		secretSummary = sum
+		vettingSummary, secretSummary, rec.EndpointTrusted = c.workspaceGates(s.Agent, s.BaseURL, s.Repos,
+			s.AcceptUnmasked, s.AcceptUnvetted, s.AcceptDrift, &overrides)
 	}
 
 	// Step 3: the session ID, the profile's dependencies, and the names.
@@ -341,4 +291,65 @@ func runPrepare(c *cmdCtx, s *LaunchSpec) SessionRecord {
 	}
 	audit.FlushOverrides(rec.LogDir, overrides, c.stamp())
 	return rec
+}
+
+// workspaceGates is the tier 2/3 gate sequence cmd_run Step 2 and recreate_session_pod share:
+// the vetting gate, then the secret gate (with the trusted-endpoint downgrade and the overlay's
+// forbidden-override knob). A refusal exits; otherwise it returns the two gates' summaries and
+// whether the inference endpoint is trusted, and appends each accepted override.
+func (c *cmdCtx) workspaceGates(agent, baseURL string, repos []string, acceptUnmasked, acceptUnvettedFlag, acceptDrift bool,
+	overrides *[]audit.Override) (vettingSummary, secretSummary, trusted string) {
+	tf := func(b bool) string {
+		if b {
+			return "true"
+		}
+		return "false"
+	}
+	recordOverride := func(m, what string, repos []string) {
+		*overrides = append(*overrides, audit.RecordOverride(m, what, repos...))
+	}
+	v := c.vetting()
+	a := vetting.Attester{Ctx: v, Out: c.stdout, Err: c.stderr, Stdin: c.stdin,
+		Warn: func(m string) { c.warn("%s", m) },
+		Scan: func(r, accept string) []string { return gate.ScanRepoSecrets(c.env.Env, r, accept, c.stderr) }}
+	vd := vetting.GateDeps{Out: c.stdout, Err: c.stderr, Stdin: c.stdin, TTY: c.env.StdinTTY && c.env.StdoutTTY,
+		Status: v.StatusRepo, RecordOverride: recordOverride, SigningConfigured: v.SigningConfigured,
+		InlineAttest: a.InlineAttest,
+		Cfg: vetting.GateConfig{ForbidOverride: v.ForbidUnvettedOverride(), TrustRoots: v.TrustRoots(),
+			TrustRoot: v.TrustRoot(), Cap: v.MaxCommitsBehind(), AgeCap: v.MaxAgeDays(), AgeDays: v.AgeDays}}
+	rc, sum := vd.VettingGateRepos(v.ResolvePosture(), tf(acceptUnvettedFlag), tf(acceptDrift), repos)
+	if rc != 0 {
+		panic(exit(rc))
+	}
+	vettingSummary = sum
+	trusted = "false"
+	if ep := agents.InferenceEndpoint(agent, baseURL); ep != "" && c.checks().InferenceEndpointIsTrusted(ep) {
+		trusted = "true"
+	}
+	acceptUnvetted := acceptUnvettedFlag && v.ForbidUnvettedOverride() != "true"
+	var stdin *bufio.Reader
+	if c.env.StdinTTY {
+		stdin = c.stdin
+	}
+	gd := gate.GateDeps{Out: c.stdout, Err: c.stderr, Stdin: stdin, IsTTY: c.env.StdinTTY,
+		VettedAcceptedFingerprints: func(repo, unvetted string) string {
+			var b strings.Builder
+			for _, l := range v.VettedAcceptedFingerprints(repo, unvetted) {
+				b.WriteString(l + "\n")
+			}
+			return b.String()
+		},
+		ExceptionsFromCommit: func() bool { return v.ExceptionsFromCommit() == "true" },
+		RecordOverride:       recordOverride,
+		LoadRepoAcceptedSecrets: func(repo string) string {
+			return strings.Join(config.LoadRepoAcceptedSecrets(repo), "\n")
+		},
+		Warn: func(m string) { c.warn("%s", m) },
+		Scan: func(r, accept string) []string { return gate.ScanRepoSecrets(c.env.Env, r, accept, c.stderr) }}
+	rc, sum = gate.SecretGateRepos(gd, tf(acceptUnmasked), trusted, tf(acceptUnvetted), repos)
+	if rc != 0 {
+		panic(exit(rc))
+	}
+	secretSummary = sum
+	return vettingSummary, secretSummary, trusted
 }

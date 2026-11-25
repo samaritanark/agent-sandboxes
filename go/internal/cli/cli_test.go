@@ -55,6 +55,22 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 	e.User = "t"
 	// cmd-stub.sh: a session is live when STUB_POD is set; the policy inputs go to stderr.
 	e.SessionLive = func(string, string) bool { return false }
+	e.SessionPhase = func(string, string) (bool, string) { return false, "" }
+	e.RecreateSession = func(p PolicyRequest, m ManifestRequest) error {
+		e.ApplyPolicy(p)
+		fmt.Fprintln(handoffErr, "### manifest")
+		for _, a := range append([]string{m.SessionID, m.Agent, m.Tier, m.Image, m.Name, m.User, "", m.PodName, "", "", ""}, m.Repos...) {
+			fmt.Fprintf(handoffErr, "arg=%s\n", a)
+		}
+		return nil
+	}
+	e.Attach = func(a AttachRequest) {
+		fmt.Fprintf(handoffOut, "### attach\npod=%s\n", a.Pod)
+		for _, x := range a.Command {
+			fmt.Fprintf(handoffOut, "arg=%s\n", x)
+		}
+		fmt.Fprintf(handoffOut, "keep_alive=%t\n", a.KeepAlive)
+	}
 	e.ApplyPolicy = func(r PolicyRequest) error {
 		fmt.Fprintln(handoffErr, "### policy")
 		for _, a := range append([]string{r.SessionID, r.Agent, r.Tier, r.KubeAPICIDR, r.KubeAPIPort}, r.Extras...) {
@@ -99,6 +115,7 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 		case "STUB_POD":
 			live := v != ""
 			e.SessionLive = func(string, string) bool { return live }
+			e.SessionPhase = func(string, string) (bool, string) { return live, v }
 		case "STOP_AT":
 			e.StopAtDecisions = v == "b1"
 		case "SANDBOX_MAX_DEPS_PER_SESSION":
@@ -193,6 +210,9 @@ func buildTree(t *testing.T, home, spec string) {
 		case "f":
 			os.MkdirAll(parent, 0o755)
 			os.WriteFile(full, []byte(dec64(t, w[2])), 0o666)
+		case "F":
+			os.MkdirAll(parent, 0o755)
+			os.WriteFile(full, []byte(strings.ReplaceAll(dec64(t, w[2]), "<HOME>", home)), 0o666)
 		case "d":
 			os.MkdirAll(full, 0o755)
 		case "l":
