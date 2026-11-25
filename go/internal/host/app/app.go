@@ -63,7 +63,7 @@ var removed = map[string]string{
 
 // notYet are host-only commands this build does not implement yet.
 var notYet = map[string]bool{
-	"upgrade": true, "doctor": true, "ca": true,
+	"upgrade": true, "ca": true,
 }
 
 // Run executes one command line and returns the exit code.
@@ -97,6 +97,8 @@ func Run(ctx context.Context, args []string, env Env) (rc int) {
 			return a.uninstall(args[1:])
 		case "sync":
 			return a.sync(args[1:])
+		case "doctor":
+			return a.doctor(args[1:])
 		}
 		if f, ok := env.HostCommands[args[0]]; ok {
 			return f(ctx, args[1:])

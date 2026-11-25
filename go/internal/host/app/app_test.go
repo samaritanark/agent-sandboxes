@@ -22,6 +22,7 @@ type fakeTransport struct {
 	rc      int
 	runs    [][]string
 	pushes  [][]byte
+	reach   string
 	ttys    []bool
 }
 
@@ -38,6 +39,12 @@ func (f *fakeTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []stri
 }
 
 func (f *fakeTransport) Output(_ context.Context, _ driver.SSHEndpoint, argv []string, max int) ([]byte, error) {
+	switch argv[0] {
+	case "sh":
+		return []byte("present\n"), nil
+	case "timeout":
+		return []byte(f.reach + "\n"), nil
+	}
 	if !reflect.DeepEqual(argv, []string{"cat", ReleasePath}) {
 		return nil, errors.New("unexpected Output")
 	}
@@ -217,5 +224,16 @@ func TestSyncReview(t *testing.T) {
 	}
 	if len(d.Calls) != 0 {
 		t.Errorf("review touched the VM: %v", d.Calls)
+	}
+}
+
+func TestDoctor(t *testing.T) {
+	d := &driver.Mock{State: driver.Running, EP: driver.SSHEndpoint{Host: "h", Port: 1, User: "root", HostKey: "k"}}
+	if r := run(t, d, &fakeTransport{release: goodRelease, reach: "blocked"}, "", "doctor"); r.rc != 0 || strings.Contains(r.out, "FAIL") ||
+		!strings.Contains(r.out, "ok    the VM cannot reach the host at 192.168.5.2: blocked") {
+		t.Errorf("%+v", r)
+	}
+	if r := run(t, d, &fakeTransport{release: goodRelease, reach: "reachable"}, "", "doctor"); r.rc != 1 || !strings.Contains(r.out, "FAIL  the VM cannot reach the host at 192.168.5.2: reachable") {
+		t.Errorf("%+v", r)
 	}
 }
