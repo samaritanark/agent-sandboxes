@@ -59,6 +59,7 @@ var allowed = map[string][]string{
 	"host/syncengine": {"host/gitobj", "host/gitref", "host/syncgate", "syncproto"},
 	"host/lima":       {"host/driver", "host/hostbin"},
 	"host/hostbin":    {},
+	"host/netd":       {},
 	"host/sshx":       {"host/driver"},
 	"host/gitref":     {},
 	"host/proxycert":  {},
@@ -92,6 +93,44 @@ func TestHostBinaryClosure(t *testing.T) {
 	}
 	if n == 0 {
 		t.Error("the host binary depends on no host package; is the closure test looking at the right binary?")
+	}
+}
+
+// thirdParty lists, per package, the only modules outside the standard library its production
+// code may import. The module's one third-party dependency is netd's network stack (owner
+// decision, 2026-11-25); everything else stays on the standard library.
+var thirdParty = map[string][]string{
+	"host/netd": {"github.com/containers/gvisor-tap-vsock/", "gvisor.dev/gvisor/"},
+}
+
+func TestThirdPartyImports(t *testing.T) {
+	out, err := exec.Command("go", "list", "-json", "../...").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(strings.NewReader(string(out)))
+	for dec.More() {
+		var p struct {
+			ImportPath string
+			Imports    []string
+		}
+		if err := dec.Decode(&p); err != nil {
+			t.Fatal(err)
+		}
+		name := strings.TrimPrefix(p.ImportPath, mod)
+		for _, imp := range p.Imports {
+			first, _, _ := strings.Cut(imp, "/")
+			if strings.HasPrefix(imp, mod) || !strings.Contains(first, ".") {
+				continue // ours, or the standard library
+			}
+			ok := false
+			for _, pre := range thirdParty[name] {
+				ok = ok || strings.HasPrefix(imp, pre)
+			}
+			if !ok {
+				t.Errorf("package %s imports %s, a third-party package the rules do not allow", name, imp)
+			}
+		}
 	}
 }
 
