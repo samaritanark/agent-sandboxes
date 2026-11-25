@@ -62,6 +62,7 @@ var allowed = map[string][]string{
 	"host/lima":       {"host/driver", "host/hostbin", "host/sizing"},
 	"host/hostbin":    {},
 	"host/netd":       {},
+	"host/seedimg":    {},
 	"host/vfkit":      {"host/driver", "host/hostbin", "host/netd", "host/sizing"},
 	"host/sshx":       {"host/driver"},
 	"host/gitref":     {},
