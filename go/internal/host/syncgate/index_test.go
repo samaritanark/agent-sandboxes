@@ -167,7 +167,10 @@ func TestIndexRefusals(t *testing.T) {
 	mut("signature", func(b []byte) []byte { b[0] = 'X'; return sealed(b) })
 	mut("version 5", func(b []byte) []byte { b[7] = 5; return sealed(b) })
 	mut("huge count", func(b []byte) []byte { binary.BigEndian.PutUint32(b[8:12], 1<<30); return sealed(b) })
-	mut("count too high", func(b []byte) []byte { binary.BigEndian.PutUint32(b[8:12], binary.BigEndian.Uint32(b[8:12])+1); return sealed(b) })
+	mut("count too high", func(b []byte) []byte {
+		binary.BigEndian.PutUint32(b[8:12], binary.BigEndian.Uint32(b[8:12])+1)
+		return sealed(b)
+	})
 	mut("bad mode", func(b []byte) []byte { binary.BigEndian.PutUint32(b[12+24:12+28], 0o100666); return sealed(b) })
 	mut("dotdot name", func(b []byte) []byte { copy(b[firstName:], ".."); b[firstName+2] = '/'; return sealed(b) })
 	mut("required extension", func(b []byte) []byte {
