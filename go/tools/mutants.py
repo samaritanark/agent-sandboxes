@@ -313,15 +313,17 @@ m(PF, "\tif len(ds) > 0 {\n\t\tb.WriteString(\"extra_allowed_domains:\\n\")", "\
 
 CK = "internal/checks/checks.go"
 R_CK = "TestChecksGolden"
-m(CK, "\td = strings.TrimRight(d, \"\\n\")\n\td = strings.TrimRight(d, \".\")", "\td = strings.TrimRight(d, \".\")", R_CK)
-m(CK, "\td = strings.TrimRight(d, \".\")\n\treturn strings.TrimRight(d, \"\\n\")", "\treturn strings.TrimRight(d, \"\\n\")", R_CK)
-m(CK, "\t\tif r >= 'A' && r <= 'Z' {", "\t\tif r >= 'A' && r < 'Z' {", R_CK)
-m(CK, "return domain == apex || strings.HasSuffix(domain, \".\"+apex)", "return strings.HasSuffix(domain, \".\"+apex)", R_CK)
-m(CK, "return domain == apex || strings.HasSuffix(domain, \".\"+apex)", "return domain == apex || strings.HasSuffix(domain, apex)", R_CK)
-m(CK, "\t\treturn strings.HasSuffix(domain, p[1:])", "\t\treturn strings.HasPrefix(domain, p[1:])", R_CK)
-m(CK, "return domain == prefix || strings.HasPrefix(domain, prefix+\".\")", "return strings.HasPrefix(domain, prefix+\".\")", R_CK)
-m(CK, "return domain == prefix || strings.HasPrefix(domain, prefix+\".\")", "return domain == prefix || strings.HasPrefix(domain, prefix)", R_CK)
-m(CK, "\tp := NormalizeDomain(pattern)", "\tp := pattern", R_CK)
+# domain normalization and block patterns moved to egressmatch; checks' goldens still cover them
+EM = "internal/egressmatch/egressmatch.go"
+m(EM, "\td = strings.TrimRight(d, \"\\n\")\n\td = strings.TrimRight(d, \".\")", "\td = strings.TrimRight(d, \".\")", R_CK, pkg="checks")
+m(EM, "\td = strings.TrimRight(d, \".\")\n\treturn strings.TrimRight(d, \"\\n\")", "\treturn strings.TrimRight(d, \"\\n\")", R_CK, pkg="checks")
+m(EM, "\t\tif r >= 'A' && r <= 'Z' {", "\t\tif r >= 'A' && r < 'Z' {", R_CK, pkg="checks")
+m(EM, "return domain == apex || strings.HasSuffix(domain, \".\"+apex)", "return strings.HasSuffix(domain, \".\"+apex)", R_CK, pkg="checks")
+m(EM, "return domain == apex || strings.HasSuffix(domain, \".\"+apex)", "return domain == apex || strings.HasSuffix(domain, apex)", R_CK, pkg="checks")
+m(EM, "\t\treturn strings.HasSuffix(domain, p[1:])", "\t\treturn strings.HasPrefix(domain, p[1:])", R_CK, pkg="checks")
+m(EM, "return domain == prefix || strings.HasPrefix(domain, prefix+\".\")", "return strings.HasPrefix(domain, prefix+\".\")", R_CK, pkg="checks")
+m(EM, "return domain == prefix || strings.HasPrefix(domain, prefix+\".\")", "return domain == prefix || strings.HasPrefix(domain, prefix)", R_CK, pkg="checks")
+m(EM, "\tp := Normalize(pattern)", "\tp := pattern", R_CK, pkg="checks")
 m(CK, "\tif ov := config.OverlayBlockedDestinationsFile(c.Env); ov != \"\" {\n\t\tf = append(f, [2]string{ov, \"overlay\"})\n\t}", "", R_CK)
 m(CK, "\tif config.IsFile(c.UserConfig) {\n\t\tf = append(f, [2]string{c.UserConfig, \"user\"})\n\t}", "", R_CK)
 m(CK, "\t\treturn []string{\"WARN: blocked-destinations.yaml not found; skipping block check.\"}, nil", "\t\treturn nil, nil", R_CK)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/egressmatch"
 )
 
 // Ctx is what the checks read: the environment and the org block list
@@ -33,32 +34,11 @@ func refuse(lines ...string) error { return &Error{Lines: lines} }
 
 // NormalizeDomain is _normalize_domain: ASCII lowercase, trailing root dots removed. (The two
 // command substitutions around it also drop trailing newlines, before and after the dots.)
-func NormalizeDomain(d string) string {
-	d = strings.Map(func(r rune) rune {
-		if r >= 'A' && r <= 'Z' {
-			return r + 'a' - 'A'
-		}
-		return r
-	}, d)
-	d = strings.TrimRight(d, "\n")
-	d = strings.TrimRight(d, ".")
-	return strings.TrimRight(d, "\n")
-}
+func NormalizeDomain(d string) string { return egressmatch.Normalize(d) }
 
 // DomainMatchesBlockPattern is _domain_matches_block_pattern; domain is already normalized.
 func DomainMatchesBlockPattern(domain, pattern string) bool {
-	p := NormalizeDomain(pattern)
-	switch {
-	case strings.HasPrefix(p, "*."):
-		apex := p[2:]
-		return domain == apex || strings.HasSuffix(domain, "."+apex)
-	case strings.HasPrefix(p, "*"):
-		return strings.HasSuffix(domain, p[1:])
-	case strings.HasSuffix(p, ".*"):
-		prefix := p[:len(p)-2]
-		return domain == prefix || strings.HasPrefix(domain, prefix+".")
-	}
-	return domain == p
+	return egressmatch.Blocked(domain, pattern)
 }
 
 // blockFiles lists the block-list sources that exist, labelled as the bash labels them.

@@ -29,7 +29,7 @@ var allowed = map[string][]string{
 	// whether a file is a terminal, for both binaries
 	"tty": {},
 	// the session spec the policy CLI hands sandboxd (design 5.4.2): data and its structural checks
-	"sessionspec": {},
+	"sessionspec": {"egressmatch"},
 	// sandboxd (design 5.4.3): the in-VM supervisor's packages
 	"sandboxd/journal": {"sessionspec"},
 	"sandboxd/limits":  {"sessionspec"},
@@ -40,15 +40,17 @@ var allowed = map[string][]string{
 	"syncproto": {},
 	"syncagent": {"syncproto"},
 	"vetting":   {"bashcompat", "config", "deviation"}, // the gate is injected, never imported
-	"checks":    {"config", "deviation"},
-	"tier":      {},
-	"catalogue": {"bashcompat", "checks", "config", "deviation"},
-	"jqjson":    {},
-	"audit":     {"bashcompat", "deviation", "jqjson", "tier"},
-	"link":      {"bashcompat", "config", "deviation"},
-	"onboard":   {"bashcompat", "config", "deviation"},
-	"agents":    {"deviation", "jqjson"},
-	"workspace": {"bashcompat", "config", "deviation"},
+	"checks":    {"config", "deviation", "egressmatch"},
+	// domain matching shared by the policy layer and the gateway and resolver: pure functions
+	"egressmatch": {},
+	"tier":        {},
+	"catalogue":   {"bashcompat", "checks", "config", "deviation"},
+	"jqjson":      {},
+	"audit":       {"bashcompat", "deviation", "jqjson", "tier"},
+	"link":        {"bashcompat", "config", "deviation"},
+	"onboard":     {"bashcompat", "config", "deviation"},
+	"agents":      {"deviation", "jqjson"},
+	"workspace":   {"bashcompat", "config", "deviation"},
 	// the host-side secret store: files only, no policy
 	"secrets": {},
 	// the session allowlist: built-in and extra domains through the block lists

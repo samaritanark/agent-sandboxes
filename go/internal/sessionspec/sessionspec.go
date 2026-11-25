@@ -19,6 +19,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/samaritanark/agent-sandboxes/go/internal/egressmatch"
 )
 
 // Version is the spec version this package reads and writes.
@@ -462,6 +464,22 @@ func checkEnv(env []EnvVar, bound map[string]string, what string, bad func(strin
 	}
 }
 
+// validBlockPattern is one of egressmatch.Blocked's forms: "*.x", "*suffix", "prefix.*", or a name.
+func validBlockPattern(p string) bool {
+	if p != egressmatch.Normalize(p) || strings.ContainsAny(p, " \t\x00") {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(p, "*."):
+		return validHost(p[2:])
+	case strings.HasPrefix(p, "*"):
+		return len(p) > 1 && !strings.Contains(p[1:], "*")
+	case strings.HasSuffix(p, ".*"):
+		return len(p) > 2 && !strings.Contains(p[:len(p)-2], "*")
+	}
+	return validHost(p)
+}
+
 // validHost is a DNS name (letters, digits, hyphens, dots; no trailing dot), lower case.
 func validHost(h string) bool {
 	if len(h) == 0 || len(h) > 253 || h != strings.ToLower(h) {
@@ -483,7 +501,7 @@ func checkEgress(e Egress, what string, bad func(string, ...any)) {
 		}
 	}
 	for _, d := range e.BlockDomains {
-		if !validHost(strings.TrimPrefix(d, "*.")) {
+		if !validBlockPattern(d) {
 			bad("%s: invalid blocked domain %q", what, d)
 		}
 	}
