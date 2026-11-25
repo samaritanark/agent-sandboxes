@@ -179,7 +179,7 @@ func TestFixDuplicateBasenameExact(t *testing.T) {
 	}
 }
 
-func TestFixLiteralProfileSecrets(t *testing.T) {
+func TestFixLiteralProfileLists(t *testing.T) {
 	dir := t.TempDir()
 	for _, f := range []string{"A1", "A2"} {
 		os.WriteFile(filepath.Join(dir, f), nil, 0o644)
@@ -190,11 +190,11 @@ func TestFixLiteralProfileSecrets(t *testing.T) {
 	eq := func(a, b []string) bool {
 		return strings.Join(a, "\x00") == strings.Join(b, "\x00") && len(a) == len(b)
 	}
-	if got := profileSecretNames("A*,B C,GH"); !eq(got, []string{"A1", "A2", "BC", "GH"}) {
+	if got := profileListNames("A*,B C,GH"); !eq(got, []string{"A1", "A2", "BC", "GH"}) {
 		t.Fatalf("legacy: %q (the bash globs against the cwd and deletes inner spaces)", got)
 	}
-	defer deviation.Force(deviation.LiteralProfileSecrets)()
-	if got := profileSecretNames("A*, B C ,GH,,"); !eq(got, []string{"A*", "B C", "GH"}) {
+	defer deviation.Force(deviation.LiteralProfileLists)()
+	if got := profileListNames("A*, B C ,GH,,"); !eq(got, []string{"A*", "B C", "GH"}) {
 		t.Errorf("fixed: %q", got)
 	}
 }

@@ -323,6 +323,32 @@ func main() {
 		add(cc)
 	}
 
+	// addRun gives a run case the stub scanner (clean reports unless the case writes its own) and
+	// pins a case that passes --infra-kubeconfig to the launch decisions (STOP_AT=b1): v2's Step 1b
+	// becomes the broker's (design 5.9.5). NOSTUB=1 leaves the scanner off PATH.
+	addRun := func(cc cs) {
+		var env []string
+		stubbed := true
+		for _, kv := range cc.env {
+			if kv == "NOSTUB=1" {
+				stubbed = false
+				continue
+			}
+			env = append(env, kv)
+		}
+		if stubbed {
+			env = append(env, "STUB=1")
+			cc.tree = append(tree{}.f("scen/ws.json", "[]").f("scen/gc.json", "[]"), cc.tree...)
+		}
+		for _, a := range cc.args {
+			if strings.HasPrefix(a, "--infra-kubeconfig") {
+				env = append(env, "STOP_AT=b1")
+				break
+			}
+		}
+		cc.env = env
+		add(cc)
+	}
 	// run: the launch decisions (bin/sandbox cmd_run up to ensure_cluster_ready, which the oracle
 	// stubs to print them; k3s_image_present answers STUB_IMAGE_RC, default 2 "cannot tell").
 	R := func(a ...string) []string { return append([]string{"run"}, a...) }
@@ -454,7 +480,67 @@ func main() {
 		{args: R("--profile", "ops", "--repo", "~/r"), tree: append(append(tree{}, rg...), ahead...)},
 		{args: R("--profile", "ops", "--repo", "~/r"), tree: append(append(tree{}, rg...), ahead...), env: []string{"SANDBOX_NO_LINK_CHECK=1"}},
 	} {
-		add(cc)
+		addRun(cc)
+	}
+
+	// run, B3: the gates, the session ID and name, dependencies, and session.json (the stub stops
+	// after audit_flush_overrides).
+	vrep := append(append(tree{}, signer...), tree{}.g("vr").f("vr/a.txt", "a").c("vr")...)
+	vvet := vrep.v("vr")
+	req := ".sandbox/config.yaml"
+	entry := func(name, kind, extra string) string {
+		return "name: " + name + "\nkind: " + kind + "\nimage: docker.io/mcp/everything@sha256:330885a0c4b2eed6f0cd3aae0f0b37152ccdf2852e2f6af6d616a5d5c1e9817d\nport: 3001\n" + extra
+	}
+	deps := func(body string) tree { return prof("d", "tier: 1\n"+body) }
+	for _, cc := range []cs{
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: vvet},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: vrep},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: vrep.f(req, "vetting: required\n")},
+		{args: R("--tier", "2", "--repo", "~/vr", "--i-accept-unvetted-repo"), tree: vrep.f(req, "vetting: required\n")},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: vvet.f(req, "vetting: required\n")},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: vvet.f(req, "vetting: off\n")},
+		{args: R("--tier", "2", "--repo", "~/vr", "--i-accept-vetting-drift"), tree: vvet.f("vr/b.txt", "b").c("vr").f(req, "vetting: required\nvetting_max_commits_behind: 0\n")},
+		{args: R("--tier", "2", "--repo", "~/vr", "--i-accept-unvetted-repo"), tree: vrep.f(req, "vetting: required\noverlay: ~/ov\n").f("ov/config.yaml", "vetting_forbid_unvetted_override: true\n")},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: vrep.r(".sandbox/vetting/allowed_signers").f(req, "vetting: required\n")},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: vvet.f("scen/ws.json", "["+finding("a.txt", "rule-a", 1)+"]")},
+		{args: R("--tier", "2", "--repo", "~/vr", "--i-accept-unmasked-secrets"), tree: vvet.f("scen/ws.json", "["+finding("a.txt", "rule-a", 1)+"]")},
+		{args: R("--tier", "2", "--repo", "~/vr", "--i-accept-unmasked-secrets", "--i-accept-unvetted-repo"),
+			tree: vrep.f(req, "vetting: required\n").f("scen/ws.json", "["+finding("a.txt", "rule-a", 1)+"]")},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: vvet.f("scen/ws.json", "["+finding("a.txt", "rule-a", 1)+"]").
+			f(req, "overlay: ~/ov\n").f("ov/config.yaml", "trusted_inference_endpoints:\n  - api.anthropic.com\n")},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: vvet.f("vr/.env", "A=1").f("vr/k.pem", "k")},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: vvet, env: []string{"NOSTUB=1"}},
+		{args: R("--tier", "2", "--repo", "~/vr", "--repo", "~/r"), tree: append(append(tree{}, vvet...), rg...)},
+		{args: R("--tier", "3", "--repo", "~/vr", "--infra-token", "~/tok"), tree: vvet.f("tok", "t")},
+		{args: R("--tier", "2", "--repo", "~/vr", "--i-accept-vetting-drift"), tree: vvet.f("vr/b.txt", "b").c("vr").f(req, "vetting: required\n")},
+		{args: R("--tier", "2", "--repo", "~/vr", "--i-accept-unvetted-repo"), tree: vvet.f("vr/b.txt", "b").c("vr").f(req, "vetting: required\n")},
+		// an accepted unvetted repo's exceptions are honored, unless the overlay forbids the override
+		{args: R("--tier", "2", "--repo", "~/vr", "--i-accept-unvetted-repo"),
+			tree: vrep.f("vr/.betterleaksignore", "a.txt:rule-a:1\n").c("vr").f("scen/ws.json", "["+finding("a.txt", "rule-a", 1)+"]")},
+		{args: R("--tier", "2", "--repo", "~/vr", "--i-accept-unvetted-repo"),
+			tree: vrep.f("vr/.betterleaksignore", "a.txt:rule-a:1\n").c("vr").f("scen/ws.json", "["+finding("a.txt", "rule-a", 1)+"]").
+				f(req, "overlay: ~/ov\n").f("ov/config.yaml", "vetting_forbid_unvetted_override: true\n")},
+		{args: R("--allow-domain", "api.anthropic.com", "--allow-domain", "x.example.org", "--allow-domain", "x.example.org")},
+		{args: R(), env: []string{"FAKE_NOW=1800003723"}},
+		// names and the pod name
+		{args: R("--name", "My Repo!! (x)")}, {args: R("--name", "-n")}, {args: R("--name", "---")}, {args: R("--name", "ÄÖ ü")}, {args: R("--name", "a\nb\tc")}, {args: R("--name", "a--b")}, {args: R("--name", " Lead")},
+		{args: R("--agent", "codex")}, {args: R("--agent", "codex", "--name", "UPPER_case.1")},
+		// dependencies
+		{args: R("--profile", "d"), tree: deps("mcps:\n  - everything-mcp\n")},
+		{args: R("--profile", "d", "--agent", "codex"), tree: deps("mcps:\n  - everything-mcp\n")},
+		{args: R("--profile", "d"), tree: deps("services:\n  - everything-mcp\n")},
+		{args: R("--profile", "d"), tree: deps("services:\n  - nope\n")},
+		{args: R("--profile", "d"), tree: deps("services:\n  - ../x\n")},
+		{args: R("--profile", "d"), tree: deps("mcps:\n  - everything-mcp\n"), env: []string{"SANDBOX_MAX_DEPS_PER_SESSION=0"}},
+		{args: R("--profile", "d"), tree: deps("services:\n  - db\n").f("ov/catalogue/db.yaml", entry("db", "service", "secrets:\n  - DB_PASS\n")), env: ov},
+		{args: R("--profile", "d"), tree: deps("services:\n  - db\n").f("ov/catalogue/db.yaml", entry("db", "service", "secrets:\n  - DB_PASS\n")).f(".sandbox/secrets/DB_PASS", "p"), env: ov},
+		{args: R("--profile", "d"), tree: deps("services:\n  - web\n  - db\n").f("ov/catalogue/web.yaml", entry("web", "service", "class: browser\n")).
+			f("ov/catalogue/db.yaml", entry("db", "service", "")), env: ov},
+		{args: R("--profile", "d"), tree: deps("services:\n  - Big_DB\n").f("ov/catalogue/Big_DB.yaml", entry("Big_DB", "service", "")), env: ov},
+		{args: R("--profile", "d"), tree: deps("services:\n  - bad\n").f("ov/catalogue/bad.yaml", entry("bad", "service", "port: x\n")), env: ov},
+		{args: R("--profile", "d"), tree: deps("services:\n  - \"*\"\n").f("ov/catalogue/db.yaml", entry("db", "service", "")).f("db", ""), env: ov},
+	} {
+		addRun(cc)
 	}
 
 	var rows []string

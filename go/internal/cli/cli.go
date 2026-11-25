@@ -43,9 +43,15 @@ type Env struct {
 	// ImagePresent is k3s_image_present: 0 present, 1 absent, 2 cannot tell. nil skips the check
 	// (v3 has no k3s image store; sandboxd reports a missing image).
 	ImagePresent func(tag string) int
-	// RunHandoff receives `sandbox run`'s launch decisions. nil (the binary today) reports that the
-	// session runtime is not available yet; the differential test prints them instead.
-	RunHandoff func(LaunchSpec)
+	StdinTTY     bool               // [[ -t 0 ]]
+	User         string             // ${USER:-$(id -un)}
+	MaxDeps      string             // SANDBOX_MAX_DEPS_PER_SESSION
+	RandBytes    func(n int) []byte // head -c n /dev/urandom; nil reads crypto/rand
+	// RunHandoff receives what `sandbox run` decided: the launch decisions and, unless
+	// StopAtDecisions, the session record. nil (the binary today) reports that the session
+	// runtime is not available yet; the differential test prints them instead.
+	RunHandoff      func(LaunchSpec, *SessionRecord)
+	StopAtDecisions bool // hand off after the launch decisions (the test's STOP_AT=b1)
 
 	Version   VersionInfo // Version "" means "dev"
 	Root      string      // the install root (SANDBOX_ROOT)

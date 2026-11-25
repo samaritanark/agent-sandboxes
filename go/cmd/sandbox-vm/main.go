@@ -4,6 +4,7 @@ package main
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -19,6 +20,17 @@ var version, commit, commitDate, buildDate, treeState string
 func isTTY(f *os.File) bool {
 	st, err := f.Stat()
 	return err == nil && st.Mode()&os.ModeCharDevice != 0
+}
+
+// currentUser is ${USER:-$(id -un)}.
+func currentUser() string {
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	if u, err := user.Current(); err == nil {
+		return u.Username
+	}
+	return ""
 }
 
 func main() {
@@ -44,6 +56,9 @@ func main() {
 		LogsDir:                 logs,
 		Runtime:                 "go " + strings.TrimPrefix(runtime.Version(), "go"),
 		StdoutTTY:               isTTY(os.Stdout),
+		StdinTTY:                isTTY(os.Stdin),
+		User:                    currentUser(),
+		MaxDeps:                 os.Getenv("SANDBOX_MAX_DEPS_PER_SESSION"),
 		StderrTTY:               isTTY(os.Stderr),
 		NoColor:                 noColor && os.Getenv("NO_COLOR") != "",
 		Now:                     func() int64 { return time.Now().Unix() },

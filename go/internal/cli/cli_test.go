@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -50,7 +51,15 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 	e.CacheDir = home + "/.sandbox/cache/leakscan"
 	e.SecretsDir = home + "/.sandbox/secrets"
 	e.ImagePresent = func(string) int { return 2 }
-	e.RunHandoff = func(s LaunchSpec) { fmt.Fprint(handoffOut, dumpSpec(s)) }
+	e.RunHandoff = func(s LaunchSpec, r *SessionRecord) { fmt.Fprint(handoffOut, dumpSpec(s, r)) }
+	e.User = "t"
+	// run-stub.sh answers /dev/urandom reads with these bytes.
+	e.RandBytes = func(n int) []byte {
+		if n == 2 {
+			return []byte{0xbe, 0xef}
+		}
+		return []byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10}
+	}
 	e.OrgBlockList = root + "/config/blocked-destinations.yaml"
 	for _, kv := range envs {
 		k, v, _ := strings.Cut(strings.ReplaceAll(kv, "<HOME>", home), "=")
@@ -71,6 +80,13 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 			e.AgentHomeOverride = v
 		case "SANDBOX_NO_LINK_CHECK":
 			e.NoLinkCheck = v != ""
+		case "FAKE_NOW":
+			n, _ := strconv.ParseInt(v, 10, 64)
+			e.Now = func() int64 { return n }
+		case "STOP_AT":
+			e.StopAtDecisions = v == "b1"
+		case "SANDBOX_MAX_DEPS_PER_SESSION":
+			e.MaxDeps = v
 		case "STUB_IMAGE_RC":
 			rc := 2
 			fmt.Sscan(v, &rc)
@@ -84,9 +100,9 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 var handoffOut io.Writer
 
 // dumpSpec prints launch decisions the way the oracle's ensure_cluster_ready stub does.
-func dumpSpec(s LaunchSpec) string {
+func dumpSpec(s LaunchSpec, r *SessionRecord) string {
 	var b strings.Builder
-	q := func(k, v string) { fmt.Fprintf(&b, "%s=%s\n", k, bashcompat.QuoteQ(v)) }
+	q := func(k, v string) { fmt.Fprintf(&b, "%s=%s\n", k, strings.ReplaceAll(v, "\n", `\n`)) }
 	tf := func(v bool) string {
 		if v {
 			return "true"
@@ -129,6 +145,21 @@ func dumpSpec(s LaunchSpec) string {
 	q("base_url", s.BaseURL)
 	q("homedir", s.HomeDir)
 	q("has_secrets", tf(s.HasSecrets))
+	if r == nil {
+		return b.String()
+	}
+	b.WriteString("### session\n")
+	q("session_id", r.ID)
+	q("pod_name", r.PodName)
+	q("endpoint_trusted", r.EndpointTrusted)
+	for _, d := range r.Dependencies {
+		q("dep", d.Name+"|"+d.Kind+"|"+d.Resource+"|"+d.Port+"|"+strings.Join(d.Secrets, ","))
+	}
+	for _, d := range r.Dependencies {
+		if d.MCPRecord != "" {
+			q("mcp", d.MCPRecord)
+		}
+	}
 	return b.String()
 }
 
@@ -313,7 +344,7 @@ func TestCLIGolden(t *testing.T) {
 		os.Unsetenv("SSH_AUTH_SOCK")
 		// The tree is built with the test's own environment; the command then runs in the case's.
 		env := fixtureEnv(row[1], home, root, envs)
-		env.SandboxRoot = "/nonexistent-sandbox-root" // the oracle's install copy, outside every case home
+		env.SandboxRoot = root // the catalogue is read from it; output paths under it print as <ROOT>
 		env.Stdin = strings.NewReader(dec64(t, row[4]))
 		var out, errb bytes.Buffer
 		handoffOut = &out

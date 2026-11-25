@@ -87,13 +87,13 @@ func firstDuplicate(xs []string) string {
 	return ""
 }
 
-// profileSecretNames is the bash's split of SESSION_PROFILE_SECRETS: in legacy mode an unquoted
+// profileListNames is the bash's split of SESSION_PROFILE_SECRETS: in legacy mode an unquoted
 // expansion with IFS=',' (so each piece is glob-expanded against the current directory), then
-// `echo | tr -d '[:space:]'`; with LiteralProfileSecrets each comma-separated piece is taken as
+// `echo | tr -d '[:space:]'`; with LiteralProfileLists each comma-separated piece is taken as
 // written, with surrounding whitespace trimmed.
-func profileSecretNames(joined string) []string {
+func profileListNames(joined string) []string {
 	var out []string
-	if deviation.Fixed(deviation.LiteralProfileSecrets) {
+	if deviation.Fixed(deviation.LiteralProfileLists) {
 		for _, p := range strings.Split(joined, ",") {
 			if p = strings.Trim(p, " \t\n\v\f\r"); p != "" {
 				out = append(out, p)
@@ -460,7 +460,7 @@ func runDecide(c *cmdCtx, args []string) LaunchSpec {
 
 	// Profile-declared secrets must be in the host-side store.
 	if secretsJoined != "" {
-		for _, name := range profileSecretNames(secretsJoined) {
+		for _, name := range profileListNames(secretsJoined) {
 			if name == "" {
 				continue
 			}
@@ -486,13 +486,22 @@ func runDecide(c *cmdCtx, args []string) LaunchSpec {
 	return s
 }
 
-// cmdRun is cmd_run. Its first stage (the launch decisions) is ported; the session itself is
-// sandboxd's in v3 and is not available yet.
+// cmdRun is cmd_run up to the cluster work: the launch decisions (B1), then the gates and the
+// session record (B3). The session itself is sandboxd's in v3 and does not exist yet; nor does
+// the broker that takes --infra-kubeconfig (design 5.9.5), which replaces v2's Step 1b.
 func cmdRun(c *cmdCtx, args []string) {
 	s := runDecide(c, args)
-	if c.env.RunHandoff != nil {
-		c.env.RunHandoff(s)
+	if c.env.StopAtDecisions && c.env.RunHandoff != nil {
+		c.env.RunHandoff(s, nil)
 		return
 	}
-	c.die("'run' is not yet available in the Go port of the sandbox CLI: the launch decisions are made, but the session runtime (sandboxd) does not exist yet.")
+	if len(s.InfraKubeconfigs) > 0 {
+		c.die("--infra-kubeconfig is not yet available in the Go port of the sandbox CLI: v3 hands kubeconfigs to the credential broker (design 5.9.5), which does not exist yet.")
+	}
+	rec := runPrepare(c, &s)
+	if c.env.RunHandoff != nil {
+		c.env.RunHandoff(s, &rec)
+		return
+	}
+	c.die("'run' is not yet available in the Go port of the sandbox CLI: the launch decisions are made and the session recorded, but the session runtime (sandboxd) does not exist yet.")
 }

@@ -173,11 +173,11 @@ const (
 	// basename`, which splits paths on whitespace, so two repos under "My Repos/" were refused as
 	// duplicates ("My") and a space-named pair could slip past. Each repo path is now one name.
 	DuplicateBasenameExact ID = "duplicate-basename-exact"
-	// LiteralProfileSecrets: a profile's secrets: list was split with an unquoted IFS=','
-	// expansion, so each name was glob-expanded against the current directory before being checked,
-	// and inner whitespace was deleted. Names are now taken as written, surrounding whitespace
-	// trimmed.
-	LiteralProfileSecrets ID = "literal-profile-secrets"
+	// LiteralProfileLists: a profile's secrets:, mcps:, and services: lists were split with an
+	// unquoted IFS=',' expansion, so each name was glob-expanded against the current directory
+	// before being checked, inner whitespace was deleted, and an echo option (-n) vanished. Names
+	// are now taken as written, surrounding whitespace trimmed.
+	LiteralProfileLists ID = "literal-profile-lists"
 )
 
 var (
