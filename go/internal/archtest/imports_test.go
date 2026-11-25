@@ -30,6 +30,8 @@ var allowed = map[string][]string{
 	"tty": {},
 	// the session spec the policy CLI hands sandboxd (design 5.4.2): data and its structural checks
 	"sessionspec": {},
+	// sandboxd (design 5.4.3): the in-VM supervisor's packages
+	"sandboxd/journal": {"sessionspec"},
 	// the sync protocol (host engine and in-VM agent) and the in-VM agent itself
 	"syncproto": {},
 	"syncagent": {"syncproto"},
