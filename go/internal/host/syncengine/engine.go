@@ -12,6 +12,7 @@
 package syncengine
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/syncgate"
 	"github.com/samaritanark/agent-sandboxes/go/internal/syncproto"
@@ -58,6 +60,8 @@ type Engine struct {
 	StateFile string
 	Store     *syncgate.Store // the quarantine
 	VM        VM
+
+	cache syncproto.FPCache // host fingerprints by stat data, across passes of one Run
 }
 
 // Report is what one Sync did.
@@ -123,13 +127,40 @@ func (e *Engine) hostScan(root *os.Root) (map[string]string, error) {
 			}
 			return nil
 		}
-		fp, _, err := hostFP(root, p)
+		st, err := root.Lstat(p)
+		if err != nil {
+			return nil
+		}
+		if f, ok := e.cache.Get(p, st); ok {
+			out[p] = f
+			return nil
+		}
+		f, _, err := hostFP(root, p)
 		if err == nil {
-			out[p] = fp
+			out[p] = f
+			e.cache.Put(p, st, f)
 		}
 		return nil
 	})
 	return out, err
+}
+
+// Run syncs every interval until ctx ends, handing each pass's report (or error) to report. A
+// failed pass is retried at the next interval; the state file keeps the last good pass.
+func (e *Engine) Run(ctx context.Context, interval time.Duration, report func(Report, error)) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		rep, err := e.Sync()
+		if report != nil {
+			report(rep, err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 func hostFP(root *os.Root, p string) (string, []byte, error) {

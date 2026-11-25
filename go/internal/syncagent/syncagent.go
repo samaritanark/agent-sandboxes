@@ -25,6 +25,7 @@ func Serve(dir string, r io.Reader, w io.Writer) error {
 		return err
 	}
 	defer root.Close()
+	cache := &syncproto.FPCache{} // lives as long as the session's agent
 	for {
 		h, body, err := syncproto.Read(r)
 		if errors.Is(err, io.EOF) {
@@ -33,7 +34,7 @@ func Serve(dir string, r io.Reader, w io.Writer) error {
 		if err != nil {
 			return err
 		}
-		reply, rbody := handle(root, h, body)
+		reply, rbody := handle(root, cache, h, body)
 		if err := syncproto.Write(w, reply, rbody); err != nil {
 			return err
 		}
@@ -77,12 +78,12 @@ func fingerprint(root *os.Root, p string) (string, []byte, error) {
 	return "other", nil, nil
 }
 
-func handle(root *os.Root, h syncproto.Header, body []byte) (syncproto.Header, []byte) {
+func handle(root *os.Root, cache *syncproto.FPCache, h syncproto.Header, body []byte) (syncproto.Header, []byte) {
 	fail := func(f string, a ...interface{}) (syncproto.Header, []byte) {
 		return syncproto.Header{Err: fmt.Sprintf(f, a...)}, nil
 	}
 	if h.Op == syncproto.OpScan {
-		entries, err := scan(root)
+		entries, err := scan(root, cache)
 		if err != nil {
 			return fail("scan: %v", err)
 		}
@@ -173,7 +174,7 @@ func apply(root *os.Root, h syncproto.Header, body []byte, cur string) error {
 }
 
 // scan lists every file and symlink under the root (directories are implied), sorted.
-func scan(root *os.Root) ([]syncproto.Entry, error) {
+func scan(root *os.Root, cache *syncproto.FPCache) ([]syncproto.Entry, error) {
 	var out []syncproto.Entry
 	err := fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -187,9 +188,17 @@ func scan(root *os.Root) ([]syncproto.Entry, error) {
 		}
 		fp := syncproto.ObjectFP
 		if !syncproto.IsObjectPath(p) { // objects are content-addressed: their name is their identity
-			var err error
-			if fp, _, err = fingerprint(root, p); err != nil {
+			st, err := root.Lstat(p)
+			if err != nil {
 				return nil
+			}
+			if f, ok := cache.Get(p, st); ok {
+				fp = f
+			} else {
+				if fp, _, err = fingerprint(root, p); err != nil {
+					return nil
+				}
+				cache.Put(p, st, fp)
 			}
 		}
 		out = append(out, syncproto.Entry{Path: p, FP: fp})

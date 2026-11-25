@@ -1,12 +1,15 @@
 package syncengine
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/syncgate"
 	"github.com/samaritanark/agent-sandboxes/go/internal/syncagent"
@@ -156,5 +159,85 @@ func TestHostileVM(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(host), "escape")); err == nil {
 		t.Error("escaped the repository")
+	}
+}
+
+func TestCacheSeesSameSizeRewrites(t *testing.T) {
+	host, vmdir, state := t.TempDir(), t.TempDir(), t.TempDir()
+	write(t, host, "f.txt", "aaaa")
+	e := &Engine{Repo: host, StateFile: filepath.Join(state, "s.json"), VM: pipeVM(t, vmdir)}
+	if _, err := e.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range []string{"bbbb", "cccc", "dddd"} { // same size, immediately after one another
+		write(t, host, "f.txt", c)
+		if _, err := e.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		if read(vmdir, "f.txt") != c {
+			t.Fatalf("rewrite %d: the VM has %q", i, read(vmdir, "f.txt"))
+		}
+		write(t, vmdir, "f.txt", strings.ToUpper(c))
+		if _, err := e.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		if read(host, "f.txt") != strings.ToUpper(c) {
+			t.Fatalf("VM rewrite %d: the host has %q", i, read(host, "f.txt"))
+		}
+	}
+}
+
+func TestSteadyStateCost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measures a 5,000-file tree")
+	}
+	host, vmdir, state := t.TempDir(), t.TempDir(), t.TempDir()
+	for i := 0; i < 5000; i++ {
+		write(t, host, fmt.Sprintf("d%02d/f%04d.txt", i%50, i), strings.Repeat("x", 2048))
+	}
+	e := &Engine{Repo: host, StateFile: filepath.Join(state, "s.json"), VM: pipeVM(t, vmdir)}
+	start := time.Now()
+	if _, err := e.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	first := time.Since(start)
+	start = time.Now()
+	rep, err := e.Sync()
+	if err != nil || len(rep.ToVM)+len(rep.ToHost) != 0 {
+		t.Fatal(rep, err)
+	}
+	steady := time.Since(start)
+	t.Logf("5,000 files: first sync %v, an unchanged pass %v", first, steady)
+	if steady > first {
+		t.Errorf("an unchanged pass (%v) cost more than the first sync (%v): the cache is not working", steady, first)
+	}
+}
+
+func TestRunStops(t *testing.T) {
+	host, vmdir, state := t.TempDir(), t.TempDir(), t.TempDir()
+	write(t, host, "a", "a")
+	e := &Engine{Repo: host, StateFile: filepath.Join(state, "s.json"), VM: pipeVM(t, vmdir)}
+	ctx, cancel := context.WithCancel(context.Background())
+	passes := 0
+	done := make(chan struct{})
+	go func() {
+		e.Run(ctx, 10*time.Millisecond, func(r Report, err error) {
+			if err != nil {
+				t.Error(err)
+			}
+			passes++
+			if passes == 3 {
+				cancel()
+			}
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not stop")
+	}
+	if read(vmdir, "a") != "a" {
+		t.Error("Run did not sync")
 	}
 }
