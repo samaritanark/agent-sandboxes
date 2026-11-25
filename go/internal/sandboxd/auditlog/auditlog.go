@@ -77,6 +77,9 @@ func Open(root, session, name string) (*File, error) {
 			f.truncated = f.truncated || rec.Type == "audit_truncated"
 			f.size += int64(len(sc.Bytes())) + 1
 		}
+		if err := sc.Err(); err != nil {
+			return nil, fmt.Errorf("auditlog: reading %s: %w", f.path, err)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
