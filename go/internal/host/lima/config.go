@@ -1,7 +1,6 @@
 package lima
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -17,15 +16,15 @@ import (
 // in Lima's `env:`, which Lima also copies into /etc/environment for every user to read.
 const SeedPath = "/etc/sandbox/seed.env"
 
-// The seed's keys.
+// The seed's keys (see driver.SeedEnv).
 const (
-	SeedHostname      = "SANDBOX_SEED_HOSTNAME"
-	SeedHostKey       = "SANDBOX_SEED_SSH_HOST_KEY_B64"
-	SeedHostKeyPub    = "SANDBOX_SEED_SSH_HOST_KEY_PUB"
-	SeedAuthorizedKey = "SANDBOX_SEED_AUTHORIZED_KEY"
-	SeedCABundle      = "SANDBOX_SEED_CA_BUNDLE_B64"
-	SeedDNS           = "SANDBOX_SEED_DNS"
-	SeedProxy         = "SANDBOX_SEED_PROXY"
+	SeedHostname      = driver.SeedHostname
+	SeedHostKey       = driver.SeedHostKey
+	SeedHostKeyPub    = driver.SeedHostKeyPub
+	SeedAuthorizedKey = driver.SeedAuthorizedKey
+	SeedCABundle      = driver.SeedCABundle
+	SeedDNS           = driver.SeedDNS
+	SeedProxy         = driver.SeedProxy
 )
 
 func limaArch(goarch string) (string, error) {
@@ -36,15 +35,6 @@ func limaArch(goarch string) (string, error) {
 		return "x86_64", nil
 	}
 	return "", fmt.Errorf("unsupported architecture %s", goarch)
-}
-
-func printable(s string) bool {
-	for _, r := range s {
-		if r < ' ' || r == 0x7f {
-			return false
-		}
-	}
-	return true
 }
 
 // Config renders the instance configuration as JSON, which Lima reads as YAML. Every setting
@@ -73,33 +63,13 @@ func Config(goos, goarch string, img driver.ImageRef, res driver.Resources, seed
 		return nil, fmt.Errorf("invalid VM resources %+v", res)
 	}
 	for _, v := range append([]string{seed.Hostname, seed.HostKeyPublic, seed.AuthorizedKey, seed.Proxy}, seed.DNS...) {
-		if !printable(v) {
-			return nil, fmt.Errorf("seed value holds a control character")
-		}
 		if strings.Contains(v, "{{") { // Lima evaluates a data provision's content as a template
 			return nil, fmt.Errorf("seed value holds a template marker")
 		}
 	}
-	for _, d := range seed.DNS {
-		if d == "" || strings.ContainsAny(d, " \t") {
-			return nil, fmt.Errorf("invalid DNS server %q", d)
-		}
-	}
-	if seed.HostKeyPrivate == "" || seed.HostKeyPublic == "" || seed.AuthorizedKey == "" {
-		return nil, fmt.Errorf("the seed needs the guest host key pair and the client's public key")
-	}
-	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
-	var env strings.Builder
-	for _, kv := range [][2]string{
-		{SeedHostname, seed.Hostname},
-		{SeedHostKey, b64(seed.HostKeyPrivate)},
-		{SeedHostKeyPub, seed.HostKeyPublic},
-		{SeedAuthorizedKey, seed.AuthorizedKey},
-		{SeedCABundle, b64(seed.CABundle)},
-		{SeedDNS, strings.Join(seed.DNS, " ")},
-		{SeedProxy, seed.Proxy},
-	} {
-		env.WriteString(kv[0] + "=" + kv[1] + "\n")
+	env, err := driver.SeedEnv(seed)
+	if err != nil {
+		return nil, err
 	}
 	c := map[string]interface{}{
 		"vmType": vmType,
@@ -122,7 +92,7 @@ func Config(goos, goarch string, img driver.ImageRef, res driver.Resources, seed
 		"audio":             map[string]string{"device": ""},
 		"hostResolver":      map[string]bool{"enabled": true},
 		"provision": []map[string]interface{}{{
-			"mode": "data", "path": SeedPath, "content": env.String(),
+			"mode": "data", "path": SeedPath, "content": env,
 			"owner": "root:root", "permissions": 600, "overwrite": true,
 		}},
 	}

@@ -1,6 +1,8 @@
 //go:build !windows
 
-package lima
+// Package hostbin checks the third-party binaries the host binary runs (limactl, vfkit) before
+// each use (design 5.1.2).
+package hostbin
 
 import (
 	"fmt"
@@ -59,31 +61,31 @@ func checkChain(p string, uid int) error {
 	}
 }
 
-// VerifyBinary is design 5.1.2's check on limactl: p must be absolute, and neither it nor the
-// file it resolves to, nor any directory on the way to either, may be replaceable by anyone but
-// root or the operator (uid). "User-writable" is read as "writable by another user": the
-// operator is trusted (the threat model), and Homebrew installs Lima in directories the operator
-// owns.
-func VerifyBinary(p string, uid int) error {
+// Verify is design 5.1.2's check on a driver tool (name is "limactl" or "vfkit", for messages):
+// p must be absolute, and neither it nor the file it resolves to, nor any directory on the way to
+// either, may be replaceable by anyone but root or the operator (uid). "User-writable" is read as
+// "writable by another user": the operator is trusted (the threat model), and Homebrew installs
+// these tools in directories the operator owns.
+func Verify(name, p string, uid int) error {
 	if !filepath.IsAbs(p) || filepath.Clean(p) != p || strings.ContainsRune(p, 0) {
-		return fmt.Errorf("limactl path %q is not a clean absolute path", p)
+		return fmt.Errorf("%s path %q is not a clean absolute path", name, p)
 	}
 	if err := checkChain(p, uid); err != nil {
-		return fmt.Errorf("refusing limactl: %w", err)
+		return fmt.Errorf("refusing %s: %w", name, err)
 	}
 	real, err := filepath.EvalSymlinks(p)
 	if err != nil {
-		return fmt.Errorf("refusing limactl: %w", err)
+		return fmt.Errorf("refusing %s: %w", name, err)
 	}
 	if err := checkChain(real, uid); err != nil {
-		return fmt.Errorf("refusing limactl (%s): %w", real, err)
+		return fmt.Errorf("refusing %s (%s): %w", name, real, err)
 	}
 	st, err := os.Stat(real)
 	if err != nil {
 		return err
 	}
 	if !st.Mode().IsRegular() || st.Mode().Perm()&0o111 == 0 {
-		return fmt.Errorf("refusing limactl: %s is not an executable file", real)
+		return fmt.Errorf("refusing %s: %s is not an executable file", name, real)
 	}
 	return nil
 }

@@ -73,7 +73,7 @@ func TestConfigHardening(t *testing.T) {
 	for _, l := range strings.Split(strings.TrimSuffix(pr["content"].(string), "\n"), "\n") {
 		k, v, _ := strings.Cut(l, "=")
 		vals[k] = v
-		if !printable(v) {
+		if strings.ContainsFunc(v, func(r rune) bool { return r < ' ' || r == 0x7f }) {
 			t.Errorf("seed %s is not one printable line", k)
 		}
 	}

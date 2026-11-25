@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/hostbin"
 )
 
 // Instance is the Lima instance name of the appliance VM.
@@ -72,7 +73,7 @@ func Record(stateDir, limactl string) (string, error) {
 			return "", err
 		}
 	}
-	if err := VerifyBinary(p, os.Getuid()); err != nil {
+	if err := hostbin.Verify("limactl", p, os.Getuid()); err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
@@ -91,7 +92,7 @@ func Open(stateDir string) (*Driver, error) {
 		return nil, err
 	}
 	p := strings.TrimSuffix(string(b), "\n")
-	if err := VerifyBinary(p, os.Getuid()); err != nil {
+	if err := hostbin.Verify("limactl", p, os.Getuid()); err != nil {
 		return nil, fmt.Errorf("%w (if Lima was reinstalled, run 'sandbox upgrade' to record it again)", err)
 	}
 	return &Driver{Limactl: p, Instance: Instance, StateDir: stateDir, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Exec: execLimactl}, nil

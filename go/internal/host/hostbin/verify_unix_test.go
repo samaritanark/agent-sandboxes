@@ -1,6 +1,6 @@
 //go:build !windows
 
-package lima
+package hostbin
 
 import (
 	"os"
@@ -38,12 +38,12 @@ func TestCheckOne(t *testing.T) {
 	}
 }
 
-func TestVerifyBinary(t *testing.T) {
-	if err := VerifyBinary("/bin/sh", os.Getuid()); err != nil {
+func TestVerify(t *testing.T) {
+	if err := Verify("limactl", "/bin/sh", os.Getuid()); err != nil {
 		t.Errorf("/bin/sh: %v", err)
 	}
 	for _, p := range []string{"bin/sh", "/bin/../bin/sh", "/bin//sh", "/nonexistent/limactl"} {
-		if err := VerifyBinary(p, os.Getuid()); err == nil {
+		if err := Verify("limactl", p, os.Getuid()); err == nil {
 			t.Errorf("%q passed", p)
 		}
 	}
@@ -53,11 +53,11 @@ func TestVerifyBinary(t *testing.T) {
 	os.Chmod(ww, 0o777)
 	exe := filepath.Join(ww, "bin", "limactl")
 	os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755)
-	if err := VerifyBinary(exe, os.Getuid()); err == nil {
+	if err := Verify("limactl", exe, os.Getuid()); err == nil {
 		t.Error("a binary below a world-writable directory passed")
 	}
 	// a link from a good place to a bad one is judged by its target too
-	if err := VerifyBinary("/etc/hosts", os.Getuid()); err == nil || !strings.Contains(err.Error(), "not an executable") {
+	if err := Verify("limactl", "/etc/hosts", os.Getuid()); err == nil || !strings.Contains(err.Error(), "not an executable") {
 		t.Errorf("non-executable: %v", err)
 	}
 }
