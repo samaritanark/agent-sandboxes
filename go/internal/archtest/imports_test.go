@@ -32,6 +32,7 @@ var allowed = map[string][]string{
 	"sessionspec": {},
 	// sandboxd (design 5.4.3): the in-VM supervisor's packages
 	"sandboxd/journal": {"sessionspec"},
+	"sandboxd/limits":  {"sessionspec"},
 	// the sync protocol (host engine and in-VM agent) and the in-VM agent itself
 	"syncproto": {},
 	"syncagent": {"syncproto"},
