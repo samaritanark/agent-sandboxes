@@ -4,13 +4,25 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 )
+
+// The differential tests compare against the bash oracle, so they run with every fix off; each fix
+// has its own test (fixes_test.go) that turns it on.
+func TestMain(m *testing.M) {
+	deviation.SetLegacy(true)
+	os.Exit(m.Run())
+}
 
 func dec64(t *testing.T, f string) string {
 	t.Helper()
@@ -23,16 +35,85 @@ func dec64(t *testing.T, f string) string {
 
 func enc64(s string) string { return "=" + base64.StdEncoding.EncodeToString([]byte(s)) }
 
-// fixtureEnv is the environment the oracle gives bin/sandbox, in its normalized form.
-func fixtureEnv(ver string) Env {
-	e := Env{Root: "<ROOT>", LogsDir: "<HOME>/logs", Runtime: "<RT>"}
+// fixtureEnv is the environment the oracle gives bin/sandbox: ver is none or full, home the case's
+// home directory, root the repository (the oracle's copied install), envs its extra variables.
+func fixtureEnv(ver, home, root string, envs []string) Env {
+	e := Env{Root: "<ROOT>", LogsDir: home + "/logs", Runtime: "<RT>"}
 	if ver == "full" {
 		e.Version = VersionInfo{"v3.0.0-test", "0123456789ab", "2026-11-24", "2026-11-25", "clean"}
+	}
+	e.Home = home
+	e.UserConfig = home + "/.sandbox/config.yaml"
+	e.OrgBlockList = root + "/config/blocked-destinations.yaml"
+	for _, kv := range envs {
+		k, v, _ := strings.Cut(strings.ReplaceAll(kv, "<HOME>", home), "=")
+		switch k {
+		case "SANDBOX_OVERLAY":
+			e.SandboxOverlay = v
+		case "USER_SANDBOX_CONFIG":
+			e.UserConfig = v
+		case "BLOCKED_DESTINATIONS_CONFIG":
+			e.OrgBlockList = v
+		}
 	}
 	return e
 }
 
+// buildTree materializes a tree spec (see oracle.sh) under home.
+func buildTree(t *testing.T, home, spec string) {
+	for _, line := range strings.Split(spec, "\n") {
+		w := strings.Fields(line)
+		if len(w) == 0 {
+			continue
+		}
+		k, p := dec64(t, w[0]), dec64(t, w[1])
+		full := home + "/" + p
+		parent := full[:strings.LastIndex(full, "/")]
+		switch k {
+		case "f":
+			os.MkdirAll(parent, 0o755)
+			os.WriteFile(full, []byte(dec64(t, w[2])), 0o666)
+		case "d":
+			os.MkdirAll(full, 0o755)
+		case "l":
+			os.MkdirAll(parent, 0o755)
+			os.Symlink(dec64(t, w[2]), full)
+		}
+	}
+}
+
+// listing is the oracle's sorted listing of home.
+func listing(home string) string {
+	var paths []string
+	filepath.WalkDir(home, func(p string, d fs.DirEntry, err error) error {
+		if p != home && err == nil {
+			paths = append(paths, "./"+strings.TrimPrefix(p, home+"/"))
+		}
+		return nil
+	})
+	sort.Strings(paths)
+	var b strings.Builder
+	for _, rel := range paths {
+		p := filepath.Join(home, rel)
+		st, _ := os.Lstat(p)
+		switch {
+		case st.Mode()&os.ModeSymlink != 0:
+			l, _ := os.Readlink(p)
+			fmt.Fprintf(&b, "l %s -> %s\n", rel, l)
+		case st.IsDir():
+			fmt.Fprintf(&b, "d %s %o\n", rel, st.Mode().Perm())
+		default:
+			data, _ := os.ReadFile(p)
+			data = []byte(strings.ReplaceAll(string(data), home, "<HOME>"))
+			fmt.Fprintf(&b, "f %s %o %s\n", rel, st.Mode().Perm(), base64.StdEncoding.EncodeToString(data))
+		}
+	}
+	return b.String()
+}
+
 func TestCLIGolden(t *testing.T) {
+	old := syscall.Umask(0o022)
+	defer syscall.Umask(old)
 	read := func(name string, n int) [][]string {
 		b, err := os.ReadFile(filepath.Join("testdata", name))
 		if err != nil {
@@ -48,26 +129,41 @@ func TestCLIGolden(t *testing.T) {
 		}
 		return rows
 	}
-	cases, golden := read("cases.tsv", 3), read("golden-cli.tsv", 4)
+	cases, golden := read("cases.tsv", 6), read("golden-cli.tsv", 5)
 	if len(cases) != len(golden) {
 		t.Fatalf("%d cases but %d golden lines: regenerate the golden file", len(cases), len(golden))
 	}
+	root, _ := filepath.Abs(filepath.Join("..", "..", ".."))
+	dir := t.TempDir()
 	var bad []string
 	for i, row := range cases {
 		var args []string
 		if a := dec64(t, row[2]); a != "" {
 			args = strings.Split(strings.TrimSuffix(a, "\x00"), "\x00")
 		}
-		var out, errb bytes.Buffer
-		rc := Run(args, fixtureEnv(row[1]), &out, &errb)
-		got := fmt.Sprintf("%s\t%d\t%s\t%s", row[0], rc, enc64(out.String()), enc64(errb.String()))
-		if want := strings.Join(golden[i], "\t"); got != want {
-			w := golden[i]
-			bad = append(bad, fmt.Sprintf("%s %s %q\n    oracle: rc=%s out=%q err=%q\n    port:   rc=%d out=%q err=%q",
-				row[0], row[1], args, w[1], dec64(t, w[2]), dec64(t, w[3]), rc, out.String(), errb.String()))
+		home := filepath.Join(dir, row[0], "home")
+		os.MkdirAll(home, 0o755)
+		buildTree(t, home, dec64(t, row[3]))
+		var envs []string
+		if e := dec64(t, row[5]); e != "" {
+			envs = strings.Split(e, "\n")
 		}
+		env := fixtureEnv(row[1], home, root, envs)
+		env.Stdin = strings.NewReader(dec64(t, row[4]))
+		var out, errb bytes.Buffer
+		rc := Run(args, env, &out, &errb)
+		norm := func(s string) string {
+			return strings.NewReplacer(home, "<HOME>", root, "<ROOT>").Replace(s)
+		}
+		got := fmt.Sprintf("%s\t%d\t%s\t%s\t%s", row[0], rc, enc64(norm(out.String())), enc64(norm(errb.String())), enc64(listing(home)))
+		if want := strings.Join(golden[i], "\t"); got != want {
+			w, g := golden[i], strings.Split(got, "\t")
+			bad = append(bad, fmt.Sprintf("%s %s %q\n    oracle: rc=%s out=%q err=%q\n%s\n    port:   rc=%s out=%q err=%q\n%s",
+				row[0], row[1], args, w[1], dec64(t, w[2]), dec64(t, w[3]), dec64(t, w[4]), g[1], dec64(t, g[2]), dec64(t, g[3]), dec64(t, g[4])))
+		}
+		os.RemoveAll(filepath.Join(dir, row[0]))
 	}
-	t.Logf("bin/sandbox dispatch, usage, version: %d cases, %d divergences", len(cases), len(bad))
+	t.Logf("bin/sandbox: %d cases, %d divergences", len(cases), len(bad))
 	if len(bad) > 0 {
 		n := len(bad)
 		if n > 5 {

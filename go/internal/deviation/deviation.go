@@ -135,6 +135,11 @@ const (
 	// that did not exist, and an empty prefix-matched variable counted while an empty exact-named
 	// one did not. Names now come from the environment entries, and empty values never count.
 	EnvCheckByName ID = "env-check-by-name"
+	// FlagValueErrors: a flag given without a value (or with an empty one) failed through bash's
+	// "${2:?...}" expansion, which prints the script's path and source line ("bin/sandbox: line
+	// 4951: 2: --tier requires a value") rather than an ERROR line. It now prints
+	// "ERROR: --tier requires a value".
+	FlagValueErrors ID = "flag-value-errors"
 )
 
 var (

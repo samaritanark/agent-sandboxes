@@ -33,7 +33,7 @@ Layout so far:
 | `internal/onboard` | `lib/onboard.sh`: which host login files each agent stages, the Codex and Grok config hardening, the API-key refusal, and the starter user config |
 | `internal/agents` | `lib/agents.sh` (per-agent domains, flags, MCP config, credential type, the opencode endpoint) and the host-environment check of `lib/credentials.sh` |
 | `internal/jqjson` | the part of jq the bash's JSON writers rely on: ordered values, jq's input rules, and its pretty output (used by `audit` and `agents`) |
-| `internal/cli`, `cmd/sandbox-vm` | the in-VM `sandbox` command (design 5.1.6): dispatch, usage texts, and the subcommands ported so far (`version`); the others print their v2 help and say they are not yet ported |
+| `internal/cli`, `cmd/sandbox-vm` | the in-VM `sandbox` command (design 5.1.6): dispatch, usage texts, and the subcommands ported so far (`version`, `profile`); the others print their v2 help and say they are not yet ported |
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
 | `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |
 
@@ -132,6 +132,7 @@ The in-VM CLI (`internal/cli`; the oracle runs `bin/sandbox` itself from a copy 
 ```bash
 # on Linux:
 go/internal/cli/testdata/gen-usage.sh
+(cd go && go run ./internal/cli/internal/gencli -base internal/cli/testdata)
 LC_ALL=C go/internal/cli/testdata/oracle.sh > go/internal/cli/testdata/golden-cli.tsv
 ```
 

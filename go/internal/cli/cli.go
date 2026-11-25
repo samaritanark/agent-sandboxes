@@ -4,10 +4,15 @@
 package cli
 
 import (
+	"bufio"
 	"embed"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/samaritanark/agent-sandboxes/go/internal/checks"
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 )
 
 //go:embed usage/*.txt
@@ -20,6 +25,10 @@ type VersionInfo struct {
 
 // Env is what the CLI reads from its surroundings.
 type Env struct {
+	config.Env             // HOME, USER_SANDBOX_CONFIG, SANDBOX_OVERLAY, and the rest
+	OrgBlockList string    // BLOCKED_DESTINATIONS_CONFIG (default <root>/config/blocked-destinations.yaml)
+	Stdin        io.Reader // answers to y/N prompts
+
 	Version   VersionInfo // Version "" means "dev"
 	Root      string      // the install root (SANDBOX_ROOT)
 	LogsDir   string      // SANDBOX_LOGS_DIR
@@ -40,6 +49,60 @@ func (e Env) version() string {
 type cmdCtx struct {
 	env            Env
 	stdout, stderr io.Writer
+	stdin          *bufio.Reader
+}
+
+func (c *cmdCtx) checks() checks.Ctx { return checks.Ctx{Env: c.env.Env, OrgFile: c.env.OrgBlockList} }
+
+// readLine is `read -r reply` under the bash's `set -e`: one line from stdin without its newline.
+// When input ends before a newline, read fails and errexit ends the command with status 1, saying
+// nothing (even a partial "y" is not acted on).
+func (c *cmdCtx) readLine() string {
+	if c.stdin == nil {
+		panic(exit(1))
+	}
+	l, err := c.stdin.ReadString('\n')
+	if err != nil {
+		panic(exit(1))
+	}
+	return strings.TrimSuffix(l, "\n")
+}
+
+// tilde is ${p/#${HOME}/\~}: the home prefix shown as ~.
+func (c *cmdCtx) tilde(p string) string {
+	if h := c.env.Home; h != "" && strings.HasPrefix(p, h) {
+		return "~" + p[len(h):]
+	}
+	return p
+}
+
+// fail prints a refusal the bash prints itself before `exit 1` (not through die, so uncolored).
+func (c *cmdCtx) fail(err error) {
+	fmt.Fprintln(c.stderr, err.Error())
+	panic(exit(1))
+}
+
+// needValue is the bash's "${2:?<flag> requires a value}": the next argument, which must be
+// non-empty. In legacy mode a missing one prints bash's own expansion error (the script path and
+// line, which the oracle normalizes to "sandbox: line 0") and exits 1; with FlagValueErrors it is
+// an ERROR line like every other refusal.
+func (c *cmdCtx) needValue(args []string, i int, flag string) string {
+	if i+1 < len(args) && args[i+1] != "" {
+		return args[i+1]
+	}
+	if deviation.Fixed(deviation.FlagValueErrors) {
+		c.die("%s requires a value", flag)
+	}
+	fmt.Fprintf(c.stderr, "sandbox: line 0: 2: %s requires a value\n", flag)
+	panic(exit(1))
+}
+
+// padRight is printf's %-Ns under LC_ALL=C: pad to n bytes, not runes.
+func padRight(s string, n int) string {
+	if len(s) >= n {
+		return s
+	}
+	return s + strings.Repeat(" ", n-len(s))
 }
 
 // exit is how a command ends early with a status, as the bash's `exit`.
@@ -81,7 +144,7 @@ var commands = map[string]func(*cmdCtx, []string){
 	"run": nil, "resume": nil, "allow": nil, "list": nil, "logs": nil, "flows": nil, "stop": nil,
 	"cleanup": nil, "check": nil, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
 	"upgrade": nil, "onboard": nil, "secret": nil, "mask": nil, "exceptions": nil, "vet": nil,
-	"profile": nil, "link": nil, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,
+	"profile": cmdProfile, "link": nil, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,
 	"version": cmdVersion,
 }
 
@@ -95,6 +158,9 @@ var usageOf = map[string]string{
 // Run is main(): dispatch args[0] to its command. It returns the exit status.
 func Run(args []string, env Env, stdout, stderr io.Writer) (status int) {
 	c := &cmdCtx{env: env, stdout: stdout, stderr: stderr}
+	if env.Stdin != nil {
+		c.stdin = bufio.NewReader(env.Stdin)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			if e, ok := r.(exit); ok {
