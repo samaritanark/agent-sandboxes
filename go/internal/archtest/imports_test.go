@@ -29,7 +29,7 @@ var allowed = map[string][]string{
 	// whether a file is a terminal, for both binaries
 	"tty": {},
 	// the session spec the policy CLI hands sandboxd (design 5.4.2): data and its structural checks
-	"sessionspec": {"egressmatch"},
+	"sessionspec": {"egressmatch", "l7"},
 	// sandboxd (design 5.4.3): the in-VM supervisor's packages
 	"sandboxd/journal":  {"sessionspec"},
 	"sandboxd/limits":   {"sessionspec"},
@@ -46,6 +46,7 @@ var allowed = map[string][]string{
 	"checks":    {"config", "deviation", "egressmatch"},
 	// domain matching shared by the policy layer and the gateway and resolver: pure functions
 	"egressmatch": {},
+	"l7":          {"egressmatch"},
 	// the gateway (design 5.8): each session's resolver, gateway controller, and broker
 	"gateway/resolver":  {"egressmatch"},
 	"gateway/authz":     {"egressmatch"},

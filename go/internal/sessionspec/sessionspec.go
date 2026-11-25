@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/egressmatch"
+	"github.com/samaritanark/agent-sandboxes/go/internal/l7"
 )
 
 // Version is the spec version this package reads and writes.
@@ -104,12 +105,8 @@ type Egress struct {
 	ExtraPorts    []int          `json:"extra_ports,omitempty"`
 }
 
-// L7Rule limits the requests allowed to Host.
-type L7Rule struct {
-	Host         string   `json:"host"`
-	Methods      []string `json:"methods,omitempty"`
-	PathPrefixes []string `json:"path_prefixes,omitempty"`
-}
+// L7Rule limits the requests to a destination (design 5.8.5, the l7 package), deny first.
+type L7Rule = l7.Rule
 
 // HostEndpoint is a declared Tier 3 host or VPN endpoint (design 5.2.6).
 type HostEndpoint struct {
@@ -522,18 +519,12 @@ func checkEgress(e Egress, what string, bad func(string, ...any)) {
 		}
 	}
 	for _, r := range e.L7 {
-		if !validHost(r.Host) {
+		h := strings.TrimPrefix(strings.TrimPrefix(r.Host, "**."), "*.")
+		if r.Host != l7.AnyHost && (!validHost(h) || strings.Contains(h, "*")) {
 			bad("%s: invalid L7 host %q", what, r.Host)
 		}
-		for _, m := range r.Methods {
-			if m != strings.ToUpper(m) || !labelRE.MatchString(strings.ToLower(m)) {
-				bad("%s: invalid L7 method %q", what, m)
-			}
-		}
-		for _, p := range r.PathPrefixes {
-			if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, " \x00\n") {
-				bad("%s: invalid L7 path prefix %q", what, p)
-			}
+		if err := r.Validate(); err != nil {
+			bad("%s: %v", what, err)
 		}
 	}
 	for _, h := range e.HostEndpoints {
