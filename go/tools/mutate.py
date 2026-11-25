@@ -40,7 +40,15 @@ def main():
     ap.add_argument("--jobs", type=int, default=6)
     ap.add_argument("--only", default="")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--check", action="store_true",
+                    help="only verify that every planted bug's text occurs exactly once in its file")
     a = ap.parse_args()
+    if a.check:
+        stale = [(i, m) for i, m in enumerate(MUTANTS) if open(m["file"]).read().count(m["old"]) != 1]
+        for i, m in stale:
+            print("STALE", i, m["file"], "|", m["old"].replace("\n", "\\n")[:70])
+        print("planted bugs: %d, stale patterns: %d" % (len(MUTANTS), len(stale)))
+        sys.exit(1 if stale else 0)
     sel = [(i, m) for i, m in enumerate(MUTANTS) if a.only in m["file"] or a.only in m.get("id", "")]
     if a.list:
         for i, m in sel:

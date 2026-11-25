@@ -156,6 +156,11 @@ const (
 	// MaskListStatus: `sandbox mask list` exited 1 whenever the repo had configured masked paths
 	// (its last command was `[[ $any == false ]] && echo "(none)"`). It now exits 0.
 	MaskListStatus ID = "mask-list-status"
+	// ExceptionSpecOneLine: `sandbox exceptions add` recorded each line of a PATH:RULE:LINE as a
+	// separate fingerprint. A file name with a newline (which the gate's own suggested command
+	// reproduces through $'...') could therefore record a second fingerprint that suppresses a real
+	// finding in another file. A spec with a line break is now refused before anything is scanned.
+	ExceptionSpecOneLine ID = "exception-spec-one-line"
 )
 
 var (

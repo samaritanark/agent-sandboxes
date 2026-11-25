@@ -161,6 +161,37 @@ func main() {
 	add(cs{args: []string{"mask", "add", "--repo", "~/r", "new.txt"}, tree: mr.f("r/.sandbox/config.yaml", "overlay: x")})
 	add(cs{args: []string{"mask", "add", "--repo", "~/r", "dir/"}, tree: mr.f("r/.sandbox/config.yaml", "masked_paths:\n  - \"file.txt\"\n")})
 
+	// exceptions
+	evil := "n\nsecret.txt:rule-a:3\nz"
+	jsonName := strings.ReplaceAll(evil, "\n", "\\n")
+	ex := tree{}.g("ex").f("ex/a.txt", "s").f("ex/b c.txt", "s").f("ex/x:y.txt", "s").f("ex/secret.txt", "s").f("ex/"+evil, "s").
+		f("scen/ws.json", "["+finding("a.txt", "rule-a", 3)+","+finding("b c.txt", "generic-api-key", 7)+","+
+			finding("x:y.txt", "r", 2)+","+finding("secret.txt", "rule-a", 3)+","+finding(jsonName, "r", 1)+"]")
+	for _, a := range [][]string{
+		{"exceptions"}, {"exceptions", "-h"}, {"exceptions", "bogus"},
+		{"exceptions", "add"}, {"exceptions", "add", "--repo", "~/ex"}, {"exceptions", "add", "--repo", "~/ex", "--bogus"},
+		{"exceptions", "add", "--repo", "~/ex", "a"}, {"exceptions", "add", "--repo", "~/ex", "a:b"}, {"exceptions", "add", "--repo", "~/ex", "a:b:x"},
+		{"exceptions", "add", "--repo", "~/ex", ":r:1"}, {"exceptions", "add", "--repo", "~/ex", "a::1"}, {"exceptions", "add", "--repo", "~/ex", "a:r:"},
+		{"exceptions", "add", "--repo", "~/ex", "/a:r:1"}, {"exceptions", "add", "--repo", "~/ex", "../a:r:1"},
+		{"exceptions", "add", "--repo", "~/ex", "a.txt:rule-a:4"}, {"exceptions", "add", "--repo", "~/ex", "a.txt:rule-a:3", "--reason", "test fixture"},
+		{"exceptions", "add", "--repo", "~/ex", "a.txt:rule-a:3", "a.txt:rule-a:3"}, {"exceptions", "add", "--repo", "~/ex", "x:y.txt:r:2"},
+		{"exceptions", "add", "--repo", "~/ex", "b c.txt:generic-api-key:7", "--reason=#hash"}, {"exceptions", "add", "--repo", "~/ex", "a.txt:rule-a:003"},
+		{"exceptions", "add", "--repo", "~/ex", evil + ":r:1"}, {"exceptions", "add", "--repo", "~/ex", "a.txt:rule-a:3", "--reason", "two\nlines"},
+		{"exceptions", "add", "--repo", "~/ex", "a.txt:rule-a:3", "--reason"}, {"exceptions", "add", "--repo=~/nope", "a:r:1"},
+	} {
+		add(cs{args: a, tree: ex, env: stub})
+	}
+	add(cs{args: []string{"exceptions", "add", "--repo", "~/ex", "a.txt:rule-a:3"}, tree: ex})
+	add(cs{args: []string{"exceptions", "add", "--repo", "~/ex", "a.txt:rule-a:3"}, tree: ex.f("scen/ws.rc", "2"), env: stub})
+	add(cs{args: []string{"exceptions", "add", "--repo", "~/ex", "a.txt:rule-a:3"}, tree: ex.f("ex/.gitleaksignore", "old:r:1"), env: stub})
+	add(cs{args: []string{"exceptions", "add", "--repo", "~/ex", "a.txt:rule-a:3"}, tree: ex.f("ex/.betterleaksignore", "a.txt:rule-a:3\n"), env: stub})
+	legacy := "masked_paths:\n  - m\naccepted_secrets:\n  - a.txt:rule-a:3:abc123  # reviewed: test key\n  - b.txt:r:9:def  #  spaced\n- c.txt:r:1\n  - d.txt:r:2:h\nother: 1\n"
+	for _, a := range [][]string{{"exceptions", "list", "--repo", "~/ex"}, {"exceptions", "list", "--repo", "~/ex", "x"}, {"exceptions", "list"},
+		{"exceptions", "migrate", "--repo", "~/ex"}, {"exceptions", "migrate", "--repo", "~/ex", "--x"}, {"exceptions", "migrate"}} {
+		add(cs{args: a, tree: ex})
+		add(cs{args: a, tree: ex.f("ex/.betterleaksignore", "# c\na.txt:rule-a:3\n\n b.txt:r:2 \n").f("ex/.sandbox/config.yaml", legacy)})
+	}
+
 	var rows []string
 	for i, c := range cases {
 		args := ""

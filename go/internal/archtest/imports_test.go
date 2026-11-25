@@ -6,6 +6,7 @@ package archtest
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -82,5 +83,24 @@ func TestImportGraph(t *testing.T) {
 		if !seen[name] {
 			t.Errorf("rule for %s matches no package", name)
 		}
+	}
+}
+
+// TestPlantedBugsApply checks that every planted bug in tools/mutants.py still finds its text,
+// exactly once, in its file. A refactor that moves the text would otherwise leave the bug
+// planting nothing, and `tools/mutate.py` reports that only when someone runs it.
+func TestPlantedBugsApply(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("python3 is required in CI")
+		}
+		t.Skip("python3 not found")
+	}
+	cmd := exec.Command(py, "tools/mutate.py", "--check")
+	cmd.Dir = "../.." // the module root, where tools/ lives
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("stale planted bugs (fix their text in tools/mutants.py):\n%s", out)
 	}
 }

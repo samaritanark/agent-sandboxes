@@ -87,7 +87,7 @@ m(ACC, 'acceptFile == ""', "false", R_ACC, equivalent="os.Stat of an empty path 
 SC = "internal/gate/scan.go"
 m(SC, 'strings.HasPrefix(entry, "../") || strings.Contains(entry, "/../")', 'strings.Contains(entry, "/../")', R_SCAN)
 m(SC, '|| strings.Contains(entry, "/../") {', "{", R_SCAN)
-m(SC, "[]string{repoIgnoreName, repoIgnoreFallback}", "[]string{repoIgnoreName}", R_SCAN)
+m(SC, "[]string{config.RepoIgnoreName, config.RepoIgnoreFallback}", "[]string{repoIgnoreName}", R_SCAN)
 m(SC, 'if strings.HasPrefix(relpath, ".git/") {', "if false {", R_SCAN)
 m(SC, "case IsPathMasked(repo, relpath):", "case IsPathMasked(realRepo, relpath):", R_SCAN, equivalent="realRepo is the same directory as repo")
 m(SC, 'class = "sealed"', 'class = "yes"', R_SCAN)
@@ -202,11 +202,11 @@ m(GT, "if len(r) > 12 {", "if len(r) > 11 {", R_GT, equivalent="r[:12] of a 12-c
 
 EX = "internal/vetting/exceptions.go"
 R_EX = "TestExceptionsGolden"
-m(EX, "for _, name := range []string{ignoreName, ignoreFallback} {", "for _, name := range []string{ignoreFallback, ignoreName} {", R_EX)
+m(EX, "for _, name := range []string{config.RepoIgnoreName, config.RepoIgnoreFallback} {", "for _, name := range []string{ignoreFallback, ignoreName} {", R_EX)
 m(EX, 'if rev == "" {', "if false {", R_EX)
 m(EX, 'if c.statusFields(repo)[0] != "vetted" {', "if false {", R_EX)
 m(EX, 'if honorFlag != "true" {', 'if honorFlag == "false" {', R_EX)
-m(EX, 'if acceptUnvetted == "true" {\n\t\t\treturn LoadRepoIgnoreFingerprints(repo)', 'if acceptUnvetted != "false" {\n\t\t\treturn LoadRepoIgnoreFingerprints(repo)', R_EX)
+m(EX, 'if acceptUnvetted == "true" {\n\t\t\treturn config.LoadRepoIgnoreFingerprints(repo)', 'if acceptUnvetted != "false" {\n\t\t\treturn config.LoadRepoIgnoreFingerprints(repo)', R_EX)
 m(EX, 'if c.ExceptionsRequireHead() == "true" {', "if false {", R_EX)
 m(EX, 'return CommittedIgnoreFingerprints(repo, tag)', 'return CommittedIgnoreFingerprints(repo, "HEAD")', R_EX)
 m(EX, 'if c.ExceptionsFromCommit() == "true" {', 'if c.ExceptionsFromCommit() != "false" {', R_EX, equivalent="the getter only returns true or false")
@@ -399,7 +399,7 @@ m(AU, "\tif err := os.WriteFile(tmp, []byte(out.String()), 0o600); err != nil {"
 m(AU, "\tos.Chmod(tmp, 0o600)\n", "", R_AU, equivalent="WriteFile already created the temp file 0600 (umask 022 cannot widen it)")
 m(AU, "\t\tnv, err := f(v)\n\t\tif err != nil {\n\t\t\treturn\n\t\t}", "\t\tnv, _ := f(v)", R_AU)
 m(AU, "\tcase Null:\n\t\tev = Arr(e)", "\tcase Null:\n\t\treturn v, fmt.Errorf(\"x\")", R_AU)
-m(AU, "\tif v.Kind != Object && v.Kind != Null {\n\t\treturn v, fmt.Errorf(\"cannot index %s\", kindName(v.Kind))\n\t}\n\tev :=", "\tev :=", R_AU,
+m(AU, "\tif v.Kind != Object && v.Kind != Null {\n\t\treturn v, fmt.Errorf(\"cannot index %s\", KindName(v.Kind))\n\t}\n\tev :=", "\tev :=", R_AU,
   equivalent="Set refuses a non-object anyway, with the same effect (the record is left unchanged)")
 m(AU, 'ev := o.value().Merge(mustObj("time", Str(now), "type", Str("override")))', 'ev := mustObj("time", Str(now), "type", Str("override")).Merge(o.value())', R_AU)
 m(AU, "\tif len(overrides) == 0 {\n\t\treturn\n\t}", "", R_AU, equivalent="the loop does nothing for no overrides")
@@ -590,3 +590,20 @@ m(MK, '\t\tcase config.IsFile(repo + "/" + p):', '\t\tcase config.Exists(repo + 
 m(MK, '\tif !deviation.Fixed(deviation.MaskListStatus) {\n\t\tpanic(exit(1))\n\t}', '', R_CL)
 m("internal/workspace/workspace.go", '\tif strings.TrimSpace(firstLine(git("ls-files", "--", ":(literal)"+relpath))) != "" {\n\t\treturn true\n\t}', '', R_CL, pkg="cli")
 m("internal/workspace/workspace.go", '\treturn strings.TrimRight(git("log", "--all", "-1", "--format=%H", "--", ":(literal)"+relpath), "\\n") != ""', '\treturn false', R_CL, pkg="cli")
+
+EXC = "internal/cli/exceptions.go"
+m(EXC, '\t\tif !strings.Contains(rest, ":") || relpath == "" || rule == "" || !lineDigits.MatchString(line) {', '\t\tif !strings.Contains(rest, ":") || relpath == "" || !lineDigits.MatchString(line) {', R_CL)
+m(EXC, '\t\tif strings.HasPrefix(relpath, "/") || strings.HasPrefix(relpath, "../") || strings.Contains(relpath, "/../") {', '\t\tif strings.HasPrefix(relpath, "/") {', R_CL)
+m(EXC, '\t\tif i := strings.LastIndex(rest, ":"); i >= 0 {\n\t\t\trule, relpath = rest[i+1:], rest[:i]', '\t\tif i := strings.Index(rest, ":"); i >= 0 {\n\t\t\trule, relpath = rest[i+1:], rest[:i]', R_CL)
+m(EXC, '\t\tcase 1:\n\t\t\tc.die("exceptions add: no %s finding', '\t\tcase 9:\n\t\t\tc.die("exceptions add: no %s finding', R_CL)
+m(EXC, '\t\t\tfor _, l := range strings.Split(fp, "\\n") {', '\t\t\tfor _, l := range []string{fp} {', R_CL)
+m(EXC, '\tif _, err := exec.LookPath("betterleaks"); err != nil {\n\t\tc.die("exceptions add: betterleaks is required', '\tif false {\n\t\tc.die("exceptions add: betterleaks is required', R_CL)
+m(EXC, '\tif !any {\n\t\tc.out("  (none)")\n\t}\n\tlegacy := false', '\tlegacy := false', R_CL)
+m(EXC, '\t\treturn strings.TrimLeft(l[i+1:], " \\t\\n\\v\\f\\r")', '\t\treturn l[i+1:]', R_CL)
+m(EXC, '\t\ti := strings.LastIndex(l, "#")', '\t\ti := strings.Index(l, "#")', R_CL)
+m(EXC, '\t\tif strings.Count(fp, ":") < 2 {\n\t\t\tfp = entry\n\t\t}', '', R_CL)
+m(EXC, '\tconfig.RemoveYAMLList(cfg, "accepted_secrets")', '', R_CL)
+m(EXC, '\tif len(entries) == 0 {\n\t\tc.out("No accepted_secrets: entries', '\tif false {\n\t\tc.out("No accepted_secrets: entries', R_CL)
+m("internal/gate/scan.go", '\t\tif file == target && r == rule && isNum && n == float64(want) {', '\t\tif file == target && r == rule && isNum {', R_CL, pkg="cli")
+m("internal/gate/scan.go", '\t\tif file == target && r == rule && isNum && n == float64(want) {', '\t\tif file == target && isNum && n == float64(want) {', R_CL, pkg="cli")
+m("internal/gate/scan.go", '\tif okRun, _ := betterleaksRun(e, realRepo, reportPath, cfgPath, ignore, ""); !okRun {\n\t\treturn nil, 2', '\tif okRun, _ := betterleaksRun(e, realRepo, reportPath, cfgPath, ignore, ""); false && !okRun {\n\t\treturn nil, 2', R_CL, pkg="cli")

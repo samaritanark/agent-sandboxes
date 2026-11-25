@@ -472,3 +472,76 @@ func ScanRepoSecrets(e config.Env, repo, acceptFile string, warn io.Writer) []st
 
 // splitScanLine splits one line of scan_repo_secrets output (class, relpath, rule, line, match).
 func splitScanLine(line string) []string { return bashcompat.SplitTab(line, 5) }
+
+// FingerprintsFor is leakscan_fingerprints_for: confirm that a finding named by location exists
+// in the current tree (scanning with the gate's own config and ignore baseline) and return its
+// `relpath:rule:line` fingerprint. rc is 0 on success, 1 when there is no such finding, 2 when the
+// scan failed, 3 when betterleaks or jq is unavailable.
+//
+// The line is compared as a number (jq 1.7 reads "007" as 7). In legacy mode the fingerprint
+// keeps the line as typed, so "007" records "path:rule:007", which betterleaks never matches
+// against line 7 (the exception silently covers nothing); with DecimalNumbers it carries the
+// canonical "7".
+func FingerprintsFor(e config.Env, repo, relpath, rule, line string) (fps []string, rc int) {
+	for _, tool := range []string{"betterleaks", "jq"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			return nil, 3
+		}
+	}
+	if !digitsOnly.MatchString(line) {
+		return nil, 1
+	}
+	want, ok := bashcompat.Decimal(line)
+	if deviation.Fixed(deviation.DecimalNumbers) {
+		line = strings.TrimLeft(line, "0")
+		if line == "" {
+			line = "0"
+		}
+	}
+	realRepo, err := filepath.EvalSymlinks(repo)
+	if err == nil {
+		realRepo, err = filepath.Abs(realRepo)
+	}
+	if err != nil {
+		return nil, 1
+	}
+	report, _ := os.CreateTemp(e.TmpDir, "sandbox-bl-fp-")
+	reportPath := report.Name()
+	report.Close()
+	defer os.Remove(reportPath)
+	cfgPath := operatorConfig(e)
+	if cfgPath == "" {
+		f, _ := os.CreateTemp(e.TmpDir, "sandbox-bl-cfg-")
+		cfgPath = f.Name()
+		f.WriteString(LeakscanConfig(e, repo))
+		f.Close()
+		defer os.Remove(cfgPath)
+	}
+	ignore := ignorePath(e)
+	if ignore == "" {
+		d, _ := os.MkdirTemp(e.TmpDir, "sandbox-bl-ign-")
+		ignore = d
+		defer os.Remove(d)
+	}
+	if okRun, _ := betterleaksRun(e, realRepo, reportPath, cfgPath, ignore, ""); !okRun {
+		return nil, 2
+	}
+	if !ok {
+		return nil, 1
+	}
+	b, _ := os.ReadFile(reportPath)
+	var findings []map[string]any
+	if json.Unmarshal(b, &findings) != nil {
+		return nil, 1
+	}
+	target := realRepo + "/" + relpath
+	for _, f := range findings {
+		file, _ := f["File"].(string)
+		r, _ := f["RuleID"].(string)
+		n, isNum := f["StartLine"].(float64)
+		if file == target && r == rule && isNum && n == float64(want) {
+			return []string{relpath + ":" + rule + ":" + line}, 0
+		}
+	}
+	return nil, 1
+}

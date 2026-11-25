@@ -132,3 +132,25 @@ func TestFixExactColumns(t *testing.T) {
 
 func FindIsEnc(f, sc, ec string) bool { return FindingIsEncrypted(f, "1", sc, ec) }
 func itoa(n int) string               { return strconv.Itoa(n) }
+
+func TestFixDecimalNumbersFingerprintLine(t *testing.T) {
+	home := t.TempDir()
+	repo := home + "/r"
+	os.MkdirAll(repo, 0o755)
+	os.WriteFile(repo+"/a.txt", []byte("s"), 0o644)
+	os.MkdirAll(home+"/scen", 0o755)
+	os.WriteFile(home+"/scen/ws.json", []byte(`[{"File":"@REPO@/a.txt","RuleID":"rule-a","StartLine":3}]`), 0o644)
+	stubDir, _ := filepath.Abs("testdata/scan/stub")
+	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
+	t.Setenv("STUB_SCEN", home+"/scen")
+	t.Setenv("STUB_LOG", home+"/stub.log")
+	t.Setenv("STUB_ROOT", home)
+	e := config.Env{Home: home, UserConfig: home + "/none.yaml"}
+	if fps, rc := FingerprintsFor(e, repo, "a.txt", "rule-a", "003"); rc != 0 || len(fps) != 1 || fps[0] != "a.txt:rule-a:003" {
+		t.Fatalf("legacy: %q %d", fps, rc)
+	}
+	defer deviation.Force(deviation.DecimalNumbers)()
+	if fps, rc := FingerprintsFor(e, repo, "a.txt", "rule-a", "003"); rc != 0 || len(fps) != 1 || fps[0] != "a.txt:rule-a:3" {
+		t.Errorf("fixed: %q %d", fps, rc)
+	}
+}

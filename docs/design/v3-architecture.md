@@ -2459,6 +2459,12 @@ Fix on v2 regardless of v3 (migration step 1).
     home. Found in the S8 port (2026-11-24); by the owner's decision fixed in v3
     only (`AgentHomeNoFollow`), where agent tokens also move to the broker store
     (5.9.6).
+16. `sandbox exceptions add` (`bin/sandbox:4139-4230`) records each line of a
+    `PATH:RULE:LINE` as a separate fingerprint. A file the agent names with
+    embedded newlines, added through the command the gate itself suggests (which
+    quotes the name with `$'...'`), records an extra fingerprint that suppresses
+    a real finding in another file. Found in the S8 port (2026-11-25); fixed in
+    v3 (`ExceptionSpecOneLine`), as items 12 and 15 are.
 
 ## Appendix C — External review dispositions (revision 3)
 

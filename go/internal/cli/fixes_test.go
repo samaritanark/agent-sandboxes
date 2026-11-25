@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
@@ -78,5 +79,37 @@ func TestFixMaskListStatus(t *testing.T) {
 	defer deviation.Force(deviation.MaskListStatus)()
 	if rc := run(); rc != 0 {
 		t.Errorf("fixed: rc=%d", rc)
+	}
+}
+
+func TestFixExceptionSpecOneLine(t *testing.T) {
+	home := t.TempDir()
+	repo := home + "/ex"
+	os.MkdirAll(repo, 0o755)
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	evil := "n\nsecret.txt:rule-a:3\nz"
+	os.WriteFile(repo+"/"+evil, []byte("s"), 0o644)
+	os.MkdirAll(home+"/scen", 0o755)
+	os.WriteFile(home+"/scen/ws.json", []byte(`[{"File":"@REPO@/n\nsecret.txt:rule-a:3\nz","RuleID":"r","StartLine":1}]`), 0o644)
+	stubDir, _ := filepath.Abs("../gate/testdata/scan/stub")
+	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
+	t.Setenv("STUB_SCEN", home+"/scen")
+	t.Setenv("STUB_LOG", home+"/stub.log")
+	t.Setenv("STUB_ROOT", home)
+	run := func() (int, string) {
+		os.Remove(repo + "/.betterleaksignore")
+		var out, errb bytes.Buffer
+		rc := Run([]string{"exceptions", "add", "--repo", repo, evil + ":r:1"}, fixtureEnv("none", home, "/nonexistent", nil), &out, &errb)
+		b, _ := os.ReadFile(repo + "/.betterleaksignore")
+		return rc, string(b)
+	}
+	if rc, ign := run(); rc != 0 || ign != "n\nsecret.txt:rule-a:3\nz:r:1\n" {
+		t.Fatalf("legacy: rc=%d ignore=%q (the bash records every line)", rc, ign)
+	}
+	defer deviation.Force(deviation.ExceptionSpecOneLine)()
+	if rc, ign := run(); rc != 1 || ign != "" {
+		t.Errorf("fixed: rc=%d ignore=%q", rc, ign)
 	}
 }

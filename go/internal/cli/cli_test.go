@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 )
 
@@ -126,18 +127,19 @@ func listing(home string) string {
 	for _, rel := range paths {
 		p := filepath.Join(home, rel)
 		st, _ := os.Lstat(p)
+		q := bashcompat.QuoteQ(rel)
 		switch {
 		case st.Mode()&os.ModeSymlink != 0:
 			l, _ := os.Readlink(p)
-			fmt.Fprintf(&b, "l %s -> %s\n", rel, l)
+			fmt.Fprintf(&b, "l %s -> %s\n", q, l)
 		case st.IsDir():
-			fmt.Fprintf(&b, "d %s %o\n", rel, st.Mode().Perm())
+			fmt.Fprintf(&b, "d %s %o\n", q, st.Mode().Perm())
 		case st.Mode()&os.ModeNamedPipe != 0:
-			fmt.Fprintf(&b, "p %s\n", rel)
+			fmt.Fprintf(&b, "p %s\n", q)
 		default:
 			data, _ := os.ReadFile(p)
 			data = []byte(strings.ReplaceAll(string(data), home, "<HOME>"))
-			fmt.Fprintf(&b, "f %s %o %s\n", rel, st.Mode().Perm(), base64.StdEncoding.EncodeToString(data))
+			fmt.Fprintf(&b, "f %s %o %s\n", q, st.Mode().Perm(), base64.StdEncoding.EncodeToString(data))
 		}
 	}
 	return b.String()

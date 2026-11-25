@@ -8,8 +8,8 @@
 # clean environment (PATH, HOME, LC_ALL, SANDBOX_LOGS_DIR); the line STUB=1 instead puts the gate's
 # stub scanner on PATH as betterleaks, answering from <HOME>/scen. version is none | full (a .version file in the copied
 # install). Output: "id rc stdout stderr home", "=" + base64 each, home a sorted listing of $HOME
-# (file contents with the case home written as <HOME>; .git directories left out, since git
-# versions populate them differently).
+# (paths as printf %q prints them; file contents with the case home written as <HOME>; .git
+# directories left out, since git versions populate them differently).
 # Normalized: the install root as <ROOT>, the case home as <HOME>, the bash version as <RT>, the
 # JSON "bash" key as "runtime", and bash's own "<script>: line N:" prefix as "sandbox: line 0:".
 set -u
@@ -62,11 +62,12 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
     sed -e "s|$T/$ver/bin/sandbox: line [0-9]*:|sandbox: line 0:|g" -e "s|$T/$ver|<ROOT>|g" -e "s|$H|<HOME>|g" \
         -e "s|bash $bv|<RT>|g" -e "s|\"bash\":\"$bv\"|\"runtime\":\"<RT>\"|g" "$1" | base64 -w0
   }
-  listing="$(cd "$H" && find . -mindepth 1 -name .git -prune -o -print | LC_ALL=C sort | while IFS= read -r p; do
-    if [[ -L "$p" ]]; then printf 'l %s -> %s\n' "$p" "$(readlink "$p")"
-    elif [[ -d "$p" ]]; then printf 'd %s %s\n' "$p" "$(stat -c %a "$p")"
-    elif [[ -p "$p" ]]; then printf 'p %s\n' "$p"
-    else printf 'f %s %s %s\n' "$p" "$(stat -c %a "$p")" "$(sed "s|$H|<HOME>|g" "$p" | base64 -w0)"; fi
+  listing="$(cd "$H" && find . -mindepth 1 -name .git -prune -o -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' p; do
+    q="$(printf '%q' "$p")"
+    if [[ -L "$p" ]]; then printf 'l %s -> %s\n' "$q" "$(readlink "$p")"
+    elif [[ -d "$p" ]]; then printf 'd %s %s\n' "$q" "$(stat -c %a "$p")"
+    elif [[ -p "$p" ]]; then printf 'p %s\n' "$q"
+    else printf 'f %s %s %s\n' "$q" "$(stat -c %a "$p")" "$(sed "s|$H|<HOME>|g" "$p" | base64 -w0)"; fi
   done | base64 -w0)"
   printf '%s\t%s\t=%s\t=%s\t=%s\n' "$id" "$rc" "$(norm "$out")" "$(norm "$err")" "$listing"
   rm -rf "$c"
