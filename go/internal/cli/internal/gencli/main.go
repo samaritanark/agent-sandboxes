@@ -97,6 +97,7 @@ func main() {
 		{"profile", "save", "--tier", "1", "--name", "2"}, {"profile", "save", "--tier", "1", "--name", "../x"},
 		{"profile", "save", "--tier", "1", "--bogus"}, {"profile", "save", "--tier", "1", "stray"},
 		{"profile", "save", "--tier", "1", "--agent"}, {"profile", "save", "--help"},
+		{"profile", "save", "--agent", "codex", "--name", "notier", "--dry-run"},
 		{"profile", "list"}, {"profile", "ls", "extra"}, {"profile", "list", "-h"},
 		{"profile", "show"}, {"profile", "show", "dev"}, {"profile", "cat", "team"}, {"profile", "show", "shadow"},
 		{"profile", "show", "nope"}, {"profile", "show", "sub/x"}, {"profile", "show", "-h"},

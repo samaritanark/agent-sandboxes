@@ -32,6 +32,7 @@ Layout so far:
 | `internal/link` | `lib/link.sh`: link names and recorded state, path normalization, the overlay shape gate, and the run-path sync (git is executed, as in the bash) |
 | `internal/onboard` | `lib/onboard.sh`: which host login files each agent stages, the Codex and Grok config hardening, the API-key refusal, and the starter user config |
 | `internal/agents` | `lib/agents.sh` (per-agent domains, flags, MCP config, credential type, the opencode endpoint) and the host-environment check of `lib/credentials.sh` |
+| `internal/allowlist` | the domain set of `build_cilium_policy` (`lib/policy.sh:42-97`): agent and tier domains, extras, the registrable unblocked apex of each `*.X`, deduplicated; in v3 the session spec's allowlist (design 5.4.1) |
 | `internal/secrets` | the host-side store of `lib/secrets.sh` (one 0600 file per secret, name validation, set, list, delete); v3 keeps it on the host (design 5.1.4) |
 | `internal/jqjson` | the part of jq the bash's JSON writers rely on: ordered values, jq's input rules, and its pretty output (used by `audit` and `agents`) |
 | `internal/cli`, `cmd/sandbox-vm` | the in-VM `sandbox` command (design 5.1.6): dispatch, usage texts, and the subcommands ported so far (`version`, `profile`, `check`, `mask`, `exceptions`, `vet`, `link`, `list`, `logs`, `cleanup`, `secret`, `onboard`, and the policy halves of `run`, `allow`, and `resume`, which then stop because sandboxd does not exist yet); the others print their v2 help and say they are not yet ported |
@@ -127,6 +128,14 @@ Agents (`internal/agents/testdata`; each case runs under `env -i` with only its 
 (cd go && go run ./internal/agents/internal/genagents -base internal/agents/testdata)
 # on Linux, with LC_ALL=C (needs jq):
 LC_ALL=C go/internal/agents/testdata/oracle.sh > go/internal/agents/testdata/golden-agents.tsv
+```
+
+The session allowlist (`internal/allowlist`; the oracle sources `lib/policy.sh` and reads back the entries `build_cilium_policy` renders):
+
+```bash
+# on Linux:
+(cd go && go run ./internal/allowlist/internal/genallowlist -base internal/allowlist/testdata)
+LC_ALL=C go/internal/allowlist/testdata/oracle.sh > go/internal/allowlist/testdata/golden-allowlist.tsv
 ```
 
 The in-VM CLI (`internal/cli`; the oracle runs `bin/sandbox` itself from a copy of the install, and the usage texts are captured from it; for `run`, `testdata/cmd-stub.sh` sources the script with the cluster calls, the removed v2 host workarounds, the clock, and `/dev/urandom` stubbed, so a case ends with its session record written, where the cluster work would begin):

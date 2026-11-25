@@ -822,3 +822,15 @@ m(OBC, '\tif n > 0 {\n\t\tc.out("")', '\tif n > 1 {\n\t\tc.out("")', R_CL)
 m(OBC, 'list = []string{"claude", "codex", "opencode", "copilot", "grok"}', 'list = []string{"claude", "codex"}', R_CL)
 m(OBC, 'DryRun: dry, Force: force}', 'DryRun: dry, Force: false}', R_CL)
 m(OBC, '\tif dry {\n\t\tc.out("Dry-run complete', '\tif false {\n\t\tc.out("Dry-run complete', R_CL)
+
+AW = "internal/allowlist/allowlist.go"
+R_AW = "TestAllowlistGolden"
+m(AW, '\tn := len(all) // the bash', '\tn := len(agentDomains) // the bash', R_AW)
+m(AW, '\t\tif !strings.HasPrefix(d, "*.") {', '\t\tif !strings.HasPrefix(d, "*") {', R_AW)
+m(AW, '\t\tapex := checks.NormalizeDomain(d[2:])', '\t\tapex := d[2:]', R_AW)
+m(AW, '\t\tif checks.ApexIsRegistrableDomain(apex) && !c.DomainIsBlocked(apex) {', '\t\tif checks.ApexIsRegistrableDomain(apex) {', R_AW)
+m(AW, '\t\tif checks.ApexIsRegistrableDomain(apex) && !c.DomainIsBlocked(apex) {', '\t\tif !c.DomainIsBlocked(apex) {', R_AW)
+m(AW, '\t\tlines = append(lines, strings.Split(d, "\\n")...)', '\t\tlines = append(lines, d)', R_AW)
+m(AW, '\t\tif strings.Trim(l, " \\t") == "" || seen[l] {', '\t\tif l == "" || seen[l] {', R_AW)
+m(AW, '\t\tif strings.Trim(l, " \\t") == "" || seen[l] {', '\t\tif strings.Trim(l, " \\t") == "" {', R_AW)
+m(AW, 'all := append(append(append([]string(nil), agentDomains...), tierDomains...), extras...)', 'all := append(append(append([]string(nil), agentDomains...), extras...), tierDomains...)', R_AW)

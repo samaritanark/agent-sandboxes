@@ -33,6 +33,8 @@ var allowed = map[string][]string{
 	"workspace":  {"bashcompat", "config", "deviation"},
 	// the host-side secret store: files only, no policy
 	"secrets": {},
+	// the session allowlist: built-in and extra domains through the block lists
+	"allowlist": {"checks"},
 	// the in-VM CLI is the policy layer's front end, so it may use every policy package
 	"cli": {"agents", "audit", "bashcompat", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
 		"link", "onboard", "secrets", "tier", "vetting", "workspace"},
