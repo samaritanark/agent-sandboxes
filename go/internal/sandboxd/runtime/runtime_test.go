@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/containerd/containerd/v2/core/containers"
@@ -15,13 +16,14 @@ func vm() MicroVM {
 	return MicroVM{ID: "s-one", Image: "docker.io/library/alpine@sha256:00", Args: []string{"sh"},
 		Env: []string{"TERM=xterm"}, UID: 1000, GID: 1000, NetNS: "/var/run/netns/sbx-s-one-agent",
 		CPUs: 1.5, MemoryMiB: 2048, Hostname: "sandbox",
-		Mounts: []specs.Mount{{Type: "bind", Source: "/var/lib/sandbox/workspaces/0123456789abcdef", Destination: "/home/agent/workspace", Options: []string{"rbind", "rw"}}}}
+		Mounts: []Mount{{Source: "/var/lib/sandbox/workspaces/0123456789abcdef", Target: "/home/agent/workspace"},
+			{Source: "/var/lib/sandbox/workspaces/0123456789abcdef/.git/config", Target: "/home/agent/workspace/.git/config", ReadOnly: true}}}
 }
 
 func spec(t *testing.T, m MicroVM, extra ...oci.SpecOpts) *oci.Spec {
 	t.Helper()
-	// a caller's option placed before the hardening cannot widen it
-	opts := append(extra, SpecOpts(m)...)
+	// an image config (here: options that ask for root and a capability) cannot widen it
+	opts := SpecOpts(m, extra...)
 	s, err := oci.GenerateSpecWithPlatform(ctxNS(context.Background()), nil, "linux/arm64", &containers.Container{ID: m.ID}, opts...)
 	if err != nil {
 		t.Fatal(err)
@@ -54,13 +56,16 @@ func TestHardening(t *testing.T) {
 	if *s.Linux.Resources.Memory.Limit != 2048<<20 || *s.Linux.Resources.CPU.Quota != 150000 || *s.Linux.Resources.CPU.Period != 100000 {
 		t.Errorf("resources %+v %+v", s.Linux.Resources.Memory, s.Linux.Resources.CPU)
 	}
-	found := false
+	opts := map[string]string{}
 	for _, m := range s.Mounts {
-		if m.Destination == "/home/agent/workspace" && m.Source == "/var/lib/sandbox/workspaces/0123456789abcdef" {
-			found = true
+		if m.Type == "bind" {
+			opts[m.Destination] = strings.Join(m.Options, ",")
 		}
 	}
-	if !found || s.Hostname != "sandbox" || s.Process.Args[0] != "sh" {
+	if opts["/home/agent/workspace"] != "rbind,rw" || opts["/home/agent/workspace/.git/config"] != "rbind,ro" {
+		t.Errorf("bind mounts %v", opts)
+	}
+	if s.Hostname != "sandbox" || s.Process.Args[0] != "sh" {
 		t.Error("mounts, hostname, or args lost")
 	}
 }
@@ -75,7 +80,8 @@ func TestCheck(t *testing.T) {
 		"no netns":   func(m *MicroVM) { m.NetNS = "" },
 		"no memory":  func(m *MicroVM) { m.MemoryMiB = 0 },
 		"no image":   func(m *MicroVM) { m.Image = "" },
-		"tmpfs":      func(m *MicroVM) { m.Mounts = append(m.Mounts, specs.Mount{Type: "tmpfs", Destination: "/x"}) },
+		"relative":   func(m *MicroVM) { m.Mounts = append(m.Mounts, Mount{Source: "x", Target: "/x"}) },
+		"over root":  func(m *MicroVM) { m.Mounts = append(m.Mounts, Mount{Source: "/x", Target: "/"}) },
 	} {
 		m := vm()
 		f(&m)

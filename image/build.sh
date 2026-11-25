@@ -34,6 +34,9 @@ install -d "${lib}/bin" "${lib}/setup" "${stage}/etc/sandbox"
 (cd go && CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" "${GO}" build -trimpath -buildvcs=false \
   -ldflags "-s -w -X main.version=${version} -X main.commit=${commit}" \
   -o "${lib}/bin/sandbox" ./cmd/sandbox-vm)
+# sandboxd, the session supervisor (design 5.4.3), a root systemd service.
+(cd go && CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" "${GO}" build -trimpath -buildvcs=false \
+  -ldflags "-s -w" -o "${lib}/bin/sandboxd" ./cmd/sandboxd)
 # What it reads from its install root (two levels above the binary).
 cp -a config "${lib}/config"
 cp -a setup/versions.sh "${lib}/setup/versions.sh"

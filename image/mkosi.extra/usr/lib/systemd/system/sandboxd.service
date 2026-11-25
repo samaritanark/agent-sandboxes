@@ -1,0 +1,16 @@
+[Unit]
+Description=sandboxd, the sandbox session supervisor (design 5.4.3)
+Requires=containerd.service
+After=containerd.service network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/sandbox/bin/sandboxd serve
+Restart=on-failure
+RestartSec=2
+# Teardown destroys microVMs before it returns; give it time.
+TimeoutStopSec=90
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

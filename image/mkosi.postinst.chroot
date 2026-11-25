@@ -28,5 +28,9 @@ for k in /boot/vmlinuz-* /usr/lib/modules/*/vmlinuz; do
 done
 # containerd (from build.sh's runtime tree) drives the Kata microVMs; buildkit starts on demand.
 systemctl enable containerd.service
+# sandboxd supervises the sessions; members of the sandbox group (the policy CLI's user) may use
+# its socket besides root.
+groupadd --system sandbox
+systemctl enable sandboxd.service
 # Build-time leftovers that differ between otherwise identical builds.
 rm -f /var/cache/ldconfig/aux-cache /var/log/alternatives.log

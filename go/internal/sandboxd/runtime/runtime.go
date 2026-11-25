@@ -4,7 +4,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"syscall"
 	"time"
@@ -32,38 +31,17 @@ const (
 	Socket = "/run/containerd/containerd.sock"
 )
 
-// MicroVM describes one microVM: a session's agent or one of its dependencies.
-type MicroVM struct {
-	ID        string
-	Image     string // pinned by digest
-	Args      []string
-	Env       []string // NAME=value
-	UID, GID  uint32   // never 0
-	Mounts    []specs.Mount
-	NetNS     string // the network namespace's path; required
-	CPUs      float64
-	MemoryMiB int
-	Hostname  string
-}
-
-// Check refuses a description sandboxd must never run.
-func (m MicroVM) Check() error {
-	switch {
-	case m.ID == "" || m.Image == "":
-		return errors.New("runtime: microVM needs an id and an image")
-	case m.UID == 0 || m.GID == 0:
-		return fmt.Errorf("runtime: %s would run as root", m.ID)
-	case m.NetNS == "":
-		return fmt.Errorf("runtime: %s has no network namespace of its own", m.ID)
-	case m.MemoryMiB <= 0 || m.CPUs <= 0:
-		return fmt.Errorf("runtime: %s has no resource limits", m.ID)
-	}
-	for _, mt := range m.Mounts {
-		if mt.Type != "bind" {
-			return fmt.Errorf("runtime: %s: only bind mounts, not %q", m.ID, mt.Type)
+// ociMounts are m's mounts as OCI bind mounts.
+func ociMounts(ms []Mount) []specs.Mount {
+	out := make([]specs.Mount, 0, len(ms))
+	for _, m := range ms {
+		mode := "rw"
+		if m.ReadOnly {
+			mode = "ro"
 		}
+		out = append(out, specs.Mount{Type: "bind", Source: m.Source, Destination: m.Target, Options: []string{"rbind", mode}})
 	}
-	return nil
+	return out
 }
 
 // dropAll removes every capability from the process, in every set.
@@ -76,18 +54,22 @@ func dropAll(_ context.Context, _ oci.Client, _ *containers.Container, s *oci.Sp
 	return nil
 }
 
-// SpecOpts is the OCI spec of m, hardening last so nothing before it can widen it.
-func SpecOpts(m MicroVM) []oci.SpecOpts {
+// SpecOpts is the OCI spec of m: the default spec, then image (the image's own config: its PATH,
+// working directory, and default command), then m, and the hardening last so nothing before it,
+// the image included, can widen it.
+func SpecOpts(m MicroVM, image ...oci.SpecOpts) []oci.SpecOpts {
 	period := uint64(100000)
-	opts := []oci.SpecOpts{
-		oci.WithDefaultSpec(),
-		oci.WithProcessArgs(m.Args...),
-		oci.WithEnv(m.Env),
-		oci.WithMounts(m.Mounts),
-		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.NetworkNamespace, Path: m.NetNS}),
-		oci.WithMemoryLimit(uint64(m.MemoryMiB) << 20),
-		oci.WithCPUCFS(int64(m.CPUs*float64(period)), period),
+	opts := append([]oci.SpecOpts{oci.WithDefaultSpec()}, image...)
+	if len(m.Args) > 0 {
+		opts = append(opts, oci.WithProcessArgs(m.Args...))
 	}
+	opts = append(opts,
+		oci.WithEnv(m.Env),
+		oci.WithMounts(ociMounts(m.Mounts)),
+		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.NetworkNamespace, Path: m.NetNS}),
+		oci.WithMemoryLimit(uint64(m.MemoryMiB)<<20),
+		oci.WithCPUCFS(int64(m.CPUs*float64(period)), period),
+	)
 	if m.Hostname != "" {
 		opts = append(opts, oci.WithHostname(m.Hostname))
 	}
@@ -143,7 +125,7 @@ func (r *Runtime) Create(ctx context.Context, m MicroVM) error {
 		client.WithImage(img),
 		client.WithNewSnapshot(m.ID+"-rootfs", img),
 		client.WithRuntime(KataRuntime, &runtimeoptions.Options{ConfigPath: KataConfig}),
-		client.WithNewSpec(SpecOpts(m)...),
+		client.WithNewSpec(SpecOpts(m, oci.WithImageConfig(img))...),
 	)
 	return err
 }
