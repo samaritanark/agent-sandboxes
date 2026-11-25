@@ -175,11 +175,34 @@ var gitLocal = map[string]bool{"MERGE_HEAD": true, "MERGE_MSG": true, "MERGE_MOD
 var gitNeverIn = map[string]bool{"FETCH_HEAD": true, "ORIG_HEAD": true, "logs": true, "shallow": true}
 
 // Exec vectors at any depth of the work tree (rule 2): a component with one of these names makes
-// the path a vector (directories) or the name itself is one (files).
-var execDirs = []string{".vscode", ".idea", ".devcontainer", ".husky", ".githooks", ".mise"}
+// the path a vector (directories) or the name itself is one (files). Several agents walk up from
+// the working directory to the repository root, so depth does not matter.
+//
+// Agent project config that can run commands on the host (5.6.2 rule 2's "equivalents for the
+// other supported agents", researched 2026-11-25):
+//   - Claude Code: .claude/settings*.json and .claude/hooks/ (below), and .mcp.json (project MCP
+//     servers launch programs). code.claude.com/docs/en/claude-directory
+//   - Codex CLI: .codex/ (config.toml with hooks and mcp_servers, hooks.json, rules), loaded from
+//     every level between the root and the working directory. developers.openai.com/codex/config-advanced
+//   - Copilot CLI: .github/hooks/*.json, .github/copilot/settings*.json (inline hooks), .mcp.json
+//     and .github/mcp.json (MCP servers); it also reads .claude/settings*.json.
+//     docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference
+//   - Grok Build: .grok/ (config.toml with mcp_servers and plugins, hooks/*.json); it also reads
+//     .cursor/hooks.json, so .cursor/ is held as well. docs.x.ai/build/settings/reference,
+//     docs.x.ai/build/features/hooks
+//   - opencode: opencode.json, opencode.jsonc, and .opencode/ (plugins/ and tools/ run code).
+//     opencode.ai/docs/config
+//
+// Instruction files (AGENTS.md, CLAUDE.md) run nothing and stay ordinary content.
+var execDirs = []string{".vscode", ".idea", ".devcontainer", ".husky", ".githooks", ".mise",
+	".codex", ".grok", ".opencode", ".cursor"}
 var execFiles = []string{".gitmodules", ".pre-commit-config.yaml", "lefthook.yml", "lefthook.yaml",
 	"lefthook-local.yml", "lefthook-local.yaml", ".lfsconfig", ".envrc", ".tool-versions", "mise.toml",
-	".mise.toml", "mise.local.toml", ".mise.local.toml"}
+	".mise.toml", "mise.local.toml", ".mise.local.toml", ".mcp.json", "opencode.json", "opencode.jsonc"}
+
+// execUnderGithub are .github/<name> entries that are exec vectors (Copilot CLI): directories, and
+// the one file.
+var execUnderGithub = []string{"hooks", "copilot", "mcp.json"}
 
 // Classify decides what happens to a VM-origin change at path p in the work tree.
 func Classify(p string, h Host, r Repo) (Class, error) {
@@ -228,6 +251,15 @@ func Classify(p string, h Host, r Repo) (Class, error) {
 			next := keys[i+1]
 			if next == h.key("hooks") || strings.HasPrefix(next, h.key("settings")) && strings.HasSuffix(next, h.key(".json")) {
 				return Quarantine, nil
+			}
+		}
+	}
+	for i := 0; i+1 < len(parts); i++ {
+		if eq(i, ".github") {
+			for _, n := range execUnderGithub {
+				if eq(i+1, n) {
+					return Quarantine, nil
+				}
 			}
 		}
 	}

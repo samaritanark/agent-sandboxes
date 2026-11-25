@@ -46,6 +46,13 @@ func TestClassify(t *testing.T) {
 		{".husky/pre-commit", linux, Quarantine}, {".hooks/pre-push", linux, Quarantine}, {".HOOKS/pre-push", apfs, Quarantine},
 		{".claude/settings.json", linux, Quarantine}, {".claude/settings.local.json", linux, Quarantine}, {".claude/hooks/x.sh", linux, Quarantine},
 		{".claude/commands/x.md", linux, Apply},
+		// other agents' project config that runs commands
+		{".mcp.json", linux, Quarantine}, {"pkg/.codex/config.toml", linux, Quarantine}, {".codex/hooks.json", linux, Quarantine},
+		{".github/hooks/pre.json", linux, Quarantine}, {".github/copilot/settings.json", linux, Quarantine}, {".github/mcp.json", linux, Quarantine},
+		{".GITHUB/Hooks/x.json", apfs, Quarantine}, {".github/workflows/ci.yml", linux, Apply}, {".github/copilot-instructions.md", linux, Apply},
+		{".grok/config.toml", linux, Quarantine}, {".cursor/hooks.json", linux, Quarantine},
+		{"opencode.json", linux, Quarantine}, {"app/opencode.jsonc", linux, Quarantine}, {".opencode/plugins/p.js", linux, Quarantine},
+		{"AGENTS.md", linux, Apply}, {"CLAUDE.md", linux, Apply},
 		{".lfscon\ufb01g", apfs, Quarantine}, {".git/con\ufb01g", apfs, Quarantine}, {"\u00dfecrets/a", apfs, Apply},
 		{"\u017Fecrets/a", apfs, Quarantine}, {"se\u00dfrets/a", Host{CaseInsensitive: true}, Apply},
 		{"vendor/lib/.git/hooks/post-checkout", linux, Quarantine}, {"vendor/lib/.Git/config", apfs, Quarantine},
