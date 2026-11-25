@@ -396,6 +396,9 @@ func (d *Driver) Endpoint(ctx context.Context) (driver.SSHEndpoint, error) {
 	default:
 		return driver.SSHEndpoint{}, fmt.Errorf("the sandbox VM is %s", st)
 	}
+	if !d.Network(ctx).Running {
+		return driver.SSHEndpoint{}, errNoNetd
+	}
 	port, err := netd.SSHPort(d.dir())
 	if err != nil {
 		return driver.SSHEndpoint{}, fmt.Errorf("netd has not published the VM's SSH port: %w", err)
@@ -405,6 +408,20 @@ func (d *Driver) Endpoint(ctx context.Context) (driver.SSHEndpoint, error) {
 		return driver.SSHEndpoint{}, fmt.Errorf("the guest's pinned host key is missing: %w", err)
 	}
 	return driver.SSHEndpoint{Host: "127.0.0.1", Port: port, User: "root", HostKey: strings.TrimSpace(string(key))}, nil
+}
+
+// errNoNetd is the state of a VM whose netd supervisor died: the link died with it.
+var errNoNetd = errors.New("sandbox netd is not running, so the sandbox VM has no network; restart the VM with: sandbox vm start")
+
+// Network reports on netd (driver.NetworkOwner).
+func (d *Driver) Network(ctx context.Context) driver.NetworkReport {
+	if st, err := d.Status(ctx); err != nil || st != driver.Running {
+		return driver.NetworkReport{Detail: "the VM is not running"}
+	}
+	if pid := d.ours(netd.PIDFile, "__netd "+d.dir()); pid > 0 {
+		return driver.NetworkReport{Running: true, Detail: fmt.Sprintf("running (pid %d)", pid)}
+	}
+	return driver.NetworkReport{Detail: errNoNetd.Error()}
 }
 
 func (d *Driver) HostReach(context.Context) (driver.HostReachControl, error) {

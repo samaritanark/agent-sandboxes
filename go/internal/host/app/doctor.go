@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 )
 
 // HostAliases are addresses a VM driver publishes for the host; the canary tries them too.
@@ -35,6 +37,10 @@ func (a *app) doctor(args []string) int {
 	}
 	caps, err := a.env.Driver.Probe(a.ctx)
 	report(err == nil, "driver "+a.env.Driver.Name(), errString(err)+strings.Join(caps.Problems, "; "))
+	if no, ok := a.env.Driver.(driver.NetworkOwner); ok {
+		rep := no.Network(a.ctx)
+		report(rep.Running, "sandbox netd (the VM's network and host-reach control)", rep.Detail)
+	}
 	ep, err := a.env.Driver.Endpoint(a.ctx)
 	if err != nil {
 		report(false, "the sandbox VM is reachable", err.Error())

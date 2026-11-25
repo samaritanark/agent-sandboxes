@@ -131,6 +131,11 @@ func (a *app) running() driver.SSHEndpoint {
 	case driver.Broken:
 		a.die("the sandbox VM is in a broken state. See: sandbox vm status")
 	}
+	if no, ok := a.env.Driver.(driver.NetworkOwner); ok {
+		if rep := no.Network(a.ctx); !rep.Running {
+			a.die("%s", rep.Detail)
+		}
+	}
 	ep, err := a.env.Driver.Endpoint(a.ctx)
 	if err != nil {
 		a.die("cannot reach the sandbox VM: %v", err)
@@ -213,8 +218,16 @@ func (a *app) vm(args []string) int {
 			a.die("cannot read the sandbox VM's state: %v", err)
 		}
 		if st == driver.Running {
-			fmt.Fprintln(a.env.Stdout, "The sandbox VM is already running.")
-			return 0
+			no, owns := a.env.Driver.(driver.NetworkOwner)
+			if !owns || no.Network(a.ctx).Running {
+				fmt.Fprintln(a.env.Stdout, "The sandbox VM is already running.")
+				return 0
+			}
+			// netd died and took the VM's network with it: only a restart brings it back.
+			fmt.Fprintln(a.env.Stdout, "==> sandbox netd is not running; restarting the sandbox VM...")
+			if err := a.env.Driver.Stop(a.ctx); err != nil {
+				a.die("could not stop the sandbox VM: %v", err)
+			}
 		}
 		if st == driver.NotCreated {
 			a.die("the sandbox VM has not been created. Run: sandbox install")
@@ -247,6 +260,13 @@ func (a *app) vm(args []string) int {
 			a.die("cannot read the sandbox VM's state: %v", err)
 		}
 		fmt.Fprintf(a.env.Stdout, "VM:     %s (driver %s)\n", st, a.env.Driver.Name())
+		if no, ok := a.env.Driver.(driver.NetworkOwner); ok && st == driver.Running {
+			rep := no.Network(a.ctx)
+			fmt.Fprintf(a.env.Stdout, "netd:   %s\n", rep.Detail)
+			if !rep.Running {
+				return 1
+			}
+		}
 		if st == driver.Running {
 			info := a.handshake(a.running())
 			fmt.Fprintf(a.env.Stdout, "Image:  %s (control API %d)\n", info.ImageVersion, info.ControlAPI)

@@ -56,7 +56,7 @@ type res struct {
 	out, err string
 }
 
-func run(t *testing.T, d *driver.Mock, tr *fakeTransport, state string, args ...string) res {
+func run(t *testing.T, d driver.Driver, tr *fakeTransport, state string, args ...string) res {
 	t.Helper()
 	var out, errb bytes.Buffer
 	rc := Run(context.Background(), args, Env{Driver: d, Transport: tr, Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errb,
@@ -235,5 +235,50 @@ func TestDoctor(t *testing.T) {
 	}
 	if r := run(t, d, &fakeTransport{release: goodRelease, reach: "reachable"}, "", "doctor"); r.rc != 1 || !strings.Contains(r.out, "FAIL  the VM cannot reach the host at 192.168.5.2: reachable") {
 		t.Errorf("%+v", r)
+	}
+}
+
+// netdMock is a driver whose network is a host process that can die (driver.NetworkOwner).
+type netdMock struct {
+	*driver.Mock
+	dead bool
+}
+
+func (n *netdMock) Network(context.Context) driver.NetworkReport {
+	if n.dead {
+		return driver.NetworkReport{Detail: "netd is gone"}
+	}
+	return driver.NetworkReport{Running: true, Detail: "running (pid 7)"}
+}
+
+func (n *netdMock) Stop(ctx context.Context) error {
+	n.dead = false // the next start brings up a new netd
+	return n.Mock.Stop(ctx)
+}
+
+func TestNetdReported(t *testing.T) {
+	d := &netdMock{Mock: &driver.Mock{State: driver.Running, EP: driver.SSHEndpoint{Host: "h", Port: 1, User: "root", HostKey: "k"}}}
+	tr := &fakeTransport{release: goodRelease, reach: "blocked"}
+	if r := run(t, d, tr, "", "vm", "status"); r.rc != 0 || !strings.Contains(r.out, "netd:   running (pid 7)\n") {
+		t.Errorf("status: %+v", r)
+	}
+	if r := run(t, d, tr, "", "doctor"); r.rc != 0 || !strings.Contains(r.out, "ok    sandbox netd (the VM's network and host-reach control): running (pid 7)") {
+		t.Errorf("doctor: %+v", r)
+	}
+
+	d.dead = true
+	if r := run(t, d, tr, "", "vm", "status"); r.rc != 1 || !strings.Contains(r.out, "netd:   netd is gone") {
+		t.Errorf("status, netd dead: %+v", r)
+	}
+	if r := run(t, d, tr, "", "doctor"); r.rc != 1 || !strings.Contains(r.out, "FAIL  sandbox netd") {
+		t.Errorf("doctor, netd dead: %+v", r)
+	}
+	if r := run(t, d, tr, "", "ls"); r.rc != 1 || !strings.Contains(r.err, "netd is gone") || len(tr.runs) != 0 {
+		t.Errorf("proxy, netd dead: %+v %v", r, tr.runs)
+	}
+	d.Calls = nil
+	if r := run(t, d, tr, "", "vm", "start"); r.rc != 0 || !strings.Contains(r.out, "restarting the sandbox VM") ||
+		!strings.Contains(strings.Join(d.Calls, " "), "Stop Start") || d.dead {
+		t.Errorf("start, netd dead: %+v %v", r, d.Calls)
 	}
 }

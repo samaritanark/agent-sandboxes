@@ -84,6 +84,18 @@ type HostReachControl struct {
 	Scoped    bool   // true when declared Tier 3 endpoints can be opened one by one
 }
 
+// NetworkReport is the state of a driver's host-side network process (`sandbox netd`, D-31).
+type NetworkReport struct {
+	Running bool   // the process that owns the VM's network is alive
+	Detail  string // for status and doctor
+}
+
+// NetworkOwner is implemented by drivers whose VM network is served by a host process of ours.
+// When it is not running while the VM is, the VM has no network until the VM is restarted.
+type NetworkOwner interface {
+	Network(ctx context.Context) NetworkReport
+}
+
 // Driver is one VM backend.
 type Driver interface {
 	Name() string
