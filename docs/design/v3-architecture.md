@@ -699,8 +699,12 @@ hostname. The gateway CA is generated in-VM on first boot (§5.10).
   `lib/policy.sh` (CNP rendering; its domain-set logic at `:42-97` moves into
   the allowlist builder), the Kubernetes parts of `lib/manifest.sh`,
   `lib/dependency.sh`, `lib/secrets.sh`, `lib/credentials.sh`, and the
-  gVisor/hostPath workarounds in `lib/filesystem.sh:1501-1674` (mount-type
-  mismatch and root-owned detritus).
+  gVisor/hostPath workarounds in `lib/filesystem.sh:1501-1674` (root-owned
+  detritus). The mount-type mismatch check of `check_masking_paths` is kept
+  as policy (owner's decision, 2026-11-25): a `masked_paths:` entry that
+  exists as the other type (`foo` a directory, `foo/` a file) still refuses
+  the launch with v2's message, because an in-guest overlay of the wrong type
+  would otherwise mask nothing.
 - `resolve_agent_home`, `resolve_workspace_mount`, and `resolve_pod_uid`
   become constants (uid 1000; VM-local paths).
 - Running the gates in the VM is itself a protection increase: v2 runs git
@@ -1611,7 +1615,10 @@ and does not require it.
   runtime, so agent images are identical across installs. Both v2 sources
   (`config/extra-ca-certs/` and the overlay's `extra-ca-certs/`) are read, plus
   `~/.sandbox/extra-ca-certs/`. The pre-build TLS-intercept probe moves to
-  `sandbox doctor`.
+  `sandbox doctor`. `sandbox setup-proxy-cert` stays as a host operation with
+  v2's flags; its default output becomes `~/.sandbox/extra-ca-certs/proxy-ca.crt`
+  and its closing message says the CA applies from the next session, with no
+  rebuild (owner's decision, 2026-11-25).
 - **Per-session issuing certificates.** `sandboxd` (root) issues each
   session's gateway a per-session intermediate certificate, name-constrained
   to that session's intercepted names and valid for the session's maximum
@@ -1720,7 +1727,7 @@ during the session):
 |---|---|
 | `run` | Host pushes state and starts sync → VM policy layer runs gates and builds the session spec → `sandboxd` creates links, gateway, broker, microVMs → host attaches the TTY |
 | `stop` | `sandboxd` destroys the microVMs first (the containment action), then the broker and bindings, then captures audit, then the host pulls logs. This keeps v2's pod-first teardown order |
-| `resume` | Re-attach to a running session; if the session is gone, recreate it after re-running every gate. v2's macOS blocker on recreation disappears |
+| `resume` | Re-attach to a running session; if the session is gone, recreate it after re-running every gate. v2's macOS blocker on recreation disappears. Its tier 3, profile, and opencode blockers stay until the broker lands; then recreation re-resolves the profile and rebinds tier 3 and opencode credentials from the broker store (owner's decision, 2026-11-25) |
 | `--keep-alive` | Survives detach and VM reboot, subject to the reaper (§5.4.3) |
 | `list`, `logs`, `status` | Read `sandboxd` state and logs |
 | `check` | Unchanged preview of masks and scan results |
@@ -1734,7 +1741,7 @@ during the session):
 | Profiles `secrets:` | Each entry gains `hosts:` (required) and `inject:` (`header:<name>`, `bearer`, `basic`, `query`); `allow_readable: true` is the audited exception |
 | Egress | New optional `l7_rules:` per domain (org, overlay, profile); org baseline in `config/egress-baseline.yaml`; explicit multi-label wildcard form `**.` |
 | Host reach | New `host_endpoints:` (Tier 3 only) |
-| Tier 3 | `--infra-token` requires `--infra-endpoint`; kubeconfigs handled by the broker; exec plugins supported via the host pump |
+| Tier 3 | `--infra-token` requires `--infra-endpoint`; kubeconfigs handled by the broker; exec plugins supported via the host pump; an `--infra-endpoint` given as a URL is reduced to its host for the allowlist and the block check (v2 put the whole URL into the policy) |
 | Overlay | `shared_tree_policy`, credential exceptions, L7 deny additions, exec-plugin allowlist, keep-alive maximums, `protected_branches` additions (§5.6.2), harness update policy (`agent_update`, `harness_min_age_days`; §5.7.1) |
 | Agent home | `--homedir` is replaced by the per-agent-per-repo history model (§5.7) |
 | Unchanged | Tiers, agents, catalogue, masks, exceptions, vetting keys, blocked destinations, persistent domains, profiles, links |
