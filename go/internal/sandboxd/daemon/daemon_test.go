@@ -150,7 +150,7 @@ func newRig(t *testing.T) *rig {
 		Journal: &journal.Store{Dir: filepath.Join(dir, "journal")}, Runtime: r.rt, NetNS: r.ns, Network: r.net, Gateways: r.gw,
 		Resolvers: []netip.Addr{netip.MustParseAddr("192.168.127.1")},
 		NetNSPath: func(n string) string { return "/var/run/netns/" + n },
-		Budget:    limits.Budget{VMMemoryMiB: 16384}, SessionRoot: filepath.Join(dir, "sessions"),
+		Budget:    limits.Budget{VMMemoryMiB: 16384}, SessionRoot: filepath.Join(dir, "sessions"), AuditRoot: filepath.Join(dir, "logs"),
 		Now: func() time.Time { return *r.now },
 	}
 	if err := r.d.Reconcile(context.Background()); err != nil {
@@ -446,5 +446,54 @@ func TestUplinksDistinctAndNetworkFailure(t *testing.T) {
 	}
 	if _, ok := r.gw.running["s-c"]; ok {
 		t.Error("a gateway was started for a session whose network failed")
+	}
+}
+
+func auditTypes(t *testing.T, root, id, file string) []string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, id, file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var types []string
+	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(l), &m); err != nil {
+			t.Fatal(err)
+		}
+		types = append(types, m["type"].(string))
+	}
+	return types
+}
+
+func TestAudit(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	b := strings.Replace(string(spec("s-aud", 2048, "db")), `"bindings":null`, `"bindings":[{"ref":"gh","hosts":["api.github.com"],"inject":"bearer","placeholder":"sbxph_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]`, 1)
+	if _, err := r.d.Start(ctx, []byte(b)); err != nil {
+		t.Fatal(err)
+	}
+	// the gateway logs connections; sandboxd collects them
+	gwLog := filepath.Join(r.d.SessionRoot, "s-aud", "gateway", "connections.log")
+	os.MkdirAll(filepath.Dir(gwLog), 0o700)
+	os.WriteFile(gwLog, []byte(`{"port":443,"refused":true,"sni":"evil.com","start":"T"}`+"\n"), 0o600)
+	r.d.Collect()
+	r.d.RecordDrop("s-aud", map[string]any{"rule": "forward", "dst": "1.1.1.1"})
+	r.d.RecordDrop("s-unknown", map[string]any{"rule": "drop"})
+	os.WriteFile(gwLog, []byte(`{"port":443,"refused":true,"sni":"evil.com","start":"T"}`+"\n"+`{"dependency":"db","port":5432,"sent":3,"start":"T"}`+"\n"), 0o600)
+	r.d.Stop(ctx, "s-aud", "operator stop")
+	ev := strings.Join(auditTypes(t, r.d.AuditRoot, "s-aud", "events.jsonl"), ",")
+	if ev != "session_requested,dependency_up,session_running,link_drop,session_end" {
+		t.Errorf("events %s", ev)
+	}
+	if fl := strings.Join(auditTypes(t, r.d.AuditRoot, "s-aud", "flows.jsonl"), ","); fl != "flow,flow" {
+		t.Errorf("flows %s (the last line is collected at teardown)", fl)
+	}
+	raw, _ := os.ReadFile(filepath.Join(r.d.AuditRoot, "s-aud", "events.jsonl"))
+	if strings.Contains(string(raw), "sbxph_") || !strings.Contains(string(raw), `"ref":"gh"`) {
+		t.Errorf("a placeholder reached the audit log, or the binding is missing:\n%s", raw)
+	}
+	if _, err := os.Stat(filepath.Join(r.d.AuditRoot, "s-unknown")); err == nil {
+		t.Error("a drop for an unknown session made a log")
 	}
 }

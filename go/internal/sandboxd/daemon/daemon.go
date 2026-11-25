@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/gwpolicy"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/auditlog"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/journal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/limits"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/netsetup"
@@ -88,6 +89,7 @@ type Daemon struct {
 	Network     Network
 	Gateways    GatewayRunner
 	Resolvers   []netip.Addr // the VM's upstream resolvers, for each gateway
+	AuditRoot   string       // each session's audit log (auditlog.Root); "" for none
 	NetNSPath   Paths
 	Budget      limits.Budget
 	Expiry      limits.Expiry
@@ -95,9 +97,75 @@ type Daemon struct {
 	Now         func() time.Time
 	Log         *log.Logger
 
-	mu    sync.Mutex // serializes lifecycle changes
-	live  map[string]*limits.Times
-	ready bool
+	mu      sync.Mutex // serializes lifecycle changes
+	live    map[string]*limits.Times
+	ready   bool
+	offsets map[string]int64 // how far each session's gateway connection log has been collected
+}
+
+// audit appends one record to a session's audit file; a failure is logged, never fatal (the
+// session's own state is the journal).
+func (d *Daemon) audit(id, file, typ string, rec map[string]any) {
+	if d.AuditRoot == "" {
+		return
+	}
+	f, err := auditlog.Open(d.AuditRoot, id, file)
+	if err == nil {
+		err = f.Append(typ, rec)
+	}
+	if err != nil {
+		d.logf("session %s: audit: %v", id, err)
+	}
+}
+
+// specSummary is what the audit log keeps of a spec: names and hosts, never values.
+func specSummary(s *sessionspec.Spec) map[string]any {
+	var bindings, deps []map[string]any
+	for _, b := range s.Bindings {
+		bindings = append(bindings, map[string]any{"ref": b.Ref, "hosts": b.Hosts})
+	}
+	for _, d := range s.Dependencies {
+		deps = append(deps, map[string]any{"name": d.Name, "image": d.Image, "port": d.Port})
+	}
+	return map[string]any{"name": s.Name, "agent": s.Agent, "tier": s.Tier, "image": s.Image, "keep_alive": s.KeepAlive,
+		"bindings": bindings, "dependencies": deps, "allow": s.Egress.Allow, "extra_ports": s.Egress.ExtraPorts}
+}
+
+// collect copies a session's new gateway connections into its flow log.
+func (d *Daemon) collect(id string) {
+	if d.AuditRoot == "" {
+		return
+	}
+	flows, err := auditlog.Open(d.AuditRoot, id, auditlog.Flows)
+	if err != nil {
+		d.logf("session %s: audit: %v", id, err)
+		return
+	}
+	if d.offsets == nil {
+		d.offsets = map[string]int64{}
+	}
+	off, err := auditlog.Tail(filepath.Join(d.SessionRoot, id, "gateway", "connections.log"), d.offsets[id], flows)
+	if err != nil {
+		d.logf("session %s: audit: %v", id, err)
+	}
+	d.offsets[id] = off
+}
+
+// Collect gathers every live session's new connections (sandboxd calls it periodically).
+func (d *Daemon) Collect() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for id := range d.live {
+		d.collect(id)
+	}
+}
+
+// RecordDrop records a link drop (a bypass attempt) for a session sandboxd knows.
+func (d *Daemon) RecordDrop(session string, rec map[string]any) {
+	if _, err := d.Journal.Load(session); err != nil {
+		return
+	}
+	d.audit(session, auditlog.Events, "link_drop", rec)
 }
 
 func (d *Daemon) now() time.Time {
@@ -160,6 +228,7 @@ func (d *Daemon) Start(ctx context.Context, raw []byte) (string, error) {
 		return "", err
 	}
 	id := spec.ID
+	d.audit(id, auditlog.Events, "session_requested", specSummary(spec))
 	holding, err := d.holding(id)
 	if err == nil {
 		err = d.Budget.Admit(holding, spec)
@@ -187,6 +256,7 @@ func (d *Daemon) Start(ctx context.Context, raw []byte) (string, error) {
 		d.live = map[string]*limits.Times{}
 	}
 	d.live[id] = &limits.Times{Started: d.now(), KeepAlive: spec.KeepAlive}
+	d.audit(id, auditlog.Events, "session_running", nil)
 	d.logf("session %s running", id)
 	return id, nil
 }
@@ -341,6 +411,7 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 		}); err != nil {
 			return err
 		}
+		d.audit(id, auditlog.Events, "dependency_up", map[string]any{"name": dep.Name, "image": dep.Image})
 	}
 	rc, err := resolvConf(0)
 	if err != nil {
@@ -437,6 +508,7 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 		case KindUplink:
 			// its interfaces went with the gateway namespace; the index is free again
 		case KindMasks:
+			d.collect(id) // the last connections, before the gateway's directory goes
 			err = os.RemoveAll(d.maskDir(id))
 			os.RemoveAll(filepath.Join(d.SessionRoot, id, "gateway"))
 		default:
@@ -452,6 +524,21 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 		}
 	}
 	os.Remove(filepath.Join(d.SessionRoot, id)) // only if empty: history and transcripts stay
+	delete(d.offsets, id)
+	end := map[string]any{"end_reason": reason}
+	if s, err := d.Journal.Load(id); err == nil {
+		var incomplete []string
+		for _, r := range s.Live() {
+			incomplete = append(incomplete, r.Kind+" "+r.Name+": "+r.Note)
+		}
+		if len(incomplete) > 0 {
+			end["teardown_incomplete"] = incomplete
+		}
+		if s.EndReason != "" {
+			end["end_reason"] = s.EndReason
+		}
+	}
+	d.audit(id, auditlog.Events, "session_end", end)
 	_, err = d.Journal.Transition(id, journal.Terminated, "torn down")
 	d.logf("session %s ended: %s", id, reason)
 	return err

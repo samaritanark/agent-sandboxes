@@ -20,6 +20,7 @@ import (
 
 	"github.com/containerd/containerd/v2/pkg/cio"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/auditlog"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/journal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/limits"
@@ -112,7 +113,7 @@ func serve() error {
 	}
 	d := &daemon.Daemon{
 		Journal: &journal.Store{Dir: JournalDir}, Runtime: kata{rt}, NetNS: netns.Manager{},
-		Network: network{}, Gateways: gws, Resolvers: resolvers,
+		Network: network{}, Gateways: gws, Resolvers: resolvers, AuditRoot: auditlog.Root,
 		NetNSPath: netns.Path, Budget: limits.Budget{VMMemoryMiB: mem},
 		SessionRoot: sessionspec.SessionStore, Log: l,
 	}
@@ -144,8 +145,14 @@ func serve() error {
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				d.Collect()
 				d.Reap(ctx)
 			}
+		}
+	}()
+	go func() {
+		if err := followDrops(ctx, d); err != nil {
+			l.Printf("kernel log: %v (link drops are not recorded)", err)
 		}
 	}()
 	l.Printf("serving on %s", Socket)
