@@ -180,3 +180,13 @@ func TestRandomMAC(t *testing.T) {
 		t.Error("MAC addresses repeat")
 	}
 }
+
+func TestCheckVersion(t *testing.T) {
+	for out, ok := range map[string]bool{"vfkit version: v0.6.4\n": true, "vfkit version: v0.6.0": true,
+		"vfkit version: v1.0.0": true, "vfkit version: v0.10.1": true, "vfkit version: v0.5.9": false,
+		"vfkit version: v0.6": false, "vfkit 0.6.4": false, "": false} {
+		if err := checkVersion(out); (err == nil) != ok {
+			t.Errorf("%q: %v", out, err)
+		}
+	}
+}

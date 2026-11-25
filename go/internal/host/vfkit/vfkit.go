@@ -93,6 +93,13 @@ func Record(stateDir, tool string) (string, error) {
 	if err := hostbin.Verify("vfkit", p, os.Getuid()); err != nil {
 		return "", err
 	}
+	out, err := exec.Command(p, "--version").Output()
+	if err != nil {
+		return "", fmt.Errorf("vfkit --version: %w", err)
+	}
+	if err := checkVersion(string(out)); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return "", err
 	}
@@ -428,14 +435,36 @@ func (d *Driver) HostReach(context.Context) (driver.HostReachControl, error) {
 	return driver.HostReachControl{Mechanism: "sandbox netd (the VM's only network; host addresses refused, declared endpoints allowed)", Scoped: true}, nil
 }
 
+// MinVersion is the oldest vfkit with everything the driver uses: virtio-net fd=, --nested, and
+// --cloud-init.
+var MinVersion = [3]int{0, 6, 0}
+
+// checkVersion reads `vfkit --version` ("vfkit version: v0.6.4") and refuses older releases.
+func checkVersion(out string) error {
+	v, ok := strings.CutPrefix(strings.TrimSpace(out), "vfkit version: v")
+	var got [3]int
+	if n, _ := fmt.Sscanf(v, "%d.%d.%d", &got[0], &got[1], &got[2]); !ok || n != 3 {
+		return fmt.Errorf("vfkit --version: cannot read %q", strings.TrimSpace(out))
+	}
+	for i := range got {
+		if got[i] != MinVersion[i] {
+			if got[i] < MinVersion[i] {
+				return fmt.Errorf("vfkit %d.%d.%d is too old: the driver needs %d.%d.%d or later", got[0], got[1], got[2], MinVersion[0], MinVersion[1], MinVersion[2])
+			}
+			break
+		}
+	}
+	return nil
+}
+
 func (d *Driver) Probe(ctx context.Context) (driver.Capabilities, error) {
 	c := driver.Capabilities{Hypervisor: "vz", CPUs: runtime.NumCPU(), DriverBinary: d.Vfkit,
 		MemoryBytes: sizing.HostMemory(), NestedVirt: runtime.GOOS == "darwin"} // decided by the VM start itself, as on lima-vz
 	cmd := exec.CommandContext(ctx, d.Vfkit, "--version")
 	if out, err := cmd.Output(); err != nil {
 		c.Problems = append(c.Problems, fmt.Sprintf("vfkit --version: %v", err))
-	} else if !strings.HasPrefix(string(out), "vfkit version:") {
-		c.Problems = append(c.Problems, "vfkit --version: unexpected output")
+	} else if err := checkVersion(string(out)); err != nil {
+		c.Problems = append(c.Problems, err.Error())
 	}
 	if runtime.GOOS != "darwin" {
 		c.Problems = append(c.Problems, "the vfkit driver runs on macOS only")
