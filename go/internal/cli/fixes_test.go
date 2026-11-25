@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
@@ -155,5 +156,45 @@ func TestFixCleanupDaysValidated(t *testing.T) {
 	}
 	if rc, kept := run("30"); rc != 0 || !kept {
 		t.Errorf("fixed 30: rc=%d kept=%v", rc, kept)
+	}
+}
+
+func TestFixDuplicateBasenameExact(t *testing.T) {
+	// Two distinct repos under "My Repos/" share the token "My"; a pair named "my r" differs only
+	// after the space.
+	under := []string{"/h/My Repos/a", "/h/My Repos/b"}
+	spaced := []string{"/h/x/my r", "/h/y/my s"}
+	if d := firstDuplicate(xargsBasenames(under)); d != "My" {
+		t.Fatalf("legacy: %q, want the bash's false duplicate My", d)
+	}
+	defer deviation.Force(deviation.DuplicateBasenameExact)()
+	if d := firstDuplicate(xargsBasenames(under)); d != "" {
+		t.Errorf("fixed: distinct repos refused as duplicate %q", d)
+	}
+	if d := firstDuplicate(xargsBasenames(spaced)); d != "" {
+		t.Errorf("fixed: %q", d)
+	}
+	if d := firstDuplicate(xargsBasenames([]string{"/a/my r", "/b/my r"})); d != "my r" {
+		t.Errorf("fixed: a real duplicate gave %q", d)
+	}
+}
+
+func TestFixLiteralProfileSecrets(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"A1", "A2"} {
+		os.WriteFile(filepath.Join(dir, f), nil, 0o644)
+	}
+	wd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(wd)
+	eq := func(a, b []string) bool {
+		return strings.Join(a, "\x00") == strings.Join(b, "\x00") && len(a) == len(b)
+	}
+	if got := profileSecretNames("A*,B C,GH"); !eq(got, []string{"A1", "A2", "BC", "GH"}) {
+		t.Fatalf("legacy: %q (the bash globs against the cwd and deletes inner spaces)", got)
+	}
+	defer deviation.Force(deviation.LiteralProfileSecrets)()
+	if got := profileSecretNames("A*, B C ,GH,,"); !eq(got, []string{"A*", "B C", "GH"}) {
+		t.Errorf("fixed: %q", got)
 	}
 }

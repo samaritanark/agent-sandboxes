@@ -83,8 +83,8 @@ func UserExtraAllowedDomains(e Env) []string {
 		}
 		return out
 	}
-	for _, w := range ifsSplit(e.ExtraAllowedDomains, ',') {
-		for _, d := range bashGlob(w) {
+	for _, w := range IFSSplit(e.ExtraAllowedDomains, ',') {
+		for _, d := range BashGlob(w) {
 			d = strings.Map(func(r rune) rune {
 				if r < 0x80 && isSpace(byte(r)) {
 					return -1
@@ -101,10 +101,10 @@ func UserExtraAllowedDomains(e Env) []string {
 	return out
 }
 
-// ifsSplit is bash word splitting of an unquoted expansion with IFS set to one non-whitespace
+// IFSSplit is bash word splitting of an unquoted expansion with IFS set to one non-whitespace
 // character: every separator ends a field, so empty fields are kept, except that a trailing
 // separator does not start a new field.
-func ifsSplit(s string, sep byte) []string {
+func IFSSplit(s string, sep byte) []string {
 	if s == "" {
 		return nil
 	}
@@ -115,11 +115,11 @@ func ifsSplit(s string, sep byte) []string {
 	return f
 }
 
-// bashGlob is bash pathname expansion of one word against the current directory, with the
+// BashGlob is bash pathname expansion of one word against the current directory, with the
 // default options: no match leaves the word as is; a leading '.' must be matched literally; the
 // matches come back sorted (byte order under LC_ALL=C). A word with '/' is left as is (the
 // corpus has none; a domain cannot contain one).
-func bashGlob(w string) []string {
+func BashGlob(w string) []string {
 	if !strings.ContainsAny(w, "*?[") || strings.Contains(w, "/") {
 		return []string{w}
 	}

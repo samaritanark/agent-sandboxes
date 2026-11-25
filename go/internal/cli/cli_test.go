@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -47,6 +48,9 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 	e.Home = home
 	e.UserConfig = home + "/.sandbox/config.yaml"
 	e.CacheDir = home + "/.sandbox/cache/leakscan"
+	e.SecretsDir = home + "/.sandbox/secrets"
+	e.ImagePresent = func(string) int { return 2 }
+	e.RunHandoff = func(s LaunchSpec) { fmt.Fprint(handoffOut, dumpSpec(s)) }
 	e.OrgBlockList = root + "/config/blocked-destinations.yaml"
 	for _, kv := range envs {
 		k, v, _ := strings.Cut(strings.ReplaceAll(kv, "<HOME>", home), "=")
@@ -57,9 +61,75 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 			e.UserConfig = v
 		case "BLOCKED_DESTINATIONS_CONFIG":
 			e.OrgBlockList = v
+		case "OPENCODE_API_KEY":
+			e.OpencodeAPIKey = v
+		case "OPENCODE_BASE_URL":
+			e.OpencodeBaseURL = v
+		case "SANDBOX_EXTRA_ALLOWED_DOMAINS":
+			e.ExtraAllowedDomains = v
+		case "SANDBOX_AGENT_HOME_OVERRIDE":
+			e.AgentHomeOverride = v
+		case "SANDBOX_NO_LINK_CHECK":
+			e.NoLinkCheck = v != ""
+		case "STUB_IMAGE_RC":
+			rc := 2
+			fmt.Sscan(v, &rc)
+			e.ImagePresent = func(string) int { return rc }
 		}
 	}
 	return e
+}
+
+// handoffOut is where the current case's RunHandoff writes.
+var handoffOut io.Writer
+
+// dumpSpec prints launch decisions the way the oracle's ensure_cluster_ready stub does.
+func dumpSpec(s LaunchSpec) string {
+	var b strings.Builder
+	q := func(k, v string) { fmt.Fprintf(&b, "%s=%s\n", k, bashcompat.QuoteQ(v)) }
+	tf := func(v bool) string {
+		if v {
+			return "true"
+		}
+		return "false"
+	}
+	b.WriteString("### decisions\n")
+	q("agent", s.Agent)
+	q("tier", s.Tier)
+	q("profile", s.Profile)
+	q("overlay", s.Overlay)
+	q("name", s.Name)
+	for _, x := range s.Repos {
+		q("repo", x)
+	}
+	for _, x := range s.Domains {
+		q("domain", x)
+	}
+	for _, x := range s.InfraEndpoints {
+		q("endpoint", x)
+	}
+	for _, x := range s.InfraTokens {
+		q("token", x)
+	}
+	for _, x := range s.InfraKubeconfigs {
+		q("kubeconfig", x)
+	}
+	q("kube_context", s.InfraKubeContext)
+	for _, x := range s.Secrets {
+		q("secret", x)
+	}
+	q("mcps", s.MCPs)
+	q("services", s.Services)
+	q("dry_run", tf(s.DryRun))
+	q("keep_alive", tf(s.KeepAlive))
+	q("allow_exec_plugin", tf(s.AllowExecPlugin))
+	q("accept_unmasked", tf(s.AcceptUnmasked))
+	q("accept_unvetted", tf(s.AcceptUnvetted))
+	q("accept_drift", tf(s.AcceptDrift))
+	q("base_url", s.BaseURL)
+	q("homedir", s.HomeDir)
+	q("has_secrets", tf(s.HasSecrets))
+	return b.String()
 }
 
 // buildTree materializes a tree spec (see oracle.sh) under home.
@@ -246,7 +316,11 @@ func TestCLIGolden(t *testing.T) {
 		env.SandboxRoot = "/nonexistent-sandbox-root" // the oracle's install copy, outside every case home
 		env.Stdin = strings.NewReader(dec64(t, row[4]))
 		var out, errb bytes.Buffer
+		handoffOut = &out
+		wd, _ := os.Getwd()
+		os.Chdir(home) // the oracle runs each case from its home
 		rc := Run(args, env, &out, &errb)
+		os.Chdir(wd)
 		norm := func(s string) string {
 			return strings.NewReplacer(home, "<HOME>", root, "<ROOT>").Replace(s)
 		}

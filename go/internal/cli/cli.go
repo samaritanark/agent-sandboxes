@@ -34,6 +34,18 @@ type Env struct {
 	VettingTrustRootDefault string       // SANDBOX_VETTING_TRUST_ROOT_DEFAULT
 	Now                     func() int64 // `date +%s`
 	LinkOverlaysDir         string       // LINK_OVERLAYS_DIR (default ~/.sandbox/overlays)
+	SecretsDir              string       // SANDBOX_SECRETS_DIR (default ~/.sandbox/secrets)
+	AgentHomeOverride       string       // SANDBOX_AGENT_HOME_OVERRIDE
+	OpencodeAPIKey          string       // OPENCODE_API_KEY
+	OpencodeBaseURL         string       // OPENCODE_BASE_URL
+	NoLinkCheck             bool         // SANDBOX_NO_LINK_CHECK is set
+	IsMacOS                 bool         // the host is macOS
+	// ImagePresent is k3s_image_present: 0 present, 1 absent, 2 cannot tell. nil skips the check
+	// (v3 has no k3s image store; sandboxd reports a missing image).
+	ImagePresent func(tag string) int
+	// RunHandoff receives `sandbox run`'s launch decisions. nil (the binary today) reports that the
+	// session runtime is not available yet; the differential test prints them instead.
+	RunHandoff func(LaunchSpec)
 
 	Version   VersionInfo // Version "" means "dev"
 	Root      string      // the install root (SANDBOX_ROOT)
@@ -159,7 +171,7 @@ func (c *cmdCtx) usage(name string) {
 
 // commands maps each v2 subcommand to its port, or nil while it is not yet ported.
 var commands = map[string]func(*cmdCtx, []string){
-	"run": nil, "resume": nil, "allow": nil, "list": cmdList, "logs": cmdLogs, "flows": nil, "stop": nil,
+	"run": cmdRun, "resume": nil, "allow": nil, "list": cmdList, "logs": cmdLogs, "flows": nil, "stop": nil,
 	"cleanup": cmdCleanup, "check": cmdCheck, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
 	"upgrade": nil, "onboard": nil, "secret": nil, "mask": cmdMask, "exceptions": cmdExceptions, "vet": cmdVet,
 	"profile": cmdProfile, "link": cmdLink, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,

@@ -47,6 +47,20 @@ func main() {
 		StderrTTY:               isTTY(os.Stderr),
 		NoColor:                 noColor && os.Getenv("NO_COLOR") != "",
 		Now:                     func() int64 { return time.Now().Unix() },
+		SecretsDir:              or(os.Getenv("SANDBOX_SECRETS_DIR"), cfg.Home+"/.sandbox/secrets"),
+		AgentHomeOverride:       os.Getenv("SANDBOX_AGENT_HOME_OVERRIDE"),
+		OpencodeAPIKey:          os.Getenv("OPENCODE_API_KEY"),
+		OpencodeBaseURL:         os.Getenv("OPENCODE_BASE_URL"),
+		NoLinkCheck:             os.Getenv("SANDBOX_NO_LINK_CHECK") != "",
+		IsMacOS:                 runtime.GOOS == "darwin",
+		LinkOverlaysDir:         os.Getenv("LINK_OVERLAYS_DIR"),
 	}
 	os.Exit(cli.Run(os.Args[1:], env, os.Stdout, os.Stderr))
+}
+
+func or(v, d string) string {
+	if v == "" {
+		return d
+	}
+	return v
 }

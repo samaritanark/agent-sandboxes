@@ -323,6 +323,140 @@ func main() {
 		add(cc)
 	}
 
+	// run: the launch decisions (bin/sandbox cmd_run up to ensure_cluster_ready, which the oracle
+	// stubs to print them; k3s_image_present answers STUB_IMAGE_RC, default 2 "cannot tell").
+	R := func(a ...string) []string { return append([]string{"run"}, a...) }
+	rg := tree{}.g("r").f("r/a.txt", "a").c("r")
+	two := rg.g("a/r").f("a/r/x", "x").c("a/r").g("b/r").f("b/r/y", "y").c("b/r")
+	sp := rg.g("a/my r").f("a/my r/x", "x").c("a/my r").g("b/my r").f("b/my r/y", "y").c("b/my r").
+		g("c/my").f("c/my/z", "z").c("c/my")
+	tok := rg.f("tok", "t\n").f("tok2", "u\n").f("kc", "apiVersion: v1\n").f("kc2", "apiVersion: v1\n")
+	prof := func(name, body string) tree { return rg.f(".sandbox/profiles/"+name+".yaml", body) }
+	sec := func(names ...string) tree {
+		t := tree{}
+		for _, n := range names {
+			t = t.f(".sandbox/secrets/"+n, "v")
+		}
+		return t
+	}
+	withSecrets := func(list string, names ...string) tree {
+		return append(prof("s", "tier: 1\nsecrets:\n"+list), sec(names...)...)
+	}
+	repoDom := "extra_allowed_domains:\n  - api.vr.example.org\n  - smtp.vr.example.org\n"
+	vrDom := append(append(tree{}, signer...), tree{}.g("vr").f("vr/.sandbox/config.yaml", repoDom).c("vr")...)
+	vrDomVetted := vrDom.v("vr")
+	honorOv := tree{}.f("ov/config.yaml", "honor_repo_allowed_domains: true\n")
+	for _, cc := range []cs{
+		// parsing
+		{args: R("--help")}, {args: R("-h")}, {args: R("--bogus")}, {args: R("stray")}, {args: R("--agent")},
+		{args: R("--tier")}, {args: R("--repo")}, {args: R("--name")}, {args: R("--agent=")},
+		{args: R()}, {args: R("--dry-run")},
+		{args: R("--agent", "codex", "--tier=1", "--name", "a b", "--dry-run", "--keep-alive", "--allow-exec-plugin",
+			"--i-accept-unmasked-secrets", "--i-accept-unvetted-repo", "--i-accept-vetting-drift")},
+		{args: R("--agent", "bogus")}, {args: R("--agent", "CLAUDE")}, {args: R("--tier", "0")}, {args: R("--tier", "4")},
+		{args: R("--tier", "abc")}, {args: R("--tier", "01")}, {args: R("--tier", " 1")},
+		{args: R("--homedir", "~/ah")}, {args: R("--homedir=")}, {args: R(), env: []string{"SANDBOX_AGENT_HOME_OVERRIDE=<HOME>/ah2"}},
+		// opencode
+		{args: R("--agent", "opencode")},
+		{args: R("--agent", "opencode"), env: []string{"OPENCODE_API_KEY=k"}},
+		{args: R("--agent", "opencode"), env: []string{"OPENCODE_API_KEY=k", "OPENCODE_BASE_URL=ftp://x.example.org"}},
+		{args: R("--agent", "opencode"), env: []string{"OPENCODE_API_KEY=k", "OPENCODE_BASE_URL=https://"}},
+		{args: R("--agent", "opencode", "--base-url", "https://llm.example.org/v1"), env: []string{"OPENCODE_API_KEY=k", "OPENCODE_BASE_URL=bad"}},
+		{args: R("--agent", "opencode", "--base-url=http://10.1.2.3:8000/v1"), env: []string{"OPENCODE_API_KEY=k"}},
+		{args: R("--agent", "opencode", "--base-url", "https://smtp.example.org/v1"), env: []string{"OPENCODE_API_KEY=k"}},
+		{args: R("--agent", "codex", "--base-url", "https://llm.example.org/v1")},
+		// tiers and repos
+		{args: R("--tier", "2")}, {args: R("--tier", "2", "--repo", "~/r"), tree: rg},
+		{args: R("--tier", "2", "--repo", "~/nope")}, {args: R("--tier", "2", "--repo", "~"), tree: rg},
+		{args: R("--tier", "2", "--repo", "~/.ssh"), tree: tree{}.d(".ssh")},
+		{args: R("--tier", "2", "--repo", "~/r/"), tree: rg},
+		{args: R("--tier", "1", "--repo", "~/r"), tree: rg},
+		{args: R("--tier", "2", "--repo", "~/a/r", "--repo", "~/b/r"), tree: two},
+		{args: R("--tier", "2", "--repo", "~/a/r", "--repo", "~/r"), tree: two},
+		{args: R("--tier", "2", "--repo", "~/a/my r", "--repo", "~/b/my r"), tree: sp},
+		{args: R("--tier", "2", "--repo", "~/a/my r", "--repo", "~/c/my"), tree: sp},
+		{args: R("--tier", "2", "--repo", "~/r"), tree: rg, env: []string{"STUB_IMAGE_RC=1"}},
+		{args: R("--tier", "2", "--repo", "~/r"), tree: rg, env: []string{"STUB_IMAGE_RC=0"}},
+		{args: R("--agent", "codex"), env: []string{"STUB_IMAGE_RC=1"}},
+		// tier 3
+		{args: R("--tier", "3", "--repo", "~/r"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "~/tok"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "GH=~/tok", "--infra-token", "~/tok2"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "~/tok", "--infra-token", "INFRA_TOKEN=~/tok2"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "A=~/tok", "--infra-token", "A=~/tok2"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "~/missing"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-kubeconfig", "~/kc"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-kubeconfig", "~/nokc"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-kubeconfig", "~/kc", "--infra-kube-context", "prod"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-kubeconfig", "~/kc", "--infra-kubeconfig", "~/kc2", "--infra-kube-context", "prod"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "~/tok", "--infra-kube-context", "prod"), tree: tok},
+		{args: R("--tier", "2", "--repo", "~/r", "--infra-kubeconfig", "~/kc"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "~/tok", "--infra-endpoint", "https://api.infra.example.org:6443/x"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "~/tok", "--infra-endpoint", "https://smtp.example.org"), tree: tok},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "~/tok", "--infra-endpoint", "http://10.9.8.7:8080"),
+			tree: tok.f(".sandbox/config.yaml", "blocked_cidrs:\n  - 10.0.0.0/8\n")},
+		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "~/tok", "--allow-exec-plugin"), tree: tok},
+		// egress
+		{args: R("--allow-domain", "api.example.org", "--allow-domain=*.cdn.example.org")},
+		{args: R("--allow-domain", "smtp.example.org")}, {args: R("--allow-domain", "discord.com")},
+		{args: R("--allow-domain", "*.com")}, {args: R("--allow-domain", "*.co.uk")}, {args: R("--allow-domain", "a b")},
+		{args: R("--allow-domain", "EXAMPLE.org.")}, {args: R("--allow-domain", "")}, {args: R("--allow-domain", "10.1.2.3")},
+		{args: R("--allow-domain", "x.example.org"), tree: tree{}.f(".sandbox/config.yaml", "blocked_domains:\n  - \"*.example.org\"\n")},
+		{args: R(), tree: tree{}.f(".sandbox/config.yaml", "blocked_cidrs:\n  - 10.0.0.0/33\n")},
+		{args: R(), tree: tree{}.f(".sandbox/config.yaml", "extra_allowed_domains:\n  - u.example.org\n  - \"*.u2.example.org\"\n")},
+		{args: R("--allow-domain", "c.example.org"), env: []string{"SANDBOX_EXTRA_ALLOWED_DOMAINS=e1.example.org e2.example.org"}},
+		{args: R(), env: []string{"SANDBOX_EXTRA_ALLOWED_DOMAINS=smtp.example.org"}},
+		{args: R(), env: []string{"SANDBOX_EXTRA_ALLOWED_DOMAINS=*"}, tree: tree{}.f("a1", "").f("b1", "")},
+		{args: R(), env: []string{"BLOCKED_DESTINATIONS_CONFIG=<HOME>/nope.yaml"}},
+		{args: R("--allow-domain", "x.example.org"), env: []string{"BLOCKED_DESTINATIONS_CONFIG=<HOME>/bl.yaml"},
+			tree: tree{}.f("bl.yaml", "blocked_domains:\n  - x.example.org\n")},
+		// per-repo egress: ungranted (no overlay), honored (vetted), honored overlay but unvetted repo
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: vrDomVetted},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: append(append(tree{}, vrDomVetted...), honorOv...), env: ov},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: append(append(tree{}, vrDom...), honorOv...), env: ov},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: append(append(tree{}, vrDomVetted.f("vr/.sandbox/config.yaml", repoDom+"  - new.example.org\n")...), honorOv...), env: ov},
+		{args: R("--tier", "2", "--repo", "~/vr"), tree: append(append(tree{}, vrDomVetted...), tree{}.f(".sandbox/config.yaml", "overlay: ~/ov\n").f("ov/config.yaml", "honor_repo_allowed_domains: true\n")...)},
+		// profiles
+		{args: R("--profile", "2", "--repo", "~/r"), tree: rg}, {args: R("--profile", "2", "--tier", "3"), tree: rg},
+		{args: R("--profile", "1", "--tier", "1")}, {args: R("--profile", "nope")}, {args: R("--profile", "../x")},
+		{args: R("--profile", "dev"), tree: prof("dev", "tier: 2\nagent: codex\ndefault_repo: ~/r\nextra_allowed_domains:\n  - p.example.org\nmcps:\n  - m1\n  - m2\nservices:\n  - postgres\n")},
+		{args: R("--profile", "dev", "--repo", "~/r"), tree: prof("dev", "tier: 2\ndefault_repo: ~/nope\n")},
+		{args: R("--profile", "dev"), tree: prof("dev", "agent: codex\n")},
+		{args: R("--profile", "dev", "--tier", "3"), tree: prof("dev", "tier: 2\n")},
+		{args: R("--profile", "dev", "--tier", "1"), tree: prof("dev", "tier: 1\n")},
+		{args: R("--profile", "dev", "--agent", "claude"), tree: prof("dev", "tier: 1\nagent: codex\n")},
+		{args: R("--profile", "dev", "--agent", "codex"), tree: prof("dev", "tier: 1\nagent: codex\n")},
+		{args: R("--profile", "dev"), tree: prof("dev", "tier: 7\n")},
+		{args: R("--profile", "dev"), tree: prof("dev", "tier: 1\nextra_allowed_domains:\n  - smtp.example.org\n")},
+		{args: R("--profile", "team"), tree: rg.f("ov/profiles/team.yaml", "tier: 1\n"), env: ov},
+		{args: R("--profile", "team"), tree: rg.f("ov/profiles/team.yaml", "tier: 1\n").f(".sandbox/config.yaml", "overlay: ~/ov\n")},
+		{args: R("--profile", "2", "--repo", "~/r"), tree: rg.d("ov"), env: ov},
+		// profile secrets
+		{args: R("--profile", "s"), tree: withSecrets("  - GH_TOKEN\n  - NPM_TOKEN\n", "GH_TOKEN", "NPM_TOKEN")},
+		{args: R("--profile", "s"), tree: withSecrets("  - GH_TOKEN\n  - NPM_TOKEN\n", "GH_TOKEN")},
+		{args: R("--profile", "s"), tree: withSecrets("  - gh_token\n", "gh_token")},
+		{args: R("--profile", "s"), tree: withSecrets("  - "+strings.Repeat("A", 65)+"\n", strings.Repeat("A", 65))},
+		{args: R("--profile", "s"), tree: withSecrets("  - "+strings.Repeat("A", 64)+"\n", strings.Repeat("A", 64))},
+		{args: R("--profile", "s"), tree: withSecrets("  - A B\n", "A", "B", "AB")},
+		{args: R("--profile", "s"), tree: withSecrets("  - \"A*\"\n", "A1", "A*").f("A2", "")},
+		{args: R("--profile", "s"), tree: withSecrets("  - -n\n  - GH\n", "GH")},
+		{args: R("--profile", "s"), tree: withSecrets("  - GH\n  - GH\n", "GH")},
+		{args: R("--profile", "s"), tree: withSecrets("  - \"\"\n", "X")},
+		{args: R("--profile", "s"), tree: withSecrets("  - 1X\n", "1X")},
+		// overlay minimum version
+		{args: R(), tree: tree{}.f("ov/config.yaml", "min_sandbox_version: 99.0\n"), env: ov},
+		{ver: "full", args: R(), tree: tree{}.f("ov/config.yaml", "min_sandbox_version: 99.0\n"), env: ov},
+		{ver: "full", args: R(), tree: tree{}.f("ov/config.yaml", "min_sandbox_version: 1.0\n"), env: ov},
+		{ver: "full", args: R(), tree: tree{}.f("ov/config.yaml", "min_sandbox_version: banana\n"), env: ov},
+		{args: R(), env: []string{"SANDBOX_OVERLAY=<HOME>/missing"}},
+		// a linked overlay is synced first (SANDBOX_NO_LINK_CHECK skips it)
+		{args: R("--profile", "dev", "--repo", "~/r"), tree: append(append(tree{}, rg...), ahead...)},
+		{args: R("--profile", "ops", "--repo", "~/r"), tree: append(append(tree{}, rg...), ahead...)},
+		{args: R("--profile", "ops", "--repo", "~/r"), tree: append(append(tree{}, rg...), ahead...), env: []string{"SANDBOX_NO_LINK_CHECK=1"}},
+	} {
+		add(cc)
+	}
+
 	var rows []string
 	for i, c := range cases {
 		args := ""

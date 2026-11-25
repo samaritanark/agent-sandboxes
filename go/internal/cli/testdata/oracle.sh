@@ -72,11 +72,41 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
     extra+=("${kv//<HOME>/$H}")
   done <<<"$envs"
   out="$c/.out" err="$c/.err"
+  # `run` stops at the cluster: the bash is sourced, k3s_image_present answers $STUB_IMAGE_RC
+  # (default 2, "cannot tell"), and ensure_cluster_ready prints the launch decisions and exits.
+  runner=("$T/$ver/bin/sandbox")
+  if [[ "${args[0]:-}" == run ]]; then
+    runner=(bash -c '
+      source "$1/bin/sandbox"
+      k3s_image_present() { return "${STUB_IMAGE_RC:-2}"; }
+      ensure_cluster_ready() {
+        q() { printf "%s=%q\n" "$1" "$2"; }
+        echo "### decisions"
+        q agent "$opt_agent"; q tier "$opt_tier"; q profile "${SESSION_PROFILE:-}"; q overlay "${SESSION_OVERLAY:-}"
+        q name "$opt_name"
+        for x in "${opt_repos[@]+"${opt_repos[@]}"}"; do q repo "$x"; done
+        for x in "${opt_allow_domains[@]+"${opt_allow_domains[@]}"}"; do q domain "$x"; done
+        for x in "${opt_infra_endpoints[@]+"${opt_infra_endpoints[@]}"}"; do q endpoint "$x"; done
+        for x in "${opt_infra_token_pairs[@]+"${opt_infra_token_pairs[@]}"}"; do q token "$x"; done
+        for x in "${opt_infra_kubeconfigs[@]+"${opt_infra_kubeconfigs[@]}"}"; do q kubeconfig "$x"; done
+        q kube_context "$opt_infra_kube_context"
+        for x in "${SESSION_PROFILE_SECRETS_LIST[@]+"${SESSION_PROFILE_SECRETS_LIST[@]}"}"; do q secret "$x"; done
+        q mcps "${SESSION_PROFILE_MCPS:-}"; q services "${SESSION_PROFILE_SERVICES:-}"
+        q dry_run "$opt_dry_run"; q keep_alive "$opt_keep_alive"; q allow_exec_plugin "$opt_allow_exec_plugin"
+        q accept_unmasked "$opt_accept_unmasked_secrets"; q accept_unvetted "$opt_accept_unvetted_repo"
+        q accept_drift "$opt_accept_vetting_drift"; q base_url "${OPENCODE_BASE_URL:-}"
+        q homedir "${SANDBOX_AGENT_HOME_OVERRIDE:-}"; q has_secrets "$SESSION_HAS_SECRETS"
+        exit 0
+      }
+      shift 2; cmd_run "$@"' _ "$T/$ver")
+  fi
+  cd "$H"
   printf '%s' "$input" | env -i PATH="$src/go/internal/vetting/testdata/config/shim:$path" FAKE_NOW=1800000000 \
     GIT_CONFIG_NOSYSTEM=1 GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x GIT_COMMITTER_DATE="@1700000200 +0000" \
     HOME="$H" LC_ALL=C SANDBOX_LOGS_DIR="$H/logs" "${extra[@]}" \
-    "$T/$ver/bin/sandbox" "${args[@]}" > "$out" 2> "$err"
+    "${runner[@]}" "${args[@]}" > "$out" 2> "$err"
   rc=$?
+  cd "$T"  # the next case's tree is built from a directory that still exists
   norm() {
     sed -e '/value too great for base/d' \
         -e "s|$T/$ver/bin/sandbox: line [0-9]*:|sandbox: line 0:|g" -e "s|$T/$ver|<ROOT>|g" -e "s|$H|<HOME>|g" \

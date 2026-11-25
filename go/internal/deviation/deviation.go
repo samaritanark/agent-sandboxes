@@ -169,6 +169,15 @@ const (
 	// "-5" (older than minus five days) removed every session log, however new. N must now be a
 	// non-negative whole number; anything else is refused before anything is removed.
 	CleanupDaysValidated ID = "cleanup-days-validated"
+	// DuplicateBasenameExact: `sandbox run` found duplicate --repo basenames with `xargs -n1
+	// basename`, which splits paths on whitespace, so two repos under "My Repos/" were refused as
+	// duplicates ("My") and a space-named pair could slip past. Each repo path is now one name.
+	DuplicateBasenameExact ID = "duplicate-basename-exact"
+	// LiteralProfileSecrets: a profile's secrets: list was split with an unquoted IFS=','
+	// expansion, so each name was glob-expanded against the current directory before being checked,
+	// and inner whitespace was deleted. Names are now taken as written, surrounding whitespace
+	// trimmed.
+	LiteralProfileSecrets ID = "literal-profile-secrets"
 )
 
 var (
