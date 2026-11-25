@@ -106,6 +106,10 @@ jobs:
 
       - name: go test
         working-directory: go
+        env:
+          # the host packages' live oracles (OpenSSL 3, lib/certs.sh) run on Linux and skip
+          # themselves elsewhere
+          SBX_ORACLE: "1"
         run: go test -count=1 ./internal/host/... ./cmd/sandbox/...
 
       - name: Build every release target

@@ -99,6 +99,13 @@ func TestRemovedAndNotYet(t *testing.T) {
 	if r := run(t, d, tr, "", "install"); r.rc != 1 || !strings.Contains(r.err, "not available") {
 		t.Errorf("install: %+v", r)
 	}
+	var got []string
+	var out, errb bytes.Buffer
+	rc := Run(context.Background(), []string{"setup-proxy-cert", "--list"}, Env{Driver: d, Transport: tr, Stdout: &out, Stderr: &errb,
+		HostCommands: map[string]func(context.Context, []string) int{"setup-proxy-cert": func(_ context.Context, a []string) int { got = a; return 4 }}})
+	if rc != 4 || !reflect.DeepEqual(got, []string{"--list"}) {
+		t.Errorf("host command: rc=%d args=%q", rc, got)
+	}
 	if len(tr.runs) != 0 || len(d.Calls) != 0 {
 		t.Errorf("host-only commands touched the VM: %q %q", tr.runs, d.Calls)
 	}

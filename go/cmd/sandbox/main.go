@@ -10,8 +10,10 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"runtime"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/app"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/proxycert"
 )
 
 func isTTY(f *os.File) bool {
@@ -43,8 +45,18 @@ func main() {
 		for range sigs {
 		}
 	}()
+	state := filepath.Join(home, ".sandbox")
+	tty := isTTY(os.Stdin)
 	os.Exit(app.Run(context.Background(), os.Args[1:], app.Env{
 		Driver: d, Transport: tr, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
-		StdinTTY: isTTY(os.Stdin), StateDir: filepath.Join(home, ".sandbox"), User: name,
+		StdinTTY: tty, StateDir: state, User: name,
+		HostCommands: map[string]func(context.Context, []string) int{
+			"setup-proxy-cert": func(ctx context.Context, args []string) int {
+				env := proxycert.System(runtime.GOOS)
+				env.Stdin, env.Stdout, env.Stderr, env.StdinTTY = os.Stdin, os.Stdout, os.Stderr, tty
+				env.DefaultOutput = filepath.Join(state, "extra-ca-certs", "proxy-ca.crt")
+				return proxycert.Run(ctx, args, env)
+			},
+		},
 	}))
 }

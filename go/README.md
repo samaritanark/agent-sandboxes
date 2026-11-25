@@ -40,7 +40,7 @@ Layout so far:
 | `internal/workspace` | `validate_repo_path` and `workspace_prescan` from `lib/filesystem.sh` (which directories may be a workspace; the warn-only filename heuristics), tested through the CLI corpus; and the workspace baseline and diff (`capture_workspace_baseline`, `capture_workspace_diff`, `files.log`), with their own corpus |
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
 | `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows; the host binary's whole dependency closure stays within `internal/host/`) |
-| `internal/host/...`, `cmd/sandbox` | the v3 host binary (design 5.1, 5.2), new code with no bash to port: `driver` (the VM driver interface and a mock), `release` (the version handshake on `/etc/sandbox/release`), `lima` (the lima-vz and lima-qemu driver: the `limactl` path check of 5.1.2, the instance config with every 5.2.5 setting written out and the first-boot seed as a root-only data file, and the lifecycle calls), `sshx` (the transport: the system OpenSSH client with the guest's key pinned under a fixed alias, `-F` on the null device so no user or system ssh config applies, agent and forwarding off, arguments single-quoted for the remote shell; its test runs a real unprivileged sshd where one is installed), `gitref` (the host half of vetting signing, 5.1.3: HEAD's commit read from `.git/HEAD`, ref files, and `packed-refs` without running git, and the signed tag written as a loose object and `refs/tags/agent-vetted/<sha>`; tested against git, including linked worktrees and SHA-256 repositories), `app` (the dispatcher: `vm start\|stop\|status\|shell`, removed commands, and proxying every other command to the in-VM `sandbox`). Its tests run on Linux, macOS, and Windows in CI |
+| `internal/host/...`, `cmd/sandbox` | the v3 host binary (design 5.1, 5.2), new code with no bash to port: `driver` (the VM driver interface and a mock), `release` (the version handshake on `/etc/sandbox/release`), `lima` (the lima-vz and lima-qemu driver: the `limactl` path check of 5.1.2, the instance config with every 5.2.5 setting written out and the first-boot seed as a root-only data file, and the lifecycle calls), `sshx` (the transport: the system OpenSSH client with the guest's key pinned under a fixed alias, `-F` on the null device so no user or system ssh config applies, agent and forwarding off, arguments single-quoted for the remote shell; its test runs a real unprivileged sshd where one is installed), `gitref` (the host half of vetting signing, 5.1.3: HEAD's commit read from `.git/HEAD`, ref files, and `packed-refs` without running git, and the signed tag written as a loose object and `refs/tags/agent-vetted/<sha>`; tested against git, including linked worktrees and SHA-256 repositories), `proxycert` (`setup-proxy-cert`, 5.1.3 and 5.10: the port of `lib/certs.sh` without openssl, with OpenSSL 3's one-line subject format reproduced; its Linux trust-store search is differential-tested against `lib/certs.sh`), `app` (the dispatcher: `vm start\|stop\|status\|shell`, removed commands, and proxying every other command to the in-VM `sandbox`). Its tests run on Linux, macOS, and Windows in CI |
 
 **Deliberate deviations.** Quirks of the bash found while porting are fixed as named
 deviations (`internal/deviation`). The differential tests (golden files and live
@@ -163,6 +163,16 @@ The in-VM CLI (`internal/cli`; the oracle runs `bin/sandbox` itself from a copy 
 go/internal/cli/testdata/gen-usage.sh
 (cd go && go run ./internal/cli/internal/gencli -base internal/cli/testdata)
 LC_ALL=C go/internal/cli/testdata/oracle.sh > go/internal/cli/testdata/golden-cli.tsv
+```
+
+The host's `setup-proxy-cert` (`internal/host/proxycert`): the subject corpus is generated anywhere, the goldens on Linux with OpenSSL 3:
+
+```bash
+(cd go && go run ./internal/host/proxycert/internal/gensubjects -base internal/host/proxycert/testdata)
+(cd go && go run ./internal/host/proxycert/internal/genstores -base internal/host/proxycert/testdata)
+# on Linux:
+LC_ALL=C go/internal/host/proxycert/testdata/oracle.sh > go/internal/host/proxycert/testdata/golden-subjects.txt
+LC_ALL=C go/internal/host/proxycert/testdata/stores/oracle.sh > go/internal/host/proxycert/testdata/stores/golden-stores.tsv
 ```
 
 Pilot 2 (`testdata/masked`, `testdata/accepted`) regenerates the same way:

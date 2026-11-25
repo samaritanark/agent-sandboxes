@@ -11,7 +11,11 @@ def m(file, old, new, run, equivalent=None, pkg=None):
     # pkg: the package whose tests run; for shared packages (config, bashcompat) it is the package
     # whose corpus exercises the code, so it must be given (default: the file's own package)
     if pkg is None:
-        pkg = PKG_OVERRIDE.get(file) or (file.split("/")[1] if file.startswith("internal/") else "")
+        parts = file.split("/")
+        if file.startswith("internal/host/"):
+            pkg = "host/" + parts[2]  # the host binary's packages are one level deeper
+        else:
+            pkg = PKG_OVERRIDE.get(file) or (parts[1] if file.startswith("internal/") else "")
     MUTANTS.append(dict(file=file, old=old, new=new, run=run, pkg=pkg, equivalent=equivalent))
 
 
@@ -909,3 +913,26 @@ m(MO, '\tcase isDir(p):\n\t\treturn "directory"\n\tcase isFile(p):\n\t\treturn "
   equivalent="a path is never both a directory and a regular file")
 m(MO, '\t\tif rel == "" {\n\t\t\tcontinue', '\t\tif rel == "-" {\n\t\t\tcontinue', R_MO,
   equivalent="LoadRepoMaskedPaths never returns an empty entry (the \"  -\" case in the corpus shows it)")
+
+# ---- host: setup-proxy-cert (internal/host/proxycert)
+PS = "internal/host/proxycert/subject.go"
+PX = "internal/host/proxycert/extract.go"
+R_PS = "TestOneLineGolden"
+R_PX = "TestLinuxStoreGolden|TestMacAndWindows"
+m(PS, '\t\tcase c > 0x7f || c < 0x20 || c == 0x7f:', '\t\tcase c > 0x7f || c < 0x20:', R_PS)
+m(PS, "\t\tcase c == '\\\\' || c == '\"':", "\t\tcase c == '\\\\':", R_PS)
+m(PS, '\t\tcase strings.IndexByte(`,+<>;`, c) >= 0:', '\t\tcase strings.IndexByte(`,+<>`, c) >= 0:', R_PS)
+m(PS, "\t\tcase (c == ' ' || c == '#') && i == 0, c == ' ' && i == len(b)-1:", "\t\tcase (c == ' ' || c == '#') && i == 0:", R_PS)
+m(PS, '\treturn strings.Join(rdns, ", "), nil', '\treturn strings.Join(rdns, ","), nil', R_PS)
+m(PS, '\t\trdns = append(rdns, strings.Join(atvs, " + "))', '\t\trdns = append(rdns, strings.Join(atvs, ", "))', R_PS)
+m(PS, '\t\t\tu[i] = uint16(b[2*i])<<8 | uint16(b[2*i+1])', '\t\t\tu[i] = uint16(b[2*i+1])<<8 | uint16(b[2*i])', R_PS)
+m(PS, '"0.9.2342.19200300.100.1.25": "DC"', '"0.9.2342.19200300.100.1.25": "dc"', R_PS)
+m(PX, '\t\tif subj != "" && m.MatchString(subj) {', '\t\tif m.MatchString(subj) {', R_PX,
+  equivalent="no vendor pattern matches the empty string")
+m(PX, '\tif ok {\n\t\treturn out, true\n\t}\n\tif st', '\tif st', R_PX)
+m(PX, '\t\tif blk.Type != "CERTIFICATE" && blk.Type != "X509 CERTIFICATE" && blk.Type != "TRUSTED CERTIFICATE" {', '\t\tif blk.Type != "CERTIFICATE" && blk.Type != "TRUSTED CERTIFICATE" {', R_PX)
+m(PX, '\treturn parseFirst(b)\n}', '\treturn nil\n}', R_PX)
+m(PX, '\t\tif !strings.HasPrefix(filepath.Base(p), ".") {', '\t\tif true {', R_PX)
+m(PX, '\tif len(lines) > 0 && lines[len(lines)-1] == "" {', '\tif false {', R_PX)
+m(PX, '\t\tif strings.Contains(l, "-----BEGIN CERTIFICATE-----") {', '\t\tif strings.HasPrefix(l, "-----BEGIN CERTIFICATE-----") {', R_PX)
+m(PX, '\tq := make([]string, len(v))\n\tfor i, s := range v {\n\t\tq[i] = regexp.QuoteMeta(s)', '\tq := make([]string, len(v))\n\tfor i, s := range v {\n\t\tq[i] = s', R_PX)

@@ -38,6 +38,9 @@ type Env struct {
 	StateDir  string // ~/.sandbox
 	User      string
 	Now       func() time.Time
+	// HostCommands are the host operations of 5.1.3 that run without the VM, by name; each gets
+	// the arguments after its name and returns the exit code.
+	HostCommands map[string]func(ctx context.Context, args []string) int
 }
 
 // ReleasePath is the image's release file (5.1.7).
@@ -56,7 +59,7 @@ var removed = map[string]string{
 // notYet are host-only commands this build does not implement yet.
 var notYet = map[string]bool{
 	"install": true, "setup": true, "uninstall": true, "upgrade": true, "doctor": true,
-	"sync": true, "ca": true, "setup-proxy-cert": true,
+	"sync": true, "ca": true,
 }
 
 // Run executes one command line and returns the exit code.
@@ -83,6 +86,9 @@ func Run(ctx context.Context, args []string, env Env) (rc int) {
 		}
 		if args[0] == "vm" {
 			return a.vm(args[1:])
+		}
+		if f, ok := env.HostCommands[args[0]]; ok {
+			return f(ctx, args[1:])
 		}
 	}
 	return a.proxy(args)

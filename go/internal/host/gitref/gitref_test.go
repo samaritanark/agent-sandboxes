@@ -127,7 +127,9 @@ func TestHeadRefusals(t *testing.T) {
 		}
 	}
 	bad("HEAD outside refs", func(d string) { os.WriteFile(filepath.Join(d, ".git/HEAD"), []byte("ref: ../../etc/passwd\n"), 0o644) })
-	bad("ref with dotdot", func(d string) { os.WriteFile(filepath.Join(d, ".git/HEAD"), []byte("ref: refs/heads/../../x\n"), 0o644) })
+	bad("ref with dotdot", func(d string) {
+		os.WriteFile(filepath.Join(d, ".git/HEAD"), []byte("ref: refs/heads/../../x\n"), 0o644)
+	})
 	bad("short hash", func(d string) { os.WriteFile(filepath.Join(d, ".git/HEAD"), []byte("abc\n"), 0o644) })
 	bad("uppercase hash", func(d string) {
 		h := git(t, d, "rev-parse", "HEAD")
@@ -136,7 +138,9 @@ func TestHeadRefusals(t *testing.T) {
 	bad("self loop", func(d string) {
 		os.WriteFile(filepath.Join(d, ".git/refs/heads/main"), []byte("ref: refs/heads/main\n"), 0o644)
 	})
-	bad("huge HEAD", func(d string) { os.WriteFile(filepath.Join(d, ".git/HEAD"), []byte(strings.Repeat("x", maxSmall+1)), 0o644) })
+	bad("huge HEAD", func(d string) {
+		os.WriteFile(filepath.Join(d, ".git/HEAD"), []byte(strings.Repeat("x", maxSmall+1)), 0o644)
+	})
 	bad("unknown object format", func(d string) {
 		f, _ := os.OpenFile(filepath.Join(d, ".git/config"), os.O_APPEND|os.O_WRONLY, 0)
 		f.WriteString("[extensions]\n\tobjectFormat = sha512\n")

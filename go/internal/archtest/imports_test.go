@@ -41,12 +41,13 @@ var allowed = map[string][]string{
 		"link", "mounts", "onboard", "secrets", "tier", "vetting", "workspace"},
 
 	// The host binary's packages (design 5.1). They import only each other.
-	"host/driver":  {},
-	"host/release": {},
-	"host/app":     {"host/driver", "host/release"},
-	"host/lima":    {"host/driver"},
-	"host/sshx":    {"host/driver"},
-	"host/gitref":  {},
+	"host/driver":    {},
+	"host/release":   {},
+	"host/app":       {"host/driver", "host/release"},
+	"host/lima":      {"host/driver"},
+	"host/sshx":      {"host/driver"},
+	"host/gitref":    {},
+	"host/proxycert": {},
 }
 
 // hostSafe is every internal package the host binary may depend on, directly or not (5.1.1).

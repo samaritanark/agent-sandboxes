@@ -1,0 +1,36 @@
+C = US, O = Zscaler Inc., CN = Zscaler Root CA	C = US, O = Zscaler Inc., CN = Zscaler Root CA
+CN = Netskope Certificate Authority, O = Netskope	CN = Netskope Certificate Authority, O = Netskope
+CN = Palo Alto Networks Decryption CA	CN = Palo Alto Networks Decryption CA
+CN = "a,b"	CN = "a,b"
+CN = "a+b"	CN = "a+b"
+CN = a\"b	CN = a\"b
+CN = a\\b	CN = a\\b
+CN = "a<b>c"	CN = "a<b>c"
+CN = "a;b"	CN = "a;b"
+CN = a=b	CN = a=b
+CN = " lead"	CN = " lead"
+CN = "trail "	CN = "trail "
+CN = "#hash"	CN = "#hash"
+CN = mid#dle	CN = mid#dle
+CN = a b	CN = a b
+CN = " "	CN = " "
+CN = 	CN = 
+CN = caf\C3\A9	CN = caf\C3\A9
+CN = \E6\97\A5\E6\9C\AC	CN = \E6\97\A5\E6\9C\AC
+CN = \E2\82\AC	CN = \E2\82\AC
+CN = \F0\9F\98\80	CN = \F0\9F\98\80
+CN = caf\C3\A9 \E2\82\AC	CN = caf\C3\A9 \E2\82\AC
+CN = A\F0\9F\98\80	CN = A\F0\9F\98\80
+CN = a\C3\A9	CN = a\C3\A9
+CN = x@y	CN = x@y
+CN = tab\09here	CN = tab\09here
+CN = nl\0Ahere	CN = nl\0Ahere
+CN = del\7F	CN = del\7F
+CN = x + OU = y, O = z	CN = x + OU = y, O = z
+emailAddress = a@b.c, DC = com, UID = u1, serialNumber = 42	emailAddress = a@b.c, DC = com, UID = u1, serialNumber = 42
+1.2.3.4.5 = private	1.2.3.4.5 = private
+	
+ST = Texas, L = Austin, title = t, organizationIdentifier = VATUS-1	ST = Texas, L = Austin, title = t, organizationIdentifier = VATUS-1
+CN = \"quoted\"	CN = \"quoted\"
+CN = \\	CN = \\
+CN = "Blue Coat, Inc. + Symantec"	CN = "Blue Coat, Inc. + Symantec"
