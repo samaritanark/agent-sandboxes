@@ -29,6 +29,9 @@ func (t tree) c(p string) tree       { return append(t.clone(), enc("c")+" "+enc
 func (t tree) r(p string) tree       { return append(t.clone(), enc("r")+" "+enc(p)) }
 func (t tree) p(p string) tree       { return append(t.clone(), enc("p")+" "+enc(p)) }
 func (t tree) v(p string) tree       { return append(t.clone(), enc("v")+" "+enc(p)) }
+func (t tree) t(p string, days int) tree {
+	return append(t.clone(), enc("t")+" "+enc(p)+" "+enc(fmt.Sprint(days)))
+}
 func (t tree) L(name, origin string) tree {
 	return append(t.clone(), enc("L")+" "+enc(name)+" "+enc(origin))
 }
@@ -276,6 +279,46 @@ func main() {
 		{args: []string{"link", "unlink", "--keep-clone"}, tree: linked, stdin: "n\n"},
 		{args: []string{"link", "unlink"}, tree: linked, stdin: ""},
 		{args: []string{"link", "unlink", "--yes"}, tree: linked.r(".sandbox/overlays/origin/.git")},
+	} {
+		add(cc)
+	}
+
+	// list, logs, cleanup
+	L := "logs/"
+	sj := func(sid, body string) tree { return tree{}.f(L+sid+"/session.json", body) }
+	sessions := tree{}.d("logs").clone()
+	for _, s := range []tree{
+		sj("ses-1", `{"agent":"claude","tier":2,"name":"dev","start_time":"2026-01-01T00:00:00Z","end_time":null}`),
+		sj("ses-2", `{"agent":"codex","tier":3,"name":"","start_time":"s","end_time":"e"}`),
+		sj("ses-3", `{"agent":false,"tier":null}`),
+		sj("ses-4", `{"agent":{"a":[1,2]},"tier":1.50,"name":"ünïcode name that is long enough","end_time":true}`),
+		sj("ses-5", ``), sj("ses-6", `not json`), sj("ses-7", `null`), sj("ses-8", `[1]`),
+		sj("ses-9", "{\"agent\":\"a\"}\n{\"agent\":\"b\"}\n"),
+		tree{}.d(L + "ses-10"), tree{}.d(L + "other"), tree{}.f(L+"ses-file", "x"),
+		tree{}.d(L + "ses-a-very-long-session-identifier-over-36-characters"),
+		tree{}.d("elsewhere").l(L+"ses-link", "../elsewhere"),
+	} {
+		sessions = append(sessions, s...)
+	}
+	for _, cc := range []cs{
+		{args: []string{"list"}}, {args: []string{"list"}, tree: tree{}.d("logs")}, {args: []string{"list"}, tree: sessions},
+		{args: []string{"list", "--anything"}, tree: sessions},
+		{args: []string{"logs"}}, {args: []string{"logs", ""}}, {args: []string{"logs", "ses-nope"}, tree: sessions},
+		{args: []string{"logs", "ses-1"}, tree: sessions.f(L+"ses-1/transcript/b.jsonl", "b").f(L+"ses-1/transcript/a/x.jsonl", "a").
+			f(L+"ses-1/files.log", "M src/a.go\nA new.txt\n")},
+		{args: []string{"logs", "ses-4"}, tree: sessions}, {args: []string{"logs", "ses-5"}, tree: sessions},
+		{args: []string{"logs", "ses-9"}, tree: sessions}, {args: []string{"logs", "ses-10"}, tree: sessions},
+		{args: []string{"logs", "ses-link"}, tree: sessions},
+		{args: []string{"cleanup"}}, {args: []string{"cleanup"}, tree: tree{}.d("logs")},
+		{args: []string{"cleanup"}, tree: tree{}.d(L+"ses-old").t(L+"ses-old", 200).d(L+"ses-new").t(L+"ses-new", 10).
+			d("elsewhere").t("elsewhere", 300).l(L+"ses-link", "../elsewhere").d(L+"keep").t(L+"keep", 400)},
+		{args: []string{"cleanup", "--older-than", "5"}, tree: tree{}.d(L+"ses-new").t(L+"ses-new", 10).d(L + "ses-now")},
+		{args: []string{"cleanup", "--older-than=005"}, tree: tree{}.d(L+"ses-new").t(L+"ses-new", 10)},
+		{args: []string{"cleanup", "--older-than", "abc"}, tree: tree{}.d(L+"ses-old").t(L+"ses-old", 200)},
+		{args: []string{"cleanup", "--older-than"}, tree: tree{}.d("logs")},
+		{args: []string{"cleanup", "--older-than="}, tree: tree{}.d(L+"ses-old").t(L+"ses-old", 200)},
+		{args: []string{"cleanup", "30"}, tree: tree{}.d("logs")},
+		{args: []string{"cleanup", "--older-than", "-5"}, tree: tree{}.d(L+"ses-new").t(L+"ses-new", 10)},
 	} {
 		add(cc)
 	}

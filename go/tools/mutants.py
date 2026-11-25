@@ -637,3 +637,17 @@ m(LKC, '\tif d == "" && l.IsActive() && config.ExtractYAMLScalar(c.env.UserConfi
 m(FET, '\tif url == "" {\n\t\treturn\n\t}', '', R_CL, pkg="cli")
 m(FET, '\tif strings.HasPrefix(url, "-") {', '\tif false {', R_CL, pkg="cli")
 m(FET, '\t\tif config.IsFile(cache) {', '\t\tif true {', R_CL, pkg="cli")
+
+SS = "internal/cli/sessions.go"
+m(SS, '\t\tcase x.Kind == jqjson.Null || (x.Kind == jqjson.Bool && !x.B):', '\t\tcase x.Kind == jqjson.Null:', R_CL)
+m(SS, '\t\tdefault:\n\t\t\treturn strings.Join(append(out, def), "\\n")', '\t\tdefault:\n\t\t\treturn def', R_CL)
+m(SS, '\t\tcase jqjson.Null:\n\t\tdefault:', '\t\tdefault:', R_CL)
+m(SS, '\t\tif strings.HasPrefix(e.Name(), "ses-") && isDir(filepath.Join(logs, e.Name())) {', '\t\tif strings.HasPrefix(e.Name(), "ses-") && e.IsDir() {', R_CL)
+m(SS, '\t\t\tfmt.Fprintf(c.stdout, "  %s  (no session.json)\\n", padRight(sid, 36))', '\t\t\tfmt.Fprintf(c.stdout, "  %s  (no session.json)\\n", sid)', R_CL)
+m(SS, 'padRight(agent, 10), padRight(tier, 2),', 'padRight(agent, 10), padRight(tier, 3),', R_CL)
+m(SS, '\tif !found {\n\t\tc.out("  (no sessions found)")', '\tif found {\n\t\tc.out("  (no sessions found)")', R_CL)
+m(SS, '\t\tsort.Strings(files)\n', '', R_CL)
+m(SS, '\t\t\tif err == nil && d.Type().IsRegular() {', '\t\t\tif err == nil {', R_CL)
+m(SS, '\t\t\tif !strings.HasPrefix(e.Name(), "ses-") || !e.IsDir() {', '\t\t\tif !strings.HasPrefix(e.Name(), "ses-") {', R_CL)
+m(SS, '\t\tif d != days {\n\t\t\tn = -n\n\t\t}', '', R_CL)
+m(SS, '\t\t\tif age := now.Sub(st.ModTime()); age > 0 && int64(age/(24*time.Hour)) > n {', '\t\t\tif age := now.Sub(st.ModTime()); age > 0 && int64(age/(24*time.Hour)) >= n {', R_CL)

@@ -159,8 +159,8 @@ func (c *cmdCtx) usage(name string) {
 
 // commands maps each v2 subcommand to its port, or nil while it is not yet ported.
 var commands = map[string]func(*cmdCtx, []string){
-	"run": nil, "resume": nil, "allow": nil, "list": nil, "logs": nil, "flows": nil, "stop": nil,
-	"cleanup": nil, "check": cmdCheck, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
+	"run": nil, "resume": nil, "allow": nil, "list": cmdList, "logs": cmdLogs, "flows": nil, "stop": nil,
+	"cleanup": cmdCleanup, "check": cmdCheck, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
 	"upgrade": nil, "onboard": nil, "secret": nil, "mask": cmdMask, "exceptions": cmdExceptions, "vet": cmdVet,
 	"profile": cmdProfile, "link": cmdLink, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,
 	"version": cmdVersion,

@@ -165,6 +165,10 @@ const (
 	// status` and `link sync` exited 1 with no output (link_active_dir's failing last test ended
 	// the command under set -e) instead of printing their messages for that case. They print them.
 	LinkMissingCloneMessage ID = "link-missing-clone-message"
+	// CleanupDaysValidated: `sandbox cleanup --older-than N` passed N to `find -mtime +N`, so
+	// "-5" (older than minus five days) removed every session log, however new. N must now be a
+	// non-negative whole number; anything else is refused before anything is removed.
+	CleanupDaysValidated ID = "cleanup-days-validated"
 )
 
 var (

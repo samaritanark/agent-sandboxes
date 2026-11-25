@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
@@ -122,6 +123,13 @@ func buildTree(t *testing.T, home, spec string) {
 			f, _ := os.OpenFile(home+"/.sandbox/config.yaml", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
 			fmt.Fprintf(f, "overlay: %s\nlink_url: %s\nlink_ref: main\nlink_commit: %s\n", dst, origin, strings.TrimSpace(string(head)))
 			f.Close()
+		case "t":
+			var days int64
+			fmt.Sscan(dec64(t, w[2]), &days)
+			when := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+			if err := os.Chtimes(full, when, when); err != nil {
+				t.Fatal(err)
+			}
 		case "r":
 			os.RemoveAll(full)
 		case "p":

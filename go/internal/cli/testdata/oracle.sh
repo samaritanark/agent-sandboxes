@@ -4,7 +4,7 @@
 # Each case in cases.tsv is "id version args tree stdin env" (all but id and version are
 # "=" + base64): args are NUL-separated words; tree builds $HOME from lines "f path content",
 # "d path", "l path target", "g path" (git init), "c path" (commit everything in that repo),
-# "r path" (remove), "p path" (a FIFO), "L name origin" (clone <HOME>/origin as the linked overlay
+# "r path" (remove), "p path" (a FIFO), "t path days" (set its mtime that many days ago), "L name origin" (clone <HOME>/origin as the linked overlay
 # <name> and record the link) (base64 words); "<HOME>" in an argument is the case home; env is NAME=VALUE lines added to a
 # clean environment (PATH, HOME, LC_ALL, SANDBOX_LOGS_DIR, GIT_CONFIG_NOSYSTEM, a fixed git committer
 # identity and date, and a `date` shim
@@ -57,6 +57,7 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
            "agent-vetted/$(git -C "$H/$p" rev-parse HEAD)" ;;
       r) rm -rf "$H/$p" ;;
       p) mkdir -p "$(dirname "$H/$p")"; mkfifo "$H/$p" ;;
+      t) touch -h -d "@$(( $(date +%s) - t * 86400 ))" "$H/$p" ;;
     esac
   done <<<"$tree"
   [[ -f "$H/.testkey/k" ]] && chmod 600 "$H/.testkey/k"

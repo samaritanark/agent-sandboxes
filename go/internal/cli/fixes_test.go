@@ -134,3 +134,26 @@ func TestFixLinkMissingCloneMessage(t *testing.T) {
 		t.Errorf("fixed sync: rc=%d %q", rc, e)
 	}
 }
+
+func TestFixCleanupDaysValidated(t *testing.T) {
+	run := func(days string) (int, bool) {
+		home := t.TempDir()
+		os.MkdirAll(home+"/logs/ses-fresh", 0o755)
+		var out, errb bytes.Buffer
+		rc := Run([]string{"cleanup", "--older-than", days}, fixtureEnv("none", home, "/nonexistent", nil), &out, &errb)
+		_, err := os.Stat(home + "/logs/ses-fresh")
+		return rc, err == nil
+	}
+	if rc, kept := run("-5"); rc != 0 || kept {
+		t.Fatalf("legacy: rc=%d kept=%v (the bash removes every session for -5)", rc, kept)
+	}
+	defer deviation.Force(deviation.CleanupDaysValidated)()
+	for _, d := range []string{"-5", "abc", "1.5", " 3"} {
+		if rc, kept := run(d); rc != 1 || !kept {
+			t.Errorf("fixed %q: rc=%d kept=%v", d, rc, kept)
+		}
+	}
+	if rc, kept := run("30"); rc != 0 || !kept {
+		t.Errorf("fixed 30: rc=%d kept=%v", rc, kept)
+	}
+}
