@@ -51,7 +51,7 @@ var allowed = map[string][]string{
 	"gateway/resolver":  {"egressmatch"},
 	"gateway/authz":     {"egressmatch"},
 	"gateway/gwpolicy":  {},
-	"gateway/envoyconf": {"egressmatch"},
+	"gateway/envoyconf": {"egressmatch", "l7"},
 	"tier":              {},
 	"catalogue":         {"bashcompat", "checks", "config", "deviation"},
 	"jqjson":            {},

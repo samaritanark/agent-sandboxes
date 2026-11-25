@@ -1,7 +1,9 @@
 package l7
 
 import (
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -71,32 +73,68 @@ func TestCompiledMatchesReference(t *testing.T) {
 
 func TestCompileRefuses(t *testing.T) {
 	for _, g := range []string{"", "a", "/a b", "/a**", "/a/**b", "/***", "/a//b", "/a?", "/a?=x", "/a?x&x", "/a?x=a b",
-		"/a#frag", "/a\x00", "/é", "/a?x=%", "/a?x=y=z"} {
+		"/a#frag", "/a\x00", "/é", "/a?x=%", "/a?x=y=z", "/a?x=a+b", "/" + strings.Repeat("a", MaxPatternLen)} {
 		if p, err := Compile(g); err == nil {
 			t.Errorf("%q compiled: %+v", g, p)
 		}
 	}
 }
 
+// queryRef is the reference for a pattern's query part: each condition holds when some parameter's
+// percent-decoded name is the condition's and, with a value, its decoded value matches the glob.
+func queryRef(glob, rawQuery string) bool {
+	_, query, ok := strings.Cut(glob, "?")
+	if !ok {
+		return true
+	}
+	for _, c := range strings.Split(query, "&") {
+		name, value, hasValue := strings.Cut(c, "=")
+		held := false
+		for _, kv := range strings.Split(rawQuery, "&") {
+			k, v, _ := strings.Cut(kv, "=")
+			dk, err := url.QueryUnescape(k)
+			if err != nil || dk != name {
+				continue
+			}
+			dv, err := url.QueryUnescape(v)
+			if err != nil {
+				dv = v
+			}
+			held = held || !hasValue || globSeg(value, dv)
+		}
+		if !held {
+			return false
+		}
+	}
+	return true
+}
+
 func TestQuery(t *testing.T) {
-	p, err := Compile("/**/info/refs?service=git-receive-pack")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for q, want := range map[string]bool{
-		"service=git-receive-pack": true, "x=1&service=git-receive-pack": true, "service=git%2Dreceive-pack": true,
-		"service=git-upload-pack": false, "": false, "service=git-upload-pack&service=git-receive-pack": false,
-		"servic%65=git-receive-pack": true, "service=git-receive-pack2": false,
-	} {
-		if got := p.Matches("/o/r.git/info/refs", q); got != want {
-			t.Errorf("query %q: %v", q, got)
+	queryGlobs := []string{"/r?service=git-receive-pack", "/r?q&page=1*", "/r?a=*x*", "/r?a=", "/r?a.b~c=d/e:f"}
+	queries := []string{"", "service=git-receive-pack", "x=1&service=git-receive-pack", "service=git%2Dreceive-pack",
+		"service=git%2dreceive-pack", "servic%65=git-receive-pack", "service=git-upload-pack", "service=git-receive-pack2",
+		"service=git-upload-pack&service=git-receive-pack", "service=git-receive-pack&service=git-upload-pack", "xservice=git-receive-pack",
+		"service=git-receive-pac%6B&z", "service=git%zzreceive-pack", "q=&page=10", "q&page=1", "page=1", "q=x&page=2", "a=x", "a=yxz",
+		"a=", "a", "a=%78", "a=b&a=", "a.b~c=d/e:f", "a.b~c=d%2Fe%3Af", "a%2Eb~c=d/e:f", "a+b=x", "a=x+", "service=git-receive-pack#x"}
+	for _, g := range queryGlobs {
+		p, err := Compile(g)
+		if err != nil {
+			t.Fatalf("%q: %v", g, err)
+		}
+		for _, q := range queries {
+			if got, want := p.Matches("/r", q), queryRef(g, q); got != want {
+				t.Errorf("%q on %q: compiled %v, reference %v", g, q, got, want)
+			}
+			for _, c := range p.Query {
+				raw := regexp.MustCompile(c.RawRegex).MatchString(q)
+				if full := regexp.MustCompile(c.QueryPathRegex()).MatchString("/r/x?" + q); full != raw {
+					t.Errorf("%q on %q: the :path form says %v", g, q, full)
+				}
+			}
 		}
 	}
-	p, _ = Compile("/s?q&page=1*")
-	for q, want := range map[string]bool{"q=&page=10": true, "q&page=1": true, "page=1": false, "q=x&page=2": false} {
-		if got := p.Matches("/s", q); got != want {
-			t.Errorf("query %q: %v", q, got)
-		}
+	if err := (Rule{Host: "x.com", Action: Allow, PathPatterns: []string{"/a?b=c"}}).Validate(); err == nil {
+		t.Error("an allow rule with a query part")
 	}
 }
 

@@ -94,6 +94,22 @@ func TestFlow(t *testing.T) {
 	if _, _, ok := Flow([]byte("not json")); ok {
 		t.Error("garbage accepted")
 	}
+	for line, want := range map[string]string{
+		`{"authority":"api.github.com","intercepted":true,"method":"GET","path":"/zen","rule":"allow:6","status":200,"start":"T","x":"y"}`: "allowed",
+		`{"intercepted":true,"method":"GET","path":"/a","rule":"default:forward","status":200}`:                                            "allowed",
+		`{"intercepted":true,"method":"POST","path":"/o/r.git/git-receive-pack?token=s3cret","rule":"deny:0","status":403}`:                "refused",
+		`{"intercepted":true,"method":"GET","path":"/u","rule":"default:refused","status":403}`:                                            "refused",
+		`{"intercepted":true,"method":"GET","path":"/zen","rule":"misdirected","status":421}`:                                              "refused",
+		`{"intercepted":true,"method":"GET","path":"/zen","rule":null,"status":404}`:                                                       "refused",
+	} {
+		typ, rec, ok := Flow([]byte(line))
+		if !ok || typ != "request" || rec["decision"] != want {
+			t.Errorf("%s: %s %v %v", line, typ, rec, ok)
+		}
+		if p, _ := rec["path"].(string); strings.Contains(p, "?") || rec["x"] != nil || rec["intercepted"] != nil {
+			t.Errorf("kept more than allowed: %v", rec)
+		}
+	}
 }
 
 func TestTail(t *testing.T) {

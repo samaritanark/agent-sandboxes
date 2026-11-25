@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/egressmatch"
+	"github.com/samaritanark/agent-sandboxes/go/internal/l7"
 )
 
 func cfg(t *testing.T) Config {
@@ -72,7 +73,20 @@ func TestEnvoyAccepts(t *testing.T) {
 	if envoy == "" {
 		t.Skip("set ENVOY to an envoy binary to validate the bootstrap")
 	}
-	b, _ := cfg(t).Bootstrap()
+	c := cfg(t)
+	// interception, with patterns at the longest l7 accepts: their regexes must fit Envoy's limit
+	dir := t.TempDir()
+	testCA(t, dir, "api.anthropic.com")
+	long := "/" + strings.Repeat("a", 60) + "?" + strings.Repeat("n", 60) + "=" + strings.Repeat("v-", 38) + "x"
+	c.UpstreamCAs = filepath.Join(dir, "ca.pem")
+	c.Links[0].Intercept = []Intercept{{Name: "api.anthropic.com", CertChain: filepath.Join(dir, "api.anthropic.com.crt"),
+		PrivateKey: filepath.Join(dir, "api.anthropic.com.key"), Rules: []l7.Rule{
+			{Host: "*", Methods: []string{"POST"}, PathPatterns: []string{long}, Action: l7.Deny},
+			{Host: "api.anthropic.com", Methods: []string{"POST"}, PathPatterns: []string{"/v1/**"}, Action: l7.Allow}}}}
+	b, err := c.Bootstrap()
+	if err != nil || len(long) != l7.MaxPatternLen {
+		t.Fatal(err, len(long))
+	}
 	p := filepath.Join(t.TempDir(), "envoy.json")
 	os.WriteFile(p, b, 0o600)
 	out, err := exec.Command(envoy, "--mode", "validate", "-c", p).CombinedOutput()
@@ -119,7 +133,7 @@ func eval(t *testing.T, p obj, sni string) bool {
 func TestChainMatcher(t *testing.T) {
 	allow := []string{"*.github.com", "github.com", "api.anthropic.com", "*.pastebin.com", "**.example.org", "blocked.net", "**.corp.com", "*.a-b.io"}
 	block := []string{"*.gist.github.com", "raw.github.com", "*pastebin.com", "blocked.net", "ngrok.example.org.*", "*.deep.a.corp.com", "*-evil.corp.com", "Upper.Example.org."}
-	m := chainMatcher(allow, block)
+	m := chainMatcher(allow, block, nil)
 	names := []string{"", ".", "github.com", "api.github.com", "a.b.github.com", "gist.github.com", "x.gist.github.com", "raw.github.com",
 		"RAW.GitHub.com", "API.GITHUB.COM", "xgithub.com", "api.anthropic.com", "anthropic.com", "x.pastebin.com", "pastebin.com",
 		"example.org", "a.example.org", "a.b.c.example.org", "ngrok.example.org", "ngrok.example.org.x", "ngrok.example.orgx",
@@ -145,7 +159,7 @@ func TestChainMatcher(t *testing.T) {
 			t.Errorf("%q: chain %q, blocked %v", n, got, blocked)
 		}
 	}
-	if chainMatcher(nil, block) != nil || chainMatcher([]string{""}, nil) != nil {
+	if chainMatcher(nil, block, nil) != nil || chainMatcher([]string{""}, nil, nil) != nil {
 		t.Error("a matcher with nothing allowed")
 	}
 }

@@ -13,15 +13,16 @@
 //   - every other character matches itself (case-sensitive);
 //   - a query part is "&"-separated conditions, each "name" (the parameter is present) or
 //     "name=value" where value is a glob in which "*" matches any characters. All conditions must
-//     hold; a parameter's first occurrence is the one compared, after percent-decoding, as Envoy
-//     compares it. A pattern without a query part ignores the query.
+//     hold, each by any occurrence of its parameter, names and values compared percent-decoded
+//     (so "git%2Dreceive-pack" is "git-receive-pack"). A pattern without a query part ignores the
+//     query. Only deny rules may have a query part: an allow rule that one occurrence satisfies
+//     would pass a request whose server reads another.
 package l7
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"regexp"
 	"strings"
 
@@ -50,7 +51,7 @@ var (
 	methodRE   = regexp.MustCompile(`^[A-Z][A-Z0-9_-]{0,31}$`)
 	pathCharRE = regexp.MustCompile(`^[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$`)
 	nameRE     = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
-	valueRE    = regexp.MustCompile(`^[A-Za-z0-9._~!$'()*+,;:@/-]*$`)
+	valueRE    = regexp.MustCompile(`^[A-Za-z0-9._~!$'()*,;:@/-]*$`) // no "+", which decodes to a space
 )
 
 // Validate checks a rule's shape (the host itself is the caller's to check).
@@ -72,8 +73,12 @@ func (r Rule) Validate() error {
 		}
 	}
 	for _, p := range r.PathPatterns {
-		if _, err := Compile(p); err != nil {
+		c, err := Compile(p)
+		if err != nil {
 			return err
+		}
+		if len(c.Query) > 0 && r.Action != Deny {
+			return fmt.Errorf("l7: %q: only a deny rule may have a query part", p)
 		}
 	}
 	return nil
@@ -87,15 +92,46 @@ type Pattern struct {
 	Query     []QueryCond
 }
 
-// QueryCond is one query condition: the parameter Name is present, and when ValueRegex is set its
-// first value matches it.
+// QueryCond is one query condition, compiled to RawRegex, an RE2 expression over the raw query
+// string (Envoy matches it against the ":path" header, QueryPathRegex).
 type QueryCond struct {
-	Name       string
-	ValueRegex string
+	Name     string
+	RawRegex string
 }
+
+// encoded is an RE2 expression for a literal that may arrive with any of its characters
+// percent-encoded, in either case of hex digit.
+func encoded(lit string) string {
+	var b strings.Builder
+	for i := 0; i < len(lit); i++ {
+		b.WriteString("(?:")
+		b.WriteString(regexp.QuoteMeta(lit[i : i+1]))
+		b.WriteString("|%")
+		for _, h := range fmt.Sprintf("%02X", lit[i]) {
+			if h >= 'A' {
+				b.WriteString("[" + string(h) + string(h+'a'-'A') + "]")
+			} else {
+				b.WriteRune(h)
+			}
+		}
+		b.WriteString(")")
+	}
+	return b.String()
+}
+
+// QueryPathRegex is the condition as an RE2 expression over a request's ":path" header.
+func (q QueryCond) QueryPathRegex() string {
+	return `^[^?]*\?` + strings.TrimPrefix(q.RawRegex, "^")
+}
+
+// MaxPatternLen bounds a path pattern, and so the size of its compiled expressions.
+const MaxPatternLen = 200
 
 // Compile parses and compiles a path pattern.
 func Compile(glob string) (Pattern, error) {
+	if len(glob) > MaxPatternLen {
+		return Pattern{}, fmt.Errorf("l7: path pattern %q is longer than %d characters", glob, MaxPatternLen)
+	}
 	path, query, hasQuery := strings.Cut(glob, "?")
 	if !strings.HasPrefix(path, "/") || !pathCharRE.MatchString(path) || strings.Contains(path, "//") {
 		return Pattern{}, fmt.Errorf("l7: path pattern %q must start with / and hold only URL path characters", glob)
@@ -134,38 +170,26 @@ func Compile(glob string) (Pattern, error) {
 				return Pattern{}, fmt.Errorf("l7: invalid query condition %q in %q", c, glob)
 			}
 			seen[name] = true
-			q := QueryCond{Name: name}
+			cond := encoded(name) + `(?:=[^&]*)?`
 			if hasValue {
 				var v strings.Builder
-				v.WriteString("^")
 				for j, part := range strings.Split(value, "*") {
 					if j > 0 {
-						v.WriteString(".*")
+						v.WriteString("[^&]*")
 					}
-					v.WriteString(regexp.QuoteMeta(part))
+					v.WriteString(encoded(part))
 				}
-				v.WriteString("$")
-				q.ValueRegex = v.String()
+				cond = encoded(name) + "=" + v.String()
+				if strings.Trim(value, "*") == "" {
+					// a parameter with no "=" has the empty value
+					cond = encoded(name) + "(?:=" + v.String() + ")?"
+				}
 			}
+			q := QueryCond{Name: name, RawRegex: `^(?:.*&)?` + cond + `(?:&.*)?$`}
 			p.Query = append(p.Query, q)
 		}
 	}
 	return p, nil
-}
-
-// firstParam is a parameter's first value in a raw query, percent-decoded, and whether it is
-// present.
-func firstParam(rawQuery, name string) (string, bool) {
-	for _, kv := range strings.Split(rawQuery, "&") {
-		k, v, _ := strings.Cut(kv, "=")
-		if dk, err := url.QueryUnescape(k); err == nil && dk == name {
-			if dv, err := url.QueryUnescape(v); err == nil {
-				return dv, true
-			}
-			return v, true
-		}
-	}
-	return "", false
 }
 
 // Matches reports whether a request's path (without the query) and raw query match the pattern,
@@ -175,8 +199,7 @@ func (p Pattern) Matches(path, rawQuery string) bool {
 		return false
 	}
 	for _, q := range p.Query {
-		v, ok := firstParam(rawQuery, q.Name)
-		if !ok || (q.ValueRegex != "" && !regexp.MustCompile(q.ValueRegex).MatchString(v)) {
+		if !regexp.MustCompile(q.RawRegex).MatchString(rawQuery) {
 			return false
 		}
 	}

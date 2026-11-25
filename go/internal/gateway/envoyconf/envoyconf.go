@@ -16,7 +16,8 @@
 // nftables on the gateway namespace's output chain (S5), which checks the address actually
 // dialled. Plain HTTP, CONNECT, and anything without a usable SNI never pass the check.
 //
-// Interception (TLS termination for L7 rules and credential injection, 5.8.5, 5.9) comes later.
+// A name with L7 rules is intercepted instead (intercept.go): its own chain terminates TLS and
+// applies the rules per request. Credential injection (5.9) comes later.
 package envoyconf
 
 import (
@@ -38,6 +39,7 @@ type Link struct {
 	Ports        []int // 443 and the microVM's declared extra ports
 	Allow        []string
 	BlockDomains []string
+	Intercept    []Intercept // names whose TLS the gateway terminates (intercept.go)
 }
 
 // Dep is a dependency the agent reaches through the gateway (design 5.8.6): the agent connects to
@@ -57,6 +59,7 @@ type Config struct {
 	Resolvers     []netip.Addr // the VM's upstream resolvers
 	AccessLog     string       // the connection log ("" for none)
 	ConnectTimout int          // seconds; 0 means 10
+	UpstreamCAs   string       // the roots intercepted upstreams are verified against (system and corporate)
 }
 
 func (c Config) check() error {
@@ -85,7 +88,7 @@ func (c Config) check() error {
 		}
 		agent[d.Port] = true
 	}
-	return nil
+	return c.checkIntercepts()
 }
 
 type obj = map[string]any
@@ -96,6 +99,9 @@ func typed(t string, cfg obj) obj {
 }
 
 const dnsCache = "sandbox_dns"
+
+// MaxRegexProgram is the RE2 program size Envoy accepts in this bootstrap.
+const MaxRegexProgram = 2048
 
 func (c Config) dnsCacheConfig() obj {
 	var rs []obj
@@ -169,7 +175,7 @@ func AllowPredicate(entry string) obj {
 		return obj{"and_matcher": obj{"predicate": []obj{suffix("." + rest), {"not_matcher": exact("." + rest)}}}}
 	}
 	if rest, ok := strings.CutPrefix(e, "*."); ok {
-		return sniPredicate(obj{"safe_regex": obj{"google_re2": obj{}, "regex":`(?i)^[^.]+\.` + regexp.QuoteMeta(rest) + "$"}})
+		return sniPredicate(obj{"safe_regex": obj{"google_re2": obj{}, "regex": `(?i)^[^.]+\.` + regexp.QuoteMeta(rest) + "$"}})
 	}
 	return exact(e)
 }
@@ -178,9 +184,10 @@ func chainAction(name string) obj {
 	return obj{"action": obj{"name": name, "typed_config": typed("google.protobuf.StringValue", obj{"value": name})}}
 }
 
-// chainMatcher selects "blocked" for any block pattern, then "allowed" for any allowlist entry;
-// anything else falls to the default chain. It is nil when nothing is allowed.
-func chainMatcher(allow, block []string) obj {
+// chainMatcher selects "blocked" for any block pattern, then an intercepted name's own chain
+// (exact names before wildcards), then "allowed" for any allowlist entry; anything else falls to
+// the default chain. It is nil when nothing is allowed.
+func chainMatcher(allow, block []string, intercept []Intercept) obj {
 	var ms []obj
 	for _, b := range block {
 		for _, p := range BlockPredicates(b) {
@@ -188,6 +195,13 @@ func chainMatcher(allow, block []string) obj {
 		}
 	}
 	nb := len(ms)
+	for _, wild := range []bool{false, true} {
+		for _, ic := range intercept {
+			if strings.HasPrefix(ic.Name, "*.") == wild {
+				ms = append(ms, obj{"predicate": AllowPredicate(ic.Name), "on_match": chainAction("intercept:" + ic.Name)})
+			}
+		}
+	}
 	for _, a := range allow {
 		if egressmatch.Normalize(a) != "" {
 			ms = append(ms, obj{"predicate": AllowPredicate(a), "on_match": chainAction("allowed")})
@@ -244,7 +258,7 @@ func (c Config) depListener(d Dep) obj {
 	}
 }
 
-func (c Config) listener(link Link, port int) obj {
+func (c Config) listener(link Link, port int) (obj, error) {
 	filters := []obj{
 		c.authzFilter(),
 		{"name": "envoy.filters.network.sni_dynamic_forward_proxy", "typed_config": typed("envoy.extensions.filters.network.sni_dynamic_forward_proxy.v3.FilterConfig", obj{
@@ -266,11 +280,19 @@ func (c Config) listener(link Link, port int) obj {
 		// everything not on the allowlist: the check alone (it refuses and records); no lookup
 		"default_filter_chain": obj{"name": "refused", "filters": c.refusedFilters()},
 	}
-	if m := chainMatcher(link.Allow, link.BlockDomains); m != nil {
+	if m := chainMatcher(link.Allow, link.BlockDomains, link.Intercept); m != nil {
 		l["filter_chain_matcher"] = m
-		l["filter_chains"] = []obj{{"name": "blocked", "filters": c.refusedFilters()}, {"name": "allowed", "filters": filters}}
+		chains := []obj{{"name": "blocked", "filters": c.refusedFilters()}, {"name": "allowed", "filters": filters}}
+		for _, ic := range link.Intercept {
+			ch, err := c.interceptChain(link, ic, port)
+			if err != nil {
+				return nil, err
+			}
+			chains = append(chains, ch)
+		}
+		l["filter_chains"] = chains
 	}
-	return l
+	return l, nil
 }
 
 // Args is Envoy's command line for a bootstrap at conf: every session's Envoy picks its own shared
@@ -290,9 +312,15 @@ func (c Config) Bootstrap() ([]byte, error) {
 		timeout = 10
 	}
 	var listeners []obj
+	intercepting := false
 	for _, l := range c.Links {
+		intercepting = intercepting || len(l.Intercept) > 0
 		for _, p := range l.Ports {
-			listeners = append(listeners, c.listener(l, p))
+			ln, err := c.listener(l, p)
+			if err != nil {
+				return nil, err
+			}
+			listeners = append(listeners, ln)
 		}
 	}
 	for _, d := range c.Deps {
@@ -318,6 +346,9 @@ func (c Config) Bootstrap() ([]byte, error) {
 			})},
 		},
 	}
+	if intercepting {
+		clusters = append(clusters, c.interceptedUpstream(timeout))
+	}
 	for _, d := range c.Deps {
 		clusters = append(clusters, obj{"name": "dep_" + d.Name, "type": "STATIC", "connect_timeout": "5s",
 			"load_assignment": obj{"cluster_name": "dep_" + d.Name, "endpoints": []obj{{"lb_endpoints": []obj{{"endpoint": obj{
@@ -326,6 +357,11 @@ func (c Config) Bootstrap() ([]byte, error) {
 	b := obj{
 		"node":             obj{"id": "sandbox-gateway", "cluster": "sandbox"},
 		"static_resources": obj{"listeners": listeners, "clusters": clusters},
+		// RE2's program size limit: Envoy's default (100) is below a long host name's single-label
+		// match and a percent-encoding-aware query condition; l7 bounds pattern lengths to fit
+		"layered_runtime": obj{"layers": []obj{{"name": "static", "static_layer": obj{
+			"re2.max_program_size.error_level": MaxRegexProgram, "re2.max_program_size.warn_level": MaxRegexProgram,
+		}}}},
 	}
 	// nothing in the session can reach Envoy's admin interface: a Unix socket in the gateway's
 	// own directory, or none

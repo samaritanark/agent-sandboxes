@@ -10,7 +10,7 @@ import (
 )
 
 // Flow turns one line of a gateway's connection log (envoyconf's access log format) into a flow
-// record. Only the fields the design allows are kept: time, SNI or dependency, decision, upstream
+// record, or a request record for a request on an intercepted connection. Only the fields the design allows are kept: time, SNI or dependency, decision, upstream
 // address, bytes, and duration.
 func Flow(line []byte) (typ string, rec map[string]any, ok bool) {
 	var in map[string]any
@@ -18,6 +18,27 @@ func Flow(line []byte) (typ string, rec map[string]any, ok bool) {
 		return "", nil, false
 	}
 	rec = map[string]any{}
+	if in["intercepted"] == true {
+		// one request on an intercepted connection: what was asked and how the L7 rules decided;
+		// never a header, body, or query string
+		for _, k := range []string{"start", "sni", "port", "authority", "method", "status", "rule", "upstream", "sent", "received", "duration_ms"} {
+			if v, ok := in[k]; ok && v != nil && v != "-" {
+				rec[k] = v
+			}
+		}
+		if p, ok := in["path"].(string); ok {
+			rec["path"], _, _ = strings.Cut(p, "?")
+		}
+		rule, _ := in["rule"].(string)
+		rec["decision"] = "allowed"
+		if !strings.HasPrefix(rule, "allow:") && rule != "default:forward" {
+			rec["decision"] = "refused"
+		}
+		if f, _ := in["flags"].(string); f != "" && f != "-" {
+			rec["flags"] = f
+		}
+		return "request", rec, true
+	}
 	for _, k := range []string{"start", "sni", "port", "upstream", "sent", "received", "duration_ms", "dependency"} {
 		if v, ok := in[k]; ok && v != nil && v != "-" {
 			rec[k] = v

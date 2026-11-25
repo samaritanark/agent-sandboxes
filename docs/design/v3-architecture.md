@@ -1345,7 +1345,10 @@ either way no process holds another session's credentials.
   `path_patterns` are globs: `*` within one path segment, `**` across
   segments, and an optional `?query` part; the gateway controller compiles
   them to Envoy RE2 and tests them against the same Go matcher (owner,
-  2026-11-25).
+  2026-11-25). A query condition holds when any occurrence of its parameter
+  matches, compared percent-decoded, and only deny rules may have one: an
+  allow satisfied by one occurrence would pass a request whose server reads
+  another.
 - **Org baseline** (shipped in `config/egress-baseline.yaml`;
   overlay-extensible; not removable by profiles or operators). The baseline is
   stated as **protocol rules and applies to every intercepted destination,

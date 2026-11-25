@@ -50,49 +50,14 @@ func TestEndToEnd(t *testing.T) {
 		t.Skip("needs ENVOY, SANDBOX_NET_TEST=1, root, and the internet")
 	}
 	dir := t.TempDir()
-	sock := filepath.Join(dir, "authz.sock")
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	var decisions []authz.Decision
-	s := &authz.Server{Record: func(d authz.Decision) { mu.Lock(); decisions = append(decisions, d); mu.Unlock() }}
 	// raw.githubusercontent.com is inside an allowed wildcard and refused by a suffix pattern:
 	// it must be refused before the forward proxy looks it up
 	allow := []string{"*.github.com", "github.com", "**.githubusercontent.com"}
 	block := []string{"*raw.githubusercontent.com", "gist.github.com"}
 	gw := netip.MustParseAddr("127.0.0.77")
-	s.SetPolicies(map[netip.Addr]*authz.Policy{gw: {Allow: allow, BlockDomains: block}})
-	g := grpc.NewServer()
-	authv3.RegisterAuthorizationServer(g, s)
-	go g.Serve(ln)
-	defer g.Stop()
-
-	c := Config{Links: []Link{{Addr: gw, Ports: []int{443}, Allow: allow, BlockDomains: block}}, AuthzSocket: sock, AdminSocket: filepath.Join(dir, "admin.sock"),
+	c := Config{Links: []Link{{Addr: gw, Ports: []int{443}, Allow: allow, BlockDomains: block}}, AdminSocket: filepath.Join(dir, "admin.sock"),
 		Resolvers: hostResolvers(t), AccessLog: filepath.Join(dir, "conn.log")}
-	b, err := c.Bootstrap()
-	if err != nil {
-		t.Fatal(err)
-	}
-	conf := filepath.Join(dir, "envoy.json")
-	os.WriteFile(conf, b, 0o600)
-	e := exec.Command(envoy, Args(conf)...)
-	e.Stderr = os.Stderr
-	if err := e.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { e.Process.Kill(); e.Wait() }()
-	for i := 0; ; i++ {
-		if c, err := net.DialTimeout("tcp", gw.String()+":443", time.Second); err == nil {
-			c.Close()
-			break
-		}
-		if i > 50 {
-			t.Fatal("envoy did not listen")
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	decisions := runGateway(t, dir, envoy, &c)
 	curl := func(host string) (string, error) {
 		out, err := exec.Command("curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "15",
 			"--resolve", host+":443:"+gw.String(), "https://"+host+"/").CombinedOutput()
@@ -123,10 +88,8 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("a refused name became an upstream host: %s", l)
 		}
 	}
-	mu.Lock()
-	defer mu.Unlock()
 	allowed, denied, noSNI := 0, 0, 0
-	for _, d := range decisions {
+	for _, d := range decisions() {
 		if d.SNI == "" {
 			noSNI++
 		}
@@ -138,7 +101,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 	// the check sees allowed names; refusals are closed before it and recorded by Envoy
 	if allowed != 1 || denied != 0 || noSNI != 0 {
-		t.Errorf("decisions %+v", decisions)
+		t.Errorf("decisions %+v", decisions())
 	}
 	logb, _ := os.ReadFile(c.AccessLog)
 	if n := strings.Count(string(logb), `"refused":true`); n != 4 {
@@ -149,8 +112,59 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("no log line with %s", sni)
 		}
 	}
-	t.Logf("decisions: %+v", decisions)
+	t.Logf("decisions: %+v", decisions())
 	if b, err := os.ReadFile(c.AccessLog); err == nil {
 		t.Logf("connection log:\n%s", b)
+	}
+}
+
+// runGateway starts the authz service and Envoy for c (filling in the authz socket), and returns
+// the recorded decisions. Envoy and the service stop with the test.
+func runGateway(t *testing.T, dir, envoy string, c *Config) func() []authz.Decision {
+	sock := filepath.Join(dir, "authz.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var decisions []authz.Decision
+	s := &authz.Server{Record: func(d authz.Decision) { mu.Lock(); decisions = append(decisions, d); mu.Unlock() }}
+	pol := map[netip.Addr]*authz.Policy{}
+	for _, l := range c.Links {
+		pol[l.Addr] = &authz.Policy{Allow: l.Allow, BlockDomains: l.BlockDomains}
+	}
+	s.SetPolicies(pol)
+	g := grpc.NewServer()
+	authv3.RegisterAuthorizationServer(g, s)
+	go g.Serve(ln)
+	t.Cleanup(g.Stop)
+	c.AuthzSocket = sock
+	b, err := c.Bootstrap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(dir, "envoy.json")
+	os.WriteFile(conf, b, 0o600)
+	e := exec.Command(envoy, Args(conf)...)
+	e.Stderr = os.Stderr
+	if err := e.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.Process.Kill(); e.Wait() })
+	addr := c.Links[0].Addr.String() + ":443"
+	for i := 0; ; i++ {
+		if conn, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
+			conn.Close()
+			break
+		}
+		if i > 50 {
+			t.Fatal("envoy did not listen")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return func() []authz.Decision {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]authz.Decision(nil), decisions...)
 	}
 }
