@@ -117,7 +117,7 @@ type fakeGW struct {
 	calls    *[]string
 }
 
-func (f *fakeGW) Start(_ context.Context, id, ns, dir string, files map[string][]byte) (int, error) {
+func (f *fakeGW) Start(_ context.Context, id, ns, dir string, slot int, files map[string][]byte) (int, error) {
 	p, err := gwpolicy.Decode(files["policy.json"])
 	if err != nil {
 		return 0, err

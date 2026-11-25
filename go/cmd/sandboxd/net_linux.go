@@ -10,7 +10,6 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -20,8 +19,12 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/netsetup"
 )
 
-// GatewayUser runs every session's gateway (design 5.8.2: a dedicated unprivileged user).
-const GatewayUser = "sandbox-gw"
+// GatewayIDBase is the first of the gateways' user and group ids (design 5.8.2: an unprivileged
+// user). Each session's gateway runs as its own id, GatewayIDBase plus its uplink slot (unique
+// among live sessions), so no gateway can read another session's leaves, connect to its broker
+// (which would hand back that session's credentials), or signal its processes. The range has no
+// passwd entries and sits below the subordinate ids (100000 and up) user namespaces use.
+const GatewayIDBase = 70000
 
 type execRunner struct{}
 
@@ -77,17 +80,9 @@ func upstreamResolvers() ([]netip.Addr, error) {
 	return out, sc.Err()
 }
 
-type gateways struct{ uid, gid int }
+type gateways struct{}
 
-func newGateways() (*gateways, error) {
-	u, err := user.Lookup(GatewayUser)
-	if err != nil {
-		return nil, err
-	}
-	uid, _ := strconv.Atoi(u.Uid)
-	gid, _ := strconv.Atoi(u.Gid)
-	return &gateways{uid, gid}, nil
-}
+func newGateways() (*gateways, error) { return &gateways{}, nil }
 
 // unit is a session's gateway service.
 func unit(id string) string { return "sandbox-gw-" + id + ".service" }
@@ -99,8 +94,10 @@ func unit(id string) string { return "sandbox-gw-" + id + ".service" }
 func gatewayProperties(ns, dir string) []string {
 	return []string{
 		"NetworkNamespacePath=/run/netns/" + ns,
-		"User=" + GatewayUser, "Group=" + GatewayUser,
-		"NoNewPrivileges=yes", "CapabilityBoundingSet=", "AmbientCapabilities=",
+		// the unit may only change its ids, which setpriv does (to this session's own, which has no
+		// passwd entry for systemd's User= to resolve) before it drops every capability and execs
+		"ProtectProc=invisible",
+		"NoNewPrivileges=yes", "CapabilityBoundingSet=CAP_SETUID CAP_SETGID", "AmbientCapabilities=",
 		"SystemCallFilter=@system-service", "SystemCallArchitectures=native", "SystemCallErrorNumber=EPERM",
 		"RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX", "RestrictNamespaces=yes", "LockPersonality=yes",
 		"RestrictRealtime=yes", "RestrictSUIDSGID=yes",
@@ -112,7 +109,11 @@ func gatewayProperties(ns, dir string) []string {
 	}
 }
 
-func (g *gateways) Start(ctx context.Context, id, ns, dir string, files map[string][]byte) (int, error) {
+func (g *gateways) Start(ctx context.Context, id, ns, dir string, slot int, files map[string][]byte) (int, error) {
+	if slot < 0 || slot > 0xffff {
+		return 0, fmt.Errorf("gateway slot %d", slot)
+	}
+	gid := GatewayIDBase + slot
 	exec.Command("systemctl", "stop", unit(id)).Run() // the remains of a failed start
 	os.RemoveAll(dir)
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
@@ -154,7 +155,7 @@ func (g *gateways) Start(ctx context.Context, id, ns, dir string, files map[stri
 		return 0, err
 	}
 	for _, p := range append(owned, logPath) {
-		if err := os.Chown(p, g.uid, g.gid); err != nil {
+		if err := os.Chown(p, gid, gid); err != nil {
 			return 0, err
 		}
 	}
@@ -162,7 +163,9 @@ func (g *gateways) Start(ctx context.Context, id, ns, dir string, files map[stri
 	for _, p := range gatewayProperties(ns, dir) {
 		args = append(args, "--property="+p)
 	}
-	args = append(args, "/usr/lib/sandbox/bin/sandbox-gateway", "--policy", pol, "--dir", dir)
+	ids := strconv.Itoa(gid)
+	args = append(args, "/usr/bin/setpriv", "--reuid="+ids, "--regid="+ids, "--clear-groups", "--inh-caps=-all",
+		"--", "/usr/lib/sandbox/bin/sandbox-gateway", "--policy", pol, "--dir", dir)
 	if out, err := exec.CommandContext(ctx, "systemd-run", args...).CombinedOutput(); err != nil {
 		return 0, fmt.Errorf("systemd-run: %v: %s", err, strings.TrimSpace(string(out)))
 	}

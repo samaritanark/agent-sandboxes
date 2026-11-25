@@ -63,7 +63,9 @@ type GatewayRunner interface {
 	// Start makes dir afresh with files in it (relative paths: "policy.json", the leaves, the
 	// upstream roots), readable only by the gateway, starts the gateway, and waits until it serves;
 	// it returns the process id.
-	Start(ctx context.Context, id, gatewayNS, dir string, files map[string][]byte) (int, error)
+	// slot is the session's uplink index, unique among live sessions: each gateway runs as its
+	// own user, derived from it.
+	Start(ctx context.Context, id, gatewayNS, dir string, slot int, files map[string][]byte) (int, error)
 	// Stop ends it (pid as Start returned it).
 	Stop(ctx context.Context, id string, pid int) error
 }
@@ -432,7 +434,7 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 	if err := d.Journal.Intend(id, KindGateway, "gateway"); err != nil {
 		return err
 	}
-	pid, err := d.Gateways.Start(ctx, id, gns, gwDir, files)
+	pid, err := d.Gateways.Start(ctx, id, gns, gwDir, uplink, files)
 	if err != nil {
 		return fmt.Errorf("gateway: %w", err)
 	}

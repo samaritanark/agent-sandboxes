@@ -32,9 +32,8 @@ systemctl enable containerd.service
 # its socket besides root.
 groupadd --system sandbox
 systemctl enable sandboxd.service
-# Every session's gateway (resolver, connection check, Envoy) runs as this unprivileged user, in the
-# session's own network namespace (design 5.8.2).
-useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin sandbox-gw
+# Each session's gateway (resolver, connection check, broker, Envoy) runs as its own unprivileged
+# id, 70000 plus its uplink slot, with no passwd entry (design 5.8.2; cmd/sandboxd GatewayIDBase).
 install -d -m 0711 /var/lib/sandbox/sessions # traversable to each session's gateway directory
 # Build-time leftovers that differ between otherwise identical builds.
 rm -f /var/cache/ldconfig/aux-cache /var/log/alternatives.log
