@@ -1,0 +1,78 @@
+---
+# yaml-language-server:$schema=https://json.schemastore.org/github-workflow.json
+#
+# Build the v3 appliance image (image/, design 5.3) on both architectures, from the package lock
+# only, and check that a second build of the same commit gives byte-identical boot artifacts
+# (the UKI, kernel, and initrd; S8 item 7). The whole disk is not compared yet: its FAT and ext4
+# metadata still vary until the read-only verity root (S8). Images are built as root, on the
+# runner only (owner decision, 2026-11-25).
+#
+# Same layout and action pinning as go.yaml; mkosi is pinned by commit.
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    paths:
+      - "image/**"
+      - "go/**"
+      - "config/**"
+      - "setup/versions.sh"
+      - ".github/workflows/image.yaml"
+  push:
+    # v3 is TEMPORARY, as in go.yaml: remove it before the v3 -> master pull request.
+    branches: [master, v3]
+    paths:
+      - "image/**"
+      - "go/**"
+      - "config/**"
+      - "setup/versions.sh"
+      - ".github/workflows/image.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: Appliance image (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      MKOSI_COMMIT: ecf7f5702bb2052b7a69cab3fe7d37bc3b9ad77b  # v27.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5  # v7.1.0
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.mod
+
+      - name: Install the build tools
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq systemd-ukify systemd-boot-efi mtools dosfstools zstd cpio \
+            qemu-utils python3-venv bubblewrap dpkg-dev
+          sudo python3 -m venv /opt/mkosi
+          sudo /opt/mkosi/bin/pip install -q "git+https://github.com/systemd/mkosi@${MKOSI_COMMIT}"
+          /opt/mkosi/bin/mkosi --version
+
+      - name: Build twice and compare the boot artifacts
+        run: |
+          set -eu
+          build() {
+            sudo env HOME=/root PATH="${PATH}" image/build.sh ci
+            (cd image/mkosi.output && sudo sha256sum sandbox-appliance.efi sandbox-appliance.vmlinuz \
+              sandbox-appliance.initrd initrd.cpio.zst) > "$1"
+          }
+          build /tmp/first.sha
+          build /tmp/second.sha
+          cat /tmp/first.sha
+          if ! diff /tmp/first.sha /tmp/second.sha; then
+            echo "::error::two builds of the same commit differ (S8 item 7)"
+            exit 1
+          fi
