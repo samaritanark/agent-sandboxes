@@ -224,12 +224,12 @@ func (c Config) interceptChain(link Link, ic Intercept, port int) (obj, error) {
 			// the gateway inspects messages, so none are compressed per message
 			"request_headers_to_remove": []string{"sec-websocket-extensions"},
 		},
-		"http_filters": []obj{
+		"http_filters": append(c.brokerFilters(), []obj{
 			{"name": "envoy.filters.http.dynamic_forward_proxy", "typed_config": typed("envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig", obj{
 				"dns_cache_config": c.dnsCacheConfig(),
 			})},
 			{"name": "envoy.filters.http.router", "typed_config": typed("envoy.extensions.filters.http.router.v3.Router", obj{"suppress_envoy_headers": true})},
-		},
+		}...),
 	}
 	if c.AccessLog != "" {
 		hcm["access_log"] = []obj{{"name": "envoy.access_loggers.file", "typed_config": typed("envoy.extensions.access_loggers.file.v3.FileAccessLog", obj{
@@ -275,5 +275,32 @@ func (c Config) interceptedUpstream(timeout int) obj {
 			"upstream_http_protocol_options": obj{"auto_sni": true, "auto_san_validation": true},
 			"auto_config":                    obj{"http_protocol_options": obj{}, "http2_protocol_options": obj{}},
 		})},
+	}
+}
+
+// brokerFilters put the credential broker (the broker package, an ext_proc service) in front of
+// every intercepted request when the session has one: it injects, refuses, and scrubs responses
+// as they stream, and Envoy refuses the request when the broker does not answer.
+func (c Config) brokerFilters() []obj {
+	if c.BrokerSocket == "" {
+		return nil
+	}
+	return []obj{{"name": "envoy.filters.http.ext_proc", "typed_config": typed("envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor", obj{
+		"grpc_service":       obj{"envoy_grpc": obj{"cluster_name": "broker"}, "timeout": "5s"},
+		"failure_mode_allow": false,
+		"processing_mode": obj{"request_header_mode": "SEND", "response_header_mode": "SEND", "request_body_mode": "NONE",
+			"response_body_mode": "STREAMED", "request_trailer_mode": "SKIP", "response_trailer_mode": "SKIP"},
+		"allow_mode_override": true,
+		"message_timeout":     "5s",
+	})}}
+}
+
+func (c Config) brokerCluster() obj {
+	return obj{
+		"name": "broker", "type": "STATIC", "connect_timeout": "1s",
+		"typed_extension_protocol_options": obj{"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": typed("envoy.extensions.upstreams.http.v3.HttpProtocolOptions", obj{
+			"explicit_http_config": obj{"http2_protocol_options": obj{}},
+		})},
+		"load_assignment": obj{"cluster_name": "broker", "endpoints": []obj{{"lb_endpoints": []obj{{"endpoint": obj{"address": obj{"pipe": obj{"path": c.BrokerSocket}}}}}}}},
 	}
 }

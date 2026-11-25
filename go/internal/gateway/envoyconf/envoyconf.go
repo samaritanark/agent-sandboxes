@@ -60,6 +60,7 @@ type Config struct {
 	AccessLog     string       // the connection log ("" for none)
 	ConnectTimout int          // seconds; 0 means 10
 	UpstreamCAs   string       // the roots intercepted upstreams are verified against (system and corporate)
+	BrokerSocket  string       // the credential broker's ext_proc socket ("" for no broker)
 }
 
 func (c Config) check() error {
@@ -351,6 +352,9 @@ func (c Config) Bootstrap() ([]byte, error) {
 	}
 	if intercepting {
 		clusters = append(clusters, c.interceptedUpstream(timeout))
+		if c.BrokerSocket != "" {
+			clusters = append(clusters, c.brokerCluster())
+		}
 	}
 	for _, d := range c.Deps {
 		clusters = append(clusters, obj{"name": "dep_" + d.Name, "type": "STATIC", "connect_timeout": "5s",

@@ -50,6 +50,7 @@ var allowed = map[string][]string{
 	// the gateway (design 5.8): each session's resolver, gateway controller, and broker
 	"gateway/resolver":  {"egressmatch"},
 	"gateway/authz":     {"egressmatch"},
+	"gateway/broker":    {},
 	"gateway/gwpolicy":  {"l7"},
 	"gateway/envoyconf": {"egressmatch", "l7"},
 	"tier":              {},
@@ -131,7 +132,8 @@ var thirdParty = map[string][]string{
 	// miekg/dns for the filtering resolver (owner decision, 2026-11-25)
 	"gateway/resolver": {"github.com/miekg/dns"},
 	// Envoy's API types and gRPC for the gateway and broker (owner decision, 2026-11-25)
-	"gateway/authz": {"github.com/envoyproxy/go-control-plane/", "google.golang.org/grpc", "google.golang.org/genproto/"},
+	"gateway/authz":  {"github.com/envoyproxy/go-control-plane/", "google.golang.org/grpc", "google.golang.org/genproto/"},
+	"gateway/broker": {"github.com/envoyproxy/go-control-plane/", "google.golang.org/grpc", "google.golang.org/genproto/"},
 }
 
 func TestThirdPartyImports(t *testing.T) {
