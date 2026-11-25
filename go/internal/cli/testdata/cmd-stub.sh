@@ -6,13 +6,15 @@
 #                                 otherwise nothing (there is no cluster)
 #   ensure_network_config_current, prepare_agent_home, prepare_workspace, check_masking_paths
 #                                 nothing: v3 removes them (VM-local paths, no gVisor mounts)
-#   audit_flush_overrides         runs; for run, then prints the decisions and exits (Step 4 ends)
 #   date                          the clock is fixed at $FAKE_NOW unless a date is given
 #   head                          /dev/urandom reads answer fixed bytes (session ID, UUID)
 #   kubectl                       `get pod` succeeds when $STUB_POD is set (a live session),
 #                                 printing $STUB_POD as the phase for a jsonpath query;
 #                                 `apply` reads and drops its input
 #   build_cilium_policy           prints its inputs to stderr (what v3 hands the gateway)
+#   echo                          (run only) on "==> Building pod manifest...", the line after the
+#                                 policy is built (Step 8), prints the decisions and exits instead;
+#                                 build_cilium_policy itself runs in $(...), where exit cannot stop run
 #   build_pod_manifest            prints its inputs to stderr (what v3 hands sandboxd)
 #   wait_for_pod                  succeeds
 #   _arm_teardown_trap            (resume, just before attaching) prints the agent command and
@@ -101,12 +103,8 @@ ensure_cluster_ready() {
   _dump_b1
   exit 0
 }
-eval "_v2_$(declare -f audit_flush_overrides)"
 # cmd_run's locals (session_id, pod_name, _endpoint_trusted) are visible here: bash scoping is dynamic.
-audit_flush_overrides() {
-  _v2_audit_flush_overrides "$@"
-  [[ "$cmd" == run ]] || return 0  # resume re-gates and flushes too, then goes on
-  _dump_b1
+_dump_session() {
   echo "### session"
   _q session_id "$session_id"; _q pod_name "$pod_name"; _q endpoint_trusted "${_endpoint_trusted:-}"
   local i
@@ -114,6 +112,11 @@ audit_flush_overrides() {
     _q dep "${SESSION_DEP_NAMES[$i]}|${SESSION_DEP_KINDS[$i]}|${SESSION_DEP_RESOURCE_NAMES[$i]}|${SESSION_DEP_PORTS[$i]}|${SESSION_DEP_SECRETS[$i]}"
   done
   for i in "${SESSION_MCP_SERVER_RECORDS[@]+"${SESSION_MCP_SERVER_RECORDS[@]}"}"; do _q mcp "$i"; done
-  exit 0
 }
+if [[ "$cmd" == run ]]; then
+  echo() {
+    if [[ "$*" == "==> Building pod manifest..." ]]; then _dump_b1; _dump_session; exit 0; fi
+    builtin echo "$@"
+  }
+fi
 "cmd_$cmd" "$@"

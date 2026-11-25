@@ -1,0 +1,10 @@
+prune_dirs:
+  - "*.tmp"
+  - cache # comment
+  - 'quoted'
+  -nodash
+  -	TAB
+other: 1
+  - after
+prune_dirs: [inline]
+  - again

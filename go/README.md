@@ -36,7 +36,7 @@ Layout so far:
 | `internal/secrets` | the host-side store of `lib/secrets.sh` (one 0600 file per secret, name validation, set, list, delete); v3 keeps it on the host (design 5.1.4) |
 | `internal/jqjson` | the part of jq the bash's JSON writers rely on: ordered values, jq's input rules, and its pretty output (used by `audit` and `agents`) |
 | `internal/cli`, `cmd/sandbox-vm` | the in-VM `sandbox` command (design 5.1.6): dispatch, usage texts, and the subcommands ported so far (`version`, `profile`, `check`, `mask`, `exceptions`, `vet`, `link`, `list`, `logs`, `cleanup`, `secret`, `onboard`, and the policy halves of `run`, `allow`, and `resume`, which then stop because sandboxd does not exist yet); the others print their v2 help and say they are not yet ported |
-| `internal/workspace` | `validate_repo_path` and `workspace_prescan` from `lib/filesystem.sh` (which directories may be a workspace; the warn-only filename heuristics), tested through the CLI corpus |
+| `internal/workspace` | `validate_repo_path` and `workspace_prescan` from `lib/filesystem.sh` (which directories may be a workspace; the warn-only filename heuristics), tested through the CLI corpus; and the workspace baseline and diff (`capture_workspace_baseline`, `capture_workspace_diff`, `files.log`), with their own corpus |
 | `internal/vetting` | all of `lib/vetting.sh`: posture and configuration, tag verification, the launch gate, committed exceptions, attestation |
 | `internal/archtest` | the import-graph rules of section 5.1.1 (a package may import only what the table allows) |
 
@@ -136,6 +136,14 @@ The session allowlist (`internal/allowlist`; the oracle sources `lib/policy.sh` 
 # on Linux:
 (cd go && go run ./internal/allowlist/internal/genallowlist -base internal/allowlist/testdata)
 LC_ALL=C go/internal/allowlist/testdata/oracle.sh > go/internal/allowlist/testdata/golden-allowlist.tsv
+```
+
+The workspace baseline and diff (`internal/workspace/testdata/baseline`; GNU `find`, `sha256sum`, and `diff`):
+
+```bash
+# on Linux:
+(cd go && go run ./internal/workspace/internal/genbaseline -base internal/workspace/testdata/baseline)
+LC_ALL=C go/internal/workspace/testdata/baseline/oracle.sh > go/internal/workspace/testdata/baseline/golden-baseline.tsv
 ```
 
 The in-VM CLI (`internal/cli`; the oracle runs `bin/sandbox` itself from a copy of the install, and the usage texts are captured from it; for `run`, `testdata/cmd-stub.sh` sources the script with the cluster calls, the removed v2 host workarounds, the clock, and `/dev/urandom` stubbed, so a case ends with its session record written, where the cluster work would begin):

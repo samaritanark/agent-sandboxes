@@ -51,7 +51,12 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 	e.CacheDir = home + "/.sandbox/cache/leakscan"
 	e.SecretsDir = home + "/.sandbox/secrets"
 	e.ImagePresent = func(string) int { return 2 }
-	e.RunHandoff = func(s LaunchSpec, r *SessionRecord) { fmt.Fprint(handoffOut, dumpSpec(s, r)) }
+	e.RunHandoff = func(s LaunchSpec, r *SessionRecord) {
+		if r != nil {
+			e.ApplyPolicy(r.Policy) // cmd-stub.sh prints the policy inputs, then the decisions
+		}
+		fmt.Fprint(handoffOut, dumpSpec(s, r))
+	}
 	e.User = "t"
 	// The environment oracle.sh gives bin/sandbox (PATH aside, which differs by machine), plus the
 	// case's own variables.
@@ -214,6 +219,37 @@ func dumpSpec(s LaunchSpec, r *SessionRecord) string {
 	return b.String()
 }
 
+// quoteC is printf '%q' under LC_ALL=C, as oracle.sh lists paths: as bashcompat.QuoteQ (the UTF-8
+// form), except that any byte from 0x80 up is unprintable, so such a name takes the $'...' form
+// with octal escapes.
+func quoteC(s string) string {
+	high := false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			high = true
+		}
+	}
+	if !high {
+		return bashcompat.QuoteQ(s)
+	}
+	esc := map[byte]string{7: `\a`, 8: `\b`, 9: `\t`, 10: `\n`, 11: `\v`, 12: `\f`, 13: `\r`, 27: `\E`, '\'': `\'`, '\\': `\\`}
+	var b strings.Builder
+	b.WriteString("$'")
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch e, ok := esc[ch]; {
+		case ok:
+			b.WriteString(e)
+		case ch < 0x20 || ch >= 0x7f:
+			fmt.Fprintf(&b, "\\%03o", ch)
+		default:
+			b.WriteByte(ch)
+		}
+	}
+	b.WriteString("'")
+	return b.String()
+}
+
 // buildTree materializes a tree spec (see oracle.sh) under home.
 func buildTree(t *testing.T, home, spec string) {
 	for _, line := range strings.Split(spec, "\n") {
@@ -238,7 +274,7 @@ func buildTree(t *testing.T, home, spec string) {
 			os.Symlink(dec64(t, w[2]), full)
 		case "g":
 			os.MkdirAll(full, 0o755)
-			cmd := exec.Command("git", "init", "-q", "-b", "main", full)
+			cmd := exec.Command("git", "init", "-q", "--template=", "-b", "main", full) // as oracle.sh
 			cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
 			if b, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("git init %s: %v %s", full, err, b)
@@ -327,7 +363,7 @@ func listing(home string) string {
 	for _, rel := range paths {
 		p := filepath.Join(home, rel)
 		st, _ := os.Lstat(p)
-		q := bashcompat.QuoteQ(rel)
+		q := quoteC(rel)
 		switch {
 		case st.Mode()&os.ModeSymlink != 0:
 			l, _ := os.Readlink(p)
@@ -338,6 +374,15 @@ func listing(home string) string {
 			fmt.Fprintf(&b, "p %s\n", q)
 		default:
 			data, _ := os.ReadFile(p)
+			if strings.HasSuffix(p, "/baseline.sha256") { // as oracle.sh: lines under .git/ dropped
+				var keep []string
+				for _, l := range bashcompat.SplitRecords(data) {
+					if !strings.Contains(l, "/.git/") {
+						keep = append(keep, l+"\n")
+					}
+				}
+				data = []byte(strings.Join(keep, ""))
+			}
 			data = []byte(strings.ReplaceAll(string(data), home, "<HOME>"))
 			fmt.Fprintf(&b, "f %s %o %s\n", q, st.Mode().Perm(), base64.StdEncoding.EncodeToString(data))
 		}

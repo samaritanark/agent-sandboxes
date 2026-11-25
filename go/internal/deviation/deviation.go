@@ -114,6 +114,17 @@ const (
 	// name died with bash's own "lib/secrets.sh: line 116: VAR: invalid variable name" (and a
 	// digits-only VAR read a positional parameter instead). It is now refused with an ERROR line.
 	FromEnvNameChecked ID = "from-env-name-checked"
+	// WorkspaceHashPruneBelowRoot: the workspace baseline's find matched its prune names
+	// (build, out, target, vendor, ...) against the repo directory itself, so a repo with such a
+	// name got no baseline and no diff at all; and a repo path with a trailing slash never matched
+	// the .git/objects prune, hashing every git object. The names now apply below the root, and
+	// .git/objects is pruned however the path is spelled.
+	WorkspaceHashPruneBelowRoot ID = "workspace-hash-prune-below-root"
+	// DiffCountOnce: capture_workspace_diff counted with `diff | grep -c ... || echo 0` under
+	// pipefail; diff fails when there are changes and grep when there are none, so a stray "0"
+	// always followed the count ("Workspace diff: 2" then "0 line(s) changed."). The count is
+	// now printed once.
+	DiffCountOnce ID = "diff-count-once"
 	// AuditDomainsAsData: audit_write_session_json pasted each allowed domain between quotes into
 	// JSON text, so a quote in a domain added entries to the session record and an escape was
 	// recorded as the character it names (the record could show a different domain from the one

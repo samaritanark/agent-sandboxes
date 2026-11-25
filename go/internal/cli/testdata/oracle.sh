@@ -44,7 +44,7 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
       F) mkdir -p "$(dirname "$H/$p")"; printf '%s' "${t//<HOME>/$H}" > "$H/$p" ;;  # <HOME> filled in
       d) mkdir -p "$H/$p" ;;
       l) mkdir -p "$(dirname "$H/$p")"; ln -s "$t" "$H/$p" ;;
-      g) mkdir -p "$H/$p"; GIT_CONFIG_GLOBAL=/dev/null git init -q -b main "$H/$p" ;;
+      g) mkdir -p "$H/$p"; GIT_CONFIG_GLOBAL=/dev/null git init -q --template= -b main "$H/$p" ;;  # no template: what .git holds must not vary with the git version
       L) GIT_CONFIG_GLOBAL=/dev/null git clone -q "$H/$t" "$H/.sandbox/overlays/$p"
          mkdir -p "$H/.sandbox"
          printf 'overlay: %s\nlink_url: %s\nlink_ref: main\nlink_commit: %s\n' "$H/.sandbox/overlays/$p" "$H/$t" \
@@ -95,6 +95,8 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
     if [[ -L "$p" ]]; then printf 'l %s -> %s\n' "$q" "$(readlink "$p")"
     elif [[ -d "$p" ]]; then printf 'd %s %s\n' "$q" "$(stat -c %a "$p")"
     elif [[ -p "$p" ]]; then printf 'p %s\n' "$q"
+    # a baseline's lines for files under .git/ depend on the git version (hook samples, index): dropped
+    elif [[ "$p" == */baseline.sha256 ]]; then printf 'f %s %s %s\n' "$q" "$(stat -c %a "$p")" "$(grep -v '/\.git/' "$p" | sed "s|$H|<HOME>|g" | base64 -w0)"
     else printf 'f %s %s %s\n' "$q" "$(stat -c %a "$p")" "$(sed "s|$H|<HOME>|g" "$p" | base64 -w0)"; fi
   done | base64 -w0)"
   printf '%s\t%s\t=%s\t=%s\t=%s\n' "$id" "$rc" "$(norm "$out")" "$(norm "$err")" "$listing"

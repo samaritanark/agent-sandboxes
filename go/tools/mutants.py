@@ -710,7 +710,7 @@ m(RP, 'catalogue.Field(path, "mcp_path", "/mcp")', 'catalogue.Field(path, "mcp_p
 m(RP, 'catalogue.Field(path, "mcp_transport", "http")', 'catalogue.Field(path, "mcp_transport", "sse")', R_CL,
   equivalent="the only MCP entry in the corpus sets mcp_transport")
 m(RP, '\t\tif err := cat.ValidateEntry(path, w.name); err != nil {', '\t\tif err := cat.ValidateEntry(path, w.name); false && err != nil {', R_CL)
-m(RP, '\tif t, _ := strconv.Atoi(s.Tier); t >= 2 && len(s.Repos) > 0 {', '\tif t, _ := strconv.Atoi(s.Tier); t >= 3 && len(s.Repos) > 0 {', R_CL)
+m(RP, '\tif t, _ := strconv.Atoi(s.Tier); t >= 2 && len(s.Repos) > 0 {\n\t\tc.out("==> Running', '\tif t, _ := strconv.Atoi(s.Tier); t >= 3 && len(s.Repos) > 0 {\n\t\tc.out("==> Running', R_CL)
 m(RP, '\t\t\tfor _, l := range workspace.Prescan(r) {', '\t\t\tfor _, l := range workspace.Prescan(r)[:0] {', R_CL)
 m(RP, 'rc, sum := vd.VettingGateRepos(v.ResolvePosture(), tf(acceptUnvettedFlag), tf(acceptDrift), repos)', 'rc, sum := vd.VettingGateRepos(v.ResolvePosture(), tf(acceptUnvettedFlag), tf(acceptUnvettedFlag), repos)', R_CL)
 m(RP, '\tif rc != 0 {\n\t\tpanic(exit(rc))\n\t}\n\tvettingSummary = sum', '\tvettingSummary = sum', R_CL)
@@ -834,3 +834,35 @@ m(AW, '\t\tlines = append(lines, strings.Split(d, "\\n")...)', '\t\tlines = appe
 m(AW, '\t\tif strings.Trim(l, " \\t") == "" || seen[l] {', '\t\tif l == "" || seen[l] {', R_AW)
 m(AW, '\t\tif strings.Trim(l, " \\t") == "" || seen[l] {', '\t\tif strings.Trim(l, " \\t") == "" {', R_AW)
 m(AW, 'all := append(append(append([]string(nil), agentDomains...), tierDomains...), extras...)', 'all := append(append(append([]string(nil), agentDomains...), extras...), tierDomains...)', R_AW)
+
+m(RP, '\tif t, _ := strconv.Atoi(s.Tier); t >= 2 && len(s.Repos) > 0 {\n\t\tc.out("==> Capturing', '\tif t, _ := strconv.Atoi(s.Tier); t >= 3 && len(s.Repos) > 0 {\n\t\tc.out("==> Capturing', R_CL)
+m(RP, 'workspace.CaptureBaseline(rec.LogDir, s.Repos, workspace.PruneDirs(c.env.SandboxRoot))', 'workspace.CaptureBaseline(rec.LogDir, s.Repos, nil)', R_CL)
+m(RP, '\tif s.Tier == "3" {\n\t\timage += "-infra"', '\tif s.Tier == "2" {\n\t\timage += "-infra"', R_CL)
+m(RP, 'Extras: append(append([]string(nil), s.InfraEndpoints...), s.Domains...)}', 'Extras: append([]string(nil), s.Domains...)}', R_CL)
+
+BL = "internal/workspace/baseline.go"
+R_BL = "TestBaselineGolden"
+m(BL, '\t\tif in && pruneEnd.MatchString(l) {\n\t\t\tin = false', '\t\tif false {\n\t\t\tin = false', R_BL)
+m(BL, '\t\t\tl = pruneCmt.ReplaceAllString(l, "")', '', R_BL)
+m(BL, '\t\t\tif strings.HasPrefix(l, `"`) || strings.HasPrefix(l, "\'") {', '\t\t\tif strings.HasPrefix(l, `"`) {', R_BL)
+m(BL, r'pruneItem  = regexp.MustCompile(`^[ \t\n\v\f\r]*-[ \t\n\v\f\r]`)', r'pruneItem  = regexp.MustCompile(`^[ \t\n\v\f\r]*-`)', R_BL)
+m(BL, '\tif strings.ContainsAny(name, "\\\\\\n\\r") {', '\tif strings.ContainsAny(name, "\\\\\\n") {', R_BL)
+m(BL, '\t\t} else if bashcompat.Glob(objects, path) {', '\t\t} else if path == objects {', R_BL)
+m(BL, '\t\t\tif bashcompat.Glob(d, base) {', '\t\t\tif d == base {', R_BL)
+m(BL, '\t\tcase st.Mode().IsRegular():', '\t\tcase !st.IsDir():', R_BL)
+m(BL, '\t\t\tif err == nil {\n\t\t\t\tlines = append(lines, sumLine(', '\t\t\tif true {\n\t\t\t\tlines = append(lines, sumLine(', R_BL,
+  equivalent="needs a file that opens but fails mid-read (an I/O error), which the corpus cannot make")
+m(BL, '\t\t\t\tif strings.HasSuffix(path, "/") {\n\t\t\t\t\tsep = ""', '\t\t\t\tif false {\n\t\t\t\t\tsep = ""', R_BL)
+m(BL, '\tsort.Strings(lines)\n\treturn lines', '\t_ = sort.Strings\n\treturn lines', R_BL)
+m(BL, '\t\t\treturn []string{"  No baseline found; skipping diff."}', '\t\t\tb = nil', R_BL)
+m(BL, '\tos.Remove(cur)', '', R_BL)
+m(BL, '\t\tif strings.HasPrefix(l, "<") || strings.HasPrefix(l, ">") {', '\t\tif strings.HasPrefix(l, "<") {', R_BL)
+m(BL, '\t\tcount += "\\n0"', '', R_BL)
+m(BL, '\t\tcase i > di && j > dj:\n\t\t\tout = append(out, rng(di+1, i)+"c"+rng(dj+1, j))', '\t\tcase false:\n\t\t\tout = append(out, rng(di+1, i)+"c"+rng(dj+1, j))', R_BL)
+m(BL, 'out = append(out, rng(di+1, i)+"d"+fmt.Sprint(j))', 'out = append(out, rng(di+1, i)+"d"+fmt.Sprint(j+1))', R_BL)
+m(BL, 'out = append(out, fmt.Sprint(i)+"a"+rng(dj+1, j))', 'out = append(out, fmt.Sprint(i+1)+"a"+rng(dj+1, j))', R_BL)
+m(BL, '\t\tif lo == hi {\n\t\t\treturn fmt.Sprint(lo)', '\t\tif false {\n\t\t\treturn fmt.Sprint(lo)', R_BL)
+m(BL, '\t\tif i > di && j > dj {\n\t\t\tout = append(out, "---")', '\t\tif i > di {\n\t\t\tout = append(out, "---")', R_BL)
+m(BL, 'return fmt.Sprintf("  Baseline: %d files.", len(all))', 'return fmt.Sprintf("  Baseline: %d files.", len(all)-1)', R_BL)
+m(BL, '\t\tif i == di && j == dj { // not one shared order after all: take a[i] as removed\n\t\t\ti++\n\t\t}', '', R_BL,
+  equivalent="a guard: the two lists always share one order, so it never fires (without it a broken order would loop forever)")

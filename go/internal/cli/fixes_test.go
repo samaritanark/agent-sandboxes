@@ -269,3 +269,15 @@ func TestResumeBlockerMacOS(t *testing.T) {
 		t.Errorf("macOS: %q", b)
 	}
 }
+
+// quoteC against bash 5.2's printf '%q' under LC_ALL=C.
+func TestQuoteC(t *testing.T) {
+	for in, want := range map[string]string{
+		"ünï": `$'\303\274n\303\257'`, "é é": `$'\303\251 \303\251'`, "a b": `a\ b`, "x'y": `x\'y`,
+		"a\x1bb\x01c\x7fd\x80": `$'a\Eb\001c\177d\200'`, "ok": "ok",
+	} {
+		if got := quoteC(in); got != want {
+			t.Errorf("quoteC(%q) = %s, want %s", in, got, want)
+		}
+	}
+}

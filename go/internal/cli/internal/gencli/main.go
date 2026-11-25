@@ -729,6 +729,7 @@ func main() {
 		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "<HOME>/to=k"), tree: tok.f("to=k", "t")},
 		{args: R("--tier", "3", "--repo", "~/r", "--infra-token", "~/tok", "--infra-endpoint", "https://smtp.example.org/x:1"), tree: tok},
 		{args: R(), tree: tree{}.f(".sandbox/config.yaml", "blocked_cidrs:\n  - nope\n")},
+		{args: R("--tier", "2", "--repo", "~/r"), tree: rg.f("r/node_modules/m.js", "m").f("r/build/o", "o").f("r/keep.txt", "k")},
 		{args: R("--tier", "2", "--repo", "~/vr"), tree: honorDel, env: ov},
 	} {
 		addRun(cc)

@@ -34,10 +34,13 @@ type Dependency struct {
 }
 
 // SessionRecord is what the second stage of `sandbox run` adds (cmd_run Steps 2 to 4, design
-// group B3): the gates have passed, and the session has an ID, a name, and a session.json.
+// group B3): the gates have passed, and the session has an ID, a name, a session.json, a
+// workspace baseline, and the inputs of its egress policy.
 type SessionRecord struct {
 	ID, PodName, LogDir string
-	EndpointTrusted     string // "true" or "false" once the tier 2/3 gates ran; "" at tier 1
+	EndpointTrusted     string        // "true" or "false" once the tier 2/3 gates ran; "" at tier 1
+	Image               string        // the agent image (v2's container_image)
+	Policy              PolicyRequest // what v2 handed build_cilium_policy
 	Dependencies        []Dependency
 }
 
@@ -211,8 +214,9 @@ func (c *cmdCtx) resolveDependencies(sessionID, agent, mcps, services string) ([
 // printErr prints an error's lines to stderr.
 func (c *cmdCtx) printErr(err error) { fmt.Fprintln(c.stderr, err.Error()) }
 
-// runPrepare is cmd_run Steps 2 to 4: the workspace gates, the session ID and name, the profile
-// dependencies, and the session record. It stops where v2 began the cluster work (Step 5).
+// runPrepare is cmd_run Steps 2 to 7: the workspace gates, the session ID and name, the profile
+// dependencies, the session record, the workspace baseline, the image, and the inputs of the
+// egress policy. It stops where v2 rendered the policy for the cluster.
 func runPrepare(c *cmdCtx, s *LaunchSpec) SessionRecord {
 	var rec SessionRecord
 	var overrides []audit.Override
@@ -290,6 +294,21 @@ func runPrepare(c *cmdCtx, s *LaunchSpec) SessionRecord {
 		audit.LogEvent(rec.LogDir, "secret-scan", secretSummary, c.stamp())
 	}
 	audit.FlushOverrides(rec.LogDir, overrides, c.stamp())
+
+	// Step 5: the workspace baseline; Step 6: the image; Step 7: the policy's inputs.
+	if t, _ := strconv.Atoi(s.Tier); t >= 2 && len(s.Repos) > 0 {
+		c.out("==> Capturing workspace baseline...")
+		c.out("%s", workspace.CaptureBaseline(rec.LogDir, s.Repos, workspace.PruneDirs(c.env.SandboxRoot)))
+	}
+	image := "docker.io/library/sandbox:" + s.Agent
+	if s.Tier == "3" {
+		image += "-infra"
+	}
+	c.out("==> Image: %s", image)
+	c.out("==> Building network policy...")
+	rec.Image = image
+	rec.Policy = PolicyRequest{SessionID: rec.ID, Agent: s.Agent, Tier: s.Tier,
+		Extras: append(append([]string(nil), s.InfraEndpoints...), s.Domains...)}
 	return rec
 }
 
