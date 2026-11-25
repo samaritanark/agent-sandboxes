@@ -1,6 +1,7 @@
 package l7
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -153,6 +154,64 @@ func TestDecide(t *testing.T) {
 		got, rule := Decide(rules, c.host, c.method, c.path, c.query)
 		if got != c.want || rule != c.rule {
 			t.Errorf("%s %s %s?%s: %v by %d, want %v by %d", c.host, c.method, c.path, c.query, got, rule, c.want, c.rule)
+		}
+	}
+}
+
+func TestShippedBaseline(t *testing.T) {
+	data, err := os.ReadFile("../../../config/egress-baseline.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ParseBaseline(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		host, method, target string
+		want                 bool
+	}{
+		{"github.com", "POST", "/o/r.git/git-receive-pack", false},
+		{"github.com", "POST", "/o/r/git-receive-pack", false},
+		{"gitlab.example.com", "GET", "/g/sub/r.git/info/refs?service=git-receive-pack", false},
+		{"github.com", "GET", "/o/r.git/info/refs?service=git-upload-pack", true},
+		{"github.com", "POST", "/o/r.git/git-upload-pack", true},
+		{"api.anthropic.com", "TRACE", "/", false},
+		{"api.anthropic.com", "POST", "/v1/messages", true},
+		{"ghcr.io", "POST", "/v2/o/img/blobs/uploads/", false},
+		{"ghcr.io", "PUT", "/v2/o/img/manifests/latest", false},
+		{"ghcr.io", "PATCH", "/v2/o/img/blobs/uploads/abc", false},
+		{"ghcr.io", "GET", "/v2/o/img/manifests/latest", true},
+		{"registry.npmjs.org", "PUT", "/left-pad", false},
+		{"registry.npmjs.org", "DELETE", "/left-pad/-rev/3-abc", false},
+		{"registry.npmjs.org", "GET", "/left-pad", true},
+		{"upload.pypi.org", "POST", "/legacy/", false},
+		{"pypi.internal.example", "POST", "/legacy/", false},
+		{"pypi.org", "GET", "/simple/requests/", true},
+		{"crates.io", "PUT", "/api/v1/crates/new", false},
+		{"rubygems.org", "POST", "/api/v1/gems", false},
+		{"api.github.com", "GET", "/repos/o/r", true},
+	} {
+		path, q, _ := strings.Cut(c.target, "?")
+		if got, i := Decide(rules, c.host, c.method, path, q); got != c.want {
+			t.Errorf("%s %s %s: %v (rule %d)", c.method, c.host, c.target, got, i)
+		}
+	}
+}
+
+func TestParseBaselineRefuses(t *testing.T) {
+	for _, b := range []string{
+		"", "# only a comment\n", "rules:\n", "other:\n  - x\n",
+		"rules:\n  - {\"host\": \"*\", \"action\": \"allow\"}\n",
+		"rules:\n  - {\"host\": \"x.com\", \"action\": \"allow\"}\n",
+		"rules:\n  - {\"host\": \"*\", \"action\": \"deny\", \"extra\": 1}\n",
+		"rules:\n  - {\"host\": \"*\", \"action\": \"deny\"} {\"host\": \"*\", \"action\": \"deny\"}\n",
+		"rules:\n  - {\"host\": \"*\", \"action\": \"deny\"}\nmore: 1\n",
+		"rules:\n  - {\"host\": \"*\", \"action\": \"deny\", \"path_patterns\": [\"x\"]}\n",
+		"rules:\n  - host: \"*\"\n",
+	} {
+		if r, err := ParseBaseline([]byte(b)); err == nil {
+			t.Errorf("%q parsed: %+v", b, r)
 		}
 	}
 }

@@ -18,6 +18,7 @@
 package l7
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -233,4 +234,42 @@ func Decide(rules []Rule, host, method, path, rawQuery string) (bool, int) {
 		}
 	}
 	return !hasAllow, -1
+}
+
+// ParseBaseline reads the org baseline (config/egress-baseline.yaml): a "rules:" key whose list
+// items are one-line JSON objects, comments and blank lines aside. Anything else, an unknown key,
+// or a rule that is not a valid deny rule is an error: the baseline fails closed.
+func ParseBaseline(data []byte) ([]Rule, error) {
+	var rules []Rule
+	inRules := false
+	for n, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		switch {
+		case t == "" || strings.HasPrefix(t, "#"):
+			continue
+		case t == "rules:" && line == t && !inRules:
+			inRules = true
+			continue
+		case inRules && strings.HasPrefix(line, "  - {"):
+			dec := json.NewDecoder(strings.NewReader(strings.TrimPrefix(line, "  - ")))
+			dec.DisallowUnknownFields()
+			var r Rule
+			if err := dec.Decode(&r); err != nil || dec.More() {
+				return nil, fmt.Errorf("l7: baseline line %d: not one rule: %v", n+1, err)
+			}
+			if err := r.Validate(); err != nil {
+				return nil, fmt.Errorf("l7: baseline line %d: %w", n+1, err)
+			}
+			if r.Action != Deny {
+				return nil, fmt.Errorf("l7: baseline line %d: the baseline holds deny rules only", n+1)
+			}
+			rules = append(rules, r)
+			continue
+		}
+		return nil, fmt.Errorf("l7: baseline line %d: unexpected %q", n+1, t)
+	}
+	if len(rules) == 0 {
+		return nil, errors.New("l7: the baseline has no rules")
+	}
+	return rules, nil
 }

@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Samaritan's Purse
+# config/egress-baseline.yaml
+# The org's L7 baseline (design 5.8.5): deny rules the gateway applies to every
+# intercepted destination. A destination is intercepted when it has a broker
+# binding or an L7 rule of its own; a destination allowlisted with neither is
+# passthrough and is not inspected (the stated residual), so it carries no
+# brokered credential to push or publish with.
+#
+# Overlays may add rules; nothing removes one of these (the additive-only
+# invariant). An overlay may relax the git push deny for named hosts only
+# (OQ-02).
+#
+# Each rule is one line, written as a JSON object (valid YAML), with the keys
+#   host           "*" for every intercepted destination, or a name
+#                  ("*.x" one label under x, "**.x" any depth under x);
+#   methods        the methods it covers (none: every method);
+#   path_patterns  path globs: "*" within a segment, "**" a whole segment
+#                  matching any number of segments, then an optional
+#                  "?name=value" query part (none: every path);
+#   action         deny (the baseline holds deny rules only).
+# Rules are deny-first: any matching deny refuses the request.
+
+rules:
+  # Git smart HTTP push, on every host: the receive-pack call and its
+  # advertisement.
+  - {"host": "*", "methods": ["POST"], "path_patterns": ["/**/git-receive-pack"], "action": "deny"}
+  - {"host": "*", "methods": ["GET"], "path_patterns": ["/**/info/refs?service=git-receive-pack"], "action": "deny"}
+
+  # TRACE and TRACK echo the request, headers included (5.9.3).
+  - {"host": "*", "methods": ["TRACE", "TRACK"], "action": "deny"}
+
+  # Container registry push (the OCI distribution API), on every host:
+  # starting a blob upload, and putting or deleting a manifest or blob.
+  - {"host": "*", "methods": ["POST", "PUT", "PATCH"], "path_patterns": ["/v2/**/blobs/uploads", "/v2/**/blobs/uploads/**"], "action": "deny"}
+  - {"host": "*", "methods": ["PUT", "DELETE"], "path_patterns": ["/v2/**/manifests/*", "/v2/**/blobs/*"], "action": "deny"}
+
+  # npm-compatible registries are read-only: publish, unpublish, deprecate,
+  # dist-tags, and owner changes are PUT or DELETE. Self-hosted npm registries
+  # (Verdaccio, Artifactory, Nexus) are added by the overlay the same way.
+  - {"host": "registry.npmjs.org", "methods": ["PUT", "DELETE", "PATCH"], "action": "deny"}
+  - {"host": "registry.yarnpkg.com", "methods": ["PUT", "DELETE", "PATCH"], "action": "deny"}
+
+  # PyPI uploads (twine and uv publish post to /legacy/).
+  - {"host": "upload.pypi.org", "methods": ["POST", "PUT", "DELETE", "PATCH"], "action": "deny"}
+  - {"host": "test.pypi.org", "methods": ["POST"], "path_patterns": ["/legacy", "/legacy/**"], "action": "deny"}
+  - {"host": "*", "methods": ["POST"], "path_patterns": ["/legacy", "/legacy/"], "action": "deny"}
+
+  # crates.io publish, yank, and owner changes.
+  - {"host": "crates.io", "methods": ["PUT", "DELETE"], "path_patterns": ["/api/v1/crates/**"], "action": "deny"}
+
+  # RubyGems push, yank, and owner changes.
+  - {"host": "rubygems.org", "methods": ["POST", "PUT", "DELETE", "PATCH"], "path_patterns": ["/api/v1/gems", "/api/v1/gems/**"], "action": "deny"}
+
+  # GitHub API writes are left out until S2/S5 enumerate the endpoints each
+  # supported agent needs (owner, 2026-11-25).
