@@ -13,7 +13,9 @@ import (
 	"runtime"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/app"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/netd"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/proxycert"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/vfkit"
 )
 
 func isTTY(f *os.File) bool {
@@ -22,6 +24,15 @@ func isTTY(f *os.File) bool {
 }
 
 func main() {
+	// netd's processes (design D-31): started by the vfkit driver, never by a user.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "__netd":
+			os.Exit(vfkit.NetdMain(os.Args[2:]))
+		case "__netd-worker":
+			os.Exit(netd.WorkerMain(os.Args[2:]))
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: cannot find the home directory: %v\n", err)

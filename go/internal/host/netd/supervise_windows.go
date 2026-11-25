@@ -13,9 +13,9 @@ var errWindows = errors.New("sandbox netd is not supported on Windows yet (desig
 
 const EndpointsName = "endpoints"
 
-func Running(string) (bool, error) { return false, errWindows }
-func SSHPort(string) (int, error)  { return 0, errWindows }
-func PID(string) (int, error)      { return 0, errWindows }
+func Running(string) (bool, error)    { return false, errWindows }
+func SSHPort(string) (int, error)     { return 0, errWindows }
+func PID(string, string) (int, error) { return 0, errWindows }
 
 func WorkerMain([]string) int {
 	fmt.Fprintln(os.Stderr, errWindows)

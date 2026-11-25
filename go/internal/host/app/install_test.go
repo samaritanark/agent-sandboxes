@@ -18,7 +18,7 @@ func installEnv(t *testing.T, d *driver.Mock, tr *fakeTransport) (Env, *bytes.Bu
 	n := 0
 	return Env{Driver: driver.Absent{}, Transport: tr, Stdout: &out, Stderr: &errb, StateDir: t.TempDir(),
 		Install: InstallDeps{
-			RecordDriver: func(tool string) (driver.Driver, error) { return d, nil },
+			RecordDriver: func(kind, tool string) (driver.Driver, error) { return d, nil },
 			GenerateKey: func(comment string) (string, string, error) {
 				n++
 				return "PRIVATE-" + comment, "ssh-ed25519 AAAA" + comment, nil
@@ -175,5 +175,42 @@ func TestUninstallState(t *testing.T) {
 	env.Driver = d
 	if rc := Run(context.Background(), []string{"uninstall", "--keep-vm"}, env); rc != 0 || d.State != driver.Stopped || !exists(env, "secrets") {
 		t.Errorf("--keep-vm: state %v", d.State)
+	}
+}
+
+func TestInstallDriverChoice(t *testing.T) {
+	cases := []struct {
+		args       []string
+		kind, tool string
+		fail       string
+	}{
+		{nil, "", "", ""},
+		{[]string{"--driver", "lima"}, "lima", "", ""},
+		{[]string{"--driver=vfkit"}, "vfkit", "", ""},
+		{[]string{"--vfkit", "/opt/vfkit"}, "vfkit", "/opt/vfkit", ""},
+		{[]string{"--limactl", "/opt/limactl", "--driver", "lima"}, "lima", "/opt/limactl", ""},
+		{[]string{"--vfkit", "/a", "--limactl", "/b"}, "", "", "choose different drivers"},
+		{[]string{"--driver", "lima", "--vfkit", "/a"}, "", "", "does not apply"},
+		{[]string{"--driver", "qemu"}, "", "", "unknown driver"},
+	}
+	for _, c := range cases {
+		d := &driver.Mock{Caps: driver.Capabilities{NestedVirt: true}, EP: driver.SSHEndpoint{Host: "h", Port: 1, User: "root", HostKey: "k"}}
+		env, out, errb := installEnv(t, d, &fakeTransport{release: goodRelease})
+		var kind, tool string
+		called := false
+		env.Install.RecordDriver = func(k, tl string) (driver.Driver, error) {
+			kind, tool, called = k, tl, true
+			return d, nil
+		}
+		rc := Run(context.Background(), append([]string{"install", "--dev-image", image(t)}, c.args...), env)
+		if c.fail != "" {
+			if rc == 0 || called || !strings.Contains(errb.String(), c.fail) {
+				t.Errorf("%v: rc=%d called=%v %q", c.args, rc, called, errb)
+			}
+			continue
+		}
+		if rc != 0 || kind != c.kind || tool != c.tool {
+			t.Errorf("%v: rc=%d kind=%q tool=%q\n%s%s", c.args, rc, kind, tool, out, errb)
+		}
 	}
 }

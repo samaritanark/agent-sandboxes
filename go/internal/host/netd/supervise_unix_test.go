@@ -77,8 +77,11 @@ func TestSupervisor(t *testing.T) {
 	if err := (&Supervisor{Dir: dir, StartVM: fakeVM}).Run(context.Background()); err != ErrRunning {
 		t.Errorf("a second supervisor: %v", err)
 	}
-	if pid, err := PID(dir); err != nil || pid != os.Getpid() {
+	if pid, err := PID(dir, PIDFile); err != nil || pid != os.Getpid() {
 		t.Errorf("pid %d %v", pid, err)
+	}
+	if pid, err := PID(dir, VMPIDFile); err != nil || pid <= 1 || pid == os.Getpid() {
+		t.Errorf("vm pid %d %v", pid, err)
 	}
 
 	// The worker comes up; killed, it is replaced.

@@ -23,6 +23,7 @@ import (
 const (
 	LockFile      = "netd.lock" // held (flock) by the supervisor and the hypervisor while the VM lives
 	PIDFile       = "netd.pid"
+	VMPIDFile     = "vm.pid" // the hypervisor's process id
 	SSHPortFile   = "ssh.port"
 	EndpointsName = "endpoints" // declared host endpoints, one ip:port per line
 )
@@ -90,15 +91,16 @@ func SSHPort(dir string) (int, error) {
 	return p, nil
 }
 
-// PID is the supervisor's process id, as it recorded it.
-func PID(dir string) (int, error) {
-	b, err := os.ReadFile(filepath.Join(dir, PIDFile))
+// PID is the process id recorded in dir's file name (PIDFile or VMPIDFile). A recorded id may
+// since have been reused: check the process before signalling it.
+func PID(dir, name string) (int, error) {
+	b, err := os.ReadFile(filepath.Join(dir, name))
 	if err != nil {
 		return 0, err
 	}
 	p, err := strconv.Atoi(strings.TrimSpace(string(b)))
 	if err != nil || p <= 1 {
-		return 0, fmt.Errorf("bad %s", PIDFile)
+		return 0, fmt.Errorf("bad %s", name)
 	}
 	return p, nil
 }
@@ -122,7 +124,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		return err
 	}
 	defer lk.Close()
-	for _, f := range []string{SSHPortFile, PIDFile} {
+	for _, f := range []string{SSHPortFile, PIDFile, VMPIDFile} {
 		os.Remove(filepath.Join(s.Dir, f))
 	}
 	if err := writeFile(s.Dir, PIDFile, strconv.Itoa(os.Getpid())+"\n"); err != nil {
@@ -164,6 +166,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	vmEnd.Close()
 	if err != nil {
 		return fmt.Errorf("starting the VM: %w", err)
+	}
+	if err := writeFile(s.Dir, VMPIDFile, strconv.Itoa(vm.Process.Pid)+"\n"); err != nil {
+		vm.Process.Kill()
+		return err
 	}
 	vmDone := make(chan error, 1)
 	go func() { vmDone <- vm.Wait() }()

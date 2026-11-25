@@ -257,6 +257,9 @@ type refusalLog struct {
 }
 
 func (r *refusalLog) log(l *log.Logger, proto string, dst netip.AddrPort, why string) {
+	if proto == "udp" && dst.Addr() == netip.AddrFrom4([4]byte{255, 255, 255, 255}) && (dst.Port() == 67 || dst.Port() == 68) {
+		return // DHCP's own broadcasts, answered by the stack's DHCP server
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if time.Since(r.window) > time.Minute || r.seen == nil {

@@ -14,12 +14,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/hostbin"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/sizing"
 )
 
 // Instance is the Lima instance name of the appliance VM.
@@ -255,7 +255,7 @@ func (d *Driver) Probe(ctx context.Context) (driver.Capabilities, error) {
 	if why != "" {
 		c.Problems = append(c.Problems, why)
 	}
-	c.MemoryBytes = HostMemory()
+	c.MemoryBytes = sizing.HostMemory()
 	return c, nil
 }
 
@@ -279,23 +279,4 @@ func hostNested(goos string) (bool, string) {
 		return false, "no /dev/kvm: KVM is not available on this host"
 	}
 	return false, "cannot tell whether nested KVM is enabled"
-}
-
-// HostMemory is the host's physical memory in bytes, or 0 when unknown.
-func HostMemory() uint64 {
-	if b, err := os.ReadFile("/proc/meminfo"); err == nil {
-		for _, l := range strings.Split(string(b), "\n") {
-			if f := strings.Fields(l); len(f) >= 2 && f[0] == "MemTotal:" {
-				if kb, err := strconv.ParseUint(f[1], 10, 64); err == nil {
-					return kb * 1024
-				}
-			}
-		}
-	}
-	if out, err := exec.Command("/usr/sbin/sysctl", "-n", "hw.memsize").Output(); err == nil {
-		if n, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64); err == nil {
-			return n
-		}
-	}
-	return 0
 }
