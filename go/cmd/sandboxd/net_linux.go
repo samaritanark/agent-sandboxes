@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -111,7 +112,7 @@ func gatewayProperties(ns, dir string) []string {
 	}
 }
 
-func (g *gateways) Start(ctx context.Context, id, ns, dir string, policy []byte) (int, error) {
+func (g *gateways) Start(ctx context.Context, id, ns, dir string, files map[string][]byte) (int, error) {
 	exec.Command("systemctl", "stop", unit(id)).Run() // the remains of a failed start
 	os.RemoveAll(dir)
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
@@ -127,15 +128,32 @@ func (g *gateways) Start(ctx context.Context, id, ns, dir string, policy []byte)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return 0, err
 	}
-	pol := filepath.Join(dir, "policy.json")
-	if err := os.WriteFile(pol, policy, 0o400); err != nil {
-		return 0, err
+	owned := []string{dir}
+	if _, ok := files["policy.json"]; !ok {
+		return 0, errors.New("no gateway policy")
 	}
+	for name, b := range files {
+		if !filepath.IsLocal(name) {
+			return 0, fmt.Errorf("gateway file %q", name)
+		}
+		p := filepath.Join(dir, name)
+		for d := filepath.Dir(p); d != dir && !slices.Contains(owned, d); d = filepath.Dir(d) {
+			if err := os.MkdirAll(d, 0o700); err != nil {
+				return 0, err
+			}
+			owned = append(owned, d)
+		}
+		if err := os.WriteFile(p, b, 0o400); err != nil {
+			return 0, err
+		}
+		owned = append(owned, p)
+	}
+	pol := filepath.Join(dir, "policy.json")
 	logPath := filepath.Join(dir, "gateway.log")
 	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
 		return 0, err
 	}
-	for _, p := range []string{dir, pol, logPath} {
+	for _, p := range append(owned, logPath) {
 		if err := os.Chown(p, g.uid, g.gid); err != nil {
 			return 0, err
 		}

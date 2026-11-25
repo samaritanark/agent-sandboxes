@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -15,9 +18,11 @@ import (
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/gwpolicy"
+	"github.com/samaritanark/agent-sandboxes/go/internal/l7"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/journal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/limits"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/netsetup"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/pki"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/runtime"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
@@ -107,16 +112,21 @@ func (f *fakeNet) Up(_ context.Context, s netsetup.Session) error {
 type fakeGW struct {
 	running  map[string]int
 	policies map[string]gwpolicy.Policy
+	files    map[string]map[string][]byte
 	stopped  []string
 	calls    *[]string
 }
 
-func (f *fakeGW) Start(_ context.Context, id, ns, dir string, policy []byte) (int, error) {
-	p, err := gwpolicy.Decode(policy)
+func (f *fakeGW) Start(_ context.Context, id, ns, dir string, files map[string][]byte) (int, error) {
+	p, err := gwpolicy.Decode(files["policy.json"])
 	if err != nil {
 		return 0, err
 	}
 	f.policies[id] = *p
+	if f.files == nil {
+		f.files = map[string]map[string][]byte{}
+	}
+	f.files[id] = files
 	f.running[id] = 4000 + len(f.running)
 	*f.calls = append(*f.calls, "gateway "+id)
 	return f.running[id], nil
@@ -468,8 +478,10 @@ func auditTypes(t *testing.T, root, id, file string) []string {
 
 func TestAudit(t *testing.T) {
 	r := newRig(t)
+	ca, _, _ := pki.LoadOrCreate(t.TempDir(), *r.now)
+	r.d.TLS = &TLS{CA: ca, Baseline: []l7.Rule{{Host: l7.AnyHost, Methods: []string{"TRACE"}, Action: l7.Deny}}}
 	ctx := context.Background()
-	b := strings.Replace(string(spec("s-aud", 2048, "db")), `"bindings":null`, `"bindings":[{"ref":"gh","hosts":["api.github.com"],"inject":"bearer","placeholder":"sbxph_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]`, 1)
+	b := strings.Replace(string(spec("s-aud", 2048, "db")), `"bindings":null`, `"bindings":[{"ref":"gh","hosts":["api.anthropic.com"],"inject":"bearer","placeholder":"sbxph_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]`, 1)
 	if _, err := r.d.Start(ctx, []byte(b)); err != nil {
 		t.Fatal(err)
 	}
@@ -495,5 +507,65 @@ func TestAudit(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(r.d.AuditRoot, "s-unknown")); err == nil {
 		t.Error("a drop for an unknown session made a log")
+	}
+}
+
+func TestInterception(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	mk := func(id string) []byte {
+		sp, err := sessionspec.Decode(bytes.NewReader(spec(id, 2048, "db")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sp.Egress.L7 = []l7.Rule{{Host: "api.anthropic.com", Methods: []string{"POST"}, PathPatterns: []string{"/v1/**"}, Action: l7.Allow}}
+		sp.Dependencies[0].Egress.L7 = []l7.Rule{{Host: "pypi.org", Methods: []string{"POST"}, Action: l7.Deny}}
+		b, _ := sp.Encode()
+		return b
+	}
+	// without a CA, a session that intercepts is refused before anything runs
+	if _, err := r.d.Start(ctx, mk("s-noca")); err == nil || !strings.Contains(err.Error(), "no CA") {
+		t.Fatalf("started without a CA: %v", err)
+	}
+	if len(r.rt.vms) != 0 {
+		t.Fatalf("microVMs left: %v", r.rt.vms)
+	}
+	ca, _, err := pki.LoadOrCreate(t.TempDir(), *r.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := []l7.Rule{{Host: l7.AnyHost, Methods: []string{"TRACE"}, Action: l7.Deny}}
+	r.d.TLS = &TLS{CA: ca, Baseline: baseline, SystemRoots: []byte("SYSTEM ROOTS\n")}
+	id, err := r.d.Start(ctx, mk("s-tls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, files := r.gw.policies[id], r.gw.files[id]
+	dir := filepath.Join(r.d.SessionRoot, id, "gateway")
+	if p.UpstreamCAs != filepath.Join(dir, "upstream-cas.pem") || string(files["upstream-cas.pem"]) != "SYSTEM ROOTS\n" {
+		t.Errorf("upstream roots %q", p.UpstreamCAs)
+	}
+	for i, want := range []string{"api.anthropic.com", "pypi.org"} {
+		l := p.Links[i]
+		if len(l.Intercept) != 1 || l.Intercept[0].Name != want || len(l.L7) != 2 || l.L7[0].Methods[0] != "TRACE" {
+			t.Fatalf("link %d: %+v", i, l)
+		}
+		rel, _ := filepath.Rel(dir, l.Intercept[0].CertChain)
+		if _, err := tls.X509KeyPair(files[rel], files[strings.TrimSuffix(rel, ".crt")+".key"]); err != nil {
+			t.Errorf("link %d leaf: %v", i, err)
+		}
+	}
+	agent := r.rt.vms[id]
+	if !slices.Contains(agent.Env, "SSL_CERT_FILE="+GuestBundle) || !slices.Contains(r.rt.vms[id+".db"].Env, "NODE_EXTRA_CA_CERTS="+GuestGatewayCA) {
+		t.Errorf("trust environment %v", agent.Env)
+	}
+	var bundle string
+	for _, m := range agent.Mounts {
+		if m.Target == GuestBundle && m.ReadOnly {
+			bundle = m.Source
+		}
+	}
+	if b, _ := os.ReadFile(bundle); !strings.Contains(string(b), strings.TrimSpace(string(ca.CertPEM))) || strings.Contains(string(b), "PRIVATE") {
+		t.Errorf("guest bundle %q", b)
 	}
 }

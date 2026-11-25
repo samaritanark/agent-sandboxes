@@ -244,6 +244,7 @@ func (s *Spec) Validate(o Options) error {
 	checkResources(s.Resources, "resources", bad)
 	checkMounts(s, bad)
 	bound := checkBindings(s.Bindings, "bindings", bad)
+	checkBindingReach(s.Bindings, s.Egress, "bindings", bad)
 	checkEnv(s.Env, bound, "env", bad)
 	readable := map[string]bool{}
 	for _, r := range s.Readable {
@@ -293,6 +294,7 @@ func (s *Spec) Validate(o Options) error {
 		checkCommand(d.Command, w+" command", bad)
 		checkResources(d.Resources, w+" resources", bad)
 		dbound := checkBindings(d.Bindings, w+" bindings", bad)
+		checkBindingReach(d.Bindings, d.Egress, w+" bindings", bad)
 		checkEnv(d.Env, dbound, w+" env", bad)
 		checkEgress(d.Egress, w+" egress", bad)
 	}
@@ -409,6 +411,33 @@ func checkMounts(s *Spec, bad func(string, ...any)) {
 
 var injectRE = regexp.MustCompile(`^(bearer|basic|header:[A-Za-z0-9-]{1,64}|query:[A-Za-z0-9_.-]{1,64})$`)
 
+// l7Reachable reports whether an L7 rule's host is one the egress allowlist allows: an exact name
+// as the gateway decides it, a wildcard only when the allowlist has that wildcard itself.
+func l7Reachable(host string, e Egress) bool {
+	h := egressmatch.Normalize(host)
+	if strings.HasPrefix(h, "*.") {
+		for _, a := range e.Allow {
+			if egressmatch.Normalize(a) == h {
+				return true
+			}
+		}
+		return false
+	}
+	return egressmatch.Decide(h, e.Allow, e.BlockDomains)
+}
+
+// checkBindingReach refuses a binding whose destination the egress allowlist does not allow: the
+// gateway intercepts every binding destination, and could not reach it.
+func checkBindingReach(bs []Binding, e Egress, what string, bad func(string, ...any)) {
+	for _, b := range bs {
+		for _, h := range b.Hosts {
+			if validHost(h) && !strings.Contains(h, "*") && !l7Reachable(h, e) {
+				bad("%s (%s): destination %q is not on the allowlist", what, b.Ref, h)
+			}
+		}
+	}
+}
+
 // checkBindings returns the env variables that carry a placeholder, with the placeholder each
 // must hold.
 func checkBindings(bs []Binding, what string, bad func(string, ...any)) map[string]string {
@@ -519,9 +548,13 @@ func checkEgress(e Egress, what string, bad func(string, ...any)) {
 		}
 	}
 	for _, r := range e.L7 {
-		h := strings.TrimPrefix(strings.TrimPrefix(r.Host, "**."), "*.")
+		// a rule's host is intercepted, and a leaf certificate covers an exact name or one label
+		// under a wildcard, so "**." cannot carry rules; the host must be one the allowlist allows
+		h := strings.TrimPrefix(r.Host, "*.")
 		if r.Host != l7.AnyHost && (!validHost(h) || strings.Contains(h, "*")) {
-			bad("%s: invalid L7 host %q", what, r.Host)
+			bad("%s: invalid L7 host %q (an exact name or *.domain)", what, r.Host)
+		} else if r.Host != l7.AnyHost && !l7Reachable(r.Host, e) {
+			bad("%s: L7 host %q is not on the allowlist", what, r.Host)
 		}
 		if err := r.Validate(); err != nil {
 			bad("%s: %v", what, err)

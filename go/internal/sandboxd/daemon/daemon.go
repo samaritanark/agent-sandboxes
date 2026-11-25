@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/gwpolicy"
+	"github.com/samaritanark/agent-sandboxes/go/internal/l7"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/auditlog"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/journal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/limits"
@@ -59,9 +60,10 @@ type Network interface {
 
 // GatewayRunner runs a session's gateway process in its gateway namespace.
 type GatewayRunner interface {
-	// Start writes policy into dir, starts the gateway, and waits until it serves; it returns the
-	// process id.
-	Start(ctx context.Context, id, gatewayNS, dir string, policy []byte) (int, error)
+	// Start makes dir afresh with files in it (relative paths: "policy.json", the leaves, the
+	// upstream roots), readable only by the gateway, starts the gateway, and waits until it serves;
+	// it returns the process id.
+	Start(ctx context.Context, id, gatewayNS, dir string, files map[string][]byte) (int, error)
 	// Stop ends it (pid as Start returned it).
 	Stop(ctx context.Context, id string, pid int) error
 }
@@ -88,6 +90,7 @@ type Daemon struct {
 	NetNS       Namespaces
 	Network     Network
 	Gateways    GatewayRunner
+	TLS         *TLS         // interception (tls.go); nil refuses any session that intercepts
 	Resolvers   []netip.Addr // the VM's upstream resolvers, for each gateway
 	AuditRoot   string       // each session's audit log (auditlog.Root); "" for none
 	NetNSPath   Paths
@@ -359,6 +362,22 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 		}
 		blockCIDRs = append(blockCIDRs, dep.Egress.BlockCIDRs...)
 	}
+	// interception: each link's names (its L7 rules' hosts and its bindings'), with the leaves
+	gwDir := filepath.Join(d.SessionRoot, id, "gateway")
+	names := [][]string{interceptNames(spec.Egress, spec.Bindings)}
+	rules := [][]l7.Rule{spec.Egress.L7}
+	for _, dep := range spec.Dependencies {
+		names = append(names, interceptNames(dep.Egress, dep.Bindings))
+		rules = append(rules, dep.Egress.L7)
+	}
+	files := map[string][]byte{}
+	if err := d.gatewayTLS(id, gwDir, names, rules, &pol, files); err != nil {
+		return err
+	}
+	trustMounts, trustEnv, err := d.guestTrust(id)
+	if err != nil {
+		return err
+	}
 	var portList []int
 	for p := range ports {
 		portList = append(portList, p)
@@ -375,11 +394,11 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 	}); err != nil {
 		return err
 	}
-	policy, _ := json.Marshal(pol)
+	files["policy.json"], _ = json.Marshal(pol)
 	if err := d.Journal.Intend(id, KindGateway, "gateway"); err != nil {
 		return err
 	}
-	pid, err := d.Gateways.Start(ctx, id, gns, filepath.Join(d.SessionRoot, id, "gateway"), policy)
+	pid, err := d.Gateways.Start(ctx, id, gns, gwDir, files)
 	if err != nil {
 		return fmt.Errorf("gateway: %w", err)
 	}
@@ -400,9 +419,9 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 		if err != nil {
 			return err
 		}
-		m := runtime.MicroVM{ID: cid, Image: dep.Image, Args: dep.Command, Env: env(dep.Env),
+		m := runtime.MicroVM{ID: cid, Image: dep.Image, Args: dep.Command, Env: append(env(dep.Env), trustEnv...),
 			UID: uint32(dep.RunAsUser), GID: uint32(dep.RunAsUser), NetNS: d.NetNSPath(depNetNS(id, dep.Name)),
-			Mounts: []runtime.Mount{rc}, CPUs: dep.Resources.CPUs, MemoryMiB: dep.Resources.MemoryMiB, Hostname: dep.Name}
+			Mounts: append([]runtime.Mount{rc}, trustMounts...), CPUs: dep.Resources.CPUs, MemoryMiB: dep.Resources.MemoryMiB, Hostname: dep.Name}
 		if err := d.step(id, KindContainer, cid, func() error {
 			if err := d.Runtime.Create(ctx, m); err != nil {
 				return err
@@ -417,8 +436,8 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 	if err != nil {
 		return err
 	}
-	mounts = append(mounts, rc)
-	agent := runtime.MicroVM{ID: id, Image: spec.Image, Args: spec.Command, Env: env(spec.Env),
+	mounts = append(append(mounts, rc), trustMounts...)
+	agent := runtime.MicroVM{ID: id, Image: spec.Image, Args: spec.Command, Env: append(env(spec.Env), trustEnv...),
 		UID: 1000, GID: 1000, Mounts: mounts, NetNS: d.NetNSPath(ns),
 		CPUs: spec.Resources.CPUs, MemoryMiB: spec.Resources.MemoryMiB, Hostname: "sandbox"}
 	return d.step(id, KindContainer, id, func() error {

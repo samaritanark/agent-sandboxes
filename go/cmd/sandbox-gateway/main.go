@@ -100,9 +100,13 @@ func run() error {
 
 	// Envoy
 	conf := envoyconf.Config{AuthzSocket: sock, AdminSocket: filepath.Join(*dir, "admin.sock"), Resolvers: p.Resolvers,
-		AccessLog: filepath.Join(*dir, "connections.log")}
+		AccessLog: filepath.Join(*dir, "connections.log"), UpstreamCAs: p.UpstreamCAs}
 	for _, l := range p.Links {
-		conf.Links = append(conf.Links, envoyconf.Link{Addr: l.Listen, Ports: l.Ports, Allow: l.Allow, BlockDomains: l.BlockDomains})
+		el := envoyconf.Link{Addr: l.Listen, Ports: l.Ports, Allow: l.Allow, BlockDomains: l.BlockDomains}
+		for _, ic := range l.Intercept {
+			el.Intercept = append(el.Intercept, envoyconf.Intercept{Name: ic.Name, CertChain: ic.CertChain, PrivateKey: ic.PrivateKey, Rules: l.L7})
+		}
+		conf.Links = append(conf.Links, el)
 	}
 	for _, d := range p.Deps {
 		conf.Deps = append(conf.Deps, envoyconf.Dep{Name: d.Name, Port: d.Port, Addr: d.Addr})

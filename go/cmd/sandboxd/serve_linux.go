@@ -20,17 +20,52 @@ import (
 
 	"github.com/containerd/containerd/v2/pkg/cio"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/l7"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/auditlog"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/journal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/limits"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/netns"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/pki"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/runtime"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
 
 // JournalDir holds sandboxd's journal.
 const JournalDir = "/var/lib/sandboxd/journal"
+
+// Interception's inputs: the gateway CA's directory (root-only), the org baseline the image ships,
+// and the VM's trust store (the system roots and the operator's corporate CA from the seed).
+const (
+	CADir       = "/var/lib/sandboxd/ca"
+	Baseline    = "/usr/lib/sandbox/config/egress-baseline.yaml"
+	SystemRoots = "/etc/ssl/certs/ca-certificates.crt"
+)
+
+// loadTLS reads what interception needs; any of it missing is a broken image, and sandboxd does
+// not start without it.
+func loadTLS(l *log.Logger) (*daemon.TLS, error) {
+	ca, made, err := pki.LoadOrCreate(CADir, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("gateway CA: %w", err)
+	}
+	if made {
+		l.Printf("made a new gateway CA, valid until %s", ca.Cert.NotAfter.Format(time.DateOnly))
+	}
+	b, err := os.ReadFile(Baseline)
+	if err != nil {
+		return nil, err
+	}
+	rules, err := l7.ParseBaseline(b)
+	if err != nil {
+		return nil, err
+	}
+	roots, err := os.ReadFile(SystemRoots)
+	if err != nil {
+		return nil, err
+	}
+	return &daemon.TLS{CA: ca, Baseline: rules, SystemRoots: roots}, nil
+}
 
 // ClientGroup's members may use the socket besides root (the policy CLI's user).
 const ClientGroup = "sandbox"
@@ -111,9 +146,13 @@ func serve() error {
 	if err != nil {
 		return fmt.Errorf("the gateway user: %w", err)
 	}
+	tlsConf, err := loadTLS(l)
+	if err != nil {
+		return err
+	}
 	d := &daemon.Daemon{
 		Journal: &journal.Store{Dir: JournalDir}, Runtime: kata{rt}, NetNS: netns.Manager{},
-		Network: network{}, Gateways: gws, Resolvers: resolvers, AuditRoot: auditlog.Root,
+		Network: network{}, Gateways: gws, TLS: tlsConf, Resolvers: resolvers, AuditRoot: auditlog.Root,
 		NetNSPath: netns.Path, Budget: limits.Budget{VMMemoryMiB: mem},
 		SessionRoot: sessionspec.SessionStore, Log: l,
 	}
