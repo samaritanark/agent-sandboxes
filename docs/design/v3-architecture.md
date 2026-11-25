@@ -480,7 +480,8 @@ sharing, or host-exec integration.
 |---|---|---|
 | macOS 15+, Apple M3 or later | `vfkit` (default) | vfkit (Apple's Virtualization framework) run by `sandbox netd`, whose userspace network is the VM's only NIC (§5.2.6, D-31; S7 2026-11-25); `--nested`, no shares, no NAT device. Raw disk image, cloud-init NoCloud seed |
 | macOS 15+, Apple M3 or later | `lima-vz` (`--driver lima`) | `vmType: vz`, `nestedVirtualization: true`, `mounts: []`. Lima always attaches its own user-mode NIC, so the VM can reach the host's LAN address and `sandbox doctor` fails (§5.2.6) |
-| Linux (bare metal) | `lima-qemu` | KVM; nested KVM enabled (`/sys/module/kvm_{intel,amd}/parameters/nested`) |
+| Linux (bare metal) | `qemu` (default) | qemu 7.2+ with KVM run by `sandbox netd`, whose datagram socket pair is the VM's only NIC (`-netdev dgram`); UEFI firmware from the distribution (OVMF/AAVMF, no Secure Boot enforcement); the cloud-init seed on a FAT disk the host binary writes; QMP for a graceful stop. Nested KVM enabled (`/sys/module/kvm_{intel,amd}/parameters/nested`); the user needs `/dev/kvm` (the `kvm` group) |
+| Linux (bare metal) | `lima-qemu` (`--driver lima`) | KVM; nested KVM enabled. Lima always attaches its own user-mode NIC, so it has no host-side per-destination control (§5.2.6) |
 | Windows 11 Pro/Enterprise | `hyperv` **or** `lima-hcs` | Decided by spike S3. Requires nested virtualization exposed to the guest and Hyper-V Administrators membership. The in-VM virtualization backend (nested KVM, or MSHV if Kata + Cloud Hypervisor support it in this configuration) is decided by S3. **This is the least certain assumption in the design** (Appendix C, F-01). **Best effort for v3.0.0** (D-29) |
 
 The virtualization backend inside the appliance MAY differ between hosts; the

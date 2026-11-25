@@ -1,6 +1,6 @@
 //go:build !windows
 
-package vfkit
+package netdvm
 
 import (
 	"context"
@@ -113,7 +113,7 @@ func sshAnswers(port int) bool {
 }
 
 // Stop asks netd to shut the guest down (netd stops it by force after Grace) and waits. If netd
-// is gone (killed), it asks vfkit itself; whatever is still running after that is killed. Every
+// is gone (killed), it asks the hypervisor itself; whatever is still running after that is killed. Every
 // recorded process id is checked against its command line first, since an id may have been reused.
 func (d *Driver) Stop(ctx context.Context) error {
 	dir := d.dir()
@@ -129,7 +129,7 @@ func (d *Driver) Stop(ctx context.Context) error {
 		if waitStopped(ctx, dir, Grace+15*time.Second) {
 			return nil
 		}
-	case vm > 0 && d.requestStop() == nil:
+	case vm > 0 && d.hv.requestStop(d) == nil:
 		if waitStopped(ctx, dir, Grace) {
 			return nil
 		}
@@ -177,7 +177,7 @@ func (d *Driver) Delete(ctx context.Context) error {
 	if err := os.RemoveAll(d.dir()); err != nil {
 		return err
 	}
-	for _, f := range []string{keyRecord, toolRecord} {
+	for _, f := range []string{keyRecord, toolRecord(d.hv.kind())} {
 		if err := os.Remove(filepath.Join(d.StateDir, f)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -185,8 +185,9 @@ func (d *Driver) Delete(ctx context.Context) error {
 	return nil
 }
 
-// NetdMain is `sandbox __netd DIR`: the supervisor of design D-31 for the vfkit VM in DIR. It
-// re-verifies vfkit, starts it with the VM's link, and serves the link until the VM exits.
+// NetdMain is `sandbox __netd DIR`: the supervisor of design D-31 for the VM in DIR
+// (~/.sandbox/vm/<kind>). It re-verifies the hypervisor, starts it with the VM's link, and serves
+// the link until the VM exits.
 func NetdMain(args []string) int {
 	l := log.New(os.Stderr, "netd: ", log.LstdFlags)
 	if len(args) != 1 || !filepath.IsAbs(args[0]) {
@@ -194,7 +195,7 @@ func NetdMain(args []string) int {
 		return 2
 	}
 	dir := filepath.Clean(args[0])
-	d, err := Open(filepath.Dir(dir))
+	d, err := Open(filepath.Dir(dir), filepath.Base(dir))
 	if err != nil {
 		l.Print(err)
 		return 1
@@ -208,17 +209,22 @@ func NetdMain(args []string) int {
 		l.Print(err)
 		return 1
 	}
-	argv := d.vmCommand(spec)
+	argv := d.hv.command(d, spec)
 	s := &netd.Supervisor{
 		Dir: dir, Self: d.Self, GuestMAC: spec.MAC, Grace: Grace, Log: l,
-		RequestStop: d.requestStop,
+		RequestStop: func() error { return d.hv.requestStop(d) },
 		StartVM: func(link, lock *os.File) (*exec.Cmd, error) {
-			os.Remove(filepath.Join(dir, restSock))
+			for _, f := range []string{restSock, qmpSock} {
+				os.Remove(filepath.Join(dir, f))
+			}
+			// The console log is the operator's alone, whatever the hypervisor's umask.
+			if f, err := os.OpenFile(filepath.Join(dir, console), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600); err == nil {
+				f.Chmod(0o600)
+				f.Close()
+			}
 			c := exec.Command(argv[0], argv[1:]...)
 			c.ExtraFiles = []*os.File{link, lock} // fd 3, fd 4
-			// vfkit builds the cloud-init ISO (which holds the seed) in TMPDIR: keep it in the VM's
-			// own 0700 directory.
-			c.Env = append(os.Environ(), "TMPDIR="+dir)
+			c.Env = append(os.Environ(), d.hv.env(dir)...)
 			c.Stdout, c.Stderr = os.Stderr, os.Stderr
 			return c, c.Start()
 		},

@@ -1,9 +1,12 @@
-// Package vfkit is the macOS VM driver that gives `sandbox netd` the VM's only NIC (design 5.2.2,
-// 5.2.6, D-31; spike S7). It runs vfkit (Apple's Virtualization framework, crc-org/vfkit) as a
-// child of `sandbox __netd`, which owns the VM's network link and SSH listener for the VM's
-// whole life, so the host-reach control holds while the CLI is not running. Lima cannot do this:
-// its own user-mode NIC is always attached.
-package vfkit
+// Package netdvm is the VM driver whose network is `sandbox netd` (design 5.2.2, 5.2.6, D-31;
+// spike S7): the hypervisor runs as a child of `sandbox __netd`, which owns the VM's only NIC (one
+// end of a datagram socket pair) and its SSH listener for the VM's whole life, so the host-reach
+// control holds while the CLI is not running. Lima cannot do this on either host: its own
+// user-mode NIC is always attached.
+//
+// Two hypervisors share everything but their command line, seed delivery, and shutdown channel:
+// vfkit on macOS (Apple's Virtualization framework) and qemu with KVM on Linux.
+package netdvm
 
 import (
 	"bytes"
@@ -14,8 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,14 +31,10 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/sizing"
 )
 
-// Files under the host binary's VM state directory (~/.sandbox/vm).
-const (
-	toolRecord = "vfkit.path"       // the verified vfkit path, recorded at install
-	keyRecord  = "ssh_host_key.pub" // the guest's pinned SSH host key
-	subdir     = "vfkit"            // the VM: disk, firmware variables, seed, netd's files
-)
+// keyRecord is the guest's pinned SSH host key, under the host binary's VM state directory.
+const keyRecord = "ssh_host_key.pub"
 
-// The VM directory's files.
+// The VM directory's files (the directory is ~/.sandbox/vm/<kind>).
 const (
 	vmConfig = "vm.json" // written last by Create: its presence means the VM exists
 	diskFile = "disk.raw"
@@ -46,7 +43,6 @@ const (
 	metaData = "meta-data"
 	console  = "console.log"
 	netdLog  = "netd.log"
-	restSock = "rest.sock"
 )
 
 // Grace is how long the guest gets to shut down before it is stopped by force.
@@ -58,57 +54,103 @@ type vmSpec struct {
 	MemoryMiB int    `json:"memoryMiB"`
 	MAC       string `json:"mac"`
 	Nested    bool   `json:"nested"`
+	Firmware  string `json:"firmware,omitempty"` // qemu: the UEFI code image
 }
 
-// Driver drives one vfkit VM.
+// hypervisor is what differs between vfkit and qemu.
+type hypervisor interface {
+	kind() string                             // the driver's name and VM directory
+	defaultTool() string                      // the binary looked up on PATH
+	checkVersion(versionOutput string) error  // `tool --version`
+	prepare(dir string, spec *vmSpec) error   // at Create: firmware, variables
+	seed(dir string, user, meta []byte) error // at Create: deliver the NoCloud seed
+	command(d *Driver, s vmSpec) []string     // argv; the link is fd 3, netd's lock fd 4
+	env(dir string) []string                  // extra environment for the hypervisor
+	requestStop(d *Driver) error              // ask the guest to shut down
+	supported(goos string) error              // whether this host can run it
+}
+
+func hypervisorFor(kind string) (hypervisor, error) {
+	switch kind {
+	case "vfkit":
+		return vfkit{}, nil
+	case "qemu":
+		return qemu{goarch: runtime.GOARCH}, nil
+	}
+	return nil, fmt.Errorf("unknown VM driver %q", kind)
+}
+
+// Kinds are the drivers this package provides.
+var Kinds = []string{"vfkit", "qemu"}
+
+// Driver drives one netd VM.
 type Driver struct {
-	Vfkit    string // verified absolute path
+	hv       hypervisor
+	Tool     string // verified absolute path of vfkit or qemu-system-*
 	StateDir string // ~/.sandbox/vm
 	Self     string // this binary, which runs as `__netd`
 }
 
-func (d *Driver) dir() string { return filepath.Join(d.StateDir, subdir) }
+func toolRecord(kind string) string { return kind + ".path" }
 
-// Recorded reports whether install chose this driver.
-func Recorded(stateDir string) bool {
-	_, err := os.Stat(filepath.Join(stateDir, toolRecord))
-	return err == nil
+func (d *Driver) dir() string { return filepath.Join(d.StateDir, d.hv.kind()) }
+
+// Recorded is the kind install chose, or "" when it chose none of this package's drivers.
+func Recorded(stateDir string) string {
+	for _, k := range Kinds {
+		if _, err := os.Stat(filepath.Join(stateDir, toolRecord(k))); err == nil {
+			return k
+		}
+	}
+	return ""
 }
 
-// Record resolves vfkit (an absolute path, or found on PATH), verifies it, and records it.
-func Record(stateDir, tool string) (string, error) {
-	if runtime.GOOS != "darwin" {
-		return "", errors.New("the vfkit driver runs on macOS only")
+// Record resolves the hypervisor binary (an absolute path, or found on PATH), verifies it, checks
+// its version, and records it.
+func Record(stateDir, kind, tool string) (string, error) {
+	hv, err := hypervisorFor(kind)
+	if err != nil {
+		return "", err
+	}
+	if err := hv.supported(runtime.GOOS); err != nil {
+		return "", err
 	}
 	p := tool
+	if p == "" {
+		p = hv.defaultTool()
+	}
 	if !filepath.IsAbs(p) {
 		lp, err := exec.LookPath(p)
 		if err != nil {
-			return "", fmt.Errorf("vfkit not found: install it (brew install vfkit), or pass --driver lima: %w", err)
+			return "", fmt.Errorf("%s not found: install it, or pass --driver lima: %w", p, err)
 		}
 		if p, err = filepath.Abs(lp); err != nil {
 			return "", err
 		}
 	}
-	if err := hostbin.Verify("vfkit", p, os.Getuid()); err != nil {
+	if err := hostbin.Verify(kind, p, os.Getuid()); err != nil {
 		return "", err
 	}
 	out, err := exec.Command(p, "--version").Output()
 	if err != nil {
-		return "", fmt.Errorf("vfkit --version: %w", err)
+		return "", fmt.Errorf("%s --version: %w", p, err)
 	}
-	if err := checkVersion(string(out)); err != nil {
+	if err := hv.checkVersion(string(out)); err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return "", err
 	}
-	return p, os.WriteFile(filepath.Join(stateDir, toolRecord), []byte(p+"\n"), 0o600)
+	return p, os.WriteFile(filepath.Join(stateDir, toolRecord(kind)), []byte(p+"\n"), 0o600)
 }
 
-// Open loads the recorded vfkit path and re-verifies it (5.1.2).
-func Open(stateDir string) (*Driver, error) {
-	b, err := os.ReadFile(filepath.Join(stateDir, toolRecord))
+// Open loads the recorded binary for kind and re-verifies it (5.1.2).
+func Open(stateDir, kind string) (*Driver, error) {
+	hv, err := hypervisorFor(kind)
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(filepath.Join(stateDir, toolRecord(kind)))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, driver.ErrNotCreated
@@ -116,17 +158,17 @@ func Open(stateDir string) (*Driver, error) {
 		return nil, err
 	}
 	p := strings.TrimSuffix(string(b), "\n")
-	if err := hostbin.Verify("vfkit", p, os.Getuid()); err != nil {
-		return nil, fmt.Errorf("%w (if vfkit was reinstalled, run 'sandbox upgrade' to record it again)", err)
+	if err := hostbin.Verify(kind, p, os.Getuid()); err != nil {
+		return nil, fmt.Errorf("%w (if %s was reinstalled, run 'sandbox upgrade' to record it again)", err, kind)
 	}
 	self, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
-	return &Driver{Vfkit: p, StateDir: stateDir, Self: self}, nil
+	return &Driver{hv: hv, Tool: p, StateDir: stateDir, Self: self}, nil
 }
 
-func (d *Driver) Name() string { return "vfkit" }
+func (d *Driver) Name() string { return d.hv.kind() }
 
 func (d *Driver) spec() (vmSpec, error) {
 	var s vmSpec
@@ -168,7 +210,7 @@ var (
 	hostnameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
-// isRawGPT reports whether p is a raw disk with a GPT header, the only format vfkit boots.
+// isRawGPT reports whether p is a raw disk with a GPT header, the format both hypervisors boot.
 func isRawGPT(p string) (bool, error) {
 	f, err := os.Open(p)
 	if err != nil {
@@ -222,8 +264,8 @@ func copySparse(dst, src string) error {
 	return out.Close()
 }
 
-// seedFiles renders the cloud-init NoCloud seed that vfkit attaches: user-data writes the seed
-// file (driver.SeedEnv) root-owned and 0600 on first boot, as Lima's data provision does.
+// seedFiles renders the cloud-init NoCloud seed: user-data writes the seed file (driver.SeedEnv)
+// root-owned and 0600 on first boot, as Lima's data provision does.
 func seedFiles(seed driver.SeedConfig, instanceID string) (user, meta []byte, err error) {
 	env, err := driver.SeedEnv(seed)
 	if err != nil {
@@ -276,15 +318,15 @@ func (d *Driver) Create(ctx context.Context, img driver.ImageRef, res driver.Res
 	if ok, err := isRawGPT(img.Path); err != nil {
 		return err
 	} else if !ok {
-		return fmt.Errorf("%s is not a raw disk image with a GPT partition table, which vfkit needs (convert a qcow2 image with: qemu-img convert -O raw IN OUT)", img.Path)
+		return fmt.Errorf("%s is not a raw disk image with a GPT partition table, which the %s driver needs (convert a qcow2 image with: qemu-img convert -O raw IN OUT)", img.Path, d.hv.kind())
 	}
 	if res.CPUs < 1 || res.MemoryMiB < 512 || res.DiskGiB < 1 {
 		return fmt.Errorf("invalid VM resources %+v", res)
 	}
 	dir := d.dir()
-	// vfkit's device options are comma-separated key=value lists.
+	// vfkit's and qemu's device options are comma-separated key=value lists.
 	if strings.ContainsAny(dir, ",=") {
-		return fmt.Errorf("the VM directory %s holds a comma or '=', which vfkit's options cannot carry", dir)
+		return fmt.Errorf("the VM directory %s holds a comma or '=', which the hypervisor's options cannot carry", dir)
 	}
 	mac, err := randomMAC()
 	if err != nil {
@@ -296,6 +338,7 @@ func (d *Driver) Create(ctx context.Context, img driver.ImageRef, res driver.Res
 	if err != nil {
 		return err
 	}
+	spec := vmSpec{CPUs: res.CPUs, MemoryMiB: res.MemoryMiB, MAC: mac, Nested: true}
 	if err := os.MkdirAll(d.StateDir, 0o700); err != nil {
 		return err
 	}
@@ -315,10 +358,11 @@ func (d *Driver) Create(ctx context.Context, img driver.ImageRef, res driver.Res
 	if err := os.WriteFile(filepath.Join(d.StateDir, keyRecord), []byte(strings.TrimSpace(seed.HostKeyPublic)+"\n"), 0o600); err != nil {
 		return err
 	}
-	for name, b := range map[string][]byte{userData: user, metaData: meta} {
-		if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {
-			return err
-		}
+	if err := d.hv.prepare(dir, &spec); err != nil {
+		return err
+	}
+	if err := d.hv.seed(dir, user, meta); err != nil {
+		return err
 	}
 	disk := filepath.Join(dir, diskFile)
 	if err := copySparse(disk, img.Path); err != nil {
@@ -332,62 +376,11 @@ func (d *Driver) Create(ctx context.Context, img driver.ImageRef, res driver.Res
 			return err
 		}
 	}
-	b, _ := json.MarshalIndent(vmSpec{CPUs: res.CPUs, MemoryMiB: res.MemoryMiB, MAC: mac, Nested: true}, "", "  ")
+	b, _ := json.MarshalIndent(spec, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, vmConfig), append(b, '\n'), 0o600); err != nil {
 		return err
 	}
 	ok = true
-	return nil
-}
-
-// vmCommand is the vfkit command line; the VM's link is fd 3 and netd's lock fd 4.
-func (d *Driver) vmCommand(s vmSpec) []string {
-	dir := d.dir()
-	args := []string{d.Vfkit,
-		"--cpus", fmt.Sprint(s.CPUs), "--memory", fmt.Sprint(s.MemoryMiB),
-		"--bootloader", "efi,variable-store=" + filepath.Join(dir, efiVars) + ",create",
-		"--device", "virtio-blk,path=" + filepath.Join(dir, diskFile),
-		"--device", "virtio-net,fd=3,mac=" + s.MAC,
-		"--device", "virtio-rng",
-		"--device", "virtio-serial,logFilePath=" + filepath.Join(dir, console),
-		"--cloud-init", filepath.Join(dir, userData) + "," + filepath.Join(dir, metaData),
-		"--restful-uri", d.restURI(),
-	}
-	if s.Nested {
-		args = append(args, "--nested")
-	}
-	return args
-}
-
-// restURI is vfkit's control socket, used only to ask the guest to shut down. A path too long for
-// a Unix socket disables it, and stop falls back to force.
-func (d *Driver) restURI() string {
-	p := filepath.Join(d.dir(), restSock)
-	if len(p) >= 104 {
-		return "none://"
-	}
-	return "unix://" + p
-}
-
-// requestStop asks vfkit to request a guest shutdown (the guest sees a power button press).
-func (d *Driver) requestStop() error {
-	uri := d.restURI()
-	if !strings.HasPrefix(uri, "unix://") {
-		return errors.New("no control socket")
-	}
-	sock := strings.TrimPrefix(uri, "unix://")
-	c := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
-		}}}
-	resp, err := c.Post("http://vfkit/vm/state", "application/json", strings.NewReader(`{"state":"Stop"}`))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 { // vfkit answers 202 Accepted
-		return fmt.Errorf("vfkit: %s", resp.Status)
-	}
 	return nil
 }
 
@@ -435,39 +428,39 @@ func (d *Driver) HostReach(context.Context) (driver.HostReachControl, error) {
 	return driver.HostReachControl{Mechanism: "sandbox netd (the VM's only network; host addresses refused, declared endpoints allowed)", Scoped: true}, nil
 }
 
-// MinVersion is the oldest vfkit with everything the driver uses: virtio-net fd=, --nested, and
-// --cloud-init.
-var MinVersion = [3]int{0, 6, 0}
-
-// checkVersion reads `vfkit --version` ("vfkit version: v0.6.4") and refuses older releases.
-func checkVersion(out string) error {
-	v, ok := strings.CutPrefix(strings.TrimSpace(out), "vfkit version: v")
-	var got [3]int
-	if n, _ := fmt.Sscanf(v, "%d.%d.%d", &got[0], &got[1], &got[2]); !ok || n != 3 {
-		return fmt.Errorf("vfkit --version: cannot read %q", strings.TrimSpace(out))
+// semver reads the first "a.b.c" after prefix in out.
+func semver(out, prefix string) ([3]int, error) {
+	var v [3]int
+	i := strings.Index(out, prefix)
+	if i < 0 {
+		return v, fmt.Errorf("cannot read the version in %q", strings.TrimSpace(out))
 	}
-	for i := range got {
-		if got[i] != MinVersion[i] {
-			if got[i] < MinVersion[i] {
-				return fmt.Errorf("vfkit %d.%d.%d is too old: the driver needs %d.%d.%d or later", got[0], got[1], got[2], MinVersion[0], MinVersion[1], MinVersion[2])
-			}
-			break
+	if n, _ := fmt.Sscanf(out[i+len(prefix):], "%d.%d.%d", &v[0], &v[1], &v[2]); n != 3 {
+		return v, fmt.Errorf("cannot read the version in %q", strings.TrimSpace(out))
+	}
+	return v, nil
+}
+
+// atLeast reports whether v >= min.
+func atLeast(v, min [3]int) bool {
+	for i := range v {
+		if v[i] != min[i] {
+			return v[i] > min[i]
 		}
 	}
-	return nil
+	return true
 }
 
 func (d *Driver) Probe(ctx context.Context) (driver.Capabilities, error) {
-	c := driver.Capabilities{Hypervisor: "vz", CPUs: runtime.NumCPU(), DriverBinary: d.Vfkit,
-		MemoryBytes: sizing.HostMemory(), NestedVirt: runtime.GOOS == "darwin"} // decided by the VM start itself, as on lima-vz
-	cmd := exec.CommandContext(ctx, d.Vfkit, "--version")
-	if out, err := cmd.Output(); err != nil {
-		c.Problems = append(c.Problems, fmt.Sprintf("vfkit --version: %v", err))
-	} else if err := checkVersion(string(out)); err != nil {
+	c := driver.Capabilities{CPUs: runtime.NumCPU(), DriverBinary: d.Tool, MemoryBytes: sizing.HostMemory()}
+	if out, err := exec.CommandContext(ctx, d.Tool, "--version").Output(); err != nil {
+		c.Problems = append(c.Problems, fmt.Sprintf("%s --version: %v", d.Tool, err))
+	} else if err := d.hv.checkVersion(string(out)); err != nil {
 		c.Problems = append(c.Problems, err.Error())
 	}
-	if runtime.GOOS != "darwin" {
-		c.Problems = append(c.Problems, "the vfkit driver runs on macOS only")
+	if err := d.hv.supported(runtime.GOOS); err != nil {
+		c.Problems = append(c.Problems, err.Error())
 	}
+	c.Hypervisor, c.NestedVirt = probeHost(d.hv.kind(), &c)
 	return c, nil
 }

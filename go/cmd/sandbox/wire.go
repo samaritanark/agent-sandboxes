@@ -9,9 +9,9 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/app"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/lima"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/netdvm"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/sizing"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/sshx"
-	"github.com/samaritanark/agent-sandboxes/go/internal/host/vfkit"
 )
 
 // wire picks the VM driver and transport for this host.
@@ -19,8 +19,8 @@ func wire(home string) (driver.Driver, app.Transport, error) {
 	state := filepath.Join(home, ".sandbox", "vm")
 	var d driver.Driver
 	switch {
-	case runtime.GOOS == "darwin" && vfkit.Recorded(state):
-		vd, err := vfkit.Open(state)
+	case netdvm.Recorded(state) != "":
+		vd, err := netdvm.Open(state, netdvm.Recorded(state))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -45,8 +45,8 @@ func wire(home string) (driver.Driver, app.Transport, error) {
 	return d, &sshx.Client{SSH: ssh, Identity: filepath.Join(state, "id_ed25519"), KnownHosts: filepath.Join(state, "known_hosts")}, nil
 }
 
-// installDeps are install's real host parts: vfkit (the default) or Lima on macOS, Lima on Linux,
-// ssh-keygen for keys.
+// installDeps are install's real host parts: the netd drivers by default (vfkit on macOS, qemu on
+// Linux) or Lima, and ssh-keygen for keys.
 func installDeps(home string) app.InstallDeps {
 	state := filepath.Join(home, ".sandbox", "vm")
 	return app.InstallDeps{
@@ -55,20 +55,17 @@ func installDeps(home string) app.InstallDeps {
 				return nil, errors.New("no VM driver for " + runtime.GOOS + " yet (design 5.2.2: decided by spike S3)")
 			}
 			if kind == "" {
-				kind = map[bool]string{true: "vfkit", false: "lima"}[runtime.GOOS == "darwin"]
+				kind = map[bool]string{true: "vfkit", false: "qemu"}[runtime.GOOS == "darwin"]
 			}
 			switch kind {
-			case "vfkit":
-				if tool == "" {
-					tool = "vfkit"
-				}
-				if _, err := vfkit.Record(state, tool); err != nil {
+			case "vfkit", "qemu":
+				if _, err := netdvm.Record(state, kind, tool); err != nil {
 					return nil, err
 				}
-				return vfkit.Open(state)
+				return netdvm.Open(state, kind)
 			case "lima":
 			default:
-				return nil, errors.New("unknown VM driver '" + kind + "' (vfkit or lima)")
+				return nil, errors.New("unknown VM driver '" + kind + "' (vfkit, qemu, or lima)")
 			}
 			if tool == "" {
 				tool = "limactl"

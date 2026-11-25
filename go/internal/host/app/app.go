@@ -236,7 +236,11 @@ func (a *app) vm(args []string) int {
 		if err := a.env.Driver.Start(a.ctx); err != nil {
 			a.die("could not start the sandbox VM: %v", err)
 		}
-		a.handshake(a.running())
+		// The guest's sshd can restart once while it boots (the seed unit applies the pinned
+		// host key), so the first handshake is retried as install's is.
+		if _, err := a.waitReady(); err != nil {
+			a.die("the sandbox VM started but is not answering: %v\n  See: sandbox vm status", err)
+		}
 		fmt.Fprintln(a.env.Stdout, "The sandbox VM is running.")
 		return 0
 	case "stop":

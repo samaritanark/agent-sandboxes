@@ -8,3 +8,6 @@ import "errors"
 func Verify(name, p string, uid int) error {
 	return errors.New(name + " is not supported on Windows (design 5.2.2: Hyper-V or lima-hcs, spike S3)")
 }
+
+// VerifyFile: as Verify.
+func VerifyFile(name, p string, uid int) error { return Verify(name, p, uid) }

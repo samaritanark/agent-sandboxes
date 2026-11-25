@@ -63,7 +63,7 @@ var allowed = map[string][]string{
 	"host/hostbin":    {},
 	"host/netd":       {},
 	"host/seedimg":    {},
-	"host/vfkit":      {"host/driver", "host/hostbin", "host/netd", "host/sizing"},
+	"host/netdvm":     {"host/driver", "host/hostbin", "host/netd", "host/seedimg", "host/sizing"},
 	"host/sshx":       {"host/driver"},
 	"host/gitref":     {},
 	"host/proxycert":  {},

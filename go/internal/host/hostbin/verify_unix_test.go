@@ -61,3 +61,17 @@ func TestVerify(t *testing.T) {
 		t.Errorf("non-executable: %v", err)
 	}
 }
+
+func TestVerifyFile(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "fw.fd")
+	os.WriteFile(f, []byte("x"), 0o644)
+	if err := VerifyFile("firmware", f, os.Getuid()); err != nil {
+		t.Errorf("own 0644 file: %v", err)
+	}
+	if err := Verify("qemu", f, os.Getuid()); err == nil {
+		t.Error("a non-executable passed Verify")
+	}
+	if err := VerifyFile("firmware", filepath.Dir(f), os.Getuid()); err == nil {
+		t.Error("a directory passed")
+	}
+}

@@ -14,17 +14,17 @@ import (
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/app"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/netd"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/netdvm"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/proxycert"
-	"github.com/samaritanark/agent-sandboxes/go/internal/host/vfkit"
 	"github.com/samaritanark/agent-sandboxes/go/internal/tty"
 )
 
 func main() {
-	// netd's processes (design D-31): started by the vfkit driver, never by a user.
+	// netd's processes (design D-31): started by the vfkit and qemu drivers, never by a user.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "__netd":
-			os.Exit(vfkit.NetdMain(os.Args[2:]))
+			os.Exit(netdvm.NetdMain(os.Args[2:]))
 		case "__netd-worker":
 			os.Exit(netd.WorkerMain(os.Args[2:]))
 		}

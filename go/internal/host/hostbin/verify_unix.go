@@ -61,12 +61,17 @@ func checkChain(p string, uid int) error {
 	}
 }
 
-// Verify is design 5.1.2's check on a driver tool (name is "limactl" or "vfkit", for messages):
-// p must be absolute, and neither it nor the file it resolves to, nor any directory on the way to
-// either, may be replaceable by anyone but root or the operator (uid). "User-writable" is read as
-// "writable by another user": the operator is trusted (the threat model), and Homebrew installs
-// these tools in directories the operator owns.
-func Verify(name, p string, uid int) error {
+// Verify is design 5.1.2's check on a driver tool (name is "limactl", "vfkit", or "qemu", for
+// messages): p must be absolute, and neither it nor the file it resolves to, nor any directory on
+// the way to either, may be replaceable by anyone but root or the operator (uid). "User-writable"
+// is read as "writable by another user": the operator is trusted (the threat model), and Homebrew
+// installs these tools in directories the operator owns.
+func Verify(name, p string, uid int) error { return verify(name, p, uid, true) }
+
+// VerifyFile is Verify for a file the tool loads rather than runs (qemu's UEFI firmware).
+func VerifyFile(name, p string, uid int) error { return verify(name, p, uid, false) }
+
+func verify(name, p string, uid int, exe bool) error {
 	if !filepath.IsAbs(p) || filepath.Clean(p) != p || strings.ContainsRune(p, 0) {
 		return fmt.Errorf("%s path %q is not a clean absolute path", name, p)
 	}
@@ -84,8 +89,12 @@ func Verify(name, p string, uid int) error {
 	if err != nil {
 		return err
 	}
-	if !st.Mode().IsRegular() || st.Mode().Perm()&0o111 == 0 {
-		return fmt.Errorf("refusing %s: %s is not an executable file", name, real)
+	if !st.Mode().IsRegular() || exe && st.Mode().Perm()&0o111 == 0 {
+		what := "a regular file"
+		if exe {
+			what = "an executable file"
+		}
+		return fmt.Errorf("refusing %s: %s is not %s", name, real, what)
 	}
 	return nil
 }

@@ -1,6 +1,6 @@
 //go:build !windows
 
-package vfkit
+package netdvm
 
 import (
 	"bytes"
@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/seedimg"
 )
 
 var seed = driver.SeedConfig{Hostname: "sandbox", AuthorizedKey: "ssh-ed25519 AAAAclient c",
@@ -86,7 +87,7 @@ func TestCopySparse(t *testing.T) {
 
 func TestCreate(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "vm")
-	d := &Driver{Vfkit: "/usr/local/bin/vfkit", StateDir: state, Self: "/x/sandbox"}
+	d := &Driver{hv: vfkit{}, Tool: "/usr/local/bin/vfkit", StateDir: state, Self: "/x/sandbox"}
 	ctx := context.Background()
 	if st, _ := d.Status(ctx); st != driver.NotCreated {
 		t.Fatalf("status %v", st)
@@ -143,7 +144,7 @@ func TestCreate(t *testing.T) {
 		t.Errorf("endpoint while stopped: %v", err)
 	}
 
-	argv := strings.Join(d.vmCommand(spec), " ")
+	argv := strings.Join(d.hv.command(d, spec), " ")
 	for _, want := range []string{"/usr/local/bin/vfkit ", "--cpus 4 ", "--memory 8192 ", "virtio-net,fd=3,mac=" + spec.MAC,
 		"virtio-blk,path=" + filepath.Join(d.dir(), diskFile), "--nested", "efi,variable-store="} {
 		if !strings.Contains(argv, want) {
@@ -185,8 +186,79 @@ func TestCheckVersion(t *testing.T) {
 	for out, ok := range map[string]bool{"vfkit version: v0.6.4\n": true, "vfkit version: v0.6.0": true,
 		"vfkit version: v1.0.0": true, "vfkit version: v0.10.1": true, "vfkit version: v0.5.9": false,
 		"vfkit version: v0.6": false, "vfkit 0.6.4": false, "": false} {
-		if err := checkVersion(out); (err == nil) != ok {
-			t.Errorf("%q: %v", out, err)
+		if err := (vfkit{}).checkVersion(out); (err == nil) != ok {
+			t.Errorf("vfkit %q: %v", out, err)
 		}
+	}
+	for out, ok := range map[string]bool{
+		"QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)\nCopyright (c) 2003-2023": true,
+		"QEMU emulator version 7.2.0": true, "QEMU emulator version 10.0.3": true,
+		"QEMU emulator version 7.1.0": false, "QEMU emulator version 6.2.0 (Debian)": false, "qemu 8.2.2": false} {
+		if err := (qemu{}).checkVersion(out); (err == nil) != ok {
+			t.Errorf("qemu %q: %v", out, err)
+		}
+	}
+}
+
+func TestFindFirmware(t *testing.T) {
+	have := map[string]bool{"/usr/share/edk2/ovmf/OVMF_CODE.fd": true, "/usr/share/edk2/ovmf/OVMF_VARS.fd": true,
+		"/usr/share/OVMF/OVMF_CODE_4M.fd": true} // a code image without its variables is skipped
+	fw, err := findFirmware("amd64", func(p string) bool { return have[p] })
+	if err != nil || fw[0] != "/usr/share/edk2/ovmf/OVMF_CODE.fd" {
+		t.Errorf("%v %v", fw, err)
+	}
+	if _, err := findFirmware("arm64", func(string) bool { return false }); err == nil || !strings.Contains(err.Error(), "qemu-efi-aarch64") {
+		t.Errorf("none: %v", err)
+	}
+	for _, pairs := range firmwarePairs {
+		for _, p := range pairs {
+			if strings.Contains(strings.ToLower(p[0]), "secboot.fd") && !strings.Contains(p[0], "no-secboot") || strings.Contains(p[0], ".ms.") {
+				t.Errorf("%s enforces Secure Boot", p[0])
+			}
+		}
+	}
+}
+
+func TestQemuCommand(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "vm")
+	for _, arch := range []string{"arm64", "amd64"} {
+		d := &Driver{hv: qemu{goarch: arch}, Tool: "/usr/bin/qemu-system-x", StateDir: state}
+		spec := vmSpec{CPUs: 4, MemoryMiB: 8192, MAC: "02:00:00:00:00:01", Firmware: "/fw/CODE.fd"}
+		argv := strings.Join(d.hv.command(d, spec), " ")
+		for _, want := range []string{"-accel kvm", "-cpu host", "-smp 4 ", "-m 8192 ", "-nodefaults", "-no-user-config",
+			"-netdev dgram,id=n0,local.type=fd,local.str=3", "virtio-net-pci,netdev=n0,mac=02:00:00:00:00:01",
+			"readonly=on,file=/fw/CODE.fd", "file=" + filepath.Join(state, "qemu", diskFile),
+			"readonly=on,file=" + filepath.Join(state, "qemu", seedDisk), "-qmp unix:"} {
+			if !strings.Contains(argv, want) {
+				t.Errorf("%s: no %q in %s", arch, want, argv)
+			}
+		}
+		for _, bad := range []string{"user,", "-nic", "hostfwd", "virtfs", "9p", "-netdev user", "smb="} {
+			if strings.Contains(argv, bad) {
+				t.Errorf("%s: %q in %s", arch, bad, argv)
+			}
+		}
+		if strings.Count(argv, "-netdev") != 1 {
+			t.Errorf("%s: more than one network: %s", arch, argv)
+		}
+	}
+}
+
+func TestQemuSeed(t *testing.T) {
+	dir := t.TempDir()
+	user, meta, err := seedFiles(seed, "sandbox-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (qemu{}).seed(dir, user, meta); err != nil {
+		t.Fatal(err)
+	}
+	img, _ := os.ReadFile(filepath.Join(dir, seedDisk))
+	files, err := seedimg.Read(img)
+	if err != nil || !bytes.Equal(files[userData], user) || !bytes.Equal(files[metaData], meta) {
+		t.Errorf("seed disk: %v", err)
+	}
+	if st, _ := os.Stat(filepath.Join(dir, seedDisk)); st.Mode().Perm() != 0o600 {
+		t.Errorf("seed disk mode %v", st.Mode())
 	}
 }

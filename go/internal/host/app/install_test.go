@@ -189,9 +189,13 @@ func TestInstallDriverChoice(t *testing.T) {
 		{[]string{"--driver=vfkit"}, "vfkit", "", ""},
 		{[]string{"--vfkit", "/opt/vfkit"}, "vfkit", "/opt/vfkit", ""},
 		{[]string{"--limactl", "/opt/limactl", "--driver", "lima"}, "lima", "/opt/limactl", ""},
+		{[]string{"--qemu", "/usr/bin/qemu-system-x86_64"}, "qemu", "/usr/bin/qemu-system-x86_64", ""},
+		{[]string{"--driver", "qemu"}, "qemu", "", ""},
 		{[]string{"--vfkit", "/a", "--limactl", "/b"}, "", "", "choose different drivers"},
+		{[]string{"--qemu", "/a", "--vfkit", "/b"}, "", "", "choose different drivers"},
 		{[]string{"--driver", "lima", "--vfkit", "/a"}, "", "", "does not apply"},
-		{[]string{"--driver", "qemu"}, "", "", "unknown driver"},
+		{[]string{"--driver", "vfkit", "--qemu", "/a"}, "", "", "does not apply"},
+		{[]string{"--driver", "xen"}, "", "", "unknown driver"},
 	}
 	for _, c := range cases {
 		d := &driver.Mock{Caps: driver.Capabilities{NestedVirt: true}, EP: driver.SSHEndpoint{Host: "h", Port: 1, User: "root", HostKey: "k"}}

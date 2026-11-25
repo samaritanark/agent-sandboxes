@@ -18,7 +18,8 @@ import (
 
 // InstallDeps are install's host-specific parts.
 type InstallDeps struct {
-	// RecordDriver records the VM driver (kind "vfkit" or "lima", "" for this host's default) and
+	// RecordDriver records the VM driver (kind "vfkit", "qemu", or "lima"; "" for this host's
+	// default) and
 	// verifies its tool (an explicit path, or "" to find it on PATH), then opens the driver.
 	RecordDriver func(kind, tool string) (driver.Driver, error)
 	// GenerateKey makes an ed25519 key pair in OpenSSH format.
@@ -44,20 +45,23 @@ const installUsage = `Usage: sandbox install --dev-image <path> [options]
 Create and start the sandbox VM.
 
 Options:
-  --dev-image <path>   A local appliance image (raw on macOS, qcow2 on Linux).
+  --dev-image <path>   A local appliance image (raw; qcow2 for --driver lima).
                        Development builds only: its signature is not checked.
   --vm-cpus <n>        VM CPUs (default: host CPUs less 2, at least 4)
   --vm-memory <GiB>    VM memory (default: host memory less 6 GiB, at least 8)
   --vm-disk <GiB>      VM state disk (default: 60)
-  --driver <name>      The VM driver: vfkit (macOS default: the VM's only network
-                       is sandbox netd, which keeps it from reaching this host) or
-                       lima (Linux; on macOS it cannot block the host's LAN address)
+  --driver <name>      The VM driver: vfkit (macOS) or qemu (Linux), the defaults,
+                       whose only network is sandbox netd, which keeps the VM from
+                       reaching this host; or lima, which cannot block the host's
+                       LAN address
   --vfkit <path>       The vfkit binary to use (default: vfkit on PATH)
+  --qemu <path>        The qemu-system binary to use (default: on PATH)
   --limactl <path>     The Lima binary to use (default: limactl on PATH)
 `
 
 func (a *app) install(args []string) int {
-	var image, tool, kind, vfkitTool, limaTool string
+	var image, tool, kind string
+	tools := map[string]string{} // driver -> tool path given
 	var o sizing.Overrides
 	for len(args) > 0 {
 		f := args[0]
@@ -92,9 +96,11 @@ func (a *app) install(args []string) int {
 		case "--driver":
 			kind = value()
 		case "--vfkit":
-			vfkitTool = value()
+			tools["vfkit"] = value()
+		case "--qemu":
+			tools["qemu"] = value()
 		case "--limactl":
-			limaTool = value()
+			tools["lima"] = value()
 		default:
 			fmt.Fprint(a.env.Stderr, installUsage)
 			a.die("install: unknown option '%s'", f)
@@ -127,22 +133,17 @@ func (a *app) install(args []string) int {
 		a.die("%v", err)
 	}
 
-	switch {
-	case vfkitTool != "" && limaTool != "":
-		a.die("install: --vfkit and --limactl choose different drivers; pass one")
-	case vfkitTool != "":
-		if kind != "" && kind != "vfkit" {
-			a.die("install: --vfkit does not apply to the %s driver", kind)
-		}
-		kind, tool = "vfkit", vfkitTool
-	case limaTool != "":
-		if kind != "" && kind != "lima" {
-			a.die("install: --limactl does not apply to the %s driver", kind)
-		}
-		kind, tool = "lima", limaTool
+	if len(tools) > 1 {
+		a.die("install: --vfkit, --qemu, and --limactl choose different drivers; pass one")
 	}
-	if kind != "" && kind != "vfkit" && kind != "lima" {
-		a.die("install: unknown driver '%s' (vfkit or lima)", kind)
+	for k, p := range tools {
+		if kind != "" && kind != k {
+			a.die("install: the %s path does not apply to the %s driver", k, kind)
+		}
+		kind, tool = k, p
+	}
+	if kind != "" && kind != "vfkit" && kind != "qemu" && kind != "lima" {
+		a.die("install: unknown driver '%s' (vfkit, qemu, or lima)", kind)
 	}
 	d, err := a.env.Install.RecordDriver(kind, tool)
 	if err != nil {
@@ -332,7 +333,7 @@ func (a *app) removeVM() {
 		}
 	}
 	vmState := filepath.Join(a.env.StateDir, "vm")
-	for _, f := range []string{"id_ed25519", "id_ed25519.pub", "known_hosts", "ssh_host_key.pub", "limactl.path", "vfkit.path"} {
+	for _, f := range []string{"id_ed25519", "id_ed25519.pub", "known_hosts", "ssh_host_key.pub", "limactl.path", "vfkit.path", "qemu.path"} {
 		if err := os.Remove(filepath.Join(vmState, f)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			a.die("%v", err)
 		}

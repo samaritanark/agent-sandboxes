@@ -1,6 +1,6 @@
 //go:build windows
 
-package vfkit
+package netdvm
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"os"
 )
 
-var errWindows = errors.New("the vfkit driver runs on macOS only")
+var errWindows = errors.New("the netd VM drivers (vfkit, qemu) do not run on Windows")
 
 func (d *Driver) Start(context.Context) error  { return errWindows }
 func (d *Driver) Stop(context.Context) error   { return errWindows }
