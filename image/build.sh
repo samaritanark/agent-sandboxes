@@ -104,6 +104,12 @@ cp -a "${n}/lib/systemd/system/containerd.service" "${n}/lib/systemd/system/buil
 for p in ptp bridge firewall host-local static loopback; do
   cp -a "${n}/libexec/cni/${p}" "${tree}/opt/cni/bin/"
 done
+# Envoy, each session's gateway data plane (design 5.8.4; owner decision: the official static
+# release, pinned like Kata).
+envoy_bin="$(ls "${art}"/envoy-*-linux-* 2>/dev/null | head -1)"
+[[ -n "${envoy_bin}" ]] || { echo "no Envoy artifact for ${goarch}" >&2; exit 1; }
+install -m 0755 "${envoy_bin}" "${tree}/usr/local/bin/envoy"
+
 # Fixed owner and times, so the tree is the same on every build.
 chown -R -h root:root "${tree}"
 find "${tree}" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +

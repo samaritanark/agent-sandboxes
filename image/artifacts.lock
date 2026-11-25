@@ -1,7 +1,10 @@
 # Upstream artifacts the appliance image unpacks (image/lock.py artifacts; design 5.3.1, owner decision
 # 2026-11-25): name arch sha256 size url. SHA-256 values are the release's own (GitHub's asset
-# digests; nerdctl also publishes SHA256SUMS). Versions are the ones spike S1 tested.
+# digests; nerdctl publishes SHA256SUMS and Envoy a signed checksums.txt.asc, both checked).
+# Versions are the ones spikes S1 (Kata, nerdctl) and S5 (Envoy) tested.
 kata-go-static amd64 240723fd052e538acf2c95a0126abda77d41078702a65783ebc2967f4829a0d6 1353034387 https://github.com/kata-containers/kata-containers/releases/download/4.4.0/kata-go-static-4.4.0-amd64.tar.zst
 kata-go-static arm64 904e09007f439c6619d9122cd25057d04db61a1b6805a728295c4f02813fb1a4 633881615 https://github.com/kata-containers/kata-containers/releases/download/4.4.0/kata-go-static-4.4.0-arm64.tar.zst
 nerdctl-full amd64 1f12c1a5840744fdf7029483c55a69813d44aa2ec1ef879d52d81ff6a3049ecd 297720400 https://github.com/containerd/nerdctl/releases/download/v2.4.2/nerdctl-full-2.4.2-linux-amd64.tar.gz
 nerdctl-full arm64 fe0ef0e9840ee8932640e6058f84b7fa98050f9726e44af44883a5b804ae830e 270513423 https://github.com/containerd/nerdctl/releases/download/v2.4.2/nerdctl-full-2.4.2-linux-arm64.tar.gz
+envoy amd64 1d64506e25c1844f146162ddb2ece7010fa4e784faddb40a079021491f1f03cc 106860504 https://github.com/envoyproxy/envoy/releases/download/v1.40.2/envoy-1.40.2-linux-x86_64
+envoy arm64 b9d6d1e06dd5838a3506de9f4deebad3de9a2ce6cadb87cd76222ca286213baf 103837096 https://github.com/envoyproxy/envoy/releases/download/v1.40.2/envoy-1.40.2-linux-aarch_64
