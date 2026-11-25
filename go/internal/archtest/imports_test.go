@@ -46,6 +46,7 @@ var allowed = map[string][]string{
 	"host/app":     {"host/driver", "host/release"},
 	"host/lima":    {"host/driver"},
 	"host/sshx":    {"host/driver"},
+	"host/gitref":  {},
 }
 
 // hostSafe is every internal package the host binary may depend on, directly or not (5.1.1).
