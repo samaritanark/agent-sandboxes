@@ -403,3 +403,17 @@ func exactASCII(parts []string) bool {
 	}
 	return true
 }
+
+// IsMasked reports whether p is a masked path (rule 1: never crosses in either direction), as
+// opposed to the other protected classes, which flow host to VM.
+func IsMasked(p string, h Host, r Repo) bool {
+	parts, err := CleanPath(p, h)
+	if err != nil {
+		return false
+	}
+	keys := make([]string, len(parts))
+	for i, c := range parts {
+		keys[i] = h.key(c)
+	}
+	return masked(parts, keys, h, r.MaskedPaths)
+}

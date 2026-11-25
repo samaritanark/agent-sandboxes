@@ -25,7 +25,10 @@ var allowed = map[string][]string{
 	// the operator-state push (5.1.4): the host builds it, the in-VM binary receives it
 	"opstate": {},
 	// the flat YAML list reader shared by config and the host sync gate (masked_paths:)
-	"yamllist":  {},
+	"yamllist": {},
+	// the sync protocol (host engine and in-VM agent) and the in-VM agent itself
+	"syncproto": {},
+	"syncagent": {"syncproto"},
 	"vetting":   {"bashcompat", "config", "deviation"}, // the gate is injected, never imported
 	"checks":    {"config", "deviation"},
 	"tier":      {},
@@ -47,16 +50,17 @@ var allowed = map[string][]string{
 		"link", "mounts", "onboard", "secrets", "tier", "vetting", "workspace"},
 
 	// The host binary's packages (design 5.1). They import only each other.
-	"host/driver":    {},
-	"host/release":   {},
-	"host/app":       {"host/driver", "host/release", "host/sizing", "host/syncgate", "opstate"},
-	"host/sizing":    {},
-	"host/syncgate":  {"tables", "yamllist"},
-	"host/gitobj":    {},
-	"host/lima":      {"host/driver"},
-	"host/sshx":      {"host/driver"},
-	"host/gitref":    {},
-	"host/proxycert": {},
+	"host/driver":     {},
+	"host/release":    {},
+	"host/app":        {"host/driver", "host/release", "host/sizing", "host/syncgate", "opstate"},
+	"host/sizing":     {},
+	"host/syncgate":   {"tables", "yamllist"},
+	"host/gitobj":     {},
+	"host/syncengine": {"host/syncgate", "syncproto"},
+	"host/lima":       {"host/driver"},
+	"host/sshx":       {"host/driver"},
+	"host/gitref":     {},
+	"host/proxycert":  {},
 }
 
 // hostSafe is every internal package the host binary may depend on, directly or not (5.1.1).

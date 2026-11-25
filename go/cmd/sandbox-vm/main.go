@@ -13,6 +13,7 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/cli"
 	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 	"github.com/samaritanark/agent-sandboxes/go/internal/opstate"
+	"github.com/samaritanark/agent-sandboxes/go/internal/syncagent"
 )
 
 // Set at build time with -ldflags "-X main.version=...".
@@ -39,7 +40,23 @@ func currentUser() string {
 // so the in-VM CLI's own commands and texts stay as v2 had them.
 const receiveOperatorState = "__receive-operator-state"
 
+// syncAgent is the in-VM end of the workspace sync (design 5.6): the host engine runs it over SSH
+// for one workspace copy under /var/lib/sandbox/workspaces.
+const syncAgent = "__sync-agent"
+
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == syncAgent {
+		ws := filepath.Clean(os.Args[2])
+		if !strings.HasPrefix(ws, "/var/lib/sandbox/workspaces/") || strings.Count(ws, "/") != 5 {
+			os.Stderr.WriteString("ERROR: not a workspace copy: " + os.Args[2] + "\n")
+			os.Exit(1)
+		}
+		if err := syncagent.Serve(ws, os.Stdin, os.Stdout); err != nil {
+			os.Stderr.WriteString("ERROR: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == receiveOperatorState {
 		dest := os.Getenv("SANDBOX_OPERATOR_DIR")
 		if dest == "" {

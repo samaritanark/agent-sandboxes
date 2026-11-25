@@ -1,0 +1,200 @@
+// Package syncagent is the in-VM side of the sync engine: it serves syncproto requests on one
+// workspace copy, confined to it with os.Root, until its input ends. It runs in the VM as the
+// sync user (design 5.6.2 rule 5) and is never reachable from a microVM. It decides nothing about
+// policy: the host engine and gate do. Host-to-VM changes carry the fingerprint the host last
+// synced, and a path that changed in the VM since is reported as a conflict, not overwritten.
+package syncagent
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path"
+	"sort"
+	"strings"
+
+	"github.com/samaritanark/agent-sandboxes/go/internal/syncproto"
+)
+
+// Serve answers requests from r on w for the tree at dir.
+func Serve(dir string, r io.Reader, w io.Writer) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	for {
+		h, body, err := syncproto.Read(r)
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		reply, rbody := handle(root, h, body)
+		if err := syncproto.Write(w, reply, rbody); err != nil {
+			return err
+		}
+	}
+}
+
+func validPath(p string) bool {
+	if p == "" || strings.HasPrefix(p, "/") || strings.ContainsRune(p, 0) || strings.ContainsRune(p, '\\') {
+		return false
+	}
+	for _, c := range strings.Split(p, "/") {
+		if c == "" || c == "." || c == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// fingerprint of p, not following a final symlink; data is the file's bytes when it is a file.
+func fingerprint(root *os.Root, p string) (string, []byte, error) {
+	st, err := root.Lstat(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil, nil
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	switch {
+	case st.Mode()&fs.ModeSymlink != 0:
+		t, err := root.Readlink(p)
+		return syncproto.Fingerprint("link", nil, false, t), nil, err
+	case st.IsDir():
+		return "dir", nil, nil
+	case st.Mode().IsRegular():
+		if st.Size() > syncproto.MaxBody {
+			return "other", nil, nil // too large to sync: reported as such, never transferred
+		}
+		b, err := root.ReadFile(p)
+		return syncproto.Fingerprint("file", b, st.Mode()&0o111 != 0, ""), b, err
+	}
+	return "other", nil, nil
+}
+
+func handle(root *os.Root, h syncproto.Header, body []byte) (syncproto.Header, []byte) {
+	fail := func(f string, a ...interface{}) (syncproto.Header, []byte) {
+		return syncproto.Header{Err: fmt.Sprintf(f, a...)}, nil
+	}
+	if h.Op == syncproto.OpScan {
+		entries, err := scan(root)
+		if err != nil {
+			return fail("scan: %v", err)
+		}
+		return syncproto.Header{Entries: entries}, nil
+	}
+	if !validPath(h.Path) {
+		return fail("invalid path %q", h.Path)
+	}
+	cur, data, err := fingerprint(root, h.Path)
+	if err != nil {
+		return fail("%v", err)
+	}
+	switch h.Op {
+	case syncproto.OpRead:
+		r := syncproto.Header{FP: cur}
+		if strings.HasPrefix(cur, "link:") {
+			r.Target = strings.TrimPrefix(cur, "link:")
+		}
+		return r, data
+	case syncproto.OpWrite, syncproto.OpSymlink, syncproto.OpDelete:
+		if cur != h.Base {
+			return syncproto.Header{Conflict: true, FP: cur}, nil
+		}
+		if err := apply(root, h, body, cur); err != nil {
+			return fail("%s %s: %v", h.Op, h.Path, err)
+		}
+		fp, _, _ := fingerprint(root, h.Path)
+		return syncproto.Header{FP: fp}, nil
+	}
+	return fail("unknown operation %q", h.Op)
+}
+
+// apply makes one change: parents as plain directories (a symlinked parent is refused), contents
+// through a temporary file renamed into place.
+func apply(root *os.Root, h syncproto.Header, body []byte, cur string) error {
+	parts := strings.Split(h.Path, "/")
+	for i := 1; i < len(parts); i++ {
+		d := strings.Join(parts[:i], "/")
+		st, err := root.Lstat(d)
+		if errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		if err != nil || !st.IsDir() {
+			return fmt.Errorf("%s is not a plain directory", d)
+		}
+	}
+	if h.Op == syncproto.OpDelete {
+		if cur == "dir" {
+			return errors.New("refusing to delete a directory")
+		}
+		err := root.Remove(h.Path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if cur == "dir" {
+		return errors.New("a directory is in the way")
+	}
+	if dir := path.Dir(h.Path); dir != "." {
+		if err := root.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	tmp := path.Join(path.Dir(h.Path), ".sandbox-sync-incoming")
+	root.Remove(tmp)
+	if h.Op == syncproto.OpSymlink {
+		if err := root.Symlink(h.Target, tmp); err != nil {
+			return err
+		}
+	} else {
+		mode := fs.FileMode(0o644)
+		if h.Exec {
+			mode = 0o755
+		}
+		if err := root.WriteFile(tmp, body, mode); err != nil {
+			return err
+		}
+		if err := root.Chmod(tmp, mode); err != nil {
+			return err
+		}
+	}
+	if err := root.Rename(tmp, h.Path); err != nil {
+		root.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// scan lists every file and symlink under the root (directories are implied), sorted.
+func scan(root *os.Root) ([]syncproto.Entry, error) {
+	var out []syncproto.Entry
+	err := fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // unreadable: left out
+		}
+		if p == "." || d.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(p, ".sandbox-sync-incoming") {
+			return nil
+		}
+		fp, _, err := fingerprint(root, p)
+		if err != nil {
+			return nil
+		}
+		out = append(out, syncproto.Entry{Path: p, FP: fp})
+		if len(out) > syncproto.MaxEntries {
+			return errors.New("too many files")
+		}
+		return nil
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, err
+}
