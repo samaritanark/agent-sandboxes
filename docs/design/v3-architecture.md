@@ -1342,6 +1342,10 @@ either way no process holds another session's credentials.
 
 - Schema: per-domain rule lists of `{methods, path_patterns, action}`,
   evaluated deny-first. Domains with rules are automatically intercepted.
+  `path_patterns` are globs: `*` within one path segment, `**` across
+  segments, and an optional `?query` part; the gateway controller compiles
+  them to Envoy RE2 and tests them against the same Go matcher (owner,
+  2026-11-25).
 - **Org baseline** (shipped in `config/egress-baseline.yaml`;
   overlay-extensible; not removable by profiles or operators). The baseline is
   stated as **protocol rules and applies to every intercepted destination,
@@ -1365,6 +1369,8 @@ either way no process holds another session's credentials.
     on such a host adds an L7 rule for it, which makes it intercepted.
   - GitHub API writes (non-`GET`) denied except endpoints a supported agent
     requires (for example Copilot's own API), enumerated per agent in S2/S5.
+    Left out of the shipped baseline until that list exists (owner,
+    2026-11-25).
 - The additive-only invariant extends to L7: overlays MAY add deny rules and
   narrow allows; they MUST NOT remove an org deny.
 
@@ -2270,7 +2276,7 @@ Each step leaves the tree releasable or gated behind a flag.
 | ID | Question | Default if unanswered |
 |---|---|---|
 | OQ-01 | If S2 finds an agent cannot be brokered, is it disabled in v3.0.0 unless an org overlay explicitly allows the exception? | Disabled unless allowed; audited per session |
-| OQ-02 | Is the `git push` deny a hard org baseline, or overlay-configurable? | Org baseline, applied by protocol to every intercepted host (§5.8.5); overlay may relax only for named hosts |
+| OQ-02 | Is the `git push` deny a hard org baseline, or overlay-configurable? | **Resolved (owner, 2026-11-25):** org baseline, applied by protocol to every intercepted host (§5.8.5); overlay may relax only for named hosts |
 | OQ-03 | arm64 Linux and arm64 Windows hosts in scope for v3.0.0? | Linux arm64 yes; Windows arm64 no |
 | OQ-04 | Image hosting and retention | ghcr.io public + documented mirror procedure |
 | OQ-05 | v2 support window after v3.0.0 | Security fixes for one minor cycle on macOS and Linux; on Windows, until a v3 release supports Windows. v2 stays bash on its own branch |
@@ -2278,7 +2284,7 @@ Each step leaves the tree releasable or gated behind a flag.
 | OQ-07 | Final exec-vector list | §5.6.2 list plus anything S4 finds that auto-executes without a trust prompt; `.gitattributes` driver selection is handled by §5.6.2 rule 8 |
 | OQ-08 | Log retention: enforce `retention_days`, or drop the claim? | Enforce in `sandbox cleanup`, per tier; VM keeps 7 days after pull |
 | OQ-09 | Exec-plugin tokens for a keep-alive session after the operator detaches | Token expires; requests fail closed until the operator re-attaches |
-| OQ-10 | Multi-label wildcard form: `**.` or a per-entry flag? | `**.` |
+| OQ-10 | Multi-label wildcard form: `**.` or a per-entry flag? | **Resolved (owner, 2026-11-25):** `**.` |
 | OQ-11 | Keep `sandbox rebuild` (buildkit in the image) or ship agent images only through image releases? | **Resolved (rev. 5): neither alone.** Harness-only updates use operator-driven `sandbox agent update` (§5.7.1, D-35); `sandbox rebuild` stays for local image changes, with buildkit GC caps from v2 carried over; image releases carry the tested baseline |
 | OQ-12 | Should agent history also be separated by tier? | **Resolved (rev. 3): yes**, agent + repo + tier (D-14) |
 | OQ-13 | If S3 finds no hardware-isolated backend on Windows, does v3.0.0 wait? | **Resolved (rev. 3): no.** v3.0.0 ships on macOS and Linux; Windows stays on v2 until it passes §7 (D-29) |
