@@ -31,11 +31,12 @@ var allowed = map[string][]string{
 	// the session spec the policy CLI hands sandboxd (design 5.4.2): data and its structural checks
 	"sessionspec": {"egressmatch"},
 	// sandboxd (design 5.4.3): the in-VM supervisor's packages
-	"sandboxd/journal": {"sessionspec"},
-	"sandboxd/limits":  {"sessionspec"},
-	"sandboxd/runtime": {},
-	"sandboxd/netns":   {},
-	"sandboxd/daemon":  {"sandboxd/journal", "sandboxd/limits", "sandboxd/runtime", "sessionspec"},
+	"sandboxd/journal":  {"sessionspec"},
+	"sandboxd/limits":   {"sessionspec"},
+	"sandboxd/runtime":  {},
+	"sandboxd/netns":    {},
+	"sandboxd/netsetup": {},
+	"sandboxd/daemon":   {"sandboxd/journal", "sandboxd/limits", "sandboxd/runtime", "sessionspec"},
 	// the sync protocol (host engine and in-VM agent) and the in-VM agent itself
 	"syncproto": {},
 	"syncagent": {"syncproto"},
