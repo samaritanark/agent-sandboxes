@@ -40,16 +40,20 @@ cp -a setup/versions.sh "${lib}/setup/versions.sh"
 
 printf 'IMAGE_VERSION=%s\nCONTROL_API=1\n' "${version}" > "${stage}/etc/sandbox/release"
 
-# Packages come from Ubuntu's snapshot archive at the timestamp in image/snapshot, so a rebuild
-# installs the same versions. snapshot.ubuntu.com serves amd64 (ubuntu) but not ports (arm64 answers
-# 401), so an arm64 build still uses the live archive and its packages are not pinned (S8).
-snapshot="$(cat "${here}/snapshot")"
-[[ "${snapshot}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || { echo "invalid image/snapshot: ${snapshot}" >&2; exit 1; }
+# Packages come only from the lockfile (image/packages.<arch>.lock, owner decision 6): lock.py
+# fetches each .deb, checks its SHA-256 against the lock, and writes a local repository that mkosi
+# uses instead of Ubuntu's archive, so a rebuild installs exactly the locked packages.
+# SANDBOX_IMAGE_UNLOCKED=1 builds from the live archive instead, only to regenerate the lock
+# (see image/README.md); such an image is not reproducible.
+lock="${here}/packages.${goarch}.lock"
 mirror=()
-if [[ "${goarch}" == amd64 ]]; then
-  mirror=(--mirror "https://snapshot.ubuntu.com/ubuntu/${snapshot}")
+if [[ "${SANDBOX_IMAGE_UNLOCKED:-}" == 1 ]]; then
+  echo "WARNING: unlocked build from the live archive; this image is not reproducible." >&2
 else
-  echo "WARNING: arm64 packages are not pinned (no ports snapshot); this image is not reproducible." >&2
+  [[ -f "${lock}" ]] || { echo "no package lock ${lock} (see image/README.md)" >&2; exit 1; }
+  repo="${here}/mkosi.cache/locked-${goarch}"
+  python3 -I "${here}/lock.py" repo --lock "${lock}" --out "${repo}"
+  mirror=(--local-mirror "file://${repo}")
 fi
 
 cd "${here}"
