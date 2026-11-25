@@ -4,7 +4,8 @@
 # Each case in cases.tsv is "id version args tree stdin env" (all but id and version are
 # "=" + base64): args are NUL-separated words; tree builds $HOME from lines "f path content",
 # "d path", "l path target", "g path" (git init), "c path" (commit everything in that repo),
-# "r path" (remove), "p path" (a FIFO) (base64 words); env is NAME=VALUE lines added to a
+# "r path" (remove), "p path" (a FIFO), "L name origin" (clone <HOME>/origin as the linked overlay
+# <name> and record the link) (base64 words); "<HOME>" in an argument is the case home; env is NAME=VALUE lines added to a
 # clean environment (PATH, HOME, LC_ALL, SANDBOX_LOGS_DIR, GIT_CONFIG_NOSYSTEM, a fixed git committer
 # identity and date, and a `date` shim
 # answering `date +%s` with FAKE_NOW=1800000000); the line STUB=1 instead puts the gate's stub
@@ -33,7 +34,7 @@ dec() { local _dv; _dv="$(printf '%s' "${2#=}" | base64 -d; printf x)"; printf -
 tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree estdin eenv; do
   c="$T/c/$id"; H="$c/home"; mkdir -p "$H"
   args=()
-  while IFS= read -r -d '' a; do args+=("$a"); done < <(printf '%s' "${eargs#=}" | base64 -d)
+  while IFS= read -r -d '' a; do args+=("${a//<HOME>/$H}"); done < <(printf '%s' "${eargs#=}" | base64 -d)
   dec tree "$etree"; dec input "$estdin"; dec envs "$eenv"
   while IFS= read -r line; do
     read -ra w <<<"$line"; [[ ${#w[@]} -gt 0 ]] || continue
@@ -42,7 +43,11 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
       f) mkdir -p "$(dirname "$H/$p")"; printf '%s' "$t" > "$H/$p" ;;
       d) mkdir -p "$H/$p" ;;
       l) mkdir -p "$(dirname "$H/$p")"; ln -s "$t" "$H/$p" ;;
-      g) mkdir -p "$H/$p"; GIT_CONFIG_GLOBAL=/dev/null git init -q "$H/$p" ;;
+      g) mkdir -p "$H/$p"; GIT_CONFIG_GLOBAL=/dev/null git init -q -b main "$H/$p" ;;
+      L) GIT_CONFIG_GLOBAL=/dev/null git clone -q "$H/$t" "$H/.sandbox/overlays/$p"
+         mkdir -p "$H/.sandbox"
+         printf 'overlay: %s\nlink_url: %s\nlink_ref: main\nlink_commit: %s\n' "$H/.sandbox/overlays/$p" "$H/$t" \
+           "$(git -C "$H/.sandbox/overlays/$p" rev-parse HEAD)" >> "$H/.sandbox/config.yaml" ;;
       c) GIT_CONFIG_GLOBAL=/dev/null git -C "$H/$p" add -A
          GIT_CONFIG_GLOBAL=/dev/null GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x \
            GIT_AUTHOR_DATE="@1700000000 +0000" GIT_COMMITTER_DATE="@1700000000 +0000" git -C "$H/$p" commit -q -m c ;;

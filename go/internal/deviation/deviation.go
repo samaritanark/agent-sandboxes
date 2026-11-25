@@ -161,6 +161,10 @@ const (
 	// reproduces through $'...') could therefore record a second fingerprint that suppresses a real
 	// finding in another file. A spec with a line break is now refused before anything is scanned.
 	ExceptionSpecOneLine ID = "exception-spec-one-line"
+	// LinkMissingCloneMessage: when the linked clone had lost its .git directory, `sandbox link
+	// status` and `link sync` exited 1 with no output (link_active_dir's failing last test ended
+	// the command under set -e) instead of printing their messages for that case. They print them.
+	LinkMissingCloneMessage ID = "link-missing-clone-message"
 )
 
 var (

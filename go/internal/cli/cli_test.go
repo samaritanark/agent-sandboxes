@@ -45,6 +45,7 @@ func fixtureEnv(ver, home, root string, envs []string) Env {
 	}
 	e.Home = home
 	e.UserConfig = home + "/.sandbox/config.yaml"
+	e.CacheDir = home + "/.sandbox/cache/leakscan"
 	e.OrgBlockList = root + "/config/blocked-destinations.yaml"
 	for _, kv := range envs {
 		k, v, _ := strings.Cut(strings.ReplaceAll(kv, "<HOME>", home), "=")
@@ -81,7 +82,7 @@ func buildTree(t *testing.T, home, spec string) {
 			os.Symlink(dec64(t, w[2]), full)
 		case "g":
 			os.MkdirAll(full, 0o755)
-			cmd := exec.Command("git", "init", "-q", full)
+			cmd := exec.Command("git", "init", "-q", "-b", "main", full)
 			cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
 			if b, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("git init %s: %v %s", full, err, b)
@@ -109,6 +110,18 @@ func buildTree(t *testing.T, home, spec string) {
 			if b, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("signed tag in %s: %v %s", full, err, b)
 			}
+		case "L":
+			origin, dst := home+"/"+dec64(t, w[2]), home+"/.sandbox/overlays/"+p
+			cmd := exec.Command("git", "clone", "-q", origin, dst)
+			cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+			if b, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("clone %s: %v %s", origin, err, b)
+			}
+			head, _ := exec.Command("git", "-C", dst, "rev-parse", "HEAD").Output()
+			os.MkdirAll(home+"/.sandbox", 0o755)
+			f, _ := os.OpenFile(home+"/.sandbox/config.yaml", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
+			fmt.Fprintf(f, "overlay: %s\nlink_url: %s\nlink_ref: main\nlink_commit: %s\n", dst, origin, strings.TrimSpace(string(head)))
+			f.Close()
 		case "r":
 			os.RemoveAll(full)
 		case "p":
@@ -186,10 +199,13 @@ func TestCLIGolden(t *testing.T) {
 	var bad []string
 	for i, row := range cases {
 		var args []string
+		home := filepath.Join(dir, row[0], "home")
 		if a := dec64(t, row[2]); a != "" {
 			args = strings.Split(strings.TrimSuffix(a, "\x00"), "\x00")
+			for j := range args {
+				args[j] = strings.ReplaceAll(args[j], "<HOME>", home)
+			}
 		}
-		home := filepath.Join(dir, row[0], "home")
 		os.MkdirAll(home, 0o755)
 		buildTree(t, home, dec64(t, row[3]))
 		var envs []string

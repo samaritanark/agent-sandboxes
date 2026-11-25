@@ -619,3 +619,21 @@ m(VT, '\tcase "dirty":\n\t\tc.out("DIRTY:    %s (HEAD %s)", repo, f2)', '\tcase 
 m(VT, '\t\tc.errOut("ERROR:    %s", f2)\n\t\tpanic(exit(1))', '\t\tc.errOut("ERROR:    %s", f2)', R_CL)
 m(VT, '\tif a.SigningSetupAssist(repo) != 0 {\n\t\tpanic(exit(1))\n\t}', '', R_CL)
 m(VT, '\tif rc := a.AttestRepo(repo, msg, yes); rc != 0 {', '\tif rc := a.AttestRepo(repo, "vetted for agent use", yes); rc != 0 {', R_CL)
+
+LKC = "internal/cli/link.go"
+FET = "internal/gate/fetch.go"
+m(LKC, '\tif l.IsActive() {\n\t\tc.die("A link is already active', '\tif false {\n\t\tc.die("A link is already active', R_CL)
+m(LKC, '\tif config.Exists(dir) {\n\t\tc.die("%s already exists.', '\tif false {\n\t\tc.die("%s already exists.', R_CL)
+m(LKC, '\tif ov := config.ExtractYAMLScalar(c.env.UserConfig, "overlay"); ov != "" {\n\t\tc.warn("existing', '\tif ov := ""; ov != "" {\n\t\tc.warn("existing', R_CL)
+m(LKC, '\tif !v.OK {\n\t\tos.RemoveAll(dir)\n\t\tc.die("overlay at', '\tif false {\n\t\tos.RemoveAll(dir)\n\t\tc.die("overlay at', R_CL)
+m(LKC, '\tif unmet != "" {\n\t\tos.RemoveAll(dir)', '\tif false {\n\t\tos.RemoveAll(dir)', R_CL)
+m(LKC, '\tif target != "" && head != target {', '\tif target != "" {', R_CL)
+m(LKC, '\tif st, _ := gitRun(l, dir, "status", "--porcelain"); st != "" {', '\tif false {', R_CL)
+m(LKC, '\tif old == target {\n\t\tl.WriteConfig', '\tif false {\n\t\tl.WriteConfig', R_CL)
+m(LKC, '\tif !v.OK {\n\t\trollback()', '\tif !v.OK {', R_CL)
+m(LKC, '\tif !keep && dir != "" && isDir(dir) {', '\tif dir != "" && isDir(dir) {', R_CL)
+m(LKC, '\t\tsuffix := " and delete its clone"', '\t\tsuffix := ""', R_CL)
+m(LKC, '\tif d == "" && l.IsActive() && config.ExtractYAMLScalar(c.env.UserConfig, "overlay") != "" &&', '\tif false &&', R_CL)
+m(FET, '\tif url == "" {\n\t\treturn\n\t}', '', R_CL, pkg="cli")
+m(FET, '\tif strings.HasPrefix(url, "-") {', '\tif false {', R_CL, pkg="cli")
+m(FET, '\t\tif config.IsFile(cache) {', '\t\tif true {', R_CL, pkg="cli")

@@ -29,6 +29,9 @@ func (t tree) c(p string) tree       { return append(t.clone(), enc("c")+" "+enc
 func (t tree) r(p string) tree       { return append(t.clone(), enc("r")+" "+enc(p)) }
 func (t tree) p(p string) tree       { return append(t.clone(), enc("p")+" "+enc(p)) }
 func (t tree) v(p string) tree       { return append(t.clone(), enc("v")+" "+enc(p)) }
+func (t tree) L(name, origin string) tree {
+	return append(t.clone(), enc("L")+" "+enc(name)+" "+enc(origin))
+}
 
 type cs struct {
 	ver   string
@@ -226,6 +229,53 @@ func main() {
 		{args: []string{"vet", "--repo", "~/vr", "--message", "release 1"}, tree: vr.f(".sandbox/config.yaml", "vetting_signing_key: ~/.testkey/k\n").f("scen/ws.json", "[]"), env: stub},
 		{args: []string{"vet", "--repo", "~/vr"}, tree: vetted.f(".sandbox/config.yaml", "vetting_signing_key: ~/.testkey/k\n").f("scen/ws.json", "[]"), env: stub},
 		{args: []string{"vet", "--repo", "~/vr", "--message"}, tree: vr},
+	} {
+		add(cc)
+	}
+
+	// link
+	og := tree{}.g("origin").f("origin/profiles/dev.yaml", "tier: 2\n").c("origin")
+	linked := og.L("origin", "origin")
+	ahead := linked.f("origin/profiles/ops.yaml", "tier: 3\nextra_allowed_domains:\n  - ops.example.com\n").c("origin")
+	for _, cc := range []cs{
+		{args: []string{"link"}}, {args: []string{"link", "-h"}}, {args: []string{"link", "status"}}, {args: []string{"link", "sync"}},
+		{args: []string{"link", "unlink"}}, {args: []string{"link", "status", "x"}}, {args: []string{"link", "--bogus"}},
+		{args: []string{"link", "<HOME>/origin"}, tree: og},
+		{args: []string{"link", "<HOME>/origin", "--name", "team", "--ref", "main"}, tree: og},
+		{args: []string{"link", "<HOME>/origin", "--ref=nope"}, tree: og},
+		{args: []string{"link", "<HOME>/origin", "--name", "a b"}, tree: og},
+		{args: []string{"link", "<HOME>/origin", "extra"}, tree: og},
+		{args: []string{"link", "<HOME>/origin/"}, tree: og},
+		{args: []string{"link", "<HOME>/origin"}, tree: og.f(".sandbox/config.yaml", "overlay: /old/team\n")},
+		{args: []string{"link", "<HOME>/origin"}, tree: og.d(".sandbox/overlays/origin")},
+		{args: []string{"link", "<HOME>/origin"}, tree: linked},
+		{args: []string{"link", "<HOME>/origin"}, tree: og.f("origin/profiles/bad.yaml", "tier: 9\n").c("origin")},
+		{args: []string{"link", "<HOME>/origin"}, tree: og.f("origin/config.yaml", "min_sandbox_version: 99.0\n").c("origin")},
+		{ver: "full", args: []string{"link", "<HOME>/origin"}, tree: og.f("origin/config.yaml", "min_sandbox_version: 99.0\n").c("origin")},
+		{ver: "full", args: []string{"link", "<HOME>/origin"}, tree: og.f("origin/config.yaml", "min_sandbox_version: 1.0\n").c("origin")},
+		{args: []string{"link", "<HOME>/origin"}, tree: og.f("origin/config.yaml", "leakscan_config_url: file:///nonexistent/x.toml\n").c("origin"), env: stub},
+		{args: []string{"link", "<HOME>/origin"}, tree: og.f("origin/config.yaml", "leakscan_config_url: file://<HOME>/cfg.toml\n").c("origin").f("cfg.toml", "x"), env: stub},
+		{args: []string{"link", "<HOME>/origin"}, tree: og.f("origin/config.yaml", "leakscan_config_url: -x\n").c("origin")},
+		{args: []string{"link", "status"}, tree: linked},
+		{args: []string{"link", "status"}, tree: ahead},
+		{args: []string{"link", "status"}, tree: linked.r(".sandbox/overlays/origin/.git")},
+		{args: []string{"link", "status"}, tree: linked.r("origin")},
+		{args: []string{"link", "sync"}, tree: linked},
+		{args: []string{"link", "sync"}, tree: ahead},
+		{args: []string{"link", "sync", "--ref", "nope"}, tree: ahead},
+		{args: []string{"link", "sync", "x"}, tree: ahead},
+		{args: []string{"link", "sync"}, tree: ahead.f(".sandbox/overlays/origin/profiles/dev.yaml", "tier: 1\n")},
+		{args: []string{"link", "sync"}, tree: linked.f("origin/profiles/bad.yaml", "tier: 0\n").c("origin")},
+		{args: []string{"link", "sync"}, tree: linked.f("origin/config.yaml", "min_sandbox_version: 99\n").c("origin")},
+		{args: []string{"link", "sync"}, tree: linked.r("origin")},
+		{args: []string{"link", "sync"}, tree: linked.r(".sandbox/overlays/origin/.git")},
+		{args: []string{"link", "unlink", "--yes"}, tree: linked},
+		{args: []string{"link", "unlink", "--keep-clone", "-y"}, tree: linked},
+		{args: []string{"link", "unlink", "--bogus"}, tree: linked},
+		{args: []string{"link", "unlink"}, tree: linked, stdin: "y\n"},
+		{args: []string{"link", "unlink", "--keep-clone"}, tree: linked, stdin: "n\n"},
+		{args: []string{"link", "unlink"}, tree: linked, stdin: ""},
+		{args: []string{"link", "unlink", "--yes"}, tree: linked.r(".sandbox/overlays/origin/.git")},
 	} {
 		add(cc)
 	}

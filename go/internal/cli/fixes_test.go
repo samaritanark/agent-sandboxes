@@ -113,3 +113,24 @@ func TestFixExceptionSpecOneLine(t *testing.T) {
 		t.Errorf("fixed: rc=%d ignore=%q", rc, ign)
 	}
 }
+
+func TestFixLinkMissingCloneMessage(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(home+"/.sandbox/overlays/team", 0o755) // recorded, but not a git clone
+	os.WriteFile(home+"/.sandbox/config.yaml", []byte("overlay: "+home+"/.sandbox/overlays/team\nlink_url: u\nlink_ref: main\n"), 0o644)
+	run := func(sub string) (int, string, string) {
+		var out, errb bytes.Buffer
+		rc := Run([]string{"link", sub}, fixtureEnv("none", home, "/nonexistent", nil), &out, &errb)
+		return rc, out.String(), errb.String()
+	}
+	if rc, o, e := run("status"); rc != 1 || o != "" || e != "" {
+		t.Fatalf("legacy: rc=%d %q %q (the bash exits 1 silently)", rc, o, e)
+	}
+	defer deviation.Force(deviation.LinkMissingCloneMessage)()
+	if rc, _, e := run("status"); rc != 0 || !bytes.Contains([]byte(e), []byte("may be stale")) {
+		t.Errorf("fixed status: rc=%d %q", rc, e)
+	}
+	if rc, _, e := run("sync"); rc != 1 || !bytes.Contains([]byte(e), []byte("missing or not a git clone")) {
+		t.Errorf("fixed sync: rc=%d %q", rc, e)
+	}
+}

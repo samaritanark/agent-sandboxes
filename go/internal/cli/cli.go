@@ -33,6 +33,7 @@ type Env struct {
 
 	VettingTrustRootDefault string       // SANDBOX_VETTING_TRUST_ROOT_DEFAULT
 	Now                     func() int64 // `date +%s`
+	LinkOverlaysDir         string       // LINK_OVERLAYS_DIR (default ~/.sandbox/overlays)
 
 	Version   VersionInfo // Version "" means "dev"
 	Root      string      // the install root (SANDBOX_ROOT)
@@ -161,7 +162,7 @@ var commands = map[string]func(*cmdCtx, []string){
 	"run": nil, "resume": nil, "allow": nil, "list": nil, "logs": nil, "flows": nil, "stop": nil,
 	"cleanup": nil, "check": cmdCheck, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
 	"upgrade": nil, "onboard": nil, "secret": nil, "mask": cmdMask, "exceptions": cmdExceptions, "vet": cmdVet,
-	"profile": cmdProfile, "link": nil, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,
+	"profile": cmdProfile, "link": cmdLink, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,
 	"version": cmdVersion,
 }
 
