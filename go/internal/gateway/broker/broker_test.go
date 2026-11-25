@@ -61,6 +61,7 @@ func TestDecide(t *testing.T) {
 		{name: "basic, user kept from the pair", r: Request{Host: "npm.corp.example", Path: "/", Headers: hdr("authorization", basic("me:"+phB))},
 			set: "authorization=" + basic("deploy:s3cretpass")},
 		{name: "unbound host, no placeholder", r: Request{Host: "example.org", Path: "/"}},
+		{name: "a bound name on another port is another destination", r: Request{Host: "api.github.com:8443", Path: "/", Headers: hdr("authorization", "Bearer "+phGH)}, refuse: true, event: "credential_misuse"},
 		{name: "bound host without its placeholder", r: Request{Host: "api.github.com", Path: "/zen"}, refuse: true, event: "credential_missing"},
 		{name: "bound host, wrong bearer", r: Request{Host: "api.github.com", Path: "/", Headers: hdr("authorization", "Bearer x")}, refuse: true, event: "credential_missing"},
 		{name: "placeholder toward another host", r: Request{Host: "evil.com", Path: "/", Headers: hdr("authorization", "Bearer "+phGH)}, refuse: true, event: "credential_misuse"},
@@ -174,6 +175,30 @@ func TestScrubberEndsOnShorterForm(t *testing.T) {
 	sc := NewScrubber(set(t).Reflections())
 	out := append(sc.Write([]byte("x "+raw)), sc.Close()...)
 	if string(out) != "x "+phAn {
+		t.Errorf("%q", out)
+	}
+}
+
+// TestScrubberAlphabets: a value whose base64 uses "+" and "/" is caught in the unpadded standard
+// form too, which the URL-safe forms do not cover.
+func TestScrubberAlphabets(t *testing.T) {
+	v := "k???>>>-123456" // 14 bytes: padded, and "/" and "+" in its base64
+	s, _ := NewSet([]Binding{{Ref: "x", Hosts: []string{"a.com"}, Inject: "bearer", Placeholder: phGH, Value: v}})
+	raw := base64.RawStdEncoding.EncodeToString([]byte(v))
+	if !strings.ContainsAny(raw, "+/") || raw == base64.StdEncoding.EncodeToString([]byte(v)) {
+		t.Fatal("the test value does not exercise the alphabet")
+	}
+	sc := NewScrubber(s.Reflections())
+	if out := append(sc.Write([]byte("y "+raw)), sc.Close()...); string(out) != "y "+phGH {
+		t.Errorf("%q", out)
+	}
+}
+
+// TestScrubberCompleteAtChunkEnd: a value that ends exactly where a chunk ends goes out with that
+// chunk, scrubbed, not held for the next one.
+func TestScrubberCompleteAtChunkEnd(t *testing.T) {
+	sc := NewScrubber(set(t).Reflections())
+	if out := sc.Write([]byte("x ghp_realtoken1234567890")); string(out) != "x "+phGH {
 		t.Errorf("%q", out)
 	}
 }

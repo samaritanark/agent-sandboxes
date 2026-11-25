@@ -939,3 +939,55 @@ m(PX, '\t\tif !strings.HasPrefix(filepath.Base(p), ".") {', '\t\tif true {', R_P
 m(PX, '\tif len(lines) > 0 && lines[len(lines)-1] == "" {', '\tif false {', R_PX)
 m(PX, '\t\tif strings.Contains(l, "-----BEGIN CERTIFICATE-----") {', '\t\tif strings.HasPrefix(l, "-----BEGIN CERTIFICATE-----") {', R_PX)
 m(PX, '\tq := make([]string, len(v))\n\tfor i, s := range v {\n\t\tq[i] = regexp.QuoteMeta(s)', '\tq := make([]string, len(v))\n\tfor i, s := range v {\n\t\tq[i] = s', R_PX)
+
+# ---- L7 rules (internal/l7): path globs, query conditions, deny-first decisions
+L7 = "internal/l7/l7.go"
+R_L7 = "."
+m(L7, '\tif r.Host == AnyHost && r.Action != Deny {', '\tif false {', R_L7)
+m(L7, '\t\tif len(c.Query) > 0 && r.Action != Deny {', '\t\tif false {', R_L7)
+m(L7, '\t\tb.WriteString("|%")', '\t\tb.WriteString("|%%")', R_L7)
+m(L7, "\t\t\tif h >= 'A' {\n\t\t\t\tb.WriteString(\"[\" + string(h) + string(h+'a'-'A') + \"]\")", "\t\t\tif h >= 'A' {\n\t\t\t\tb.WriteString(string(h))", R_L7)
+m(L7, '|| strings.Contains(path, "//") {', '{', R_L7)
+m(L7, '\t\t\tre.WriteString("(?:/.*)?")', '\t\t\tre.WriteString("/.*")', R_L7)
+m(L7, '\t\t\t\tre.WriteString("[^/]*")', '\t\t\t\tre.WriteString(".*")', R_L7)
+m(L7, '\t\t\tre.WriteString(regexp.QuoteMeta(part))', '\t\t\tre.WriteString(part)', R_L7)
+m(L7, '\tre.WriteString("$")', '\tre.WriteString("")', R_L7)
+m(L7, '|| seen[name] ||', '||', R_L7)
+m(L7, '\t\t\t\t\t\tv.WriteString("[^&]*")', '\t\t\t\t\t\tv.WriteString(".*")', R_L7)
+m(L7, '\t\t\t\tif strings.Trim(value, "*") == "" {', '\t\t\t\tif false {', R_L7)
+m(L7, '`^(?:.*&)?` + cond + `(?:&.*)?$`', '`^(?:.*&)?` + cond', R_L7)
+m(L7, '`^(?:.*&)?` + cond + `(?:&.*)?$`', '`(?:.*&)?` + cond + `(?:&.*)?$`', R_L7)
+m(L7, '\t\tif r.Action == Deny && HostMatches(r.Host, host) && r.matches(method, path, rawQuery) {', '\t\tif r.Action == Deny && r.matches(method, path, rawQuery) {', R_L7)
+m(L7, '\treturn !hasAllow, -1', '\treturn true, -1', R_L7)
+m(L7, '\tif len(r.PathPatterns) == 0 {\n\t\treturn true\n\t}', '\tif len(r.PathPatterns) == 0 {\n\t\treturn false\n\t}', R_L7)
+
+# ---- the credential broker's core (internal/gateway/broker)
+BR = "internal/gateway/broker/broker.go"
+SC = "internal/gateway/broker/scrub.go"
+R_BR = "."
+m(BR, '\tif h, port, ok := strings.Cut(host, ":"); ok && port == "443" {', '\tif h, _, ok := strings.Cut(host, ":"); ok {', R_BR, pkg="gateway/broker")
+m(BR, '\tif lengths > 1 || (lengths > 0 && codings > 0) {', '\tif lengths > 1 {', R_BR, pkg="gateway/broker")
+m(BR, '\t\tif strings.Contains(v, "%") {', '\t\tif false {', R_BR, pkg="gateway/broker")
+m(BR, '\t\t\t\tif d, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rest)); err == nil {\n\t\t\t\t\tnote(string(d))', '\t\t\t\tif d, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rest)); err == nil {\n\t\t\t\t\t_ = d', R_BR, pkg="gateway/broker")
+m(BR, '\t\tif !mine {', '\t\tif false {', R_BR, pkg="gateway/broker")
+m(BR, '\t\tif !found[b.Placeholder] {', '\t\tif false {', R_BR, pkg="gateway/broker")
+m(BR, '\t\tif len(vs) != 1 {\n\t\t\treturn nil, "", errAmbiguous\n\t\t}\n\t\tif rest, ok := cutFold(vs[0], "bearer ");', '\t\tif len(vs) == 0 {\n\t\t\treturn nil, "", errAmbiguous\n\t\t}\n\t\tif rest, ok := cutFold(vs[0], "bearer ");', R_BR, pkg="gateway/broker")
+m(BR, '\t\tif hits != 1 {', '\t\tif hits == 0 {', R_BR, pkg="gateway/broker")
+m(BR, '\t\tif !setting {', '\t\tif true {', R_BR, pkg="gateway/broker")
+m(BR, '\tif len(v) >= 8 && !seen[v] {', '\tif !seen[v] {', R_BR,
+  equivalent="every form of the test values is at least 8 bytes", pkg="gateway/broker")
+m(BR, 'base64.StdEncoding.EncodeToString([]byte(b.Value)), base64.RawStdEncoding.EncodeToString([]byte(b.Value)),', 'base64.StdEncoding.EncodeToString([]byte(b.Value)),', R_BR, pkg="gateway/broker")
+m(SC, '\t\tif !final && s.partial(buf[i:]) {', '\t\tif s.partial(buf[i:]) {', R_BR, pkg="gateway/broker")
+m(SC, '\t\tif !final && s.partial(buf[i:]) {', '\t\tif false {', R_BR, pkg="gateway/broker")
+m(SC, '\t\tif len(rest) < len(r.From) && bytes.HasPrefix(r.From, rest) {', '\t\tif len(rest) <= len(r.From) && bytes.HasPrefix(r.From, rest) {', R_BR, pkg="gateway/broker")
+m(SC, '\t\tfor j := i; j > 0 && len(rs[j].From) > len(rs[j-1].From); j-- {', '\t\tfor j := i; j > 0 && len(rs[j].From) < len(rs[j-1].From); j-- {', R_BR, pkg="gateway/broker")
+
+# ---- the gateway's SNI matcher (internal/gateway/envoyconf) and the multi-label wildcard
+EC = "internal/gateway/envoyconf/envoyconf.go"
+EM = "internal/egressmatch/egressmatch.go"
+m(EC, '\t\treturn []obj{exact(p[2:]), suffix(p[1:])}', '\t\treturn []obj{suffix(p[1:])}', "TestChainMatcher", pkg="gateway/envoyconf")
+m(EC, '\t\treturn []obj{exact(p[:len(p)-2]), prefix(p[:len(p)-1])}', '\t\treturn []obj{prefix(p[:len(p)-1])}', "TestChainMatcher", pkg="gateway/envoyconf")
+m(EC, '{"not_matcher": exact("." + rest)}', '{"not_matcher": exact(rest)}', "TestChainMatcher",
+  pkg="gateway/envoyconf")
+m(EC, '`(?i)^[^.]+\\.` + regexp.QuoteMeta(rest) + "$"', '`(?i)^.+\\.` + regexp.QuoteMeta(rest) + "$"', "TestChainMatcher", pkg="gateway/envoyconf")
+m(EM, '\t\treturn strings.HasSuffix(domain, "."+rest) && len(domain) > len(rest)+1', '\t\treturn strings.HasSuffix(domain, rest)', "TestAllowed", pkg="egressmatch")

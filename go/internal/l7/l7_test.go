@@ -115,7 +115,7 @@ func TestQuery(t *testing.T) {
 		"service=git%2dreceive-pack", "servic%65=git-receive-pack", "service=git-upload-pack", "service=git-receive-pack2",
 		"service=git-upload-pack&service=git-receive-pack", "service=git-receive-pack&service=git-upload-pack", "xservice=git-receive-pack",
 		"service=git-receive-pac%6B&z", "service=git%zzreceive-pack", "q=&page=10", "q&page=1", "page=1", "q=x&page=2", "a=x", "a=yxz",
-		"a=", "a", "a=%78", "a=b&a=", "a.b~c=d/e:f", "a.b~c=d%2Fe%3Af", "a%2Eb~c=d/e:f", "a+b=x", "a=x+", "service=git-receive-pack#x"}
+		"a=", "a", "a=%78", "a=b&a=", "a.b~c=d/e:f", "a.b~c=d%2Fe%3Af", "a%2Eb~c=d/e:f", "a+b=x", "a=x+", "service=git-receive-pack#x", "a=y&b=x", "a=&x"}
 	for _, g := range queryGlobs {
 		p, err := Compile(g)
 		if err != nil {
