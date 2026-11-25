@@ -58,7 +58,10 @@ func TestEndToEnd(t *testing.T) {
 	var mu sync.Mutex
 	var decisions []authz.Decision
 	s := &authz.Server{Record: func(d authz.Decision) { mu.Lock(); decisions = append(decisions, d); mu.Unlock() }}
-	allow, block := []string{"*.github.com", "github.com"}, []string{"*.githubusercontent.com", "gist.github.com"}
+	// raw.githubusercontent.com is inside an allowed wildcard and refused by a suffix pattern:
+	// it must be refused before the forward proxy looks it up
+	allow := []string{"*.github.com", "github.com", "**.githubusercontent.com"}
+	block := []string{"*raw.githubusercontent.com", "gist.github.com"}
 	gw := netip.MustParseAddr("127.0.0.77")
 	s.SetPolicies(map[netip.Addr]*authz.Policy{gw: {Allow: allow, BlockDomains: block}})
 	g := grpc.NewServer()

@@ -38,11 +38,15 @@ func Blocked(domain, pattern string) bool {
 	return domain == p
 }
 
-// Allowed reports whether a normalized domain matches one allowlist entry: an exact name, or
-// "*.x", which (as a Cilium matchPattern in v2) matches exactly one label under x and not x itself;
-// the policy layer adds the apex as its own entry when it should be allowed.
+// Allowed reports whether a normalized domain matches one allowlist entry: an exact name; "*.x",
+// which (as a Cilium matchPattern in v2) matches exactly one label under x and not x itself; or
+// "**.x", which matches any depth under x and not x itself (OQ-10). The policy layer adds the apex
+// as its own entry when it should be allowed.
 func Allowed(domain, entry string) bool {
 	e := Normalize(entry)
+	if rest, ok := strings.CutPrefix(e, "**."); ok {
+		return strings.HasSuffix(domain, "."+rest) && len(domain) > len(rest)+1
+	}
 	if rest, ok := strings.CutPrefix(e, "*."); ok {
 		label, parent, found := strings.Cut(domain, ".")
 		return found && label != "" && parent == rest

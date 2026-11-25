@@ -27,6 +27,8 @@ func TestAllowed(t *testing.T) {
 		{"a.b.github.com", "*.github.com", false}, {"github.com", "github.com", true},
 		{"api.github.com", "github.com", false}, {"api.github.com", "*.GitHub.com.", true},
 		{"xgithub.com", "*.github.com", false},
+		{"a.b.github.com", "**.github.com", true}, {"api.github.com", "**.github.com", true},
+		{"github.com", "**.github.com", false}, {"xgithub.com", "**.github.com", false}, {".github.com", "**.github.com", false},
 	} {
 		if Allowed(c.d, c.e) != c.want {
 			t.Errorf("Allowed(%q, %q) = %v", c.d, c.e, !c.want)

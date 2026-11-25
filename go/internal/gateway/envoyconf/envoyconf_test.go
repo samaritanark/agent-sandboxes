@@ -6,15 +6,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/samaritanark/agent-sandboxes/go/internal/egressmatch"
 )
 
 func cfg(t *testing.T) Config {
 	dir := t.TempDir()
 	return Config{Links: []Link{
 		{Addr: netip.MustParseAddr("10.200.0.1"), Ports: []int{443, 6443}, Allow: []string{"*.github.com", "api.anthropic.com"}, BlockDomains: []string{"*.gist.github.com"}},
-		{Addr: netip.MustParseAddr("10.200.1.1"), Ports: []int{443}, Allow: []string{"registry.npmjs.org"}},
+		// a long single-label wildcard: its regex must stay inside Envoy's RE2 program size limit
+		{Addr: netip.MustParseAddr("10.200.1.1"), Ports: []int{443}, Allow: []string{"registry.npmjs.org", "*." + strings.Repeat(strings.Repeat("a", 63)+".", 3) + "com"}},
 	},
 		Deps:        []Dep{{Name: "db", Port: 5432, Addr: netip.MustParseAddr("10.200.1.2")}},
 		AuthzSocket: filepath.Join(dir, "authz.sock"), AdminSocket: filepath.Join(dir, "admin.sock"),
@@ -77,17 +81,71 @@ func TestEnvoyAccepts(t *testing.T) {
 	}
 }
 
-func TestServerNames(t *testing.T) {
-	allow, deny := ServerNames(
-		[]string{"*.github.com", "github.com", "api.anthropic.com", "*.pastebin.com", "*.example.org", "blocked.net", "*.corp.com"},
-		[]string{"*.gist.github.com", "raw.github.com", "*pastebin.com", "blocked.net", "ngrok.example.org.*", "*.deep.a.corp.com"})
-	wantA := "*.github.com github.com api.anthropic.com *.example.org *.corp.com"
-	wantD := "gist.github.com raw.github.com"
-	if got := strings.Join(allow, " "); got != wantA {
-		t.Errorf("allow %q, want %q", got, wantA)
+// eval applies a predicate as Envoy's matcher does: StringMatcher with ignore_case, RE2 regexes.
+func eval(t *testing.T, p obj, sni string) bool {
+	switch {
+	case p["single_predicate"] != nil:
+		m := p["single_predicate"].(obj)["value_match"].(obj)
+		s := sni
+		if m["ignore_case"] == true {
+			s = strings.ToLower(s)
+		}
+		switch {
+		case m["exact"] != nil:
+			return s == m["exact"]
+		case m["suffix"] != nil:
+			return strings.HasSuffix(s, m["suffix"].(string))
+		case m["prefix"] != nil:
+			return strings.HasPrefix(s, m["prefix"].(string))
+		case m["safe_regex"] != nil:
+			return regexp.MustCompile(m["safe_regex"].(obj)["regex"].(string)).MatchString(s)
+		}
+	case p["and_matcher"] != nil:
+		for _, q := range p["and_matcher"].(obj)["predicate"].([]obj) {
+			if !eval(t, q, sni) {
+				return false
+			}
+		}
+		return true
+	case p["not_matcher"] != nil:
+		return !eval(t, p["not_matcher"].(obj), sni)
 	}
-	// ngrok.example.org is a single-label child too
-	if got := strings.Join(deny, " "); got != wantD+" ngrok.example.org" {
-		t.Errorf("deny %q", got)
+	t.Fatalf("unknown predicate %v", p)
+	return false
+}
+
+// TestChainMatcher checks the Envoy matcher against egressmatch, the rules the check and the
+// resolver use: a name reaches the "allowed" chain exactly when egressmatch.Decide allows it.
+func TestChainMatcher(t *testing.T) {
+	allow := []string{"*.github.com", "github.com", "api.anthropic.com", "*.pastebin.com", "**.example.org", "blocked.net", "**.corp.com", "*.a-b.io"}
+	block := []string{"*.gist.github.com", "raw.github.com", "*pastebin.com", "blocked.net", "ngrok.example.org.*", "*.deep.a.corp.com", "*-evil.corp.com", "Upper.Example.org."}
+	m := chainMatcher(allow, block)
+	names := []string{"", ".", "github.com", "api.github.com", "a.b.github.com", "gist.github.com", "x.gist.github.com", "raw.github.com",
+		"RAW.GitHub.com", "API.GITHUB.COM", "xgithub.com", "api.anthropic.com", "anthropic.com", "x.pastebin.com", "pastebin.com",
+		"example.org", "a.example.org", "a.b.c.example.org", "ngrok.example.org", "ngrok.example.org.x", "ngrok.example.orgx",
+		"upper.example.org", "x.upper.example.org", ".example.org", "blocked.net", "corp.com", "x.corp.com", "deep.a.corp.com",
+		"x.deep.a.corp.com", "a.corp.com", "z.y-evil.corp.com", "y-evil.corp.com", "x.a-b.io", "x.aab.io", "x.y.a-b.io", "evil.com",
+		"github.com.evil.com", "10.0.0.1"}
+	for _, n := range names {
+		got := ""
+		for _, fm := range m["matcher_list"].(obj)["matchers"].([]obj) {
+			if eval(t, fm["predicate"].(obj), n) {
+				got = fm["on_match"].(obj)["action"].(obj)["name"].(string)
+				break
+			}
+		}
+		if want := egressmatch.Decide(n, allow, block); (got == "allowed") != want {
+			t.Errorf("%q: chain %q, egressmatch allows: %v", n, got, want)
+		}
+		blocked := false
+		for _, b := range block {
+			blocked = blocked || egressmatch.Blocked(egressmatch.Normalize(n), b)
+		}
+		if blocked != (got == "blocked") && n != "" {
+			t.Errorf("%q: chain %q, blocked %v", n, got, blocked)
+		}
+	}
+	if chainMatcher(nil, block) != nil || chainMatcher([]string{""}, nil) != nil {
+		t.Error("a matcher with nothing allowed")
 	}
 }

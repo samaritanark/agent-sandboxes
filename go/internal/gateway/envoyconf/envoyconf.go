@@ -2,13 +2,12 @@
 // default. One listener per allowed port (443 and any declared extra ports) on the gateway's link
 // address reads the TLS SNI (tls_inspector) and picks a filter chain by it:
 //
-//   - an SNI the allowlist names (exact, or a single-label wildcard: Envoy's server_names match
-//     the allowlist's own semantics, S5) gets the connection check (ext_authz, the authz package,
-//     which applies the block lists, deny wins) and is then forwarded unchanged to its host
-//     (sni_dynamic_forward_proxy and tcp_proxy);
-//   - every other connection (a name a block pattern carves out of an allowed wildcard, a name
-//     not on the allowlist, an IP address, no SNI at all) gets the check alone, which refuses and
-//     records it, and is never looked up or connected.
+//   - an SNI that no block pattern matches and the allowlist names (exact, "*.x", or "**.x"; the
+//     filter chain matcher mirrors egressmatch exactly) gets the connection check (ext_authz, the
+//     authz package, which decides again from the same rules) and is then forwarded unchanged to
+//     its host (sni_dynamic_forward_proxy and tcp_proxy);
+//   - every other connection (a blocked name, a name not on the allowlist, an IP address, no SNI
+//     at all) is refused and recorded by Envoy, and is never looked up or connected.
 //
 // The order matters: Envoy's forward proxy resolves and connects when a connection opens, before
 // ext_authz sees its first data, so a name must be on the allowlist before it reaches the forward
@@ -26,6 +25,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/egressmatch"
@@ -130,57 +130,73 @@ func (c Config) authzFilter() obj {
 	})}
 }
 
-// ServerNames splits the allowlist for Envoy's filter chain match: allow is what may reach the
-// forward proxy, deny the exact names inside an allowed wildcard that a block pattern refuses (an
-// exact server name outranks a wildcard in Envoy's match). A wildcard whose every name is blocked,
-// and an exact name that is blocked, are left out.
-func ServerNames(allowList, block []string) (allow, deny []string) {
-	seenA, seenD := map[string]bool{}, map[string]bool{}
-	add := func(m map[string]bool, out *[]string, n string) {
-		if !m[n] {
-			m[n] = true
-			*out = append(*out, n)
+// The filter chain matcher (Envoy's filter_chain_matcher, a list matcher on the SNI) mirrors
+// egressmatch exactly: the first match wins, so every block pattern comes before every allowlist
+// entry and a blocked name never reaches the forward proxy, whatever wildcard allows it. Names are
+// compared ignoring case; SNIs carry no trailing dot.
+
+func sniPredicate(match obj) obj {
+	return obj{"single_predicate": obj{
+		"input":       obj{"name": "sni", "typed_config": typed("envoy.extensions.matching.common_inputs.network.v3.ServerNameInput", obj{})},
+		"value_match": match,
+	}}
+}
+
+func exact(v string) obj  { return sniPredicate(obj{"exact": v, "ignore_case": true}) }
+func suffix(v string) obj { return sniPredicate(obj{"suffix": v, "ignore_case": true}) }
+func prefix(v string) obj { return sniPredicate(obj{"prefix": v, "ignore_case": true}) }
+
+// BlockPredicates are the SNI predicates that together match egressmatch.Blocked(·, pattern).
+func BlockPredicates(pattern string) []obj {
+	p := egressmatch.Normalize(pattern)
+	switch {
+	case p == "":
+		return nil
+	case strings.HasPrefix(p, "*."):
+		return []obj{exact(p[2:]), suffix(p[1:])}
+	case strings.HasPrefix(p, "*"):
+		return []obj{suffix(p[1:])}
+	case strings.HasSuffix(p, ".*"):
+		return []obj{exact(p[:len(p)-2]), prefix(p[:len(p)-1])}
+	}
+	return []obj{exact(p)}
+}
+
+// AllowPredicate is the SNI predicate that matches egressmatch.Allowed(·, entry).
+func AllowPredicate(entry string) obj {
+	e := egressmatch.Normalize(entry)
+	if rest, ok := strings.CutPrefix(e, "**."); ok {
+		return obj{"and_matcher": obj{"predicate": []obj{suffix("." + rest), {"not_matcher": exact("." + rest)}}}}
+	}
+	if rest, ok := strings.CutPrefix(e, "*."); ok {
+		return sniPredicate(obj{"safe_regex": obj{"google_re2": obj{}, "regex":`(?i)^[^.]+\.` + regexp.QuoteMeta(rest) + "$"}})
+	}
+	return exact(e)
+}
+
+func chainAction(name string) obj {
+	return obj{"action": obj{"name": name, "typed_config": typed("google.protobuf.StringValue", obj{"value": name})}}
+}
+
+// chainMatcher selects "blocked" for any block pattern, then "allowed" for any allowlist entry;
+// anything else falls to the default chain. It is nil when nothing is allowed.
+func chainMatcher(allow, block []string) obj {
+	var ms []obj
+	for _, b := range block {
+		for _, p := range BlockPredicates(b) {
+			ms = append(ms, obj{"predicate": p, "on_match": chainAction("blocked")})
 		}
 	}
-	for _, e := range allowList {
-		e = egressmatch.Normalize(e)
-		parent, wild := strings.CutPrefix(e, "*.")
-		if !wild {
-			if egressmatch.Decide(e, allowList, block) {
-				add(seenA, &allow, e)
-			}
-			continue
-		}
-		all := false
-		for _, b := range block {
-			b = egressmatch.Normalize(b)
-			switch {
-			case strings.HasPrefix(b, "*."):
-				y := b[2:]
-				if y == parent || strings.HasSuffix(parent, "."+y) {
-					all = true
-				} else if child, ok := strings.CutSuffix(y, "."+parent); ok && !strings.Contains(child, ".") {
-					add(seenD, &deny, y)
-				}
-			case strings.HasPrefix(b, "*"):
-				if strings.HasSuffix("."+parent, b[1:]) {
-					all = true
-				}
-			case strings.HasSuffix(b, ".*"):
-				if p := b[:len(b)-2]; strings.Count(p, ".") == strings.Count(parent, ".")+1 && strings.HasSuffix(p, "."+parent) {
-					add(seenD, &deny, p)
-				}
-			default:
-				if child, ok := strings.CutSuffix(b, "."+parent); ok && child != "" && !strings.Contains(child, ".") {
-					add(seenD, &deny, b)
-				}
-			}
-		}
-		if !all {
-			add(seenA, &allow, e)
+	nb := len(ms)
+	for _, a := range allow {
+		if egressmatch.Normalize(a) != "" {
+			ms = append(ms, obj{"predicate": AllowPredicate(a), "on_match": chainAction("allowed")})
 		}
 	}
-	return allow, deny
+	if len(ms) == nb {
+		return nil
+	}
+	return obj{"matcher_list": obj{"matchers": ms}}
 }
 
 // refusedFilters end a chain that must never connect anywhere: the check (which refuses and
@@ -229,7 +245,6 @@ func (c Config) depListener(d Dep) obj {
 }
 
 func (c Config) listener(link Link, port int) obj {
-	allow, deny := ServerNames(link.Allow, link.BlockDomains)
 	filters := []obj{
 		c.authzFilter(),
 		{"name": "envoy.filters.network.sni_dynamic_forward_proxy", "typed_config": typed("envoy.extensions.filters.network.sni_dynamic_forward_proxy.v3.FilterConfig", obj{
@@ -251,14 +266,10 @@ func (c Config) listener(link Link, port int) obj {
 		// everything not on the allowlist: the check alone (it refuses and records); no lookup
 		"default_filter_chain": obj{"name": "refused", "filters": c.refusedFilters()},
 	}
-	var chains []obj
-	if len(deny) > 0 {
-		chains = append(chains, obj{"name": "blocked", "filter_chain_match": obj{"server_names": deny}, "filters": c.refusedFilters()})
+	if m := chainMatcher(link.Allow, link.BlockDomains); m != nil {
+		l["filter_chain_matcher"] = m
+		l["filter_chains"] = []obj{{"name": "blocked", "filters": c.refusedFilters()}, {"name": "allowed", "filters": filters}}
 	}
-	if len(allow) > 0 {
-		chains = append(chains, obj{"name": "allowed", "filter_chain_match": obj{"server_names": allow}, "filters": filters})
-	}
-	l["filter_chains"] = chains
 	return l
 }
 

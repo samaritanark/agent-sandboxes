@@ -506,7 +506,7 @@ func validHost(h string) bool {
 
 func checkEgress(e Egress, what string, bad func(string, ...any)) {
 	for _, a := range e.Allow {
-		h := strings.TrimPrefix(a, "*.")
+		h := strings.TrimPrefix(strings.TrimPrefix(a, "**."), "*.")
 		if !validHost(h) || strings.Contains(h, "*") || !strings.Contains(h, ".") {
 			bad("%s: invalid allowlist entry %q", what, a)
 		}
