@@ -14,15 +14,11 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 	"github.com/samaritanark/agent-sandboxes/go/internal/opstate"
 	"github.com/samaritanark/agent-sandboxes/go/internal/syncagent"
+	"github.com/samaritanark/agent-sandboxes/go/internal/tty"
 )
 
 // Set at build time with -ldflags "-X main.version=...".
 var version, commit, commitDate, buildDate, treeState string
-
-func isTTY(f *os.File) bool {
-	st, err := f.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
-}
 
 // currentUser is ${USER:-$(id -un)}.
 func currentUser() string {
@@ -89,12 +85,12 @@ func main() {
 		Root:                    root,
 		LogsDir:                 logs,
 		Runtime:                 "go " + strings.TrimPrefix(runtime.Version(), "go"),
-		StdoutTTY:               isTTY(os.Stdout),
-		StdinTTY:                isTTY(os.Stdin),
+		StdoutTTY:               tty.Is(os.Stdout),
+		StdinTTY:                tty.Is(os.Stdin),
 		Getenv:                  os.Getenv,
 		User:                    currentUser(),
 		MaxDeps:                 os.Getenv("SANDBOX_MAX_DEPS_PER_SESSION"),
-		StderrTTY:               isTTY(os.Stderr),
+		StderrTTY:               tty.Is(os.Stderr),
 		NoColor:                 noColor && os.Getenv("NO_COLOR") != "",
 		Now:                     func() int64 { return time.Now().Unix() },
 		SecretsDir:              or(os.Getenv("SANDBOX_SECRETS_DIR"), cfg.Home+"/.sandbox/secrets"),

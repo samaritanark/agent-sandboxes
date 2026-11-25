@@ -16,12 +16,8 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/netd"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/proxycert"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/vfkit"
+	"github.com/samaritanark/agent-sandboxes/go/internal/tty"
 )
-
-func isTTY(f *os.File) bool {
-	st, err := f.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
-}
 
 func main() {
 	// netd's processes (design D-31): started by the vfkit driver, never by a user.
@@ -57,7 +53,7 @@ func main() {
 		}
 	}()
 	state := filepath.Join(home, ".sandbox")
-	tty := isTTY(os.Stdin)
+	tty := tty.Is(os.Stdin)
 	os.Exit(app.Run(context.Background(), os.Args[1:], app.Env{
 		Driver: d, Transport: tr, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 		StdinTTY: tty, StateDir: state, User: name,

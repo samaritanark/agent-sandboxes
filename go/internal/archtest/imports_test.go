@@ -26,6 +26,8 @@ var allowed = map[string][]string{
 	"opstate": {},
 	// the flat YAML list reader shared by config and the host sync gate (masked_paths:)
 	"yamllist": {},
+	// whether a file is a terminal, for both binaries
+	"tty": {},
 	// the sync protocol (host engine and in-VM agent) and the in-VM agent itself
 	"syncproto": {},
 	"syncagent": {"syncproto"},
@@ -69,7 +71,7 @@ var allowed = map[string][]string{
 // hostSafe is every internal package the host binary may depend on, directly or not (5.1.1).
 // Adding a policy package here is a design change, not a code change.
 func hostSafe(name string) bool {
-	return strings.HasPrefix(name, "host/") || name == "tables" || name == "opstate" || name == "yamllist" || name == "syncproto"
+	return strings.HasPrefix(name, "host/") || name == "tables" || name == "opstate" || name == "yamllist" || name == "syncproto" || name == "tty"
 }
 
 // TestHostBinaryClosure checks the host binary's whole dependency closure, so a host package
