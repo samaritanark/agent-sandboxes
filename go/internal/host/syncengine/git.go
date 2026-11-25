@@ -45,25 +45,6 @@ func ignoredFromVM(p string) bool {
 
 func fp(b []byte) string { return syncproto.Fingerprint("file", b, false, "") }
 
-// hostGitScan fingerprints the host's .git (objects by name only).
-func hostGitScan(root *os.Root) map[string]string {
-	out := map[string]string{}
-	fs.WalkDir(root.FS(), ".git", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if syncproto.IsObjectPath(p) {
-			out[p] = syncproto.ObjectFP
-			return nil
-		}
-		if f, _, err := hostFP(root, p); err == nil {
-			out[p] = f
-		}
-		return nil
-	})
-	return out
-}
-
 // writeFileAtomic writes p inside root through a lock-named temporary file (git's protocol for
 // refs and the index: <p>.lock created exclusively, then renamed). It fails when the lock is held.
 func writeFileAtomic(root *os.Root, p string, data []byte, mode fs.FileMode) error {
@@ -149,15 +130,7 @@ func refsOf(files map[string]string, get func(string) ([]byte, error), idLen int
 }
 
 // syncGit runs the git rules. host and vm are the two sides' .git scans.
-func (e *Engine) syncGit(root *os.Root, st *State, host, vm map[string]string, rules syncgate.Repo, rep *Report) error {
-	if g, err := root.Lstat(".git"); err != nil || !g.IsDir() {
-		rep.Notes = append(rep.Notes, "the repository's .git is not a directory (a linked worktree or submodule); git state is not synced")
-		return nil
-	}
-	repo, err := gitref.Open(e.Repo)
-	if err != nil {
-		return err
-	}
+func (e *Engine) syncGit(hg *hostGit, repo *gitref.Repo, st *State, host, vm map[string]string, rules syncgate.Repo, rep *Report) error {
 	idLen := repo.HashLen / 2
 	g := &st.Git
 	if g.Refs == nil {
@@ -166,7 +139,7 @@ func (e *Engine) syncGit(root *os.Root, st *State, host, vm map[string]string, r
 	if g.Files == nil {
 		g.Files = map[string]string{}
 	}
-	hostRead := func(p string) ([]byte, error) { return root.ReadFile(p) }
+	hostRead := hg.ReadFile
 	vmReadB := func(p string) ([]byte, error) { b, _, err := e.vmRead(p); return b, err }
 
 	// 1. Objects: content-addressed and append-only; never deleted by the sync.
@@ -199,10 +172,10 @@ func (e *Engine) syncGit(root *os.Root, st *State, host, vm map[string]string, r
 				rep.Quarantined = append(rep.Quarantined, p+" (pack refused: "+err.Error()+")")
 				continue
 			}
-			if err := writeObject(root, packPath, pb); err != nil {
+			if err := hg.writeObject(packPath, pb); err != nil {
 				return err
 			}
-			if err := writeObject(root, p, ib); err != nil {
+			if err := hg.writeObject(p, ib); err != nil {
 				return err
 			}
 			rep.ToHost = append(rep.ToHost, packPath, p)
@@ -215,7 +188,7 @@ func (e *Engine) syncGit(root *os.Root, st *State, host, vm map[string]string, r
 				rep.Quarantined = append(rep.Quarantined, p+" (object refused: "+err.Error()+")")
 				continue
 			}
-			if err := writeObject(root, p, raw); err != nil {
+			if err := hg.writeObject(p, raw); err != nil {
 				return err
 			}
 			rep.ToHost = append(rep.ToHost, p)
@@ -235,7 +208,7 @@ func (e *Engine) syncGit(root *os.Root, st *State, host, vm map[string]string, r
 			}
 		}
 	}
-	store, err := gitobj.Open(e.Repo+"/.git/objects", idLen)
+	store, err := gitobj.Open(filepath.Join(repo.CommonDir, "objects"), idLen)
 	if err != nil {
 		return err
 	}
@@ -267,12 +240,12 @@ func (e *Engine) syncGit(root *os.Root, st *State, host, vm map[string]string, r
 	originHead, _ := hostRead(".git/refs/remotes/origin/HEAD")
 	var decisions []syncgate.RefDecision
 	if !fresh {
-		decisions = syncgate.DecideRefs(g.Refs, hostRefs, vmRefs, syncgate.Protected(string(originHead), nil), e.Host, store)
+		decisions = syncgate.DecideRefs(g.Refs, hostRefs, vmRefs, syncgate.Protected(string(originHead), hg.otherWorktreeBranches()), e.Host, store)
 	}
 	for _, d := range decisions {
 		key := ".git/" + d.Ref
 		if d.Apply {
-			if err := writeFileAtomic(root, key, []byte(d.New+"\n"), 0o644); err != nil {
+			if err := hg.writeAtomic(key, []byte(d.New+"\n")); err != nil {
 				return err
 			}
 			hostRefs[d.Ref] = d.New
@@ -344,7 +317,7 @@ func (e *Engine) syncGit(root *os.Root, st *State, host, vm map[string]string, r
 				rep.Quarantined = append(rep.Quarantined, ".git/HEAD ("+err.Error()+")")
 			}
 		} else if text != "" {
-			if err := writeFileAtomic(root, ".git/HEAD", []byte(text), 0o644); err != nil {
+			if err := hg.writeAtomic(".git/HEAD", []byte(text)); err != nil {
 				return err
 			}
 			g.Head = text
@@ -361,7 +334,7 @@ func (e *Engine) syncGit(root *os.Root, st *State, host, vm map[string]string, r
 	}
 
 	// 4. The index, merged by entry.
-	if err := e.syncIndex(root, st, host, vm, rules, store, idLen, rep); err != nil {
+	if err := e.syncIndex(hg, st, host, vm, rules, store, idLen, rep); err != nil {
 		return err
 	}
 
@@ -388,7 +361,11 @@ func (e *Engine) syncGit(root *os.Root, st *State, host, vm map[string]string, r
 			if h == "dir" || h == "other" {
 				continue
 			}
-			f, err := e.toVM(root, p, h, b)
+			r, rel, err := hg.loc(p)
+			if err != nil {
+				return err
+			}
+			f, err := e.toVMFrom(r, rel, p, h, b)
 			if err != nil {
 				return err
 			}
@@ -442,7 +419,7 @@ func writeObject(root *os.Root, p string, data []byte) error {
 }
 
 // syncIndex merges the index three ways (rule 7) when either side's changed since the last sync.
-func (e *Engine) syncIndex(root *os.Root, st *State, host, vm map[string]string, rules syncgate.Repo, store *gitobj.Store, idLen int, rep *Report) error {
+func (e *Engine) syncIndex(hg *hostGit, st *State, host, vm map[string]string, rules syncgate.Repo, store *gitobj.Store, idLen int, rep *Report) error {
 	g := &st.Git
 	hFP, vFP := host[".git/index"], vm[".git/index"]
 	if hFP == g.IndexHostFP && vFP == g.IndexVMFP {
@@ -459,7 +436,7 @@ func (e *Engine) syncIndex(root *os.Root, st *State, host, vm map[string]string,
 		}
 		return ix.Entries
 	}
-	hostB, _ := root.ReadFile(".git/index")
+	hostB, _ := hg.ReadFile(".git/index")
 	if hFP == "" {
 		hostB = nil
 	}
@@ -496,7 +473,7 @@ func (e *Engine) syncIndex(root *os.Root, st *State, host, vm map[string]string,
 	}
 	newHost := hFP
 	if !syncgate.SameEntries(res.Entries, parse(hostB)) || hostB == nil && len(res.Entries) > 0 {
-		if err := writeFileAtomic(root, ".git/index", merged, 0o644); err != nil {
+		if err := hg.writeAtomic(".git/index", merged); err != nil {
 			rep.Notes = append(rep.Notes, "the host index is in use; staging sync deferred")
 			return nil
 		}

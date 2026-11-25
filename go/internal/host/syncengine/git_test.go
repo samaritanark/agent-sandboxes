@@ -145,3 +145,85 @@ func TestHooksPathQuarantined(t *testing.T) {
 		t.Errorf("quarantined %v", rep.Quarantined)
 	}
 }
+
+func TestLinkedWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	top, vmdir, state := t.TempDir(), t.TempDir(), t.TempDir()
+	main := filepath.Join(top, "main")
+	os.Mkdir(main, 0o755)
+	git(t, main, "init", "-q", "--template=", "-b", "main")
+	write(t, main, "a.txt", "a\n")
+	git(t, main, "add", "a.txt")
+	git(t, main, "commit", "-q", "-m", "one")
+	wt := filepath.Join(top, "wt")
+	git(t, main, "worktree", "add", "-q", "-b", "work", wt)
+	git(t, main, "worktree", "add", "-q", "-b", "other", filepath.Join(top, "wt2"))
+	mainHead := git(t, main, "symbolic-ref", "HEAD")
+
+	store := &syncgate.Store{Dir: filepath.Join(state, "quarantine")}
+	e := &Engine{Repo: wt, StateFile: filepath.Join(state, "sync.json"), Store: store, VM: pipeVM(t, vmdir)}
+	rep, err := e.Sync()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range rep.Notes {
+		if strings.Contains(n, "not synced") {
+			t.Fatalf("git state skipped: %v", rep.Notes)
+		}
+	}
+	// The VM copy is an ordinary repository on the worktree's branch, without the linkage files.
+	if git(t, vmdir, "symbolic-ref", "HEAD") != "refs/heads/work" || git(t, vmdir, "rev-parse", "HEAD") != git(t, wt, "rev-parse", "HEAD") {
+		t.Fatal("the VM copy is not on the worktree's branch")
+	}
+	for _, f := range []string{".git/commondir", ".git/gitdir", ".git/worktrees"} {
+		if exists(vmdir, f) {
+			t.Errorf("%s reached the VM", f)
+		}
+	}
+
+	// An agent commit on the worktree's branch, and staging of a new file.
+	write(t, vmdir, "b.txt", "b\n")
+	git(t, vmdir, "add", "b.txt")
+	git(t, vmdir, "commit", "-q", "-m", "agent")
+	write(t, vmdir, "c.txt", "c\n")
+	git(t, vmdir, "add", "c.txt")
+	// and moves of the branch checked out in the other worktree, and of main
+	git(t, vmdir, "branch", "-f", "other", "HEAD")
+	git(t, vmdir, "branch", "-f", "main", "HEAD")
+	if _, err := e.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if git(t, wt, "rev-parse", "work") != git(t, vmdir, "rev-parse", "work") {
+		t.Error("the worktree's branch did not follow the VM's commit")
+	}
+	if !strings.Contains(git(t, wt, "diff", "--cached", "--name-only"), "c.txt") {
+		t.Error("the VM's staging did not reach the worktree's index")
+	}
+	if git(t, main, "diff", "--cached", "--name-only") != "" {
+		t.Error("the main worktree's index changed")
+	}
+	if git(t, main, "rev-parse", "other") == git(t, vmdir, "rev-parse", "HEAD") {
+		t.Error("the branch checked out in another worktree was moved")
+	}
+	if git(t, main, "rev-parse", "main") == git(t, vmdir, "rev-parse", "HEAD") {
+		t.Error("main was moved")
+	}
+	// A branch switch in the VM moves this worktree's HEAD only.
+	git(t, vmdir, "checkout", "-q", "-b", "topic")
+	if _, err := e.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, wt, "symbolic-ref", "HEAD"); got != "refs/heads/topic" {
+		t.Errorf("worktree HEAD %s", got)
+	}
+	if git(t, main, "symbolic-ref", "HEAD") != mainHead {
+		t.Error("the main worktree's HEAD changed")
+	}
+	if out := git(t, main, "fsck", "--strict"); strings.Contains(out, "error") {
+		t.Errorf("fsck: %s", out)
+	}
+}

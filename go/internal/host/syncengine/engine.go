@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/gitref"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/syncgate"
 	"github.com/samaritanark/agent-sandboxes/go/internal/syncproto"
 )
@@ -103,6 +104,28 @@ func (e *Engine) save(s State) error {
 		return err
 	}
 	return os.Rename(tmp, e.StateFile)
+}
+
+// gitPhase opens the host's git directories (a linked worktree's two, or one) and runs the git
+// rules on both sides' .git.
+func (e *Engine) gitPhase(state *State, vm map[string]string, rules syncgate.Repo, rep *Report) error {
+	repo, err := gitref.Open(e.Repo)
+	if err != nil {
+		rep.Notes = append(rep.Notes, "git state is not synced: "+err.Error())
+		return nil
+	}
+	hg, err := openHostGit(repo)
+	if err != nil {
+		return err
+	}
+	defer hg.Close()
+	vmGit := map[string]string{}
+	for p, f := range vm {
+		if inGit(p, e.Host) && strings.HasPrefix(p, ".git/") {
+			vmGit[p] = f
+		}
+	}
+	return e.syncGit(hg, repo, state, hg.scan(), vmGit, rules, rep)
 }
 
 // inGit is a path the work-tree sync leaves to the git rules.
@@ -315,14 +338,7 @@ func (e *Engine) Sync() (Report, error) {
 		}
 	}
 	// git state, by the ref, HEAD, index, and object rules
-	hostGit := hostGitScan(root)
-	vmGit := map[string]string{}
-	for p, f := range vm {
-		if inGit(p, e.Host) && strings.HasPrefix(p, ".git/") {
-			vmGit[p] = f
-		}
-	}
-	if err := e.syncGit(root, &state, hostGit, vmGit, rules, &rep); err != nil {
+	if err := e.gitPhase(&state, vm, rules, &rep); err != nil {
 		return rep, err
 	}
 	if len(batch) > 0 {
@@ -355,6 +371,12 @@ func (e *Engine) Sync() (Report, error) {
 // toVM sends the host's version of p (fingerprint h) to the VM, on condition that the VM still has
 // base there. It returns the VM's fingerprint afterwards.
 func (e *Engine) toVM(root *os.Root, p, h, base string) (string, error) {
+	return e.toVMFrom(root, p, p, h, base)
+}
+
+// toVMFrom is toVM for a host file at hostRel in root that the VM holds at p (git state, whose
+// host location can differ from its place in the VM's .git).
+func (e *Engine) toVMFrom(root *os.Root, hostRel, p, h, base string) (string, error) {
 	req := syncproto.Header{Path: p, Base: base}
 	var body []byte
 	switch {
@@ -363,7 +385,7 @@ func (e *Engine) toVM(root *os.Root, p, h, base string) (string, error) {
 	case strings.HasPrefix(h, "link:"):
 		req.Op, req.Target = syncproto.OpSymlink, strings.TrimPrefix(h, "link:")
 	default:
-		fp, data, err := hostFP(root, p)
+		fp, data, err := hostFP(root, hostRel)
 		if err != nil {
 			return "", err
 		}
