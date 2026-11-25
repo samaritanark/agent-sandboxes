@@ -33,6 +33,7 @@ Layout so far:
 | `internal/onboard` | `lib/onboard.sh`: which host login files each agent stages, the Codex and Grok config hardening, the API-key refusal, and the starter user config |
 | `internal/agents` | `lib/agents.sh` (per-agent domains, flags, MCP config, credential type, the opencode endpoint) and the host-environment check of `lib/credentials.sh` |
 | `internal/allowlist` | the domain set of `build_cilium_policy` (`lib/policy.sh:42-97`): agent and tier domains, extras, the registrable unblocked apex of each `*.X`, deduplicated; in v3 the session spec's allowlist (design 5.4.1) |
+| `internal/mounts` | the workspace mount rules of a Tier 2/3 session from `lib/manifest.sh` and `lib/filesystem.sh`: which paths each repo masks (empty file or directory) and which host-exec vectors it mounts read-only; in v3 part of the session spec (design 5.4.2) |
 | `internal/secrets` | the host-side store of `lib/secrets.sh` (one 0600 file per secret, name validation, set, list, delete); v3 keeps it on the host (design 5.1.4) |
 | `internal/jqjson` | the part of jq the bash's JSON writers rely on: ordered values, jq's input rules, and its pretty output (used by `audit` and `agents`) |
 | `internal/cli`, `cmd/sandbox-vm` | the in-VM `sandbox` command (design 5.1.6): dispatch, usage texts, and the subcommands ported so far (`version`, `profile`, `check`, `mask`, `exceptions`, `vet`, `link`, `list`, `logs`, `cleanup`, `secret`, `onboard`, and the policy halves of `run`, `allow`, and `resume`, which then stop because sandboxd does not exist yet); the others print their v2 help and say they are not yet ported |
@@ -144,6 +145,14 @@ The workspace baseline and diff (`internal/workspace/testdata/baseline`; GNU `fi
 # on Linux:
 (cd go && go run ./internal/workspace/internal/genbaseline -base internal/workspace/testdata/baseline)
 LC_ALL=C go/internal/workspace/testdata/baseline/oracle.sh > go/internal/workspace/testdata/baseline/golden-baseline.tsv
+```
+
+The workspace mounts (`internal/mounts`; the oracle sources `lib/manifest.sh` and prints `build_volume_mounts_block` and `_readonly_workspace_entries`):
+
+```bash
+# on Linux:
+(cd go && go run ./internal/mounts/internal/genmounts -base internal/mounts/testdata)
+LC_ALL=C go/internal/mounts/testdata/oracle.sh > go/internal/mounts/testdata/golden-mounts.tsv
 ```
 
 The in-VM CLI (`internal/cli`; the oracle runs `bin/sandbox` itself from a copy of the install, and the usage texts are captured from it; for `run`, `testdata/cmd-stub.sh` sources the script with the cluster calls, the removed v2 host workarounds, the clock, and `/dev/urandom` stubbed, so a case ends with its session record written, where the cluster work would begin):

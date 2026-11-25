@@ -35,6 +35,8 @@ var allowed = map[string][]string{
 	"secrets": {},
 	// the session allowlist: built-in and extra domains through the block lists
 	"allowlist": {"checks"},
+	// the workspace mount rules (masks, read-only exec vectors) and their tables
+	"mounts": {"bashcompat", "config", "gate"},
 	// the in-VM CLI is the policy layer's front end, so it may use every policy package
 	"cli": {"agents", "audit", "bashcompat", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
 		"link", "onboard", "secrets", "tier", "vetting", "workspace"},

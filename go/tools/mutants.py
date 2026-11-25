@@ -866,3 +866,23 @@ m(BL, '\t\tif i > di && j > dj {\n\t\t\tout = append(out, "---")', '\t\tif i > d
 m(BL, 'return fmt.Sprintf("  Baseline: %d files.", len(all))', 'return fmt.Sprintf("  Baseline: %d files.", len(all)-1)', R_BL)
 m(BL, '\t\tif i == di && j == dj { // not one shared order after all: take a[i] as removed\n\t\t\ti++\n\t\t}', '', R_BL,
   equivalent="a guard: the two lists always share one order, so it never fires (without it a broken order would loop forever)")
+
+MO = "internal/mounts/mounts.go"
+R_MO = "TestMountsGolden"
+m(MO, '{".vscode", true}, {".idea", true}', '{".vscode", true}, {".idea", false}', R_MO)
+m(MO, 'func isFile(p string) bool { st, err := os.Stat(p); return err == nil && st.Mode().IsRegular() }', 'func isFile(p string) bool { st, err := os.Lstat(p); return err == nil && st.Mode().IsRegular() }', R_MO)
+m(MO, 'func isDir(p string) bool  { st, err := os.Stat(p); return err == nil && st.IsDir() }', 'func isDir(p string) bool  { st, err := os.Lstat(p); return err == nil && st.IsDir() }', R_MO)
+m(MO, '\t\tif e.Type().IsRegular() && bashcompat.Glob(gate.MaskedOpenrcPattern, e.Name()) {', '\t\tif bashcompat.Glob(gate.MaskedOpenrcPattern, e.Name()) {', R_MO)
+m(MO, '\tsort.Strings(out)\n\treturn out\n}', '\t_ = sort.Strings\n\treturn out\n}', R_MO,
+  equivalent="os.ReadDir already returns names sorted bytewise")
+m(MO, '\t\tcase mp == "":\n', '', R_MO,
+  equivalent="an empty entry would test the repo directory itself as a file, which is never one")
+m(MO, '\t\tcase strings.HasSuffix(mp, "/"):', '\t\tcase false:', R_MO)
+m(MO, 'Kind: MaskDir, Index: idx})', 'Kind: MaskDir, Index: idx + 1})', R_MO)
+m(MO, '\tif isDir(repo + "/" + gate.MaskedDirPath) {', '\tif isFile(repo + "/" + gate.MaskedDirPath) {', R_MO)
+m(MO, '\t\tcase !p.Dir && isFile(full):', '\t\tcase !p.Dir && isDir(full):', R_MO)
+m(MO, '\t\tcase p.Dir && isDir(full):', '\t\tcase p.Dir:', R_MO)
+m(MO, '\tif isFile(repo + "/.git") {', '\tif isDir(repo + "/.git") {', R_MO)
+m(MO, 'Kind: ReadonlyFile, Index: len(ReadonlyPaths)})', 'Kind: ReadonlyFile, Index: len(ReadonlyPaths) - 1})', R_MO)
+m(MO, '\tif total == 1 {\n\t\treturn "/workspace"', '\tif total <= 2 {\n\t\treturn "/workspace"', R_MO)
+m(MO, '\tfor _, p := range gate.MaskedFilePaths {', '\tfor _, p := range gate.MaskedFilePaths[1:] {', R_MO)
