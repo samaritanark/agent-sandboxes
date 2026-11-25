@@ -43,14 +43,16 @@ var allowed = map[string][]string{
 	"checks":    {"config", "deviation", "egressmatch"},
 	// domain matching shared by the policy layer and the gateway and resolver: pure functions
 	"egressmatch": {},
-	"tier":        {},
-	"catalogue":   {"bashcompat", "checks", "config", "deviation"},
-	"jqjson":      {},
-	"audit":       {"bashcompat", "deviation", "jqjson", "tier"},
-	"link":        {"bashcompat", "config", "deviation"},
-	"onboard":     {"bashcompat", "config", "deviation"},
-	"agents":      {"deviation", "jqjson"},
-	"workspace":   {"bashcompat", "config", "deviation"},
+	// the gateway (design 5.8): each session's resolver, gateway controller, and broker
+	"gateway/resolver": {"egressmatch"},
+	"tier":             {},
+	"catalogue":        {"bashcompat", "checks", "config", "deviation"},
+	"jqjson":           {},
+	"audit":            {"bashcompat", "deviation", "jqjson", "tier"},
+	"link":             {"bashcompat", "config", "deviation"},
+	"onboard":          {"bashcompat", "config", "deviation"},
+	"agents":           {"deviation", "jqjson"},
+	"workspace":        {"bashcompat", "config", "deviation"},
 	// the host-side secret store: files only, no policy
 	"secrets": {},
 	// the session allowlist: built-in and extra domains through the block lists
@@ -118,6 +120,8 @@ var thirdParty = map[string][]string{
 	"host/netd": {"github.com/containers/gvisor-tap-vsock/", "gvisor.dev/gvisor/"},
 	// containerd's Go client for sandboxd (owner decision, 2026-11-25, design 5.4.3)
 	"sandboxd/runtime": {"github.com/containerd/", "github.com/opencontainers/runtime-spec/"},
+	// miekg/dns for the filtering resolver (owner decision, 2026-11-25)
+	"gateway/resolver": {"github.com/miekg/dns"},
 }
 
 func TestThirdPartyImports(t *testing.T) {

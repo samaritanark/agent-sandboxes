@@ -9,6 +9,7 @@ require (
 	github.com/containerd/containerd/v2 v2.4.2
 	github.com/containerd/errdefs v1.0.0
 	github.com/containers/gvisor-tap-vsock v0.9.0
+	github.com/miekg/dns v1.1.73
 	github.com/opencontainers/runtime-spec v1.3.0
 	gvisor.dev/gvisor v0.0.0-20260413194555-9680d69bf798
 )
@@ -40,7 +41,6 @@ require (
 	github.com/linuxkit/virtsock v0.0.0-20241009230534-cb6a20cc0422 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/mdlayher/vsock v1.3.0 // indirect
-	github.com/miekg/dns v1.1.73 // indirect
 	github.com/moby/locker v1.0.1 // indirect
 	github.com/moby/sys/mountinfo v0.7.2 // indirect
 	github.com/moby/sys/signal v0.7.1 // indirect
