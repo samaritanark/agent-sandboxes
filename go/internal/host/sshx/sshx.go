@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 )
@@ -128,6 +129,7 @@ func (c *Client) command(ctx context.Context, ep driver.SSHEndpoint, argv []stri
 	// No SSH_AUTH_SOCK or similar reaches ssh: IdentityAgent=none already ignores it, and the
 	// environment is cut down to what ssh needs to run.
 	cmd.Env = minimalEnv()
+	cmd.WaitDelay = 2 * time.Second // ssh's own output pipes, should a child keep them open
 	return cmd, nil
 }
 
@@ -151,8 +153,28 @@ func (c *Client) Run(ctx context.Context, ep driver.SSHEndpoint, argv []string, 
 	if err != nil {
 		return 1, err
 	}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-	err = cmd.Run()
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	if f, ok := stdin.(*os.File); ok || stdin == nil {
+		cmd.Stdin = f
+		if stdin == nil {
+			cmd.Stdin = nil
+		}
+		err = cmd.Run()
+	} else {
+		// os/exec's Wait would wait for its own stdin copy, which blocks for as long as the
+		// caller's reader does (a long-lived pipe): copy here instead, so Run returns when ssh
+		// ends; the copy ends when the caller closes its reader.
+		var w io.WriteCloser
+		if w, err = cmd.StdinPipe(); err == nil {
+			if err = cmd.Start(); err == nil {
+				go func() {
+					io.Copy(w, stdin)
+					w.Close()
+				}()
+				err = cmd.Wait()
+			}
+		}
+	}
 	var ee *exec.ExitError
 	switch {
 	case err == nil:

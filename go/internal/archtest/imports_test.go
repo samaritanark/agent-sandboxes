@@ -52,7 +52,7 @@ var allowed = map[string][]string{
 	// The host binary's packages (design 5.1). They import only each other.
 	"host/driver":     {},
 	"host/release":    {},
-	"host/app":        {"host/driver", "host/release", "host/sizing", "host/syncgate", "opstate"},
+	"host/app":        {"host/driver", "host/release", "host/sizing", "host/syncengine", "host/syncgate", "opstate"},
 	"host/sizing":     {},
 	"host/syncgate":   {"tables", "yamllist"},
 	"host/gitobj":     {},
@@ -66,7 +66,7 @@ var allowed = map[string][]string{
 // hostSafe is every internal package the host binary may depend on, directly or not (5.1.1).
 // Adding a policy package here is a design change, not a code change.
 func hostSafe(name string) bool {
-	return strings.HasPrefix(name, "host/") || name == "tables" || name == "opstate" || name == "yamllist"
+	return strings.HasPrefix(name, "host/") || name == "tables" || name == "opstate" || name == "yamllist" || name == "syncproto"
 }
 
 // TestHostBinaryClosure checks the host binary's whole dependency closure, so a host package

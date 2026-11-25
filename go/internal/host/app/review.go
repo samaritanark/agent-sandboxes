@@ -10,12 +10,17 @@ import (
 )
 
 const syncUsage = `Usage: sandbox sync review [--apply <id>] [--discard <id>]
+       sandbox sync once --repo <path>
 
-List workspace changes the sync gate withheld from your checkouts, with a diff
-against what is there now; apply or discard one by its id.
+review  List workspace changes the sync gate withheld from your checkouts, with
+        a diff against what is there now; apply or discard one by its id.
+once    Run one sync pass between a repository and its copy in the VM.
 `
 
 func (a *app) sync(args []string) int {
+	if len(args) > 0 && args[0] == "once" {
+		return a.syncOnce(args[1:])
+	}
 	if len(args) == 0 || args[0] != "review" {
 		if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
 			fmt.Fprint(a.env.Stdout, syncUsage)

@@ -11,8 +11,13 @@ systemctl enable sandbox-seed.path
 ln -sf /usr/lib/sandbox/bin/sandbox /usr/bin/sandbox
 # The operator state the host pushes before each command (design 5.1.4) lands in
 # /var/lib/sandbox/operator; the in-VM CLI reads ~/.sandbox, as v2 did, so root's points there.
-install -d -m 0700 /var/lib/sandbox /var/lib/sandbox/operator
+install -d -m 0711 /var/lib/sandbox # traversable, so the sync user reaches its workspaces
+install -d -m 0700 /var/lib/sandbox/operator
 ln -sfn /var/lib/sandbox/operator /root/.sandbox
+# The sync agent runs as its own unprivileged user (design 5.6.2 rule 5), one workspace copy per
+# repository under /var/lib/sandbox/workspaces, which only that user's group can enter.
+useradd --system --user-group --home-dir /var/lib/sandbox/workspaces --no-create-home --shell /usr/sbin/nologin sandbox-sync
+install -d -o root -g sandbox-sync -m 0750 /var/lib/sandbox/workspaces
 # Ubuntu's arm64 kernel is a gzip-compressed Image, which systemd-stub (systemd 255) cannot load
 # from a unified kernel image ("Bad kernel image"); store it uncompressed before the UKI is built.
 for k in /boot/vmlinuz-* /usr/lib/modules/*/vmlinuz; do
