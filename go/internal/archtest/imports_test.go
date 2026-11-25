@@ -31,14 +31,15 @@ var allowed = map[string][]string{
 	// the session spec the policy CLI hands sandboxd (design 5.4.2): data and its structural checks
 	"sessionspec": {"egressmatch", "l7"},
 	// sandboxd (design 5.4.3): the in-VM supervisor's packages
-	"sandboxd/journal":  {"sessionspec"},
-	"sandboxd/limits":   {"sessionspec"},
-	"sandboxd/runtime":  {},
-	"sandboxd/netns":    {},
-	"sandboxd/auditlog": {},
-	"sandboxd/pki":      {},
-	"sandboxd/netsetup": {},
-	"sandboxd/daemon":   {"egressmatch", "gateway/gwpolicy", "l7", "sandboxd/auditlog", "sandboxd/journal", "sandboxd/limits", "sandboxd/netsetup", "sandboxd/pki", "sandboxd/runtime", "sessionspec"},
+	"sandboxd/journal":     {"sessionspec"},
+	"sandboxd/limits":      {"sessionspec"},
+	"sandboxd/runtime":     {},
+	"sandboxd/netns":       {},
+	"sandboxd/auditlog":    {},
+	"sandboxd/brokerstore": {},
+	"sandboxd/pki":         {},
+	"sandboxd/netsetup":    {},
+	"sandboxd/daemon":      {"egressmatch", "gateway/gwpolicy", "l7", "sandboxd/auditlog", "sandboxd/journal", "sandboxd/limits", "sandboxd/netsetup", "sandboxd/pki", "sandboxd/runtime", "sessionspec"},
 	// the sync protocol (host engine and in-VM agent) and the in-VM agent itself
 	"syncproto": {},
 	"syncagent": {"syncproto"},

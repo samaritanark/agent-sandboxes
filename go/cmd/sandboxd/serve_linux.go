@@ -22,6 +22,7 @@ import (
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/l7"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/auditlog"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/brokerstore"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/journal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/limits"
@@ -152,7 +153,8 @@ func serve() error {
 	}
 	d := &daemon.Daemon{
 		Journal: &journal.Store{Dir: JournalDir}, Runtime: kata{rt}, NetNS: netns.Manager{},
-		Network: network{}, Gateways: gws, TLS: tlsConf, Resolvers: resolvers, AuditRoot: auditlog.Root,
+		Network: network{}, Gateways: gws, TLS: tlsConf, Broker: &brokerStore{store: brokerstore.Store{Dir: brokerstore.Dir}},
+		Resolvers: resolvers, AuditRoot: auditlog.Root,
 		NetNSPath: netns.Path, Budget: limits.Budget{VMMemoryMiB: mem},
 		SessionRoot: sessionspec.SessionStore, Log: l,
 	}

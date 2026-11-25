@@ -476,8 +476,33 @@ func auditTypes(t *testing.T, root, id, file string) []string {
 	return types
 }
 
+// fakeBroker records handovers.
+type fakeBroker struct {
+	key      []byte
+	handed   map[string][][]string
+	sockets  []string
+	failWith error
+}
+
+func (f *fakeBroker) SetKey(k []byte) error    { f.key = append([]byte(nil), k...); return nil }
+func (f *fakeBroker) Put(string, []byte) error { return nil }
+func (f *fakeBroker) Delete(string) error      { return nil }
+func (f *fakeBroker) List() ([]string, error)  { return nil, nil }
+func (f *fakeBroker) HandOver(_ context.Context, id, socket string, refs [][]string) error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	if f.handed == nil {
+		f.handed = map[string][][]string{}
+	}
+	f.handed[id] = refs
+	f.sockets = append(f.sockets, socket)
+	return nil
+}
+
 func TestAudit(t *testing.T) {
 	r := newRig(t)
+	r.d.Broker = &fakeBroker{}
 	ca, _, _ := pki.LoadOrCreate(t.TempDir(), *r.now)
 	r.d.TLS = &TLS{CA: ca, Baseline: []l7.Rule{{Host: l7.AnyHost, Methods: []string{"TRACE"}, Action: l7.Deny}}}
 	ctx := context.Background()
@@ -567,5 +592,56 @@ func TestInterception(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(bundle); !strings.Contains(string(b), strings.TrimSpace(string(ca.CertPEM))) || strings.Contains(string(b), "PRIVATE") {
 		t.Errorf("guest bundle %q", b)
+	}
+}
+
+func TestBrokerHandover(t *testing.T) {
+	r := newRig(t)
+	ca, _, _ := pki.LoadOrCreate(t.TempDir(), *r.now)
+	r.d.TLS = &TLS{CA: ca, Baseline: []l7.Rule{{Host: l7.AnyHost, Methods: []string{"TRACE"}, Action: l7.Deny}}}
+	ctx := context.Background()
+	mk := func(id string) []byte {
+		sp, _ := sessionspec.Decode(bytes.NewReader(spec(id, 2048, "db")))
+		sp.Bindings = []sessionspec.Binding{{Ref: "anthropic", Hosts: []string{"api.anthropic.com"}, Inject: "header:x-api-key",
+			Placeholder: "sbxph_" + strings.Repeat("A", 43)}}
+		sp.Dependencies[0].Bindings = []sessionspec.Binding{{Ref: "pypi", Hosts: []string{"pypi.org"}, Inject: "bearer",
+			Placeholder: "sbxph_" + strings.Repeat("B", 43)}}
+		b, _ := sp.Encode()
+		return b
+	}
+	// no broker store: refused, and nothing is left running
+	if _, err := r.d.Start(ctx, mk("s-nob")); err == nil {
+		t.Fatal("started without a broker store")
+	}
+	if len(r.rt.vms) != 0 || len(r.gw.running) != 0 {
+		t.Fatalf("left running: %v %v", r.rt.vms, r.gw.running)
+	}
+	fb := &fakeBroker{}
+	r.d.Broker = fb
+	id, err := r.d.Start(ctx, mk("s-bro"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := fb.handed[id]; len(refs) != 2 || len(refs[0]) != 1 || refs[0][0] != "anthropic" || refs[1][0] != "pypi" {
+		t.Errorf("handed %v", refs)
+	}
+	if !strings.HasSuffix(fb.sockets[0], "/gateway/handover.sock") {
+		t.Errorf("socket %v", fb.sockets)
+	}
+	p := r.gw.policies[id]
+	if len(p.Links[0].Bindings) != 1 || p.Links[0].Bindings[0].Inject != "header:x-api-key" || len(p.Links[1].Bindings) != 1 ||
+		len(p.Links[0].Intercept) != 1 || p.Links[0].Intercept[0].Name != "api.anthropic.com" {
+		t.Errorf("policy %+v", p.Links)
+	}
+	if strings.Contains(string(r.gw.files[id]["policy.json"]), "value") {
+		t.Error("a value field in the gateway policy")
+	}
+	// a failed handover stops the start and tears the session down
+	fb.failWith = errors.New("no key")
+	if _, err := r.d.Start(ctx, mk("s-fail")); err == nil || !strings.Contains(err.Error(), "handover") {
+		t.Fatalf("%v", err)
+	}
+	if _, ok := r.gw.running["s-fail"]; ok {
+		t.Error("the gateway of a failed start still runs")
 	}
 }

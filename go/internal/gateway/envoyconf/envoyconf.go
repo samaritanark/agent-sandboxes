@@ -40,6 +40,7 @@ type Link struct {
 	Allow        []string
 	BlockDomains []string
 	Intercept    []Intercept // names whose TLS the gateway terminates (intercept.go)
+	BrokerSocket string      // this microVM's credential broker (ext_proc), "" for none
 }
 
 // Dep is a dependency the agent reaches through the gateway (design 5.8.6): the agent connects to
@@ -60,7 +61,6 @@ type Config struct {
 	AccessLog     string       // the connection log ("" for none)
 	ConnectTimout int          // seconds; 0 means 10
 	UpstreamCAs   string       // the roots intercepted upstreams are verified against (system and corporate)
-	BrokerSocket  string       // the credential broker's ext_proc socket ("" for no broker)
 }
 
 func (c Config) check() error {
@@ -352,8 +352,10 @@ func (c Config) Bootstrap() ([]byte, error) {
 	}
 	if intercepting {
 		clusters = append(clusters, c.interceptedUpstream(timeout))
-		if c.BrokerSocket != "" {
-			clusters = append(clusters, c.brokerCluster())
+	}
+	for i, l := range c.Links {
+		if l.BrokerSocket != "" && len(l.Intercept) > 0 {
+			clusters = append(clusters, brokerCluster(i, l.BrokerSocket))
 		}
 	}
 	for _, d := range c.Deps {

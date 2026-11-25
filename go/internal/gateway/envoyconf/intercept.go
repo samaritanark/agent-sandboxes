@@ -224,7 +224,7 @@ func (c Config) interceptChain(link Link, ic Intercept, port int) (obj, error) {
 			// the gateway inspects messages, so none are compressed per message
 			"request_headers_to_remove": []string{"sec-websocket-extensions"},
 		},
-		"http_filters": append(c.brokerFilters(), []obj{
+		"http_filters": append(brokerFilters(c.linkIndex(link), link.BrokerSocket), []obj{
 			{"name": "envoy.filters.http.dynamic_forward_proxy", "typed_config": typed("envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig", obj{
 				"dns_cache_config": c.dnsCacheConfig(),
 			})},
@@ -278,15 +278,15 @@ func (c Config) interceptedUpstream(timeout int) obj {
 	}
 }
 
-// brokerFilters put the credential broker (the broker package, an ext_proc service) in front of
+// brokerFilters put the link's credential broker (the broker package, an ext_proc service) in front of
 // every intercepted request when the session has one: it injects, refuses, and scrubs responses
 // as they stream, and Envoy refuses the request when the broker does not answer.
-func (c Config) brokerFilters() []obj {
-	if c.BrokerSocket == "" {
+func brokerFilters(i int, socket string) []obj {
+	if socket == "" {
 		return nil
 	}
 	return []obj{{"name": "envoy.filters.http.ext_proc", "typed_config": typed("envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor", obj{
-		"grpc_service":       obj{"envoy_grpc": obj{"cluster_name": "broker"}, "timeout": "5s"},
+		"grpc_service":       obj{"envoy_grpc": obj{"cluster_name": fmt.Sprintf("broker_%d", i)}, "timeout": "5s"},
 		"failure_mode_allow": false,
 		"processing_mode": obj{"request_header_mode": "SEND", "response_header_mode": "SEND", "request_body_mode": "NONE",
 			"response_body_mode": "STREAMED", "request_trailer_mode": "SKIP", "response_trailer_mode": "SKIP"},
@@ -295,12 +295,23 @@ func (c Config) brokerFilters() []obj {
 	})}}
 }
 
-func (c Config) brokerCluster() obj {
+// linkIndex is a link's place in the configuration (each link has its own broker).
+func (c Config) linkIndex(l Link) int {
+	for i, o := range c.Links {
+		if o.Addr == l.Addr {
+			return i
+		}
+	}
+	return -1
+}
+
+func brokerCluster(i int, socket string) obj {
+	name := fmt.Sprintf("broker_%d", i)
 	return obj{
-		"name": "broker", "type": "STATIC", "connect_timeout": "1s",
+		"name": name, "type": "STATIC", "connect_timeout": "1s",
 		"typed_extension_protocol_options": obj{"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": typed("envoy.extensions.upstreams.http.v3.HttpProtocolOptions", obj{
 			"explicit_http_config": obj{"http2_protocol_options": obj{}},
 		})},
-		"load_assignment": obj{"cluster_name": "broker", "endpoints": []obj{{"lb_endpoints": []obj{{"endpoint": obj{"address": obj{"pipe": obj{"path": c.BrokerSocket}}}}}}}},
+		"load_assignment": obj{"cluster_name": name, "endpoints": []obj{{"lb_endpoints": []obj{{"endpoint": obj{"address": obj{"pipe": obj{"path": socket}}}}}}}},
 	}
 }

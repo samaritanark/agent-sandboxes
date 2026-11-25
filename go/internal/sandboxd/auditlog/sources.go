@@ -63,9 +63,45 @@ func Flow(line []byte) (typ string, rec map[string]any, ok bool) {
 	return "flow", rec, true
 }
 
+// brokerTypes are the broker's event types (the broker package's Event).
+var brokerTypes = map[string]bool{"credential_injected": true, "credential_missing": true, "credential_misuse": true,
+	"credential_reflection": true, "refused": true}
+
+// BrokerEvent turns one line of a gateway's broker log into an event record: the type, the
+// binding's reference, and the request's host, method, and path (never a value, a placeholder, or
+// a query string).
+func BrokerEvent(line []byte) (typ string, rec map[string]any, ok bool) {
+	var in map[string]any
+	if json.Unmarshal(line, &in) != nil {
+		return "", nil, false
+	}
+	typ, _ = in["type"].(string)
+	if !brokerTypes[typ] {
+		return "", nil, false
+	}
+	rec = map[string]any{}
+	for _, k := range []string{"ref", "host", "method", "reason"} {
+		if v, ok := in[k].(string); ok && v != "" {
+			rec[k] = v
+		}
+	}
+	if p, ok := in["path"].(string); ok {
+		rec["path"], _, _ = strings.Cut(p, "?")
+	}
+	if typ == "refused" {
+		typ = "broker_refused"
+	}
+	return typ, rec, true
+}
+
 // Tail copies new lines of a gateway connection log, from byte offset off, into flows; it returns
 // the offset after the last complete line, for the next call.
 func Tail(path string, off int64, flows *File) (int64, error) {
+	return TailWith(path, off, flows, Flow)
+}
+
+// TailWith copies new lines of a gateway log into a session file, each made a record by parse.
+func TailWith(path string, off int64, flows *File, parse func([]byte) (string, map[string]any, bool)) (int64, error) {
 	r, err := os.Open(path)
 	if os.IsNotExist(err) {
 		return off, nil
@@ -84,7 +120,7 @@ func Tail(path string, off int64, flows *File) (int64, error) {
 			return off, nil // a partial line waits for the next call
 		}
 		off += int64(len(line))
-		if typ, rec, ok := Flow(line); ok {
+		if typ, rec, ok := parse(line); ok {
 			if err := flows.Append(typ, rec); err != nil {
 				return off, err
 			}

@@ -10,12 +10,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/brokerstore"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
 )
 
@@ -23,7 +27,8 @@ import (
 const Socket = "/run/sandboxd.sock"
 
 func usage() int {
-	fmt.Fprintln(os.Stderr, "usage: sandboxd serve | sandboxd ctl start SPEC.json | stop ID [REASON] | heartbeat ID | list")
+	fmt.Fprintln(os.Stderr, "usage: sandboxd serve | sandboxd ctl start SPEC.json | stop ID [REASON] | heartbeat ID | list |\n"+
+		"       broker-key KEYFILE | broker-put REF SEALEDFILE | broker-delete REF | broker-list")
 	return 2
 }
 
@@ -42,6 +47,27 @@ func run(args []string) int {
 		return 0
 	case "ctl":
 		return ctl(args[1:])
+	case "__broker-handover":
+		return brokerHandover()
+	case "__seal":
+		// development only: seal stdin as REF's entry under the key in KEYFILE (the host binary
+		// seals entries itself, so the VM never sees a value to store it)
+		if len(args) != 3 {
+			return usage()
+		}
+		k, err1 := os.ReadFile(args[1])
+		v, err2 := io.ReadAll(os.Stdin)
+		if err := errors.Join(err1, err2); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		b, err := brokerstore.Seal(k, args[2], bytes.TrimRight(v, "\n"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		os.Stdout.Write(b)
+		return 0
 	}
 	return usage()
 }
@@ -68,6 +94,25 @@ func ctl(args []string) int {
 		req = daemon.Request{Op: "heartbeat", ID: args[1]}
 	case args[0] == "list" && len(args) == 1:
 		req = daemon.Request{Op: "list"}
+	case args[0] == "broker-key" && len(args) == 2:
+		// the store key's 32 raw bytes, from a file (the host binary pushes it from its keychain)
+		k, err := os.ReadFile(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		req = daemon.Request{Op: "broker-key", Key: k}
+	case args[0] == "broker-put" && len(args) == 3:
+		b, err := os.ReadFile(args[2])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		req = daemon.Request{Op: "broker-put", ID: args[1], Sealed: b}
+	case args[0] == "broker-delete" && len(args) == 2:
+		req = daemon.Request{Op: "broker-delete", ID: args[1]}
+	case args[0] == "broker-list" && len(args) == 1:
+		req = daemon.Request{Op: "broker-list"}
 	default:
 		return usage()
 	}
@@ -79,6 +124,12 @@ func ctl(args []string) int {
 	if !resp.OK {
 		fmt.Fprintf(os.Stderr, "sandboxd: %s\n", strings.TrimSpace(resp.Error))
 		return 1
+	}
+	if req.Op == "broker-list" {
+		for _, r := range resp.Refs {
+			fmt.Println(r)
+		}
+		return 0
 	}
 	if req.Op == "list" {
 		for _, s := range resp.Sessions {

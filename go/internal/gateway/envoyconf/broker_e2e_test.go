@@ -54,9 +54,9 @@ func TestBrokerEndToEnd(t *testing.T) {
 	}
 	gw := netip.MustParseAddr("127.0.0.79")
 	c := Config{Links: []Link{{Addr: gw, Ports: []int{443}, Allow: []string{"httpbin.org", "api.github.com"},
-		Intercept: []Intercept{ic("httpbin.org"), ic("api.github.com")}}},
+		Intercept: []Intercept{ic("httpbin.org"), ic("api.github.com")}, BrokerSocket: bsock}},
 		AdminSocket: filepath.Join(dir, "admin.sock"), Resolvers: hostResolvers(t), AccessLog: filepath.Join(dir, "conn.log"),
-		UpstreamCAs: "/etc/ssl/certs/ca-certificates.crt", BrokerSocket: bsock}
+		UpstreamCAs: "/etc/ssl/certs/ca-certificates.crt"}
 	runGateway(t, dir, envoy, &c)
 
 	get := func(url string, hdrs ...string) (string, string) {

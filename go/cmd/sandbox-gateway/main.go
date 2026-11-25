@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,12 +21,14 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"google.golang.org/grpc"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/authz"
+	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/broker"
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/envoyconf"
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/gwpolicy"
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/resolver"
@@ -98,11 +101,31 @@ func run() error {
 	go func() { failed <- fmt.Errorf("authz: %w", g.Serve(ln)) }()
 	defer g.Stop()
 
+	// the credential brokers, one per link with bindings; their events go to broker.log, which
+	// sandboxd collects into the session's audit log
+	blog, err := os.OpenFile(filepath.Join(*dir, "broker.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer blog.Close()
+	var bmu sync.Mutex
+	record := func(e broker.Event) {
+		b, _ := json.Marshal(map[string]string{"type": e.Type, "ref": e.Ref, "host": e.Host, "method": e.Method, "path": e.Path, "reason": e.Reason})
+		bmu.Lock()
+		blog.Write(append(b, '\n'))
+		bmu.Unlock()
+	}
+	brokerSockets, stopBrokers, err := startBrokers(*dir, p, record, failed)
+	if err != nil {
+		return err
+	}
+	defer stopBrokers()
+
 	// Envoy
 	conf := envoyconf.Config{AuthzSocket: sock, AdminSocket: filepath.Join(*dir, "admin.sock"), Resolvers: p.Resolvers,
 		AccessLog: filepath.Join(*dir, "connections.log"), UpstreamCAs: p.UpstreamCAs}
 	for _, l := range p.Links {
-		el := envoyconf.Link{Addr: l.Listen, Ports: l.Ports, Allow: l.Allow, BlockDomains: l.BlockDomains}
+		el := envoyconf.Link{Addr: l.Listen, Ports: l.Ports, Allow: l.Allow, BlockDomains: l.BlockDomains, BrokerSocket: brokerSockets[len(conf.Links)]}
 		for _, ic := range l.Intercept {
 			el.Intercept = append(el.Intercept, envoyconf.Intercept{Name: ic.Name, CertChain: ic.CertChain, PrivateKey: ic.PrivateKey, Rules: l.L7})
 		}

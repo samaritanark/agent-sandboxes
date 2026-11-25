@@ -179,3 +179,18 @@ func TestFlowNoRequest(t *testing.T) {
 		t.Errorf("%s %v %v", typ, rec, ok)
 	}
 }
+
+func TestBrokerEvent(t *testing.T) {
+	typ, rec, ok := BrokerEvent([]byte(`{"type":"credential_misuse","ref":"gh","host":"evil.com","method":"GET","path":"/x?t=sbxph_x","reason":"r","value":"v"}`))
+	if !ok || typ != "credential_misuse" || rec["path"] != "/x" || rec["value"] != nil || rec["ref"] != "gh" {
+		t.Errorf("%s %v %v", typ, rec, ok)
+	}
+	if typ, _, _ := BrokerEvent([]byte(`{"type":"refused"}`)); typ != "broker_refused" {
+		t.Errorf("%s", typ)
+	}
+	for _, l := range []string{`{"type":"session_end"}`, `nope`, `{}`} {
+		if _, _, ok := BrokerEvent([]byte(l)); ok {
+			t.Errorf("%s accepted", l)
+		}
+	}
+}

@@ -22,6 +22,26 @@ type Link struct {
 	BlockDomains []string    `json:"block_domains"`
 	Intercept    []Intercept `json:"intercept,omitempty"`
 	L7           []l7.Rule   `json:"l7,omitempty"` // the org baseline and the microVM's own rules
+	Bindings     []Binding   `json:"bindings,omitempty"`
+}
+
+// Binding is a brokered credential of the link's microVM, without its value: the value reaches
+// the gateway only through the handover (Handover), from sandboxd's short-lived helper.
+type Binding struct {
+	Ref         string   `json:"ref"`
+	Hosts       []string `json:"hosts"`
+	Inject      string   `json:"inject"`
+	Placeholder string   `json:"placeholder"`
+}
+
+// HandoverSocket is the socket in the gateway's directory the helper writes the values to; only
+// root may write it.
+const HandoverSocket = "handover.sock"
+
+// Handover carries the session's credential values, by link and reference ([]byte, so the sender
+// can wipe them).
+type Handover struct {
+	Links []map[string][]byte `json:"links"`
 }
 
 // Intercept is an intercepted name and its leaf's files (in the gateway's directory).

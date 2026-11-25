@@ -15,10 +15,12 @@ const MaxRequest = 1 << 20
 
 // Request is one call on sandboxd's socket. One request per connection.
 type Request struct {
-	Op     string          `json:"op"` // start, stop, heartbeat, list
+	Op     string          `json:"op"` // start, stop, heartbeat, list, broker-key, broker-put, broker-delete, broker-list
 	Spec   json.RawMessage `json:"spec,omitempty"`
-	ID     string          `json:"id,omitempty"`
+	ID     string          `json:"id,omitempty"` // a session, or for broker-put and broker-delete a credential reference
 	Reason string          `json:"reason,omitempty"`
+	Key    []byte          `json:"key,omitempty"`    // broker-key: the store key (from the host keychain)
+	Sealed []byte          `json:"sealed,omitempty"` // broker-put: an entry the host sealed
 }
 
 // Response answers a Request.
@@ -27,6 +29,7 @@ type Response struct {
 	Error    string    `json:"error,omitempty"`
 	ID       string    `json:"id,omitempty"`
 	Sessions []Summary `json:"sessions,omitempty"`
+	Refs     []string  `json:"refs,omitempty"`
 }
 
 // Authorize decides whether a connection's peer may use sandboxd (SO_PEERCRED on Linux).
@@ -98,6 +101,29 @@ func (d *Daemon) call(ctx context.Context, req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, Sessions: l}
+	case "broker-key", "broker-put", "broker-delete", "broker-list":
+		if d.Broker == nil {
+			return fail(errors.New("sandboxd has no broker store"))
+		}
+		var err error
+		var refs []string
+		switch req.Op {
+		case "broker-key":
+			err = d.Broker.SetKey(req.Key)
+			for i := range req.Key {
+				req.Key[i] = 0
+			}
+		case "broker-put":
+			err = d.Broker.Put(req.ID, req.Sealed)
+		case "broker-delete":
+			err = d.Broker.Delete(req.ID)
+		case "broker-list":
+			refs, err = d.Broker.List()
+		}
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, ID: req.ID, Refs: refs}
 	}
 	return fail(errors.New("unknown op " + req.Op))
 }

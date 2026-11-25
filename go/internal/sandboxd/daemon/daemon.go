@@ -68,6 +68,28 @@ type GatewayRunner interface {
 	Stop(ctx context.Context, id string, pid int) error
 }
 
+// Broker is the credential store in the VM and the handover of a session's bound values to its
+// gateway (design 5.9.2). The store key reaches sandboxd only in memory (D-32), and the values are
+// decrypted only by a short-lived helper, never by sandboxd itself.
+type Broker interface {
+	SetKey(key []byte) error
+	Put(ref string, sealed []byte) error
+	Delete(ref string) error
+	List() ([]string, error)
+	// HandOver decrypts refs[i] (link i's bound references) and writes them to the gateway's
+	// handover socket.
+	HandOver(ctx context.Context, session, socket string, refs [][]string) error
+}
+
+// policyBindings are a microVM's bindings as its gateway gets them: no values.
+func policyBindings(bs []sessionspec.Binding) []gwpolicy.Binding {
+	var out []gwpolicy.Binding
+	for _, b := range bs {
+		out = append(out, gwpolicy.Binding{Ref: b.Ref, Hosts: b.Hosts, Inject: b.Inject, Placeholder: b.Placeholder})
+	}
+	return out
+}
+
 // Paths: where a namespace is bound, given its name.
 type Paths func(name string) string
 
@@ -91,6 +113,7 @@ type Daemon struct {
 	Network     Network
 	Gateways    GatewayRunner
 	TLS         *TLS         // interception (tls.go); nil refuses any session that intercepts
+	Broker      Broker       // the broker store and handover; nil refuses any session that binds credentials
 	Resolvers   []netip.Addr // the VM's upstream resolvers, for each gateway
 	AuditRoot   string       // each session's audit log (auditlog.Root); "" for none
 	NetNSPath   Paths
@@ -152,6 +175,17 @@ func (d *Daemon) collect(id string) {
 		d.logf("session %s: audit: %v", id, err)
 	}
 	d.offsets[id] = off
+	// the broker's events: injections, refusals, misuse, reflections
+	events, err := auditlog.Open(d.AuditRoot, id, auditlog.Events)
+	if err != nil {
+		d.logf("session %s: audit: %v", id, err)
+		return
+	}
+	off, err = auditlog.TailWith(filepath.Join(d.SessionRoot, id, "gateway", "broker.log"), d.offsets[id+"/broker"], events, auditlog.BrokerEvent)
+	if err != nil {
+		d.logf("session %s: audit: %v", id, err)
+	}
+	d.offsets[id+"/broker"] = off
 }
 
 // Collect gathers every live session's new connections (sandboxd calls it periodically).
@@ -344,7 +378,7 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 	// the gateway's policy: each link's own allowlist, and the agent's way to its dependencies
 	agentPorts := append([]int{443}, spec.Egress.ExtraPorts...)
 	pol := gwpolicy.Policy{Resolvers: d.Resolvers, Links: []gwpolicy.Link{{Name: "agent", Listen: netsetup.GatewayAddr,
-		Ports: agentPorts, Allow: spec.Egress.Allow, BlockDomains: spec.Egress.BlockDomains}}}
+		Ports: agentPorts, Allow: spec.Egress.Allow, BlockDomains: spec.Egress.BlockDomains, Bindings: policyBindings(spec.Bindings)}}}
 	ports := map[int]bool{}
 	blockCIDRs := append([]string(nil), spec.Egress.BlockCIDRs...)
 	for _, p := range agentPorts {
@@ -354,7 +388,7 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 		gw, guest := netsetup.LinkAddrs(i + 1)
 		dp := append([]int{443}, dep.Egress.ExtraPorts...)
 		pol.Links = append(pol.Links, gwpolicy.Link{Name: dep.Name, Listen: gw, Ports: dp,
-			Allow: dep.Egress.Allow, BlockDomains: dep.Egress.BlockDomains})
+			Allow: dep.Egress.Allow, BlockDomains: dep.Egress.BlockDomains, Bindings: policyBindings(dep.Bindings)})
 		pol.Deps = append(pol.Deps, gwpolicy.Dep{Name: dep.Name, Port: dep.Port, Addr: guest})
 		ports[dep.Port] = true
 		for _, p := range dp {
@@ -404,6 +438,23 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 	}
 	if err := d.Journal.Mark(id, KindGateway, "gateway", journal.Created, strconv.Itoa(pid)); err != nil {
 		return err
+	}
+	// the bound credentials' values, decrypted by a short-lived helper straight into the gateway
+	refs := make([][]string, len(pol.Links))
+	anyBinding := false
+	for i, l := range pol.Links {
+		for _, b := range l.Bindings {
+			refs[i] = append(refs[i], b.Ref)
+			anyBinding = true
+		}
+	}
+	if anyBinding {
+		if d.Broker == nil {
+			return errors.New("the session binds credentials, but sandboxd has no broker store")
+		}
+		if err := d.Broker.HandOver(ctx, id, filepath.Join(gwDir, gwpolicy.HandoverSocket), refs); err != nil {
+			return fmt.Errorf("credential handover: %w", err)
+		}
 	}
 	// each microVM's resolver is its own gateway address
 	resolvConf := func(n int) (runtime.Mount, error) {
