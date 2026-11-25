@@ -1,0 +1,9 @@
+# staged by build.sh
+mkosi.extra/usr/lib/sandbox/bin/
+mkosi.extra/usr/lib/sandbox/config/
+mkosi.extra/usr/lib/sandbox/setup/
+mkosi.extra/etc/sandbox/
+# mkosi's outputs and caches
+mkosi.output/
+mkosi.cache/
+mkosi.workspace/

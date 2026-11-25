@@ -1,0 +1,6 @@
+[Unit]
+Description=Apply the sandbox first-boot seed (SSH keys, CAs) and start sshd
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sandbox/seed.sh

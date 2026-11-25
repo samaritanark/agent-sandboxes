@@ -1,0 +1,19 @@
+#!/bin/bash
+# Runs inside the image after the packages are installed.
+set -euo pipefail
+# sshd starts only from sandbox-seed.service, once the pinned host key is in place; the stock
+# host keys are removed so none can ever be presented.
+systemctl disable ssh.socket ssh.service 2>/dev/null || true
+systemctl mask ssh.socket
+rm -f /etc/ssh/ssh_host_*
+systemctl enable sandbox-seed.path
+# The in-VM sandbox (staged by build.sh) is the command the host binary proxies to.
+ln -sf /usr/lib/sandbox/bin/sandbox /usr/bin/sandbox
+# Ubuntu's arm64 kernel is a gzip-compressed Image, which systemd-stub (systemd 255) cannot load
+# from a unified kernel image ("Bad kernel image"); store it uncompressed before the UKI is built.
+for k in /boot/vmlinuz-* /usr/lib/modules/*/vmlinuz; do
+  [[ -f "${k}" && ! -L "${k}" ]] || continue
+  if [[ "$(od -An -tx1 -N2 "${k}" | tr -d ' ')" == "1f8b" ]]; then
+    zcat "${k}" > "${k}.raw" && mv -f "${k}.raw" "${k}"
+  fi
+done

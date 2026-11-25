@@ -1,0 +1,8 @@
+[Unit]
+Description=Wait for the sandbox first-boot seed
+
+[Path]
+PathExists=/etc/sandbox/seed.env
+
+[Install]
+WantedBy=multi-user.target
