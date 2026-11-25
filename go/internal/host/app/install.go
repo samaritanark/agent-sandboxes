@@ -265,7 +265,8 @@ func (a *app) uninstall(args []string) int {
 	if st == driver.Running {
 		fmt.Fprintln(a.env.Stdout, "==> Stopping the sandbox VM...")
 		if err := a.env.Driver.Stop(a.ctx); err != nil {
-			a.die("could not stop the sandbox VM: %v", err)
+			// deleting stops it by force
+			fmt.Fprintf(a.env.Stderr, "WARNING: could not stop the sandbox VM cleanly: %v\n", err)
 		}
 	}
 	if st != driver.NotCreated {

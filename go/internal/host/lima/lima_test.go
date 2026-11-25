@@ -246,3 +246,22 @@ func TestHostReach(t *testing.T) {
 		t.Errorf("qemu: %+v", hr)
 	}
 }
+
+func TestStopFallsBackToForce(t *testing.T) {
+	d, f := newFake(t, "")
+	calls := 0
+	d.Exec = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		f.calls = append(f.calls, args)
+		calls++
+		if calls == 1 {
+			return nil, errors.New("did not receive an event with the exiting status")
+		}
+		return nil, nil
+	}
+	if err := d.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"--tty=false", "stop", "--force", "sandbox-v3"}; !reflect.DeepEqual(f.calls[1], want) {
+		t.Errorf("second call %q", f.calls[1])
+	}
+}

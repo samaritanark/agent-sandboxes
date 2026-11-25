@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 )
@@ -193,9 +194,19 @@ func (d *Driver) Start(ctx context.Context) error {
 	return err
 }
 
+// Stop asks the guest to shut down (Lima does it over its own SSH connection) and, if that fails
+// within a minute, stops the VM by force.
 func (d *Driver) Stop(ctx context.Context) error {
-	_, err := d.limactl(ctx, "stop", d.Instance)
-	return err
+	gctx, cancel := context.WithTimeout(ctx, time.Minute)
+	_, err := d.limactl(gctx, "stop", d.Instance)
+	cancel()
+	if err == nil {
+		return nil
+	}
+	if _, ferr := d.limactl(ctx, "stop", "--force", d.Instance); ferr != nil {
+		return fmt.Errorf("%v; forced stop: %v", err, ferr)
+	}
+	return nil
 }
 
 func (d *Driver) Delete(ctx context.Context) error {
