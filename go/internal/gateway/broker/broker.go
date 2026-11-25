@@ -176,6 +176,13 @@ func (s *Set) Decide(r Request) Outcome {
 		return Outcome{} // nothing brokered here; the request goes on as it is
 	}
 
+	// a protocol upgrade hands the connection to raw frames, which the scrubber is not known to
+	// see: until that is verified, an upgrade never carries an injected value (fail closed)
+	for _, h := range r.Headers {
+		if h.Name == "upgrade" {
+			return refuse("refused", bound[0].Ref, "a protocol upgrade on a brokered destination cannot be scrubbed")
+		}
+	}
 	out := Outcome{RemoveHeaders: removals(r.Headers)}
 	for _, b := range bound {
 		if !found[b.Placeholder] {

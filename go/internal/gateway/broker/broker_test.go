@@ -73,6 +73,8 @@ func TestDecide(t *testing.T) {
 		{name: "placeholder in the wrong place", r: Request{Host: "api.github.com", Path: "/?access_token=" + phGH}, refuse: true, event: "credential_misuse"},
 		{name: "two authorization headers", r: Request{Host: "api.github.com", Path: "/", Headers: hdr("authorization", "Bearer "+phGH, "authorization", "Bearer "+phGH)}, refuse: true, event: "credential_misuse"},
 		{name: "query placeholder twice", r: Request{Host: "maps.example.com", Path: "/?key=" + phQ + "&key=" + phQ}, refuse: true, event: "credential_misuse"},
+		{name: "an upgrade to a bound destination", r: Request{Host: "api.github.com", Path: "/", Headers: hdr("authorization", "Bearer "+phGH, "connection", "upgrade", "upgrade", "websocket")}, refuse: true, event: "refused"},
+		{name: "an upgrade elsewhere passes", r: Request{Host: "example.org", Path: "/", Headers: hdr("connection", "upgrade", "upgrade", "websocket")}},
 		{name: "CR in a header", r: Request{Host: "example.org", Path: "/", Headers: hdr("x", "a\r\nb")}, refuse: true},
 		{name: "two content lengths", r: Request{Host: "example.org", Path: "/", Headers: hdr("content-length", "1", "content-length", "2")}, refuse: true},
 		{name: "length and chunked", r: Request{Host: "example.org", Path: "/", Headers: hdr("content-length", "1", "transfer-encoding", "chunked")}, refuse: true},
