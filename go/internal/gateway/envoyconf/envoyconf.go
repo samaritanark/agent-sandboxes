@@ -100,6 +100,9 @@ func typed(t string, cfg obj) obj {
 
 const dnsCache = "sandbox_dns"
 
+// MaxConnections bounds the connections a session's gateway holds open at once.
+const MaxConnections = 4096
+
 // MaxRegexProgram is the RE2 program size Envoy accepts in this bootstrap.
 const MaxRegexProgram = 2048
 
@@ -359,6 +362,11 @@ func (c Config) Bootstrap() ([]byte, error) {
 		"static_resources": obj{"listeners": listeners, "clusters": clusters},
 		// RE2's program size limit: Envoy's default (100) is below a long host name's single-label
 		// match and a percent-encoding-aware query condition; l7 bounds pattern lengths to fit
+		// a session cannot hold more connections open on its gateway than this
+		"overload_manager": obj{"resource_monitors": []obj{{"name": "envoy.resource_monitors.global_downstream_max_connections",
+			"typed_config": typed("envoy.extensions.resource_monitors.downstream_connections.v3.DownstreamConnectionsConfig", obj{
+				"max_active_downstream_connections": MaxConnections,
+			})}}},
 		"layered_runtime": obj{"layers": []obj{{"name": "static", "static_layer": obj{
 			"re2.max_program_size.error_level": MaxRegexProgram, "re2.max_program_size.warn_level": MaxRegexProgram,
 		}}}},

@@ -30,8 +30,13 @@ func Flow(line []byte) (typ string, rec map[string]any, ok bool) {
 			rec["path"], _, _ = strings.Cut(p, "?")
 		}
 		rule, _ := in["rule"].(string)
-		rec["decision"] = "allowed"
-		if !strings.HasPrefix(rule, "allow:") && rule != "default:forward" {
+		method, _ := in["method"].(string)
+		switch {
+		case method == "" || method == "-":
+			rec["decision"] = "no_request" // the connection closed before a request
+		case strings.HasPrefix(rule, "allow:") || rule == "default:forward":
+			rec["decision"] = "allowed"
+		default:
 			rec["decision"] = "refused"
 		}
 		if f, _ := in["flags"].(string); f != "" && f != "-" {

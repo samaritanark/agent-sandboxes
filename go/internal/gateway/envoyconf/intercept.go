@@ -119,11 +119,11 @@ func routes(rules []l7.Rule) ([]obj, error) {
 					if err != nil {
 						return err
 					}
-					match = obj{"safe_regex": obj{"google_re2": obj{}, "regex": p.PathRegex}}
+					match = obj{"safe_regex": obj{"regex": p.PathRegex}}
 					// query conditions match the raw ":path", percent-encoded or not (l7.QueryCond)
 					var hs []obj
 					for _, q := range p.Query {
-						hs = append(hs, obj{"name": ":path", "string_match": obj{"safe_regex": obj{"google_re2": obj{}, "regex": q.QueryPathRegex()}}})
+						hs = append(hs, obj{"name": ":path", "string_match": obj{"safe_regex": obj{"regex": q.QueryPathRegex()}}})
 					}
 					if len(hs) > 0 {
 						match["headers"] = hs
@@ -182,11 +182,11 @@ func virtualHosts(ic Intercept, port int, exactNames []string, rs []obj) []obj {
 		var guard []obj
 		// Envoy's "*.x" domain takes any depth; the connection's wildcard takes one label
 		guard = append(guard, misdirected("misdirected:depth", obj{"prefix": "/", "headers": []obj{{"name": ":authority", "invert_match": true,
-			"string_match": obj{"safe_regex": obj{"google_re2": obj{}, "regex": `(?i)^[^.:]+\.` + regexp.QuoteMeta(rest) + portRE + "$"}}}}}))
+			"string_match": obj{"safe_regex": obj{"regex": `(?i)^[^.:]+\.` + regexp.QuoteMeta(rest) + portRE + "$"}}}}}))
 		for _, e := range exactNames {
 			if egressmatch.Allowed(e, ic.Name) {
 				guard = append(guard, misdirected("misdirected:"+e, obj{"prefix": "/", "headers": []obj{{"name": ":authority",
-					"string_match": obj{"safe_regex": obj{"google_re2": obj{}, "regex": `(?i)^` + regexp.QuoteMeta(e) + portRE + "$"}}}}}))
+					"string_match": obj{"safe_regex": obj{"regex": `(?i)^` + regexp.QuoteMeta(e) + portRE + "$"}}}}}))
 			}
 		}
 		rs = append(guard, rs...)

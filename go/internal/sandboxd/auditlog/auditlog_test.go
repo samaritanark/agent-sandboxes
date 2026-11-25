@@ -171,3 +171,11 @@ func TestReadAfter(t *testing.T) {
 		t.Error("traversal")
 	}
 }
+
+func TestFlowNoRequest(t *testing.T) {
+	// a TLS connection to an intercepted name that closed before any request
+	typ, rec, ok := Flow([]byte(`{"intercepted":true,"method":null,"path":null,"rule":null,"status":0,"flags":"DC","sni":"api.github.com"}`))
+	if !ok || typ != "request" || rec["decision"] != "no_request" {
+		t.Errorf("%s %v %v", typ, rec, ok)
+	}
+}
