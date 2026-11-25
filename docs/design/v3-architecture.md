@@ -478,7 +478,8 @@ sharing, or host-exec integration.
 
 | Host | Driver | Notes |
 |---|---|---|
-| macOS 15+, Apple M3 or later | `lima-vz` | `vmType: vz`, `nestedVirtualization: true`, `mounts: []` |
+| macOS 15+, Apple M3 or later | `vfkit` (default) | vfkit (Apple's Virtualization framework) run by `sandbox netd`, whose userspace network is the VM's only NIC (§5.2.6, D-31; S7 2026-11-25); `--nested`, no shares, no NAT device. Raw disk image, cloud-init NoCloud seed |
+| macOS 15+, Apple M3 or later | `lima-vz` (`--driver lima`) | `vmType: vz`, `nestedVirtualization: true`, `mounts: []`. Lima always attaches its own user-mode NIC, so the VM can reach the host's LAN address and `sandbox doctor` fails (§5.2.6) |
 | Linux (bare metal) | `lima-qemu` | KVM; nested KVM enabled (`/sys/module/kvm_{intel,amd}/parameters/nested`) |
 | Windows 11 Pro/Enterprise | `hyperv` **or** `lima-hcs` | Decided by spike S3. Requires nested virtualization exposed to the guest and Hyper-V Administrators membership. The in-VM virtualization backend (nested KVM, or MSHV if Kata + Cloud Hypervisor support it in this configuration) is decided by S3. **This is the least certain assumption in the design** (Appendix C, F-01). **Best effort for v3.0.0** (D-29) |
 
@@ -606,6 +607,20 @@ host loopback services. Therefore:
   our own are the untested routes). D-31 stands as the target for the
   per-endpoint requirement; `hostLoopback: false` plus the host agent is the
   baseline without it (`docs/design/spikes/S7.md`).
+- **Measured with `sandbox netd` on vfkit (S7, 2026-11-25):** with netd as the
+  VM's only NIC, VM root (VM-local rules removed) could not reach the host's
+  LAN address, loopback, the gateway, or a host network's broadcast address;
+  DNS, outbound HTTPS, and a declared endpoint worked; throughput matched
+  Lima's built-in network. netd's forwarders refuse every address on any host
+  interface (read at each connection), their directed broadcasts, loopback,
+  link-local, multicast, and the VM's own network; the stack is IPv4 only, so
+  the VM has no IPv6 path. A supervisor owns the VM's link (a datagram socket
+  pair, one end given to vfkit) and restarts the stack worker, so the VM fails
+  closed and recovers; if the supervisor itself dies the VM has no network
+  until stopped. This is the `vfkit` driver (§5.2.2), the default on macOS.
+  Open: Linux (qemu), Windows, split DNS, VPN routes, and hairpin NAT (a LAN
+  router forwarding a public address back to the host is not caught by an
+  address check).
 - **Mechanism and owner (S7 evaluates first):** a host-side userspace network
   stack as the VM's only NIC (the gvisor-tap-vsock approach Lima's user-mode
   networking already uses), run by **`sandbox netd`** (D-31): a mode of the
