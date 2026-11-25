@@ -50,6 +50,7 @@ func main() {
 	os.Exit(app.Run(context.Background(), os.Args[1:], app.Env{
 		Driver: d, Transport: tr, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 		StdinTTY: tty, StateDir: state, User: name,
+		Install: installDeps(home),
 		HostCommands: map[string]func(context.Context, []string) int{
 			"setup-proxy-cert": func(ctx context.Context, args []string) int {
 				env := proxycert.System(runtime.GOOS)

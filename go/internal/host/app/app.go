@@ -41,6 +41,8 @@ type Env struct {
 	// HostCommands are the host operations of 5.1.3 that run without the VM, by name; each gets
 	// the arguments after its name and returns the exit code.
 	HostCommands map[string]func(ctx context.Context, args []string) int
+	// Install is what install and uninstall need beyond the rest of Env.
+	Install InstallDeps
 }
 
 // ReleasePath is the image's release file (5.1.7).
@@ -58,8 +60,7 @@ var removed = map[string]string{
 
 // notYet are host-only commands this build does not implement yet.
 var notYet = map[string]bool{
-	"install": true, "setup": true, "uninstall": true, "upgrade": true, "doctor": true,
-	"sync": true, "ca": true,
+	"upgrade": true, "doctor": true, "sync": true, "ca": true,
 }
 
 // Run executes one command line and returns the exit code.
@@ -84,8 +85,13 @@ func Run(ctx context.Context, args []string, env Env) (rc int) {
 		if notYet[args[0]] {
 			a.die("'sandbox %s' is not available in this build of the v3 host binary yet.", args[0])
 		}
-		if args[0] == "vm" {
+		switch args[0] {
+		case "vm":
 			return a.vm(args[1:])
+		case "install", "setup": // setup remains an alias (5.1.6)
+			return a.install(args[1:])
+		case "uninstall":
+			return a.uninstall(args[1:])
 		}
 		if f, ok := env.HostCommands[args[0]]; ok {
 			return f(ctx, args[1:])
@@ -125,17 +131,23 @@ func (a *app) running() driver.SSHEndpoint {
 	return ep
 }
 
-// handshake reads the image's release file and checks its control API (5.1.7).
-func (a *app) handshake(ep driver.SSHEndpoint) release.Info {
+// checkRelease reads the image's release file and checks its control API (5.1.7).
+func (a *app) checkRelease(ep driver.SSHEndpoint) (release.Info, error) {
 	b, err := a.env.Transport.Output(a.ctx, ep, []string{"cat", ReleasePath}, release.MaxSize+1)
 	if err != nil {
-		a.die("cannot read %s in the sandbox VM: %v", ReleasePath, err)
+		return release.Info{}, fmt.Errorf("cannot read %s in the sandbox VM: %w", ReleasePath, err)
 	}
 	info, err := release.Parse(b)
 	if err != nil {
-		a.die("the sandbox VM's %s is invalid: %v", ReleasePath, err)
+		return release.Info{}, fmt.Errorf("the sandbox VM's %s is invalid: %w", ReleasePath, err)
 	}
-	if err := release.Check(info); err != nil {
+	return info, release.Check(info)
+}
+
+// handshake is checkRelease, dying on failure.
+func (a *app) handshake(ep driver.SSHEndpoint) release.Info {
+	info, err := a.checkRelease(ep)
+	if err != nil {
 		a.die("%v", err)
 	}
 	return info
