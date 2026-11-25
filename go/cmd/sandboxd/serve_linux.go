@@ -119,6 +119,7 @@ func serve() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	stopAllGateways()
 	l.Printf("reconciling (VM memory %d MiB)", mem)
 	if err := d.Reconcile(ctx); err != nil {
 		return fmt.Errorf("reconcile: %w", err)

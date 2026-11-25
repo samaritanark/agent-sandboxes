@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/netsetup"
@@ -89,7 +88,31 @@ func newGateways() (*gateways, error) {
 	return &gateways{uid, gid}, nil
 }
 
+// unit is a session's gateway service.
+func unit(id string) string { return "sandbox-gw-" + id + ".service" }
+
+// gatewayProperties confine a gateway (design 5.8.2: an unprivileged user under a seccomp
+// profile): it joins only its session's network namespace, holds no capabilities, sees a
+// read-only system with only its own directory writable, may make only the system calls of an
+// ordinary service and only IPv4, IPv6, and Unix sockets, and has a memory cap.
+func gatewayProperties(ns, dir string) []string {
+	return []string{
+		"NetworkNamespacePath=/run/netns/" + ns,
+		"User=" + GatewayUser, "Group=" + GatewayUser,
+		"NoNewPrivileges=yes", "CapabilityBoundingSet=", "AmbientCapabilities=",
+		"SystemCallFilter=@system-service", "SystemCallArchitectures=native", "SystemCallErrorNumber=EPERM",
+		"RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX", "RestrictNamespaces=yes", "LockPersonality=yes",
+		"RestrictRealtime=yes", "RestrictSUIDSGID=yes",
+		"ProtectSystem=strict", "ReadWritePaths=" + dir, "ProtectHome=yes", "PrivateTmp=yes", "PrivateDevices=yes",
+		"ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes", "ProtectControlGroups=yes",
+		"ProtectClock=yes", "ProtectHostname=yes", "UMask=0077",
+		"MemoryMax=512M", "TasksMax=256",
+		"StandardOutput=append:" + filepath.Join(dir, "gateway.log"), "StandardError=append:" + filepath.Join(dir, "gateway.log"),
+	}
+}
+
 func (g *gateways) Start(ctx context.Context, id, ns, dir string, policy []byte) (int, error) {
+	exec.Command("systemctl", "stop", unit(id)).Run() // the remains of a failed start
 	os.RemoveAll(dir)
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return 0, err
@@ -108,47 +131,57 @@ func (g *gateways) Start(ctx context.Context, id, ns, dir string, policy []byte)
 	if err := os.WriteFile(pol, policy, 0o400); err != nil {
 		return 0, err
 	}
-	for _, p := range []string{dir, pol} {
+	logPath := filepath.Join(dir, "gateway.log")
+	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+		return 0, err
+	}
+	for _, p := range []string{dir, pol, logPath} {
 		if err := os.Chown(p, g.uid, g.gid); err != nil {
 			return 0, err
 		}
 	}
-	logf, err := os.OpenFile(filepath.Join(dir, "gateway.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
-	if err != nil {
-		return 0, err
+	args := []string{"--unit=" + unit(id), "--collect", "--quiet", "--description=sandbox gateway for session " + id}
+	for _, p := range gatewayProperties(ns, dir) {
+		args = append(args, "--property="+p)
 	}
-	defer logf.Close()
-	os.Chown(logf.Name(), g.uid, g.gid)
-	cmd := exec.Command("ip", "netns", "exec", ns,
-		"setpriv", "--reuid="+strconv.Itoa(g.uid), "--regid="+strconv.Itoa(g.gid), "--clear-groups",
-		"--no-new-privs", "--inh-caps=-all", "--bounding-set=-all",
-		"/usr/lib/sandbox/bin/sandbox-gateway", "--policy", pol, "--dir", dir)
-	cmd.Stdout, cmd.Stderr = logf, logf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		return 0, err
+	args = append(args, "/usr/lib/sandbox/bin/sandbox-gateway", "--policy", pol, "--dir", dir)
+	if out, err := exec.CommandContext(ctx, "systemd-run", args...).CombinedOutput(); err != nil {
+		return 0, fmt.Errorf("systemd-run: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
 	// serving means Envoy listens on the gateway's address
 	deadline := time.After(20 * time.Second)
 	for {
 		if listening(ns, netsetup.GatewayAddr.String()+":443") {
-			return cmd.Process.Pid, nil
+			pid, _ := strconv.Atoi(strings.TrimSpace(show(unit(id), "MainPID")))
+			return pid, nil
+		}
+		if st := show(unit(id), "ActiveState"); st == "failed" || st == "inactive" {
+			b, _ := os.ReadFile(logPath)
+			exec.Command("systemctl", "stop", unit(id)).Run()
+			return 0, fmt.Errorf("gateway exited: %s", lastLine(string(b)))
 		}
 		select {
-		case err := <-exited:
-			b, _ := os.ReadFile(filepath.Join(dir, "gateway.log"))
-			return 0, fmt.Errorf("gateway exited (%v): %s", err, lastLine(string(b)))
 		case <-deadline:
-			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			exec.Command("systemctl", "stop", unit(id)).Run()
 			return 0, errors.New("gateway did not start listening within 20 s")
 		case <-ctx.Done():
-			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			exec.Command("systemctl", "stop", unit(id)).Run()
 			return 0, ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+// show is one property of a unit.
+func show(unit, prop string) string {
+	out, _ := exec.Command("systemctl", "show", "--value", "-p", prop, unit).Output()
+	return strings.TrimSpace(string(out))
+}
+
+// stopAllGateways stops every gateway unit: at start, before reconciling, nothing that runs is
+// vouched for (the sessions themselves are torn down by the reconciliation).
+func stopAllGateways() {
+	exec.Command("systemctl", "stop", "sandbox-gw-*.service").Run()
 }
 
 func lastLine(s string) string {
@@ -164,22 +197,14 @@ func listening(ns, addr string) bool {
 	return exec.Command("ip", "netns", "exec", ns, "bash", "-c", "exec 3<>/dev/tcp/"+strings.Replace(addr, ":", "/", 1)).Run() == nil
 }
 
-// Stop ends the gateway's process group (the gateway and Envoy), if pid is still that gateway.
+// Stop ends a session's gateway unit (the gateway and Envoy with it).
 func (g *gateways) Stop(ctx context.Context, id string, pid int) error {
-	if pid <= 1 {
+	if st := show(unit(id), "LoadState"); st == "not-found" {
 		return nil
 	}
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
-	if err != nil || !strings.Contains(string(b), "/sessions/"+id+"/gateway") {
-		return nil // gone (or the id was reused): nothing of ours to stop
+	out, err := exec.CommandContext(ctx, "systemctl", "stop", unit(id)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemctl stop %s: %v: %s", unit(id), err, strings.TrimSpace(string(out)))
 	}
-	syscall.Kill(-pid, syscall.SIGTERM)
-	for i := 0; i < 50; i++ {
-		if err := syscall.Kill(pid, 0); err != nil {
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	syscall.Kill(-pid, syscall.SIGKILL)
 	return nil
 }
