@@ -28,6 +28,8 @@ var allowed = map[string][]string{
 	"yamllist": {},
 	// whether a file is a terminal, for both binaries
 	"tty": {},
+	// the session spec the policy CLI hands sandboxd (design 5.4.2): data and its structural checks
+	"sessionspec": {},
 	// the sync protocol (host engine and in-VM agent) and the in-VM agent itself
 	"syncproto": {},
 	"syncagent": {"syncproto"},
