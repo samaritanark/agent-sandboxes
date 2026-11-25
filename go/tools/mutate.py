@@ -6,7 +6,7 @@ the module, applies the mutant, runs the named test, and reports whether the cor
 (the test fails) or the mutant SURVIVED (the test still passes). A survivor that is not marked
 equivalent means the corpus cannot see that bug: grow the corpus before trimming it.
 
-usage: tools/mutate.py [--jobs N] [--only SUBSTRING] [--list]
+usage: tools/mutate.py [--jobs N] [--only SUBSTRING] [--from INDEX] [--pick I,J,...] [--list] [--check]
 Run from the go/ directory (or anywhere: it finds go/ from its own location).
 """
 import argparse, os, shutil, subprocess, sys, tempfile
@@ -14,22 +14,45 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GO = os.path.dirname(HERE)
+# The whole repository is copied, not only go/: some corpora read the install the bash oracle
+# reads (config/, bin/), and a test that cannot find it fails whatever the planted bug is.
+REPO = os.path.dirname(GO)
 sys.path.insert(0, HERE)
 from mutants import MUTANTS  # noqa: E402
 
 
+def copy_repo():
+    d = tempfile.mkdtemp(prefix="mut-")
+    shutil.copytree(REPO, d + "/repo", ignore=shutil.ignore_patterns(".git"))
+    return d, d + "/repo/go"
+
+
+def go_test(gocopy, pkg, run):
+    return subprocess.run(["go", "test", "-count=1", "./internal/" + pkg, "-run", run],
+                          cwd=gocopy, capture_output=True, text=True, timeout=1500)
+
+
+def baseline(a):
+    """The unmodified copy must pass: otherwise every planted bug would count as caught."""
+    pkg, run = a
+    d, g = copy_repo()
+    try:
+        r = go_test(g, pkg, run)
+        return pkg, run, r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def run_one(a):
     i, m = a
-    d = tempfile.mkdtemp(prefix="mut-")
+    d, g = copy_repo()
     try:
-        shutil.copytree(GO, d + "/go", ignore=shutil.ignore_patterns(".git"))
-        p = os.path.join(d, "go", m["file"])
+        p = os.path.join(g, m["file"])
         s = open(p).read()
         if s.count(m["old"]) != 1:
             return i, m, "BAD-PATTERN"
         open(p, "w").write(s.replace(m["old"], m["new"]))
-        r = subprocess.run(["go", "test", "-count=1", "./internal/" + m["pkg"], "-run", m["run"]],
-                           cwd=d + "/go", capture_output=True, text=True, timeout=1500)
+        r = go_test(g, m["pkg"], m["run"])
         return i, m, ("SURVIVED" if r.returncode == 0 else "caught")
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -40,6 +63,8 @@ def main():
     ap.add_argument("--jobs", type=int, default=6)
     ap.add_argument("--only", default="")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--from", dest="start", type=int, default=0, help="skip planted bugs before this index")
+    ap.add_argument("--pick", default="", help="only these indices (comma-separated)")
     ap.add_argument("--check", action="store_true",
                     help="only verify that every planted bug's text occurs exactly once in its file")
     a = ap.parse_args()
@@ -49,12 +74,20 @@ def main():
             print("STALE", i, m["file"], "|", m["old"].replace("\n", "\\n")[:70])
         print("planted bugs: %d, stale patterns: %d" % (len(MUTANTS), len(stale)))
         sys.exit(1 if stale else 0)
-    sel = [(i, m) for i, m in enumerate(MUTANTS) if a.only in m["file"] or a.only in m.get("id", "")]
+    pick = {int(x) for x in a.pick.split(",") if x}
+    sel = [(i, m) for i, m in enumerate(MUTANTS)
+           if i >= a.start and (a.only in m["file"] or a.only in m.get("id", "")) and (not pick or i in pick)]
     if a.list:
         for i, m in sel:
             print(i, m["file"], "|", m["old"].replace("\n", "\\n")[:70])
         return
     bad = 0
+    with ThreadPoolExecutor(a.jobs) as ex:
+        failed = [b for b in ex.map(baseline, sorted({(m["pkg"], m["run"]) for _, m in sel})) if not b[2]]
+    for pkg, run, _, out in failed:
+        print("BASELINE FAILS: ./internal/%s -run %s on the unmodified copy\n%s" % (pkg, run, out))
+    if failed:
+        sys.exit(2)
     with ThreadPoolExecutor(a.jobs) as ex:
         for i, m, res in ex.map(run_one, sel):
             eq = m.get("equivalent")
