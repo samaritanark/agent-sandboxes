@@ -156,7 +156,7 @@ func (c *cmdCtx) usage(name string) {
 var commands = map[string]func(*cmdCtx, []string){
 	"run": nil, "resume": nil, "allow": nil, "list": nil, "logs": nil, "flows": nil, "stop": nil,
 	"cleanup": nil, "check": cmdCheck, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
-	"upgrade": nil, "onboard": nil, "secret": nil, "mask": nil, "exceptions": nil, "vet": nil,
+	"upgrade": nil, "onboard": nil, "secret": nil, "mask": cmdMask, "exceptions": nil, "vet": nil,
 	"profile": cmdProfile, "link": nil, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,
 	"version": cmdVersion,
 }

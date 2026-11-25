@@ -148,6 +148,14 @@ const (
 	// CheckHelp: `sandbox check --help` took --help as the workspace path and failed ("Repo path
 	// does not exist"). It now prints the usage line.
 	CheckHelp ID = "check-help"
+	// MaskPathComponents: `sandbox mask add` refused a RELPATH starting with '/' or "../" or
+	// containing "/../", but not "", ".", "..", "a/..", or "./x": those stored masks such as "/"
+	// or "../" (the whole workspace or its parent) or one that never matches ("./x"). A RELPATH
+	// that is empty or has a "." or ".." component is now refused.
+	MaskPathComponents ID = "mask-path-components"
+	// MaskListStatus: `sandbox mask list` exited 1 whenever the repo had configured masked paths
+	// (its last command was `[[ $any == false ]] && echo "(none)"`). It now exits 0.
+	MaskListStatus ID = "mask-list-status"
 )
 
 var (

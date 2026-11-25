@@ -195,3 +195,28 @@ func Prescan(ws string) []string {
 	}
 	return out
 }
+
+// PathHasTrackedContent is path_has_tracked_content: relpath is in git's index, or in the history
+// of any ref, so a mask hides the working copy only. Any git error reads as false (fails open; the
+// result only decides whether to print an advisory).
+func PathHasTrackedContent(repo, relpath string) bool {
+	git := func(args ...string) string {
+		cmd := exec.Command("git", append([]string{"-C", repo, "-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"}, args...)...)
+		out, err := cmd.Output()
+		if err != nil && len(out) == 0 {
+			return ""
+		}
+		return string(out)
+	}
+	if strings.TrimSpace(firstLine(git("ls-files", "--", ":(literal)"+relpath))) != "" {
+		return true
+	}
+	return strings.TrimRight(git("log", "--all", "-1", "--format=%H", "--", ":(literal)"+relpath), "\n") != ""
+}
+
+func firstLine(s string) string {
+	if i := strings.Index(s, "\n"); i >= 0 {
+		return s[:i+1]
+	}
+	return s
+}

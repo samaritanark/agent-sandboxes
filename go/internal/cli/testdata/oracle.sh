@@ -3,7 +3,8 @@
 #   LC_ALL=C oracle.sh > golden-cli.tsv
 # Each case in cases.tsv is "id version args tree stdin env" (all but id and version are
 # "=" + base64): args are NUL-separated words; tree builds $HOME from lines "f path content",
-# "d path", "l path target", "g path" (git init) (base64 words); env is NAME=VALUE lines added to a
+# "d path", "l path target", "g path" (git init), "c path" (commit everything in that repo),
+# "r path" (remove), "p path" (a FIFO) (base64 words); env is NAME=VALUE lines added to a
 # clean environment (PATH, HOME, LC_ALL, SANDBOX_LOGS_DIR); the line STUB=1 instead puts the gate's
 # stub scanner on PATH as betterleaks, answering from <HOME>/scen. version is none | full (a .version file in the copied
 # install). Output: "id rc stdout stderr home", "=" + base64 each, home a sorted listing of $HOME
@@ -36,6 +37,11 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
       d) mkdir -p "$H/$p" ;;
       l) mkdir -p "$(dirname "$H/$p")"; ln -s "$t" "$H/$p" ;;
       g) mkdir -p "$H/$p"; GIT_CONFIG_GLOBAL=/dev/null git init -q "$H/$p" ;;
+      c) GIT_CONFIG_GLOBAL=/dev/null git -C "$H/$p" add -A
+         GIT_CONFIG_GLOBAL=/dev/null GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x \
+           git -C "$H/$p" commit -q -m c ;;
+      r) rm -rf "$H/$p" ;;
+      p) mkdir -p "$(dirname "$H/$p")"; mkfifo "$H/$p" ;;
     esac
   done <<<"$tree"
   extra=() path=/usr/bin:/bin
@@ -59,6 +65,7 @@ tr '\t' '\037' < "$here/cases.tsv" | while IFS="$us" read -r id ver eargs etree 
   listing="$(cd "$H" && find . -mindepth 1 -name .git -prune -o -print | LC_ALL=C sort | while IFS= read -r p; do
     if [[ -L "$p" ]]; then printf 'l %s -> %s\n' "$p" "$(readlink "$p")"
     elif [[ -d "$p" ]]; then printf 'd %s %s\n' "$p" "$(stat -c %a "$p")"
+    elif [[ -p "$p" ]]; then printf 'p %s\n' "$p"
     else printf 'f %s %s %s\n' "$p" "$(stat -c %a "$p")" "$(sed "s|$H|<HOME>|g" "$p" | base64 -w0)"; fi
   done | base64 -w0)"
   printf '%s\t%s\t=%s\t=%s\t=%s\n' "$id" "$rc" "$(norm "$out")" "$(norm "$err")" "$listing"

@@ -85,6 +85,22 @@ func buildTree(t *testing.T, home, spec string) {
 			if b, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("git init %s: %v %s", full, err, b)
 			}
+		case "c":
+			for _, a := range [][]string{{"add", "-A"}, {"commit", "-q", "-m", "c"}} {
+				cmd := exec.Command("git", append([]string{"-C", full}, a...)...)
+				cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x",
+					"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x")
+				if b, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git %v in %s: %v %s", a, full, err, b)
+				}
+			}
+		case "r":
+			os.RemoveAll(full)
+		case "p":
+			os.MkdirAll(parent, 0o755)
+			if err := syscall.Mkfifo(full, 0o644); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 }
@@ -116,6 +132,8 @@ func listing(home string) string {
 			fmt.Fprintf(&b, "l %s -> %s\n", rel, l)
 		case st.IsDir():
 			fmt.Fprintf(&b, "d %s %o\n", rel, st.Mode().Perm())
+		case st.Mode()&os.ModeNamedPipe != 0:
+			fmt.Fprintf(&b, "p %s\n", rel)
 		default:
 			data, _ := os.ReadFile(p)
 			data = []byte(strings.ReplaceAll(string(data), home, "<HOME>"))

@@ -21,6 +21,9 @@ func (t tree) f(p, body string) tree { return append(t, enc("f")+" "+enc(p)+" "+
 func (t tree) d(p string) tree       { return append(t, enc("d")+" "+enc(p)) }
 func (t tree) l(p, to string) tree   { return append(t, enc("l")+" "+enc(p)+" "+enc(to)) }
 func (t tree) g(p string) tree       { return append(t, enc("g")+" "+enc(p)) }
+func (t tree) c(p string) tree       { return append(t, enc("c")+" "+enc(p)) }
+func (t tree) r(p string) tree       { return append(t, enc("r")+" "+enc(p)) }
+func (t tree) p(p string) tree       { return append(t, enc("p")+" "+enc(p)) }
 
 type cs struct {
 	ver   string
@@ -133,6 +136,30 @@ func main() {
 	} {
 		add(cc)
 	}
+
+	// mask
+	mr := tree{}.g("r").f("r/file.txt", "x").d("r/dir").f("r/dir/k", "k").f("r/tracked.txt", "t").f("r/gone.txt", "g").c("r").r("r/gone.txt").
+		f("r/new.txt", "n").p("r/fifo")
+	mrel := [][]string{{"file.txt"}, {"dir"}, {"dir/"}, {"file.txt/"}, {"nope"}, {"nope/"}, {"/abs"}, {"../up"}, {"a/../b"}, {".."},
+		{"."}, {""}, {"a/.."}, {"./x"}, {"tracked.txt"}, {"gone.txt"}, {"new.txt"}, {"fifo"}, {"we\"ird"}, {"a #b"},
+		{"file.txt", "dir", "file.txt"}, {"x/./y"}, {"a//b"}}
+	for _, r := range mrel {
+		add(cs{args: append([]string{"mask", "add", "--repo", "~/r"}, r...), tree: mr})
+	}
+	for _, a := range [][]string{
+		{"mask"}, {"mask", "-h"}, {"mask", "help"}, {"mask", "bogus"}, {"mask", "add"}, {"mask", "add", "x"},
+		{"mask", "add", "--repo", "~/r"}, {"mask", "add", "--repo"}, {"mask", "add", "--repo=~/r", "file.txt"},
+		{"mask", "add", "--repo", "~/nope", "x"}, {"mask", "add", "--repo", "~/plain", "x"}, {"mask", "add", "--repo", "~/r", "--bogus"},
+		{"mask", "add", "--repo", "~/r", "x", "--help"}, {"mask", "list"}, {"mask", "list", "--repo", "~/r"},
+		{"mask", "list", "--repo", "~/r", "extra"}, {"mask", "list", "--repo", "~/r", "--x"}, {"mask", "list", "-h"},
+		{"mask", "list", "--repo", "~/nope"},
+	} {
+		add(cs{args: a, tree: mr.d("plain")})
+	}
+	add(cs{args: []string{"mask", "list", "--repo", "~/r"}, tree: mr.f("r/.sandbox/config.yaml",
+		"masked_paths:\n  - \"file.txt\"\n  - dir/\n  - gone/\n  - absent.txt\n  - fifo\n  - -n\n  -\n")})
+	add(cs{args: []string{"mask", "add", "--repo", "~/r", "new.txt"}, tree: mr.f("r/.sandbox/config.yaml", "overlay: x")})
+	add(cs{args: []string{"mask", "add", "--repo", "~/r", "dir/"}, tree: mr.f("r/.sandbox/config.yaml", "masked_paths:\n  - \"file.txt\"\n")})
 
 	var rows []string
 	for i, c := range cases {

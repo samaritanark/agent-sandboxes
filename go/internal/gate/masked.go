@@ -9,11 +9,14 @@ import (
 
 // Rule tables shared with the mask builder (MASKED_* in lib/filesystem.sh).
 var (
-	maskedFilePaths = []string{".env", ".env.local", ".npmrc", "clouds.yaml", "kubeconfig"}
-	maskedDirPath   = ".kube"
+	MaskedFilePaths = []string{".env", ".env.local", ".npmrc", "clouds.yaml", "kubeconfig"}
+	MaskedDirPath   = ".kube"
 )
 
 const maskedOpenrcSuffix = "-openrc.sh" // MASKED_OPENRC_PATTERN='*-openrc.sh'
+
+// MaskedOpenrcPattern is MASKED_OPENRC_PATTERN, as `sandbox mask list` prints it.
+const MaskedOpenrcPattern = "*" + maskedOpenrcSuffix
 
 var (
 	listItemLead = regexp.MustCompile(`^[[:space:]]*-[[:space:]]*`)
@@ -24,12 +27,12 @@ var (
 // IsPathMasked is is_path_masked in lib/filesystem.sh: whether a workspace-relative path is hidden
 // from the agent by the sandbox mask (built-in set plus the repo's masked_paths: list).
 func IsPathMasked(repo, relpath string) bool {
-	for _, p := range maskedFilePaths {
+	for _, p := range MaskedFilePaths {
 		if relpath == p {
 			return true
 		}
 	}
-	if relpath == maskedDirPath || strings.HasPrefix(relpath, maskedDirPath+"/") {
+	if relpath == MaskedDirPath || strings.HasPrefix(relpath, MaskedDirPath+"/") {
 		return true
 	}
 	if !strings.Contains(relpath, "/") && strings.HasSuffix(relpath, maskedOpenrcSuffix) {
