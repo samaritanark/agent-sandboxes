@@ -39,7 +39,19 @@ cp -a setup/versions.sh "${lib}/setup/versions.sh"
 
 printf 'IMAGE_VERSION=%s\nCONTROL_API=1\n' "${version}" > "${stage}/etc/sandbox/release"
 
+# Packages come from Ubuntu's snapshot archive at the timestamp in image/snapshot, so a rebuild
+# installs the same versions. snapshot.ubuntu.com serves amd64 (ubuntu) but not ports (arm64 answers
+# 401), so an arm64 build still uses the live archive and its packages are not pinned (S8).
+snapshot="$(cat "${here}/snapshot")"
+[[ "${snapshot}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || { echo "invalid image/snapshot: ${snapshot}" >&2; exit 1; }
+mirror=()
+if [[ "${goarch}" == amd64 ]]; then
+  mirror=(--mirror "https://snapshot.ubuntu.com/ubuntu/${snapshot}")
+else
+  echo "WARNING: arm64 packages are not pinned (no ports snapshot); this image is not reproducible." >&2
+fi
+
 cd "${here}"
-"${MKOSI:-/opt/mkosi/bin/mkosi}" --force build
+"${MKOSI:-/opt/mkosi/bin/mkosi}" --force "${mirror[@]}" build
 qemu-img convert -f raw -O qcow2 mkosi.output/sandbox-appliance.raw mkosi.output/sandbox-appliance.qcow2
 ls -l mkosi.output/

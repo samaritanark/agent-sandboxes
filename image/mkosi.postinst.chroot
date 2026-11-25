@@ -17,3 +17,5 @@ for k in /boot/vmlinuz-* /usr/lib/modules/*/vmlinuz; do
     zcat "${k}" > "${k}.raw" && mv -f "${k}.raw" "${k}"
   fi
 done
+# Build-time leftovers that differ between otherwise identical builds.
+rm -f /var/cache/ldconfig/aux-cache /var/log/alternatives.log
