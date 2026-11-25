@@ -207,6 +207,12 @@ func Classify(p string, h Host, r Repo) (Class, error) {
 			return Quarantine, nil
 		}
 	}
+	// The repository's own sandbox policy: its config (masked_paths:, vetting settings) and the
+	// secret scanner's exception files. A VM-side change to them would loosen the policy the host
+	// and the next session apply, so it waits for the operator.
+	if eq(0, ".sandbox") || len(parts) == 1 && (eq(0, ".betterleaksignore") || eq(0, ".gitleaksignore")) {
+		return Quarantine, nil
+	}
 	// Rule 1: masked paths, built-in (repo root) and configured.
 	if masked(parts, keys, h, r.MaskedPaths) {
 		return Quarantine, nil

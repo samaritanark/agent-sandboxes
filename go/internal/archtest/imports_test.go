@@ -18,12 +18,14 @@ var allowed = map[string][]string{
 	"archtest":   {},
 	"deviation":  {},
 	"bashcompat": {"deviation"},
-	"config":     {"bashcompat", "deviation"},
+	"config":     {"bashcompat", "deviation", "yamllist"},
 	"gate":       {"bashcompat", "config", "deviation", "tables"},
 	// rule tables shared by the policy layer and the host's sync gate: data only
 	"tables": {},
 	// the operator-state push (5.1.4): the host builds it, the in-VM binary receives it
-	"opstate":   {},
+	"opstate": {},
+	// the flat YAML list reader shared by config and the host sync gate (masked_paths:)
+	"yamllist":  {},
 	"vetting":   {"bashcompat", "config", "deviation"}, // the gate is injected, never imported
 	"checks":    {"config", "deviation"},
 	"tier":      {},
@@ -49,7 +51,7 @@ var allowed = map[string][]string{
 	"host/release":   {},
 	"host/app":       {"host/driver", "host/release", "host/sizing", "host/syncgate", "opstate"},
 	"host/sizing":    {},
-	"host/syncgate":  {"tables"},
+	"host/syncgate":  {"tables", "yamllist"},
 	"host/gitobj":    {},
 	"host/lima":      {"host/driver"},
 	"host/sshx":      {"host/driver"},
@@ -60,7 +62,7 @@ var allowed = map[string][]string{
 // hostSafe is every internal package the host binary may depend on, directly or not (5.1.1).
 // Adding a policy package here is a design change, not a code change.
 func hostSafe(name string) bool {
-	return strings.HasPrefix(name, "host/") || name == "tables" || name == "opstate"
+	return strings.HasPrefix(name, "host/") || name == "tables" || name == "opstate" || name == "yamllist"
 }
 
 // TestHostBinaryClosure checks the host binary's whole dependency closure, so a host package

@@ -123,3 +123,23 @@ func TestProbeHost(t *testing.T) {
 	}
 	t.Logf("%s: %+v", runtime.GOOS, h)
 }
+
+func TestRepoMaskedPaths(t *testing.T) {
+	repo := t.TempDir()
+	if got, err := RepoMaskedPaths(repo); err != nil || got != nil {
+		t.Fatalf("missing config: %v %v", got, err)
+	}
+	os.MkdirAll(filepath.Join(repo, ".sandbox"), 0o755)
+	os.WriteFile(filepath.Join(repo, ".sandbox/config.yaml"), []byte("vetting: required\nmasked_paths:\n  - secrets/\n  - \"conf/db.yml\" # db\n  - -n\nother:\n  - x\n"), 0o644)
+	got, err := RepoMaskedPaths(repo)
+	if err != nil || strings.Join(got, ",") != "secrets/,conf/db.yml,-n" {
+		t.Fatalf("%q %v", got, err)
+	}
+	if runtime.GOOS != "windows" {
+		os.Remove(filepath.Join(repo, ".sandbox/config.yaml"))
+		os.Symlink("/etc/hosts", filepath.Join(repo, ".sandbox/config.yaml"))
+		if _, err := RepoMaskedPaths(repo); err == nil {
+			t.Error("a symlinked config was read")
+		}
+	}
+}

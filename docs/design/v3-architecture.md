@@ -331,7 +331,13 @@ needs policy knowledge on the host is a design change and requires updating
 this document. In the single Go module (§5.4.1), the host binary MAY import
 only the packages designated host-safe (shared rule tables, the sync gate, the
 drivers); a CI check on the import graph fails the build if it imports the
-policy, vetting, secret-gate, or repo-parsing packages.
+policy, vetting, secret-gate, or repo-parsing packages. One exception (owner's
+decision, 2026-11-25): the sync gate reads the host checkout's own
+`masked_paths:` list (§5.6.2 rule 1), because the VM's report of it cannot be
+trusted, using the same small dependency-free list reader as the policy layer
+(`internal/yamllist`). The repository's policy files (`.sandbox/`,
+`.betterleaksignore`, `.gitleaksignore`) never flow VM → host without review,
+so the list the host reads is one the operator controls.
 
 #### 5.1.2 Platforms and build
 

@@ -65,16 +65,17 @@ m(MSK, 'if relpath == d || strings.HasPrefix(relpath, d+"/") {', "if relpath == 
 
 CFG = "internal/config/config.go"
 R_CFG = "TestListsGolden|TestMaskedGolden"
-m(CFG, 'if strings.HasPrefix(line, key+":") {\n\t\t\tflag = true', "if strings.HasPrefix(line, key) {\n\t\t\tflag = true", R_CFG)
-m(CFG, "(c >= 'A' && c <= 'Z') || ", "", R_CFG)
-m(CFG, "c == '_' || ", "", R_CFG)
-m(CFG, "if !deviation.Fixed(deviation.EchoOptionItems) && echoOption.MatchString(line) {", "if false {", R_CFG)
-m(CFG, "if !deviation.Fixed(deviation.EchoOptionItems) && echoOption.MatchString(item) {", "if false {", R_CFG)
-m(CFG, "if isSpace(item[i]) && item[i+1] == '#' {", "if item[i] == ' ' && item[i+1] == '#' {", R_CFG)
-m(CFG, 'item = strings.TrimRight(item, " \\t\\n\\v\\f\\r")', 'item = strings.TrimRight(item, " ")', R_CFG)
-m(CFG, 'item = strings.NewReplacer(`"`, "", `\'`, "").Replace(item)', 'item = strings.NewReplacer(`"`, "").Replace(item)', R_CFG)
-m(CFG, "if item == \"\" || item[0] == '#' {", 'if item == "" {', R_CFG)
-m(CFG, "flag = true\n\t\t\tcontinue", "flag = true", R_CFG)
+YL = "internal/yamllist/yamllist.go"  # the list reader, shared with the host sync gate; its corpus is config's
+m(YL, 'if strings.HasPrefix(line, key+":") {\n\t\t\tflag = true', "if strings.HasPrefix(line, key) {\n\t\t\tflag = true", R_CFG, pkg="gate")
+m(YL, "(c >= 'A' && c <= 'Z') || ", "", R_CFG, pkg="gate")
+m(YL, "c == '_' || ", "", R_CFG, pkg="gate")
+m(YL, "if legacyEcho && echoOption.MatchString(line) {", "if false {", R_CFG, pkg="gate")
+m(YL, "if legacyEcho && echoOption.MatchString(item) {", "if false {", R_CFG, pkg="gate")
+m(YL, "if isSpace(item[i]) && item[i+1] == '#' {", "if item[i] == ' ' && item[i+1] == '#' {", R_CFG, pkg="gate")
+m(YL, 'item = strings.TrimRight(item, " \\t\\n\\v\\f\\r")', 'item = strings.TrimRight(item, " ")', R_CFG, pkg="gate")
+m(YL, 'item = strings.NewReplacer(`"`, "", `\'`, "").Replace(item)', 'item = strings.NewReplacer(`"`, "").Replace(item)', R_CFG, pkg="gate")
+m(YL, "if item == \"\" || item[0] == '#' {", 'if item == "" {', R_CFG, pkg="gate")
+m(YL, "flag = true\n\t\t\tcontinue", "flag = true", R_CFG, pkg="gate")
 R_SCAN = "TestScanGolden"
 m(CFG, "raw = e.Home + raw[1:]", "raw = raw[1:]", R_SCAN)
 m(CFG, "if loc := reTrailComment.FindStringIndex(line); loc != nil {", "if loc := reTrailComment.FindStringIndex(line); false && loc != nil {", R_SCAN)

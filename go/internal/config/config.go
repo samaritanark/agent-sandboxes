@@ -4,6 +4,7 @@ package config
 
 import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/yamllist"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,7 +20,6 @@ var (
 	reTrailComment = regexp.MustCompile(`[[:space:]]+#.*$`)
 	reLeadSpace    = regexp.MustCompile(`^[[:space:]]+`)
 	reTrailSpace   = regexp.MustCompile(`[[:space:]]+$`)
-	listItemLead   = regexp.MustCompile(`^[[:space:]]*-[[:space:]]*`)
 	// echo "-n", "-e", "-E" and combinations are options to bash's builtin echo, not text.
 	echoOption = regexp.MustCompile(`^-[neE]+$`)
 )
@@ -143,55 +143,13 @@ func ExtractYAMLList(path, key string) []string {
 	if err != nil {
 		return nil
 	}
-	var out []string
-	flag := false
-	for _, line := range bashcompat.SplitRecords(data) {
-		if strings.HasPrefix(line, key+":") {
-			flag = true
-			continue
-		}
-		if flag && line != "" {
-			if c := line[0]; c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
-				flag = false
-			}
-		}
-		if !flag {
-			continue
-		}
-		t := strings.TrimLeft(line, " \t\n\v\f\r")
-		if !strings.HasPrefix(t, "-") {
-			continue
-		}
-		if item, ok := listItem(line); ok {
-			out = append(out, item)
-		}
-	}
-	return out
+	return yamllist.Extract(data, key, !deviation.Fixed(deviation.EchoOptionItems))
 }
 
 // listItem is what extract_yaml_list_from_file prints for one list line ("  - x"), and false
 // when it prints nothing.
 func listItem(line string) (string, bool) {
-	if !deviation.Fixed(deviation.EchoOptionItems) && echoOption.MatchString(line) {
-		return "", false
-	}
-	item := listItemLead.ReplaceAllString(line, "")
-	item = strings.NewReplacer(`"`, "", `'`, "").Replace(item)
-	// ${item%%[[:space:]]#*}: cut at the first whitespace character that is followed by '#'.
-	for i := 0; i+1 < len(item); i++ {
-		if isSpace(item[i]) && item[i+1] == '#' {
-			item = item[:i]
-			break
-		}
-	}
-	item = strings.TrimRight(item, " \t\n\v\f\r")
-	if item == "" || item[0] == '#' {
-		return "", false
-	}
-	if !deviation.Fixed(deviation.EchoOptionItems) && echoOption.MatchString(item) { // the final `echo "${item}"` swallows it the same way
-		return "", false
-	}
-	return item, true
+	return yamllist.Item(line, !deviation.Fixed(deviation.EchoOptionItems))
 }
 
 // UpsertYAMLScalar is upsert_yaml_scalar_in_file: replace the first "<key>:" line or append one;

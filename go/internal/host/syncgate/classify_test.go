@@ -32,6 +32,9 @@ func TestClassify(t *testing.T) {
 		{"secrets/a", linux, Quarantine}, {"Secrets/a", apfs, Quarantine}, {"Secrets/a", linux, Apply},
 		{"conf/db.yml", linux, Quarantine}, {"conf/db.yml/x", linux, Quarantine}, {"conf/other.yml", linux, Apply},
 		{"café.txt", apfs, Quarantine},
+		// the repository's sandbox policy
+		{".sandbox/config.yaml", linux, Quarantine}, {".SANDBOX/config.yaml", apfs, Quarantine}, {".sandbox/vetting/x", linux, Quarantine},
+		{".betterleaksignore", linux, Quarantine}, {".gitleaksignore", apfs, Quarantine}, {"sub/.betterleaksignore", linux, Apply},
 		// rule 2: exec vectors
 		{".git/hooks/pre-commit", linux, Quarantine}, {".GIT/hooks/pre-commit", apfs, Quarantine},
 		{".git/hooKs/pre-commit", apfs, Quarantine}, {".git/config", linux, Quarantine},
