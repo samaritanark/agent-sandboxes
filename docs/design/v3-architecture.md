@@ -342,7 +342,11 @@ policy, vetting, secret-gate, or repo-parsing packages.
   access, file-permission checks on `~/.sandbox`.
 - The binary SHOULD shell out to `limactl` rather than import Lima's Go
   packages, which are not a stable API. It MUST resolve `limactl` to an
-  absolute path at install, refuse a path in a user-writable directory, and
+  absolute path at install, refuse a path another account could replace (the
+  file, its link target, or any directory above either owned by neither root
+  nor the operator, world-writable, or group-writable by a group other than
+  root's or, on macOS, `admin`; Homebrew's own directories pass; owner's
+  decision, 2026-11-25), and
   re-verify the path and its ownership on every start; `sandbox upgrade`
   re-records the path after a Lima upgrade.
 - Unit tests MUST run on GitHub-hosted runners for all three OSes using a mock
@@ -424,7 +428,7 @@ Host-only commands:
 
 | Command | Purpose |
 |---|---|
-| `sandbox install` / `uninstall` | Create/destroy the VM; `uninstall` also offers v2 cleanup (§11) and removes `~/.sandbox` state the operator does not ask to keep, including agent tokens |
+| `sandbox install` / `uninstall` | Create/destroy the VM; `uninstall` also offers v2 cleanup (§11) and asks, per category, whether to remove `~/.sandbox` state (secrets and agent tokens, logs, settings and profiles); without a terminal it keeps everything unless `--purge` is given |
 | `sandbox upgrade [--app] [--image]` | Update binary and/or image (§10) |
 | `sandbox vm start\|stop\|status\|shell` | VM lifecycle; `shell` is a root debug shell, recorded by the host binary in `~/.sandbox/logs/vm-shell.log` (append-only), because an in-VM record can be erased by VM root |
 | `sandbox sync review [--apply <id>] [--discard <id>]` | Lists workspace changes the sync gate withheld (§5.6.2) with diffs; applies or discards them on explicit operator action |
@@ -525,7 +529,12 @@ runtime** (D-04).
   per-install client key and the guest's SSH host key, delivers the host
   private key in the NoCloud seed, pins the public key before first
   connection, and deletes the seed after first boot. The pinned key is bound to
-  the install ID. Password auth disabled; root login by key only.
+  the install ID. Password auth disabled; root login by key only. On Lima the seed is
+  a root-only data file Lima writes on every boot, and its copy stays in Lima's
+  0700 instance directory on the host, so it is not deleted after first boot;
+  VM root holds the host key anyway (owner's decision, 2026-11-25). Lima's own
+  guest user keeps SSH for Lima's readiness check but has no sudo, so only the
+  pinned key reaches root.
 - Inbound: SSH from the host only. The VM MUST NOT be reachable from the LAN.
 - Outbound: NAT through the host for the gateways' upstream connections.
 - Two disks: a **system disk** (the signed image), mounted read-only with
