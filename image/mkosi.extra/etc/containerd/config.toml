@@ -1,0 +1,12 @@
+# containerd for sandboxd (design 5.4.3, 5.5): no Kubernetes, so the CRI plugins are off. Sessions
+# and dependencies run as Kata microVMs with Cloud Hypervisor; sandboxd selects the configuration
+# through the runtime's config path (S1: Kata accepts only its shipped configuration files).
+version = 3
+disabled_plugins = [
+  "io.containerd.grpc.v1.cri",
+  "io.containerd.cri.v1.images",
+  "io.containerd.cri.v1.runtime",
+]
+
+[grpc]
+  address = "/run/containerd/containerd.sock"

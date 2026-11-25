@@ -14,6 +14,10 @@ refused, wherever it came from.
       drops a superseded version), check its size and SHA-256, and write an unsigned flat
       repository at DIR for mkosi's --local-mirror (suite noble, component main).
 
+  lock.py artifacts --lock artifacts.lock --arch ARCH --out DIR
+      Fetch the upstream artifacts for ARCH (Kata, nerdctl-full) into DIR, each checked against
+      its locked size and SHA-256; a file already there is kept only if it still matches.
+
 Standard library only; resolve also runs apt-get (in a scratch directory, as any user).
 """
 
@@ -232,6 +236,38 @@ def cmd_repo(args):
     print(f"lock.py: {len(entries)} locked packages for {arch} in {args.out}", file=sys.stderr)
 
 
+ART_RE = re.compile(r"^([a-z0-9][a-z0-9.-]+) (amd64|arm64) ([0-9a-f]{64}) ([0-9]+) (https://github\.com/\S+)$")
+
+
+def cmd_artifacts(args):
+    os.makedirs(args.out, exist_ok=True)
+    n = 0
+    for i, l in enumerate(open(args.lock), 1):
+        l = l.rstrip("\n")
+        if not l or l.startswith("#"):
+            continue
+        m = ART_RE.match(l)
+        if not m:
+            die(f"{args.lock} line {i}: malformed")
+        name, arch, sha, size, url = m.groups()
+        if arch != args.arch:
+            continue
+        base = os.path.basename(urllib.parse.urlparse(url).path)
+        if "/" in base or base.startswith("."):
+            die(f"{args.lock} line {i}: bad file name")
+        dest = os.path.join(args.out, base)
+        if os.path.exists(dest) and os.path.getsize(dest) == int(size) and sha256_file(dest) == sha:
+            n += 1
+            continue
+        err = fetch(url, dest, sha, int(size))
+        if err:
+            die(f"cannot fetch {name} for {arch}: {url}: {err}")
+        n += 1
+    if n == 0:
+        die(f"no artifacts for {args.arch} in {args.lock}")
+    print(f"lock.py: {n} locked artifacts for {args.arch} in {args.out}", file=sys.stderr)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -243,8 +279,12 @@ def main():
     s = sub.add_parser("repo")
     s.add_argument("--lock", required=True)
     s.add_argument("--out", required=True)
+    s = sub.add_parser("artifacts")
+    s.add_argument("--lock", required=True)
+    s.add_argument("--arch", required=True)
+    s.add_argument("--out", required=True)
     a = p.parse_args()
-    {"names": cmd_names, "resolve": cmd_resolve, "repo": cmd_repo}[a.cmd](a)
+    {"names": cmd_names, "resolve": cmd_resolve, "repo": cmd_repo, "artifacts": cmd_artifacts}[a.cmd](a)
 
 
 if __name__ == "__main__":

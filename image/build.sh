@@ -56,7 +56,56 @@ else
   mirror=(--local-mirror "file://${repo}")
 fi
 
+# The runtime (design 5.3.1, 5.5): containerd, runc, nerdctl, and buildkit from nerdctl-full, and Kata
+# with Cloud Hypervisor from kata-go-static (S1: kata-static holds only the Rust shim), each fetched
+# and checked against image/artifacts.lock. Only what the image uses is unpacked: no QEMU,
+# Firecracker, rootless or stargz tools, or GPU and confidential guest images.
+art="${here}/mkosi.cache/artifacts-${goarch}"
+python3 -I "${here}/lock.py" artifacts --lock "${here}/artifacts.lock" --arch "${goarch}" --out "${art}"
+tree="${here}/mkosi.cache/runtime-tree-${goarch}"
+unpack="$(mktemp -d /var/tmp/sandbox-unpack.XXXXXX)"
+trap 'rm -rf "${unpack}"' EXIT
+rm -rf "${tree}"
+install -d "${tree}/opt/kata/bin" "${tree}/opt/kata/libexec" "${tree}/opt/kata/share/defaults/kata-containers" \
+  "${tree}/opt/kata/share/kata-containers" "${tree}/usr/local/bin" "${tree}/usr/local/lib/systemd/system" \
+  "${tree}/opt/cni/bin"
+
+install -d "${unpack}/kata"
+tar -I zstd -C "${unpack}/kata" -xf "${art}"/kata-go-static-*-"${goarch}".tar.zst
+k="${unpack}/kata/opt/kata"
+cp -a "${k}/VERSION" "${tree}/opt/kata/"
+cp -a "${k}/bin/cloud-hypervisor" "${k}/bin/containerd-shim-kata-v2" "${tree}/opt/kata/bin/"
+cp -a "${k}/libexec/virtiofsd" "${tree}/opt/kata/libexec/"
+cp -a "${k}/share/defaults/kata-containers/configuration-clh.toml" "${tree}/opt/kata/share/defaults/kata-containers/"
+for link in vmlinux.container kata-containers.img; do # the links the configuration names, and their targets
+  target="$(readlink "${k}/share/kata-containers/${link}")"
+  [[ "${target}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "unexpected Kata link ${link} -> ${target}" >&2; exit 1; }
+  cp -a "${k}/share/kata-containers/${link}" "${k}/share/kata-containers/${target}" "${tree}/opt/kata/share/kata-containers/"
+done
+# Guest seccomp is off in the shipped configuration; design 5.5.2 requires it on.
+clh="${tree}/opt/kata/share/defaults/kata-containers/configuration-clh.toml"
+sed -i 's/^disable_guest_seccomp = true$/disable_guest_seccomp = false/' "${clh}"
+grep -qx 'disable_guest_seccomp = false' "${clh}" || { echo "cannot enable guest seccomp in ${clh}" >&2; exit 1; }
+# containerd finds the runtime io.containerd.kata.v2 as containerd-shim-kata-v2 on its PATH.
+ln -s /opt/kata/bin/containerd-shim-kata-v2 "${tree}/usr/local/bin/containerd-shim-kata-v2"
+
+install -d "${unpack}/nerdctl"
+tar -C "${unpack}/nerdctl" -xzf "${art}"/nerdctl-full-*-linux-"${goarch}".tar.gz
+n="${unpack}/nerdctl"
+for b in containerd containerd-shim-runc-v2 ctr runc nerdctl buildkitd buildctl; do
+  cp -a "${n}/bin/${b}" "${tree}/usr/local/bin/"
+done
+cp -a "${n}/lib/systemd/system/containerd.service" "${n}/lib/systemd/system/buildkit.service" \
+  "${tree}/usr/local/lib/systemd/system/"
+# The CNI plugins design 5.8 names (ptp, bridge, firewall) and the IPAM and loopback they need.
+for p in ptp bridge firewall host-local static loopback; do
+  cp -a "${n}/libexec/cni/${p}" "${tree}/opt/cni/bin/"
+done
+# Fixed owner and times, so the tree is the same on every build.
+chown -R -h root:root "${tree}"
+find "${tree}" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+
 cd "${here}"
-"${MKOSI:-/opt/mkosi/bin/mkosi}" --force "${mirror[@]}" build
+"${MKOSI:-/opt/mkosi/bin/mkosi}" --force "${mirror[@]}" --extra-tree "${tree}" build
 qemu-img convert -f raw -O qcow2 mkosi.output/sandbox-appliance.raw mkosi.output/sandbox-appliance.qcow2
 ls -l mkosi.output/
