@@ -7,12 +7,14 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/cli"
 	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 	"github.com/samaritanark/agent-sandboxes/go/internal/opstate"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/auditlog"
 	"github.com/samaritanark/agent-sandboxes/go/internal/syncagent"
 	"github.com/samaritanark/agent-sandboxes/go/internal/tty"
 )
@@ -40,7 +42,40 @@ const receiveOperatorState = "__receive-operator-state"
 // for one workspace copy under /var/lib/sandbox/workspaces.
 const syncAgent = "__sync-agent"
 
+// auditSessions and auditRead are the VM half of the audit pull (design 5.1.5, 5.12): the host
+// lists sessions and reads each log's records after the last sequence number it holds, and checks
+// everything it is given.
+const (
+	auditSessions = "__audit-sessions"
+	auditRead     = "__audit-read"
+	auditMaxRead  = 8 << 20
+)
+
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == auditSessions {
+		ss, err := auditlog.Sessions(auditlog.Root)
+		if err != nil {
+			os.Stderr.WriteString("ERROR: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		for _, s := range ss {
+			os.Stdout.WriteString(s + "\n")
+		}
+		return
+	}
+	if len(os.Args) == 5 && os.Args[1] == auditRead {
+		after, err := strconv.ParseUint(os.Args[4], 10, 64)
+		var b []byte
+		if err == nil {
+			b, err = auditlog.ReadAfter(auditlog.Root, os.Args[2], os.Args[3], after, auditMaxRead)
+		}
+		if err != nil {
+			os.Stderr.WriteString("ERROR: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		os.Stdout.Write(b)
+		return
+	}
 	if len(os.Args) == 3 && os.Args[1] == syncAgent {
 		ws := filepath.Clean(os.Args[2])
 		if !strings.HasPrefix(ws, "/var/lib/sandbox/workspaces/") || strings.Count(ws, "/") != 5 {

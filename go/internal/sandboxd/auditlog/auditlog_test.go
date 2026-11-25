@@ -134,3 +134,24 @@ func TestDrop(t *testing.T) {
 		t.Error("an unrelated line matched")
 	}
 }
+
+func TestReadAfter(t *testing.T) {
+	root := t.TempDir()
+	f, _ := Open(root, "s-read", Events)
+	for i := 0; i < 5; i++ {
+		f.Append("e", map[string]any{"i": i})
+	}
+	b, err := ReadAfter(root, "s-read", Events, 2, 1<<20)
+	if err != nil || strings.Count(string(b), "\n") != 3 || !strings.Contains(string(b), `"seq":3`) || strings.Contains(string(b), `"seq":2,`) {
+		t.Errorf("%q %v", b, err)
+	}
+	if b, _ := ReadAfter(root, "s-read", Events, 0, 150); strings.Count(string(b), "\n") != 1 {
+		t.Errorf("max bytes: %q", b)
+	}
+	if ss, _ := Sessions(root); len(ss) != 1 || ss[0] != "s-read" {
+		t.Errorf("sessions %v", ss)
+	}
+	if _, err := ReadAfter(root, "../etc", Events, 0, 100); err == nil {
+		t.Error("traversal")
+	}
+}

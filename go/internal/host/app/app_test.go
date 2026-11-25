@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/auditpull"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/syncgate"
 )
@@ -24,6 +25,10 @@ type fakeTransport struct {
 	pushes  [][]byte
 	reach   string
 	ttys    []bool
+	// the audit pull
+	pulls         int
+	auditSessions string
+	auditRecords  map[string]string
 }
 
 func (f *fakeTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []string, stdin io.Reader, stdout, _ io.Writer, tty bool) (int, error) {
@@ -39,6 +44,13 @@ func (f *fakeTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []stri
 }
 
 func (f *fakeTransport) Output(_ context.Context, _ driver.SSHEndpoint, argv []string, max int) ([]byte, error) {
+	if len(argv) > 1 && argv[1] == auditpull.VMSessions {
+		f.pulls++
+		return []byte(f.auditSessions), nil
+	}
+	if len(argv) > 1 && argv[1] == auditpull.VMRead {
+		return []byte(f.auditRecords[argv[2]+"/"+argv[3]]), nil
+	}
 	switch argv[0] {
 	case "sh":
 		return []byte("present\n"), nil
@@ -280,5 +292,22 @@ func TestNetdReported(t *testing.T) {
 	if r := run(t, d, tr, "", "vm", "start"); r.rc != 0 || !strings.Contains(r.out, "restarting the sandbox VM") ||
 		!strings.Contains(strings.Join(d.Calls, " "), "Stop Start") || d.dead {
 		t.Errorf("start, netd dead: %+v %v", r, d.Calls)
+	}
+}
+
+func TestProxyPullsAudit(t *testing.T) {
+	d := &driver.Mock{State: driver.Running, EP: driver.SSHEndpoint{Host: "h", Port: 1, User: "root", HostKey: "k"}}
+	tr := &fakeTransport{release: goodRelease, auditSessions: "s-one\n", auditRecords: map[string]string{
+		"s-one/events.jsonl": `{"seq":1,"session":"s-one","type":"session_requested"}` + "\n"}}
+	state := t.TempDir()
+	if r := run(t, d, tr, state, "list"); r.rc != 0 || tr.pulls != 1 {
+		t.Fatalf("%+v pulls %d", r, tr.pulls)
+	}
+	b, err := os.ReadFile(filepath.Join(state, "logs", "s-one", "events.jsonl"))
+	if err != nil || !strings.Contains(string(b), "session_requested") {
+		t.Errorf("%q %v", b, err)
+	}
+	if r := run(t, d, tr, state, "vm", "stop"); r.rc != 0 || tr.pulls != 2 {
+		t.Errorf("vm stop did not pull first: %+v pulls %d", r, tr.pulls)
 	}
 }

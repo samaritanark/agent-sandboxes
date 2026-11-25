@@ -320,6 +320,9 @@ func (a *app) removeVM() {
 		a.die("cannot read the sandbox VM's state: %v", err)
 	}
 	if st == driver.Running {
+		if ep, err := a.env.Driver.Endpoint(a.ctx); err == nil {
+			a.pullAudit(ep) // the sessions' last records, before the VM is deleted
+		}
 		fmt.Fprintln(a.env.Stdout, "==> Stopping the sandbox VM...")
 		if err := a.env.Driver.Stop(a.ctx); err != nil {
 			// deleting stops it by force

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/auditpull"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/release"
 	"github.com/samaritanark/agent-sandboxes/go/internal/opstate"
@@ -192,7 +193,25 @@ func (a *app) proxy(args []string) int {
 	if err != nil {
 		a.die("cannot run the command in the sandbox VM: %v", err)
 	}
+	a.pullAudit(ep)
 	return rc
+}
+
+// pullAudit brings the sessions' new audit records to ~/.sandbox/logs (design 5.1.5, 5.12). A
+// failure is a warning: the next pull continues from the last record the host holds, and records
+// the gap if any are lost.
+func (a *app) pullAudit(ep driver.SSHEndpoint) {
+	run := func(ctx context.Context, argv []string, max int) ([]byte, error) {
+		return a.env.Transport.Output(ctx, ep, argv, max)
+	}
+	rep, err := auditpull.Pull(a.ctx, run, VMCommand, filepath.Join(a.env.StateDir, "logs"), a.env.Now)
+	if err != nil {
+		fmt.Fprintf(a.env.Stderr, "WARNING: could not pull the session audit logs: %v\n", err)
+		return
+	}
+	if rep.Gaps > 0 || len(rep.Refused) > 0 {
+		fmt.Fprintf(a.env.Stderr, "WARNING: the session audit logs had %d gap(s) and %d refused record(s); see ~/.sandbox/logs\n", rep.Gaps, len(rep.Refused))
+	}
 }
 
 const vmUsage = `Usage: sandbox vm <start|stop|status|shell>
@@ -251,6 +270,9 @@ func (a *app) vm(args []string) int {
 		if st != driver.Running {
 			fmt.Fprintf(a.env.Stdout, "The sandbox VM is %s.\n", st)
 			return 0
+		}
+		if ep, err := a.env.Driver.Endpoint(a.ctx); err == nil {
+			a.pullAudit(ep) // before the VM goes
 		}
 		fmt.Fprintln(a.env.Stdout, "==> Stopping the sandbox VM...")
 		if err := a.env.Driver.Stop(a.ctx); err != nil {

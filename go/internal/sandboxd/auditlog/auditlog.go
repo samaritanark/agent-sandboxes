@@ -117,3 +117,53 @@ func (f *File) Append(typ string, fields map[string]any) error {
 	f.size += int64(len(b)) + 1
 	return nil
 }
+
+// Sessions lists the sessions that have a log.
+func Sessions(root string) ([]string, error) {
+	ents, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range ents {
+		if e.IsDir() && idRE.MatchString(e.Name()) {
+			out = append(out, e.Name())
+		}
+	}
+	return out, nil
+}
+
+// ReadAfter returns a session file's records with a sequence number above after, whole lines only,
+// at most max bytes (the host pulls in rounds).
+func ReadAfter(root, session, name string, after uint64, max int) ([]byte, error) {
+	if !idRE.MatchString(session) || (name != Events && name != Flows) {
+		return nil, fmt.Errorf("auditlog: invalid session or file")
+	}
+	r, err := os.Open(filepath.Join(root, session, name))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	var out []byte
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	for sc.Scan() {
+		var rec struct {
+			Seq uint64 `json:"seq"`
+		}
+		if json.Unmarshal(sc.Bytes(), &rec) != nil || rec.Seq <= after {
+			continue
+		}
+		if len(out)+len(sc.Bytes())+1 > max {
+			break
+		}
+		out = append(append(out, sc.Bytes()...), '\n')
+	}
+	return out, sc.Err()
+}
