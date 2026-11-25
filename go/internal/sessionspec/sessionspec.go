@@ -267,7 +267,18 @@ func (s *Spec) Validate(o Options) error {
 		bad("%d dependencies, more than the limit of %d", len(s.Dependencies), max)
 	}
 	names := map[string]bool{}
+	// the agent reaches each dependency on its own port of the gateway's address (5.8.6), so the
+	// ports must not collide with each other or with the gateway's own
+	usedPorts := map[int]string{53: "DNS", 443: "egress"}
+	for _, p := range s.Egress.ExtraPorts {
+		usedPorts[p] = "a declared egress port"
+	}
 	for i, d := range s.Dependencies {
+		if other, ok := usedPorts[d.Port]; ok && d.Port > 0 {
+			bad("dependency %d (%s): port %d is already used by %s", i, d.Name, d.Port, other)
+		} else if d.Port > 0 {
+			usedPorts[d.Port] = "dependency " + d.Name
+		}
 		w := fmt.Sprintf("dependency %d (%s)", i, d.Name)
 		if !labelRE.MatchString(d.Name) || names[d.Name] {
 			bad("%s: invalid or repeated name", w)

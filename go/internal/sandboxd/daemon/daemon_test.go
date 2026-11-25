@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/gwpolicy"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/journal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/limits"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/netsetup"
@@ -105,17 +106,17 @@ func (f *fakeNet) Up(_ context.Context, s netsetup.Session) error {
 
 type fakeGW struct {
 	running  map[string]int
-	policies map[string]GatewayPolicy
+	policies map[string]gwpolicy.Policy
 	stopped  []string
 	calls    *[]string
 }
 
 func (f *fakeGW) Start(_ context.Context, id, ns, dir string, policy []byte) (int, error) {
-	var p GatewayPolicy
-	if err := json.Unmarshal(policy, &p); err != nil {
+	p, err := gwpolicy.Decode(policy)
+	if err != nil {
 		return 0, err
 	}
-	f.policies[id] = p
+	f.policies[id] = *p
 	f.running[id] = 4000 + len(f.running)
 	*f.calls = append(*f.calls, "gateway "+id)
 	return f.running[id], nil
@@ -144,7 +145,7 @@ func newRig(t *testing.T) *rig {
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
 	r := &rig{rt: &fakeRuntime{vms: map[string]runtime.MicroVM{}, started: map[string]bool{}}, ns: &fakeNS{names: map[string]bool{}}, now: &now, net: &fakeNet{}}
-	r.gw = &fakeGW{running: map[string]int{}, policies: map[string]GatewayPolicy{}, calls: &r.rt.calls}
+	r.gw = &fakeGW{running: map[string]int{}, policies: map[string]gwpolicy.Policy{}, calls: &r.rt.calls}
 	r.d = &Daemon{
 		Journal: &journal.Store{Dir: filepath.Join(dir, "journal")}, Runtime: r.rt, NetNS: r.ns, Network: r.net, Gateways: r.gw,
 		Resolvers: []netip.Addr{netip.MustParseAddr("192.168.127.1")},
@@ -173,7 +174,8 @@ func spec(id string, mem int, deps ...string) []byte {
 		Egress: sessionspec.Egress{Allow: []string{"api.anthropic.com"}}}
 	for _, d := range deps {
 		s.Dependencies = append(s.Dependencies, sessionspec.Dependency{Name: d, Image: "docker.io/library/postgres@sha256:" + strings.Repeat("b", 64),
-			Port: 5432, RunAsUser: 999, Resources: sessionspec.Resources{CPUs: 1, MemoryMiB: 1024}})
+			Port: 5432, RunAsUser: 999, Resources: sessionspec.Resources{CPUs: 1, MemoryMiB: 1024},
+			Egress: sessionspec.Egress{Allow: []string{"pypi.org"}}})
 	}
 	b, _ := s.Encode()
 	return b
@@ -187,22 +189,30 @@ func TestStartAndStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, _ := r.d.Journal.Load(id)
-	// masks, dependency netns and microVM, agent and gateway netns, uplink, gateway, agent microVM
+	// masks, agent, gateway, and dependency netns, uplink, gateway, dependency and agent microVMs
 	if s.State != journal.Running || len(s.Live()) != 8 {
 		t.Fatalf("state %s, resources %+v", s.State, s.Resources)
 	}
-	if p := r.gw.policies[id]; p.Listen.String() != "10.200.0.1" || p.Allow[0] != "api.anthropic.com" || p.Dependencies[0] != "db" || p.Resolvers[0].String() != "192.168.127.1" {
+	p := r.gw.policies[id]
+	if len(p.Links) != 2 || p.Links[0].Listen.String() != "10.200.0.1" || p.Links[0].Allow[0] != "api.anthropic.com" ||
+		p.Links[1].Listen.String() != "10.200.1.1" || p.Links[1].Name != "db" || len(p.Links[1].Allow) != 1 || p.Links[1].Allow[0] != "pypi.org" ||
+		len(p.Deps) != 1 || p.Deps[0].Addr.String() != "10.200.1.2" || p.Deps[0].Port != 5432 || p.Resolvers[0].String() != "192.168.127.1" {
 		t.Errorf("gateway policy %+v", p)
+	}
+	if db := r.rt.vms["s-one.db"]; len(db.Mounts) != 1 || db.Mounts[0].Target != "/etc/resolv.conf" || db.NetNS != "/var/run/netns/sbx-s-one-d-db" {
+		t.Errorf("dependency %+v", db)
+	} else if b, _ := os.ReadFile(db.Mounts[0].Source); string(b) != "nameserver 10.200.1.1\n" {
+		t.Errorf("dependency resolv.conf %q", b)
 	}
 	if len(r.net.uplinks) != 1 || r.net.uplinks[0] != 0 || r.net.root != 1 {
 		t.Errorf("network: %+v", r.net)
 	}
 	agent := r.rt.vms["s-one"]
-	if agent.UID != 1000 || agent.NetNS != "/var/run/netns/sbx-s-one-a" || !r.rt.started["s-one"] || !r.rt.started["s-one--db"] {
+	if agent.UID != 1000 || agent.NetNS != "/var/run/netns/sbx-s-one-a" || !r.rt.started["s-one"] || !r.rt.started["s-one.db"] {
 		t.Errorf("agent %+v started %v", agent, r.rt.started)
 	}
-	if r.rt.vms["s-one--db"].UID != 999 || len(r.rt.vms["s-one--db"].Mounts) != 0 {
-		t.Errorf("dependency %+v", r.rt.vms["s-one--db"])
+	if r.rt.vms["s-one.db"].UID != 999 {
+		t.Errorf("dependency %+v", r.rt.vms["s-one.db"])
 	}
 	if last := agent.Mounts[len(agent.Mounts)-1]; last.Target != "/etc/resolv.conf" || !last.ReadOnly {
 		t.Errorf("resolv.conf mount %+v", last)
@@ -232,7 +242,7 @@ func TestStartAndStop(t *testing.T) {
 	}
 	// microVMs go first, then the gateway, then the namespaces
 	last := strings.Join(r.rt.calls, ",")
-	if !strings.HasSuffix(last, "destroy s-one--db,destroy s-one,stop gateway s-one") && !strings.HasSuffix(last, "destroy s-one,destroy s-one--db,stop gateway s-one") {
+	if !strings.HasSuffix(last, "destroy s-one.db,destroy s-one,stop gateway s-one") && !strings.HasSuffix(last, "destroy s-one,destroy s-one.db,stop gateway s-one") {
 		t.Errorf("calls %s", last)
 	}
 	// the uplink is free again

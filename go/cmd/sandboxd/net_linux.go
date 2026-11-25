@@ -25,13 +25,16 @@ const GatewayUser = "sandbox-gw"
 
 type execRunner struct{}
 
-func (execRunner) Run(ctx context.Context, stdin, name string, args ...string) error {
+func (execRunner) Run(ctx context.Context, stdin, name string, args ...string) (string, error) {
 	c := exec.CommandContext(ctx, name, args...)
 	c.Stdin = strings.NewReader(stdin)
-	if out, err := c.CombinedOutput(); err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	var stderr strings.Builder
+	c.Stderr = &stderr
+	out, err := c.Output()
+	if err != nil {
+		return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	return nil
+	return string(out), nil
 }
 
 type network struct{}
@@ -40,10 +43,11 @@ func (network) Root(ctx context.Context) error {
 	r := execRunner{}
 	// forwarding for the uplinks' NAT; and log the gateway namespaces' drops (bypass attempts),
 	// which the kernel otherwise logs only for the root namespace
-	if err := r.Run(ctx, "", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1", "net.netfilter.nf_log_all_netns=1"); err != nil {
+	if _, err := r.Run(ctx, "", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1", "net.netfilter.nf_log_all_netns=1"); err != nil {
 		return err
 	}
-	return r.Run(ctx, netsetup.RootRules(), "nft", "-f", "-")
+	_, err := r.Run(ctx, netsetup.RootRules(), "nft", "-f", "-")
+	return err
 }
 
 func (network) Up(ctx context.Context, s netsetup.Session) error {

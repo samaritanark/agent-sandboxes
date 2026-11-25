@@ -4,9 +4,10 @@
 // keep-alive limits expire, and on start reconciles the journal against what exists before it
 // accepts new sessions.
 //
-// The agent's network is its link to the session's gateway namespace (5.8.2): its resolver and
-// Envoy are the only things it can reach. Dependencies still get a namespace with no link; their
-// links, the broker (5.9), and attaching a terminal come next. Keep-alive sessions are not yet restarted after a VM reboot: they are torn
+// Every microVM's network is its own link to the session's gateway namespace (5.8.2): its resolver
+// and Envoy are the only things it can reach, under its own allowlist, and the agent reaches its
+// dependencies only through the gateway (5.8.6). The broker (5.9) and attaching a terminal come
+// next. Keep-alive sessions are not yet restarted after a VM reboot: they are torn
 // down like the rest (item 9 needs the broker store key).
 package daemon
 
@@ -26,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/gwpolicy"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/journal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/limits"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/netsetup"
@@ -61,16 +63,6 @@ type GatewayRunner interface {
 	Start(ctx context.Context, id, gatewayNS, dir string, policy []byte) (int, error)
 	// Stop ends it (pid as Start returned it).
 	Stop(ctx context.Context, id string, pid int) error
-}
-
-// GatewayPolicy is what the gateway process reads (cmd/sandbox-gateway's Policy).
-type GatewayPolicy struct {
-	Listen       netip.Addr   `json:"listen"`
-	Ports        []int        `json:"ports"`
-	Allow        []string     `json:"allow"`
-	BlockDomains []string     `json:"block_domains"`
-	Dependencies []string     `json:"dependencies"`
-	Resolvers    []netip.Addr `json:"resolvers"`
 }
 
 // Paths: where a namespace is bound, given its name.
@@ -127,7 +119,7 @@ var ErrNotReady = errors.New("sandboxd is reconciling its sessions; try again")
 func agentNetNS(id string) string        { return "sbx-" + id + "-a" }
 func gatewayNetNS(id string) string      { return "sbx-" + id + "-g" }
 func depNetNS(id, dep string) string     { return "sbx-" + id + "-d-" + dep }
-func depContainer(id, dep string) string { return id + "--" + dep }
+func depContainer(id, dep string) string { return id + "." + dep } // containerd ids allow single separators; session ids have no dots
 
 // holding is the specs of sessions that hold memory now.
 func (d *Daemon) holding(except string) ([]*sessionspec.Spec, error) {
@@ -251,7 +243,8 @@ func env(vs []sessionspec.EnvVar) []string {
 	return out
 }
 
-// bringUp creates the session's namespaces and microVMs, each journaled first.
+// bringUp creates the session's namespaces, network, gateway, and microVMs, each journaled first.
+// The network and gateway exist before any microVM starts, so no microVM ever runs unfiltered.
 func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 	id := spec.ID
 	if err := d.step(id, KindMasks, "masks", func() error { return os.MkdirAll(d.maskDir(id), 0o700) }); err != nil {
@@ -261,46 +254,58 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 	if err != nil {
 		return err
 	}
-	for _, dep := range spec.Dependencies {
-		ns, cid := depNetNS(id, dep.Name), depContainer(id, dep.Name)
-		if err := d.step(id, KindNetNS, ns, func() error { return d.NetNS.Create(ctx, ns) }); err != nil {
-			return err
-		}
-		m := runtime.MicroVM{ID: cid, Image: dep.Image, Args: dep.Command, Env: env(dep.Env),
-			UID: uint32(dep.RunAsUser), GID: uint32(dep.RunAsUser), NetNS: d.NetNSPath(ns),
-			CPUs: dep.Resources.CPUs, MemoryMiB: dep.Resources.MemoryMiB, Hostname: dep.Name}
-		if err := d.step(id, KindContainer, cid, func() error {
-			if err := d.Runtime.Create(ctx, m); err != nil {
-				return err
-			}
-			return d.Runtime.Start(ctx, cid)
-		}); err != nil {
-			return err
-		}
-	}
 	ns, gns := agentNetNS(id), gatewayNetNS(id)
-	for _, n := range []string{ns, gns} {
+	all := []string{ns, gns}
+	links := []netsetup.Link{{Index: 0, NS: ns, Name: id}}
+	for i, dep := range spec.Dependencies {
+		n := depNetNS(id, dep.Name)
+		all = append(all, n)
+		links = append(links, netsetup.Link{Index: i + 1, NS: n, Name: depContainer(id, dep.Name)})
+	}
+	for _, n := range all {
 		if err := d.step(id, KindNetNS, n, func() error { return d.NetNS.Create(ctx, n) }); err != nil {
 			return err
 		}
 	}
+
+	// the gateway's policy: each link's own allowlist, and the agent's way to its dependencies
+	agentPorts := append([]int{443}, spec.Egress.ExtraPorts...)
+	pol := gwpolicy.Policy{Resolvers: d.Resolvers, Links: []gwpolicy.Link{{Name: "agent", Listen: netsetup.GatewayAddr,
+		Ports: agentPorts, Allow: spec.Egress.Allow, BlockDomains: spec.Egress.BlockDomains}}}
+	ports := map[int]bool{}
+	blockCIDRs := append([]string(nil), spec.Egress.BlockCIDRs...)
+	for _, p := range agentPorts {
+		ports[p] = true
+	}
+	for i, dep := range spec.Dependencies {
+		gw, guest := netsetup.LinkAddrs(i + 1)
+		dp := append([]int{443}, dep.Egress.ExtraPorts...)
+		pol.Links = append(pol.Links, gwpolicy.Link{Name: dep.Name, Listen: gw, Ports: dp,
+			Allow: dep.Egress.Allow, BlockDomains: dep.Egress.BlockDomains})
+		pol.Deps = append(pol.Deps, gwpolicy.Dep{Name: dep.Name, Port: dep.Port, Addr: guest})
+		ports[dep.Port] = true
+		for _, p := range dp {
+			ports[p] = true
+		}
+		blockCIDRs = append(blockCIDRs, dep.Egress.BlockCIDRs...)
+	}
+	var portList []int
+	for p := range ports {
+		portList = append(portList, p)
+	}
+	sort.Ints(portList)
+
 	uplink, err := d.freeUplink()
 	if err != nil {
 		return err
 	}
-	ports := append([]int{443}, spec.Egress.ExtraPorts...)
 	if err := d.step(id, KindUplink, strconv.Itoa(uplink), func() error {
-		return d.Network.Up(ctx, netsetup.Session{ID: id, GatewayNS: gns, AgentNS: ns, Uplink: uplink,
-			Ports: ports, BlockCIDRs: spec.Egress.BlockCIDRs, Resolvers: d.Resolvers})
+		return d.Network.Up(ctx, netsetup.Session{ID: id, GatewayNS: gns, Links: links, Uplink: uplink,
+			Ports: portList, BlockCIDRs: blockCIDRs, Resolvers: d.Resolvers})
 	}); err != nil {
 		return err
 	}
-	var deps []string
-	for _, dep := range spec.Dependencies {
-		deps = append(deps, dep.Name)
-	}
-	policy, _ := json.Marshal(GatewayPolicy{Listen: netsetup.GatewayAddr, Ports: ports, Allow: spec.Egress.Allow,
-		BlockDomains: spec.Egress.BlockDomains, Dependencies: deps, Resolvers: d.Resolvers})
+	policy, _ := json.Marshal(pol)
 	if err := d.Journal.Intend(id, KindGateway, "gateway"); err != nil {
 		return err
 	}
@@ -311,12 +316,37 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 	if err := d.Journal.Mark(id, KindGateway, "gateway", journal.Created, strconv.Itoa(pid)); err != nil {
 		return err
 	}
-	// the agent's resolver is its gateway
-	resolv := filepath.Join(d.maskDir(id), "resolv.conf")
-	if err := os.WriteFile(resolv, []byte("nameserver "+netsetup.GatewayAddr.String()+"\n"), 0o444); err != nil {
+	// each microVM's resolver is its own gateway address
+	resolvConf := func(n int) (runtime.Mount, error) {
+		gw, _ := netsetup.LinkAddrs(n)
+		p := filepath.Join(d.maskDir(id), "resolv-"+strconv.Itoa(n)+".conf")
+		err := os.WriteFile(p, []byte("nameserver "+gw.String()+"\n"), 0o444)
+		return runtime.Mount{Source: p, Target: "/etc/resolv.conf", ReadOnly: true}, err
+	}
+
+	for i, dep := range spec.Dependencies {
+		cid := depContainer(id, dep.Name)
+		rc, err := resolvConf(i + 1)
+		if err != nil {
+			return err
+		}
+		m := runtime.MicroVM{ID: cid, Image: dep.Image, Args: dep.Command, Env: env(dep.Env),
+			UID: uint32(dep.RunAsUser), GID: uint32(dep.RunAsUser), NetNS: d.NetNSPath(depNetNS(id, dep.Name)),
+			Mounts: []runtime.Mount{rc}, CPUs: dep.Resources.CPUs, MemoryMiB: dep.Resources.MemoryMiB, Hostname: dep.Name}
+		if err := d.step(id, KindContainer, cid, func() error {
+			if err := d.Runtime.Create(ctx, m); err != nil {
+				return err
+			}
+			return d.Runtime.Start(ctx, cid)
+		}); err != nil {
+			return err
+		}
+	}
+	rc, err := resolvConf(0)
+	if err != nil {
 		return err
 	}
-	mounts = append(mounts, runtime.Mount{Source: resolv, Target: "/etc/resolv.conf", ReadOnly: true})
+	mounts = append(mounts, rc)
 	agent := runtime.MicroVM{ID: id, Image: spec.Image, Args: spec.Command, Env: env(spec.Env),
 		UID: 1000, GID: 1000, Mounts: mounts, NetNS: d.NetNSPath(ns),
 		CPUs: spec.Resources.CPUs, MemoryMiB: spec.Resources.MemoryMiB, Hostname: "sandbox"}

@@ -9,9 +9,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -29,18 +27,9 @@ import (
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/authz"
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/envoyconf"
+	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/gwpolicy"
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/resolver"
 )
-
-// Policy is what sandboxd writes for the gateway (from the session spec).
-type Policy struct {
-	Listen       netip.Addr   `json:"listen"`
-	Ports        []int        `json:"ports"`
-	Allow        []string     `json:"allow"`
-	BlockDomains []string     `json:"block_domains"`
-	Dependencies []string     `json:"dependencies"`
-	Resolvers    []netip.Addr `json:"resolvers"`
-}
 
 func main() {
 	if err := run(); err != nil {
@@ -61,25 +50,30 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	var p Policy
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&p); err != nil {
+	p, err := gwpolicy.Decode(b)
+	if err != nil {
 		return fmt.Errorf("policy: %w", err)
-	}
-	if !p.Listen.IsValid() || len(p.Ports) == 0 || len(p.Resolvers) == 0 {
-		return errors.New("policy: listen address, ports, and resolvers are required")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	failed := make(chan error, 4)
 
-	// the filtering resolver on the gateway's address
-	res := &resolver.Server{}
-	res.SetPolicy(&resolver.Policy{Allow: p.Allow, BlockDomains: p.BlockDomains, Dependencies: p.Dependencies, Gateway: p.Listen})
-	go func() {
-		failed <- fmt.Errorf("resolver: %w", res.ListenAndServe(net.JoinHostPort(p.Listen.String(), "53")))
-	}()
+	// a filtering resolver on each link's gateway address, with that microVM's own policy: only the
+	// agent resolves dependency names
+	var deps []string
+	for _, d := range p.Deps {
+		deps = append(deps, d.Name)
+	}
+	for i, l := range p.Links {
+		res := &resolver.Server{}
+		rp := &resolver.Policy{Allow: l.Allow, BlockDomains: l.BlockDomains, Gateway: l.Listen}
+		if i == 0 {
+			rp.Dependencies = deps
+		}
+		res.SetPolicy(rp)
+		addr := net.JoinHostPort(l.Listen.String(), "53")
+		go func() { failed <- fmt.Errorf("resolver %s: %w", addr, res.ListenAndServe(addr)) }()
+	}
 
 	// the connection check, on a socket only this user can reach
 	sock := filepath.Join(*dir, "authz.sock")
@@ -91,19 +85,28 @@ func run() error {
 	os.Chmod(sock, 0o600)
 	az := &authz.Server{Record: func(d authz.Decision) {
 		if !d.Allowed {
-			log.Printf("refused %q: %s", d.SNI, d.Reason)
+			log.Printf("refused %q on %s: %s", d.SNI, d.Link, d.Reason)
 		}
 	}}
-	az.SetPolicy(&authz.Policy{Allow: p.Allow, BlockDomains: p.BlockDomains})
+	pols := map[netip.Addr]*authz.Policy{}
+	for _, l := range p.Links {
+		pols[l.Listen] = &authz.Policy{Allow: l.Allow, BlockDomains: l.BlockDomains}
+	}
+	az.SetPolicies(pols)
 	g := grpc.NewServer()
 	authv3.RegisterAuthorizationServer(g, az)
 	go func() { failed <- fmt.Errorf("authz: %w", g.Serve(ln)) }()
 	defer g.Stop()
 
 	// Envoy
-	conf := envoyconf.Config{Allow: p.Allow, BlockDomains: p.BlockDomains, Listen: p.Listen, Ports: p.Ports,
-		AuthzSocket: sock, AdminSocket: filepath.Join(*dir, "admin.sock"), Resolvers: p.Resolvers,
+	conf := envoyconf.Config{AuthzSocket: sock, AdminSocket: filepath.Join(*dir, "admin.sock"), Resolvers: p.Resolvers,
 		AccessLog: filepath.Join(*dir, "connections.log")}
+	for _, l := range p.Links {
+		conf.Links = append(conf.Links, envoyconf.Link{Addr: l.Listen, Ports: l.Ports, Allow: l.Allow, BlockDomains: l.BlockDomains})
+	}
+	for _, d := range p.Deps {
+		conf.Deps = append(conf.Deps, envoyconf.Dep{Name: d.Name, Port: d.Port, Addr: d.Addr})
+	}
 	bs, err := conf.Bootstrap()
 	if err != nil {
 		return err
@@ -119,7 +122,7 @@ func run() error {
 		return err
 	}
 	go func() { failed <- fmt.Errorf("envoy exited: %v", e.Wait()) }()
-	log.Printf("serving on %s (ports %v)", p.Listen, p.Ports)
+	log.Printf("serving %d links, %d dependencies", len(p.Links), len(p.Deps))
 
 	select {
 	case <-ctx.Done():

@@ -31,12 +31,27 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/egressmatch"
 )
 
+// Link is the gateway's side of one microVM's link (the agent's, or a dependency's): its address,
+// the egress ports it serves, and that microVM's own allowlist and block patterns.
+type Link struct {
+	Addr         netip.Addr
+	Ports        []int // 443 and the microVM's declared extra ports
+	Allow        []string
+	BlockDomains []string
+}
+
+// Dep is a dependency the agent reaches through the gateway (design 5.8.6): the agent connects to
+// the agent link's gateway address on Port, and the gateway forwards to the dependency's Addr.
+type Dep struct {
+	Name string
+	Port int
+	Addr netip.Addr
+}
+
 // Config is one session gateway.
 type Config struct {
-	Allow         []string     // the session's allowlist (egressmatch forms)
-	BlockDomains  []string     // its merged block patterns
-	Listen        netip.Addr   // the gateway's link address
-	Ports         []int        // 443 and the declared extra ports
+	Links         []Link // the agent's first
+	Deps          []Dep
 	AuthzSocket   string       // the authz service's Unix socket
 	AdminSocket   string       // Envoy's admin interface, as a Unix socket ("" for none)
 	Resolvers     []netip.Addr // the VM's upstream resolvers
@@ -45,15 +60,30 @@ type Config struct {
 }
 
 func (c Config) check() error {
-	if !c.Listen.IsValid() || len(c.Ports) == 0 || !path.IsAbs(c.AuthzSocket) || len(c.Resolvers) == 0 {
-		return errors.New("envoyconf: listen address, ports, authz socket, and resolvers are required")
+	if len(c.Links) == 0 || !path.IsAbs(c.AuthzSocket) || len(c.Resolvers) == 0 {
+		return errors.New("envoyconf: links, authz socket, and resolvers are required")
 	}
-	seen := map[int]bool{}
-	for _, p := range c.Ports {
-		if p < 1 || p > 65535 || seen[p] {
-			return fmt.Errorf("envoyconf: bad or repeated port %d", p)
+	agent := map[int]bool{}
+	for i, l := range c.Links {
+		if !l.Addr.IsValid() || len(l.Ports) == 0 {
+			return fmt.Errorf("envoyconf: link %d needs an address and ports", i)
 		}
-		seen[p] = true
+		seen := map[int]bool{}
+		for _, p := range l.Ports {
+			if p < 1 || p > 65535 || seen[p] {
+				return fmt.Errorf("envoyconf: link %d: bad or repeated port %d", i, p)
+			}
+			seen[p] = true
+			if i == 0 {
+				agent[p] = true
+			}
+		}
+	}
+	for _, d := range c.Deps {
+		if d.Name == "" || !d.Addr.IsValid() || d.Port < 1 || d.Port > 65535 || agent[d.Port] {
+			return fmt.Errorf("envoyconf: dependency %q: bad or colliding port %d", d.Name, d.Port)
+		}
+		agent[d.Port] = true
 	}
 	return nil
 }
@@ -180,8 +210,26 @@ func (c Config) accessLog(tcp obj, refused bool) {
 	})}}
 }
 
-func (c Config) listener(port int) obj {
-	allow, deny := ServerNames(c.Allow, c.BlockDomains)
+// depListener forwards the agent's connections on the dependency's port to the dependency.
+func (c Config) depListener(d Dep) obj {
+	tcp := obj{"stat_prefix": "dep_" + d.Name, "cluster": "dep_" + d.Name}
+	if c.AccessLog != "" {
+		tcp["access_log"] = []obj{{"name": "envoy.access_loggers.file", "typed_config": typed("envoy.extensions.access_loggers.file.v3.FileAccessLog", obj{
+			"path": c.AccessLog, "log_format": obj{"json_format": obj{
+				"start": "%START_TIME%", "dependency": d.Name, "port": "%DOWNSTREAM_LOCAL_PORT%",
+				"sent": "%BYTES_SENT%", "received": "%BYTES_RECEIVED%", "duration_ms": "%DURATION%", "flags": "%RESPONSE_FLAGS%",
+			}},
+		})}}
+	}
+	return obj{
+		"name":          "dep_" + d.Name,
+		"address":       obj{"socket_address": obj{"address": c.Links[0].Addr.String(), "port_value": d.Port}},
+		"filter_chains": []obj{{"filters": []obj{{"name": "envoy.filters.network.tcp_proxy", "typed_config": typed("envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy", tcp)}}}},
+	}
+}
+
+func (c Config) listener(link Link, port int) obj {
+	allow, deny := ServerNames(link.Allow, link.BlockDomains)
 	filters := []obj{
 		c.authzFilter(),
 		{"name": "envoy.filters.network.sni_dynamic_forward_proxy", "typed_config": typed("envoy.extensions.filters.network.sni_dynamic_forward_proxy.v3.FilterConfig", obj{
@@ -189,12 +237,12 @@ func (c Config) listener(port int) obj {
 			"dns_cache_config": c.dnsCacheConfig(),
 		})},
 	}
-	tcp := obj{"stat_prefix": fmt.Sprintf("egress_%d", port), "cluster": "upstream"}
+	tcp := obj{"stat_prefix": fmt.Sprintf("egress_%s_%d", link.Addr, port), "cluster": "upstream"}
 	c.accessLog(tcp, false)
 	filters = append(filters, obj{"name": "envoy.filters.network.tcp_proxy", "typed_config": typed("envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy", tcp)})
 	l := obj{
-		"name":             fmt.Sprintf("egress_%d", port),
-		"address":          obj{"socket_address": obj{"address": c.Listen.String(), "port_value": port}},
+		"name":             fmt.Sprintf("egress_%s_%d", link.Addr, port),
+		"address":          obj{"socket_address": obj{"address": link.Addr.String(), "port_value": port}},
 		"listener_filters": []obj{{"name": "envoy.filters.listener.tls_inspector", "typed_config": typed("envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector", obj{})}},
 		// a connection that is not TLS gets no SNI, so the check refuses it; this bounds how long
 		// the inspector waits for a ClientHello
@@ -231,8 +279,13 @@ func (c Config) Bootstrap() ([]byte, error) {
 		timeout = 10
 	}
 	var listeners []obj
-	for _, p := range c.Ports {
-		listeners = append(listeners, c.listener(p))
+	for _, l := range c.Links {
+		for _, p := range l.Ports {
+			listeners = append(listeners, c.listener(l, p))
+		}
+	}
+	for _, d := range c.Deps {
+		listeners = append(listeners, c.depListener(d))
 	}
 	clusters := []obj{
 		{
@@ -253,6 +306,11 @@ func (c Config) Bootstrap() ([]byte, error) {
 				"dns_cache_config": c.dnsCacheConfig(),
 			})},
 		},
+	}
+	for _, d := range c.Deps {
+		clusters = append(clusters, obj{"name": "dep_" + d.Name, "type": "STATIC", "connect_timeout": "5s",
+			"load_assignment": obj{"cluster_name": "dep_" + d.Name, "endpoints": []obj{{"lb_endpoints": []obj{{"endpoint": obj{
+				"address": obj{"socket_address": obj{"address": d.Addr.String(), "port_value": d.Port}}}}}}}}})
 	}
 	b := obj{
 		"node":             obj{"id": "sandbox-gateway", "cluster": "sandbox"},

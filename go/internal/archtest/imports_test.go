@@ -36,7 +36,7 @@ var allowed = map[string][]string{
 	"sandboxd/runtime":  {},
 	"sandboxd/netns":    {},
 	"sandboxd/netsetup": {},
-	"sandboxd/daemon":   {"sandboxd/journal", "sandboxd/limits", "sandboxd/netsetup", "sandboxd/runtime", "sessionspec"},
+	"sandboxd/daemon":   {"gateway/gwpolicy", "sandboxd/journal", "sandboxd/limits", "sandboxd/netsetup", "sandboxd/runtime", "sessionspec"},
 	// the sync protocol (host engine and in-VM agent) and the in-VM agent itself
 	"syncproto": {},
 	"syncagent": {"syncproto"},
@@ -47,6 +47,7 @@ var allowed = map[string][]string{
 	// the gateway (design 5.8): each session's resolver, gateway controller, and broker
 	"gateway/resolver":  {"egressmatch"},
 	"gateway/authz":     {"egressmatch"},
+	"gateway/gwpolicy":  {},
 	"gateway/envoyconf": {"egressmatch"},
 	"tier":              {},
 	"catalogue":         {"bashcompat", "checks", "config", "deviation"},

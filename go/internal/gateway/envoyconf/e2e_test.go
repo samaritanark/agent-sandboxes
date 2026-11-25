@@ -59,14 +59,14 @@ func TestEndToEnd(t *testing.T) {
 	var decisions []authz.Decision
 	s := &authz.Server{Record: func(d authz.Decision) { mu.Lock(); decisions = append(decisions, d); mu.Unlock() }}
 	allow, block := []string{"*.github.com", "github.com"}, []string{"*.githubusercontent.com", "gist.github.com"}
-	s.SetPolicy(&authz.Policy{Allow: allow, BlockDomains: block})
+	gw := netip.MustParseAddr("127.0.0.77")
+	s.SetPolicies(map[netip.Addr]*authz.Policy{gw: {Allow: allow, BlockDomains: block}})
 	g := grpc.NewServer()
 	authv3.RegisterAuthorizationServer(g, s)
 	go g.Serve(ln)
 	defer g.Stop()
 
-	gw := netip.MustParseAddr("127.0.0.77")
-	c := Config{Allow: allow, BlockDomains: block, Listen: gw, Ports: []int{443}, AuthzSocket: sock, AdminSocket: filepath.Join(dir, "admin.sock"),
+	c := Config{Links: []Link{{Addr: gw, Ports: []int{443}, Allow: allow, BlockDomains: block}}, AuthzSocket: sock, AdminSocket: filepath.Join(dir, "admin.sock"),
 		Resolvers: hostResolvers(t), AccessLog: filepath.Join(dir, "conn.log")}
 	b, err := c.Bootstrap()
 	if err != nil {

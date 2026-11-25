@@ -5,8 +5,10 @@
 // only the gateway's listeners and resolver, drop and log the rest, forward nothing, and refuse
 // connections to blocked CIDRs on output (S5); the root namespace drops all input from uplinks.
 //
-// Addresses repeat across sessions (every gateway namespace is separate): the agent is 10.200.0.2
-// and its gateway 10.200.0.1. Uplinks are /30s in 10.201.0.0/16, one per live session.
+// Addresses repeat across sessions (every gateway namespace is separate): link n (0 is the agent,
+// then each dependency) is 10.200.n.0/30, the gateway 10.200.n.1 and the microVM 10.200.n.2. Each
+// link's rules pin its source and destination to those two addresses, so no microVM reaches
+// another's gateway address or another link. Uplinks are /30s in 10.201.0.0/16.
 //
 // Commands run through Runner (ip, nft, sysctl, the CNI plugin), so the plan is testable.
 package netsetup
@@ -21,12 +23,26 @@ import (
 	"strings"
 )
 
-// Fixed addresses inside each session's namespaces.
+// LinkAddrs are the gateway and microVM ends of link n.
+func LinkAddrs(n int) (gateway, guest netip.Addr) {
+	return netip.AddrFrom4([4]byte{10, 200, byte(n), 1}), netip.AddrFrom4([4]byte{10, 200, byte(n), 2})
+}
+
+// The agent's link (0).
 var (
-	GatewayAddr = netip.MustParseAddr("10.200.0.1")
-	AgentAddr   = netip.MustParseAddr("10.200.0.2")
-	uplinkNet   = netip.MustParsePrefix("10.201.0.0/16")
+	GatewayAddr, AgentAddr = LinkAddrs(0)
+	uplinkNet              = netip.MustParsePrefix("10.201.0.0/16")
 )
+
+// MaxLinks bounds a session's microVMs (the agent and its dependencies).
+const MaxLinks = 256
+
+// Link is one microVM's link: its index (0 for the agent) and its network namespace.
+type Link struct {
+	Index int
+	NS    string
+	Name  string // for CNI (the container id)
+}
 
 // MaxUplinks is how many sessions can have an uplink at once.
 const MaxUplinks = 1 << 14 // /30s in a /16
@@ -41,10 +57,10 @@ const (
 // Session is one session's network.
 type Session struct {
 	ID         string
-	GatewayNS  string // namespace names
-	AgentNS    string
-	Uplink     int // the uplink's index (0..MaxUplinks-1)
-	Ports      []int
+	GatewayNS  string
+	Links      []Link
+	Uplink     int   // the uplink's index (0..MaxUplinks-1)
+	Ports      []int // every port any gateway listener serves (each link's rules bound the address)
 	BlockCIDRs []string
 	Resolvers  []netip.Addr // the gateway's upstream resolvers (exempt from the CIDR block)
 }
@@ -62,9 +78,9 @@ func UplinkAddrs(n int) (root, gw netip.Addr) {
 // RootIf is the root end of uplink n (interface names are at most 15 bytes).
 func RootIf(n int) string { return "sbxu" + strconv.Itoa(n) }
 
-// Runner runs a command with optional stdin.
+// Runner runs a command with optional stdin and returns its standard output.
 type Runner interface {
-	Run(ctx context.Context, stdin string, name string, args ...string) error
+	Run(ctx context.Context, stdin string, name string, args ...string) (string, error)
 }
 
 // RootRules is the VM root namespace's table (installed once, by sandboxd at start): no input from
@@ -131,12 +147,13 @@ func GatewayRules(s Session) string {
 		}
 	}
 	links := fmt.Sprintf(`iifname != { "lo", %q }`, UplinkIf)
+	// each link's address rules are inserted ahead of these once its interface exists (linkRules)
 	fmt.Fprintf(&b, `	chain input {
 		type filter hook input priority filter; policy drop;
 		iif lo accept
-		iifname %q ct state established,related accept
-		%s ip saddr != %s counter log prefix %q drop
-		%s ip daddr != %s counter log prefix %q drop
+		# replies: to the gateway's own connections out of the uplink and into a dependency's link
+		# (5.8.6), and to what a link was allowed to open (each link's address rules come first)
+		ct state established,related accept
 		%s tcp dport { %s } accept
 		%s meta l4proto { tcp, udp } th dport 53 accept
 		counter log prefix %q drop
@@ -147,8 +164,7 @@ func GatewayRules(s Session) string {
 	}
 	chain output {
 		type filter hook output priority filter; policy accept;
-`, UplinkIf, links, AgentAddr, logPrefix(s, "spoof"), links, GatewayAddr, logPrefix(s, "weakhost"), links, joinInts(ports), links,
-		logPrefix(s, "drop"), logPrefix(s, "forward"))
+`, links, joinInts(ports), links, logPrefix(s, "drop"), logPrefix(s, "forward"))
 	for _, r := range s.Resolvers {
 		fmt.Fprintf(&b, "\t\tip daddr %s meta l4proto { tcp, udp } th dport 53 accept\n", r)
 	}
@@ -162,49 +178,99 @@ func GatewayRules(s Session) string {
 	return b.String()
 }
 
-// ptpConfig is the CNI configuration of the agent's link.
-func ptpConfig() string {
+// linkRules pin link n's interface to its two addresses: a packet from it must come from the
+// microVM's address (no spoofing) and be for the gateway's address on that link (the weak-host
+// model would otherwise accept it for any local address, another link's included).
+func linkRules(s Session, ifname string, n int) []string {
+	gw, guest := LinkAddrs(n)
+	return []string{
+		fmt.Sprintf(`insert rule inet sbx input iifname %q ip daddr != %s counter log prefix %q drop`, ifname, gw, logPrefix(s, "weakhost")),
+		fmt.Sprintf(`insert rule inet sbx input iifname %q ip saddr != %s counter log prefix %q drop`, ifname, guest, logPrefix(s, "spoof")),
+	}
+}
+
+// ptpConfig is the CNI configuration of link n.
+func ptpConfig(n int) string {
+	gw, guest := LinkAddrs(n)
 	c := map[string]any{
 		"cniVersion": "1.0.0", "name": "sandbox", "type": "ptp", "ipMasq": false, "mtu": 1500,
 		"ipam": map[string]any{"type": "static",
-			"addresses": []map[string]string{{"address": AgentAddr.String() + "/30", "gateway": GatewayAddr.String()}},
+			"addresses": []map[string]string{{"address": guest.String() + "/30", "gateway": gw.String()}},
 			"routes":    []map[string]string{{"dst": "0.0.0.0/0"}}},
 	}
 	b, _ := json.Marshal(c)
 	return string(b)
 }
 
-// Up builds the session's network; its namespaces (GatewayNS, AgentNS) must exist.
+// Up builds the session's network; its namespaces (GatewayNS and each link's) must exist.
 func Up(ctx context.Context, r Runner, s Session) error {
 	if s.Uplink < 0 || s.Uplink >= MaxUplinks {
 		return fmt.Errorf("netsetup: uplink index %d out of range", s.Uplink)
 	}
+	if len(s.Links) == 0 || len(s.Links) > MaxLinks {
+		return fmt.Errorf("netsetup: %d links", len(s.Links))
+	}
 	rootAddr, gwAddr := UplinkAddrs(s.Uplink)
 	gw := func(args ...string) []string { return append([]string{"netns", "exec", s.GatewayNS}, args...) }
-	steps := []struct {
-		stdin string
-		name  string
-		args  []string
-	}{
+	run := func(stdin string, name string, args ...string) (string, error) {
+		out, err := r.Run(ctx, stdin, name, args...)
+		if err != nil {
+			return "", fmt.Errorf("netsetup %s: %w", strings.Join(append([]string{name}, args...), " "), err)
+		}
+		return out, nil
+	}
+	for _, st := range [][]string{
 		// no forwarding in the gateway namespace (nftables is the second layer); the gateway's
 		// unprivileged user may bind 53 and 443
-		{"", "ip", gw("sysctl", "-q", "-w", "net.ipv4.ip_forward=0", "net.ipv4.ip_unprivileged_port_start=0")},
-		{"", "ip", []string{"link", "add", RootIf(s.Uplink), "type", "veth", "peer", "name", UplinkIf, "netns", s.GatewayNS}},
-		{"", "ip", []string{"addr", "add", rootAddr.String() + "/30", "dev", RootIf(s.Uplink)}},
-		{"", "ip", []string{"link", "set", RootIf(s.Uplink), "up"}},
-		{"", "ip", gw("ip", "addr", "add", gwAddr.String()+"/30", "dev", UplinkIf)},
-		{"", "ip", gw("ip", "link", "set", UplinkIf, "up")},
-		{"", "ip", gw("ip", "route", "add", "default", "via", rootAddr.String())},
-		// the rules go in before the link exists
-		{GatewayRules(s), "ip", gw("nft", "-f", "-")},
-		// the agent's link: ptp, run in the gateway namespace with the agent's as CNI_NETNS
-		{ptpConfig(), "ip", gw("env", "CNI_COMMAND=ADD", "CNI_CONTAINERID="+s.ID, "CNI_NETNS=/var/run/netns/"+s.AgentNS,
-			"CNI_IFNAME="+GuestIf, "CNI_PATH="+CNIPath, CNIPath+"/ptp")},
+		gw("sysctl", "-q", "-w", "net.ipv4.ip_forward=0", "net.ipv4.ip_unprivileged_port_start=0"),
+		{"link", "add", RootIf(s.Uplink), "type", "veth", "peer", "name", UplinkIf, "netns", s.GatewayNS},
+		{"addr", "add", rootAddr.String() + "/30", "dev", RootIf(s.Uplink)},
+		{"link", "set", RootIf(s.Uplink), "up"},
+		gw("ip", "addr", "add", gwAddr.String()+"/30", "dev", UplinkIf),
+		gw("ip", "link", "set", UplinkIf, "up"),
+		gw("ip", "route", "add", "default", "via", rootAddr.String()),
+	} {
+		if _, err := run("", "ip", st...); err != nil {
+			return err
+		}
 	}
-	for _, st := range steps {
-		if err := r.Run(ctx, st.stdin, st.name, st.args...); err != nil {
-			return fmt.Errorf("netsetup %s: %w", strings.Join(append([]string{st.name}, st.args...), " "), err)
+	// the rules go in before any link exists
+	if _, err := run(GatewayRules(s), "ip", gw("nft", "-f", "-")...); err != nil {
+		return err
+	}
+	for _, l := range s.Links {
+		if l.Index < 0 || l.Index >= MaxLinks {
+			return fmt.Errorf("netsetup: link index %d out of range", l.Index)
+		}
+		// ptp, run in the gateway namespace with the microVM's as CNI_NETNS: neither end is in the
+		// VM root namespace
+		if _, err := run(ptpConfig(l.Index), "ip", gw("env", "CNI_COMMAND=ADD", "CNI_CONTAINERID="+l.Name,
+			"CNI_NETNS=/var/run/netns/"+l.NS, "CNI_IFNAME="+GuestIf, "CNI_PATH="+CNIPath, CNIPath+"/ptp")...); err != nil {
+			return err
+		}
+		_, guest := LinkAddrs(l.Index)
+		out, err := run("", "ip", gw("ip", "-o", "route", "get", guest.String())...)
+		if err != nil {
+			return err
+		}
+		ifname := routeDev(out)
+		if ifname == "" || ifname == UplinkIf || ifname == "lo" {
+			return fmt.Errorf("netsetup: no link interface for %s in %q", guest, out)
+		}
+		if _, err := run(strings.Join(linkRules(s, ifname, l.Index), "\n")+"\n", "ip", gw("nft", "-f", "-")...); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// routeDev is the interface in `ip -o route get` output ("10.200.0.2 dev vethX src ...").
+func routeDev(out string) string {
+	f := strings.Fields(out)
+	for i := 0; i+1 < len(f); i++ {
+		if f[i] == "dev" {
+			return f[i+1]
+		}
+	}
+	return ""
 }

@@ -112,9 +112,17 @@ func refusalCases() map[string]func(*Spec) {
 		"readable clashes with env": func(s *Spec) { s.Readable[0].EnvVar = "TERM" },
 		"root dependency":           func(s *Spec) { s.Dependencies[0].RunAsUser = 0 },
 		"dependency port":           func(s *Spec) { s.Dependencies[0].Port = 0 },
+		"dependency port 443":       func(s *Spec) { s.Dependencies[0].Port = 443 },
+		"dependency on extra port":  func(s *Spec) { s.Dependencies[0].Port = 8443 },
+		"two dependencies on one port": func(s *Spec) {
+			d := s.Dependencies[0]
+			d.Name, d.Env, d.Bindings = "replica", nil, nil
+			s.Dependencies = append(s.Dependencies, d)
+		},
 		"too many dependencies": func(s *Spec) {
 			for i := 0; i < 6; i++ {
 				d := s.Dependencies[0]
+				d.Port = 6000 + i
 				d.Name = "dep" + string(rune('a'+i))
 				d.Env, d.Bindings = nil, nil
 				s.Dependencies = append(s.Dependencies, d)
@@ -142,6 +150,7 @@ func TestValidateRefuses(t *testing.T) {
 	s := good()
 	for i := 0; i < 6; i++ {
 		d := s.Dependencies[0]
+		d.Port = 6000 + i
 		d.Name = "dep" + string(rune('a'+i))
 		d.Env, d.Bindings = nil, nil
 		s.Dependencies = append(s.Dependencies, d)
