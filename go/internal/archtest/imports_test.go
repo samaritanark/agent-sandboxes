@@ -19,17 +19,19 @@ var allowed = map[string][]string{
 	"deviation":  {},
 	"bashcompat": {"deviation"},
 	"config":     {"bashcompat", "deviation"},
-	"gate":       {"bashcompat", "config", "deviation"},
-	"vetting":    {"bashcompat", "config", "deviation"}, // the gate is injected, never imported
-	"checks":     {"config", "deviation"},
-	"tier":       {},
-	"catalogue":  {"bashcompat", "checks", "config", "deviation"},
-	"jqjson":     {},
-	"audit":      {"bashcompat", "deviation", "jqjson", "tier"},
-	"link":       {"bashcompat", "config", "deviation"},
-	"onboard":    {"bashcompat", "config", "deviation"},
-	"agents":     {"deviation", "jqjson"},
-	"workspace":  {"bashcompat", "config", "deviation"},
+	"gate":       {"bashcompat", "config", "deviation", "tables"},
+	// rule tables shared by the policy layer and the host's sync gate: data only
+	"tables":    {},
+	"vetting":   {"bashcompat", "config", "deviation"}, // the gate is injected, never imported
+	"checks":    {"config", "deviation"},
+	"tier":      {},
+	"catalogue": {"bashcompat", "checks", "config", "deviation"},
+	"jqjson":    {},
+	"audit":     {"bashcompat", "deviation", "jqjson", "tier"},
+	"link":      {"bashcompat", "config", "deviation"},
+	"onboard":   {"bashcompat", "config", "deviation"},
+	"agents":    {"deviation", "jqjson"},
+	"workspace": {"bashcompat", "config", "deviation"},
 	// the host-side secret store: files only, no policy
 	"secrets": {},
 	// the session allowlist: built-in and extra domains through the block lists
@@ -43,7 +45,9 @@ var allowed = map[string][]string{
 	// The host binary's packages (design 5.1). They import only each other.
 	"host/driver":    {},
 	"host/release":   {},
-	"host/app":       {"host/driver", "host/release"},
+	"host/app":       {"host/driver", "host/release", "host/sizing"},
+	"host/sizing":    {},
+	"host/syncgate":  {"tables"},
 	"host/lima":      {"host/driver"},
 	"host/sshx":      {"host/driver"},
 	"host/gitref":    {},
@@ -52,7 +56,7 @@ var allowed = map[string][]string{
 
 // hostSafe is every internal package the host binary may depend on, directly or not (5.1.1).
 // Adding a policy package here is a design change, not a code change.
-func hostSafe(name string) bool { return strings.HasPrefix(name, "host/") }
+func hostSafe(name string) bool { return strings.HasPrefix(name, "host/") || name == "tables" }
 
 // TestHostBinaryClosure checks the host binary's whole dependency closure, so a host package
 // cannot reach a policy package through another package either.

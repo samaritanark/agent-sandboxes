@@ -5,15 +5,17 @@ import (
 	"strings"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/config"
+	"github.com/samaritanark/agent-sandboxes/go/internal/tables"
 )
 
-// Rule tables shared with the mask builder (MASKED_* in lib/filesystem.sh).
+// Rule tables shared with the mask builder and the host's sync gate (MASKED_* in
+// lib/filesystem.sh); the data lives in internal/tables.
 var (
-	MaskedFilePaths = []string{".env", ".env.local", ".npmrc", "clouds.yaml", "kubeconfig"}
-	MaskedDirPath   = ".kube"
+	MaskedFilePaths = tables.MaskedFilePaths
+	MaskedDirPath   = tables.MaskedDirPath
 )
 
-const maskedOpenrcSuffix = "-openrc.sh" // MASKED_OPENRC_PATTERN='*-openrc.sh'
+const maskedOpenrcSuffix = tables.MaskedOpenrcSuffix // MASKED_OPENRC_PATTERN='*-openrc.sh'
 
 // MaskedOpenrcPattern is MASKED_OPENRC_PATTERN, as `sandbox mask list` prints it.
 const MaskedOpenrcPattern = "*" + maskedOpenrcSuffix

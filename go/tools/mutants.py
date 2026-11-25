@@ -55,7 +55,7 @@ m(ENC, "keyLine = regexp.MustCompile(`(?s)^[^[:space:]#][^:]*:([[:space:]].*)?$`
 
 MSK = "internal/gate/masked.go"
 R_MSK = "TestMaskedGolden"
-m(MSK, '".env", ".env.local", ".npmrc"', '".env", ".npmrc"', R_MSK)
+m("internal/tables/tables.go", '".env", ".env.local", ".npmrc"', '".env", ".npmrc"', R_MSK, pkg="gate")
 m(MSK, "relpath == MaskedDirPath ||", "false ||", R_MSK)
 m(MSK, 'MaskedDirPath+"/")', "MaskedDirPath)", R_MSK)
 m(MSK, '!strings.Contains(relpath, "/") &&', "", R_MSK)
