@@ -33,6 +33,7 @@ var allowed = map[string][]string{
 	// sandboxd (design 5.4.3): the in-VM supervisor's packages
 	"sandboxd/journal": {"sessionspec"},
 	"sandboxd/limits":  {"sessionspec"},
+	"sandboxd/runtime": {},
 	// the sync protocol (host engine and in-VM agent) and the in-VM agent itself
 	"syncproto": {},
 	"syncagent": {"syncproto"},
@@ -106,10 +107,13 @@ func TestHostBinaryClosure(t *testing.T) {
 }
 
 // thirdParty lists, per package, the only modules outside the standard library its production
-// code may import. The module's one third-party dependency is netd's network stack (owner
-// decision, 2026-11-25); everything else stays on the standard library.
+// code may import. Third-party code is confined to the packages the owner allowed (2026-11-25):
+// netd's network stack and sandboxd's containerd client; everything else stays on the standard
+// library.
 var thirdParty = map[string][]string{
 	"host/netd": {"github.com/containers/gvisor-tap-vsock/", "gvisor.dev/gvisor/"},
+	// containerd's Go client for sandboxd (owner decision, 2026-11-25, design 5.4.3)
+	"sandboxd/runtime": {"github.com/containerd/", "github.com/opencontainers/runtime-spec/"},
 }
 
 func TestThirdPartyImports(t *testing.T) {
