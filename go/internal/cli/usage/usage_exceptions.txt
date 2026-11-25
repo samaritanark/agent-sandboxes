@@ -1,0 +1,47 @@
+sandbox exceptions — Record reviewed false positives for the secret gate
+
+USAGE:
+  sandbox exceptions add --repo <PATH> <PATH:RULE:LINE>... [--reason <TEXT>]
+  sandbox exceptions list --repo <PATH>
+  sandbox exceptions migrate --repo <PATH>
+  sandbox exceptions --help
+
+The Tier 2/3 secret gate refuses to launch when betterleaks finds a secret in a
+file the mask would not hide. When a finding is a reviewed false positive, record
+it here instead of masking the whole file or accepting every secret at launch.
+Each entry is a betterleaks fingerprint 'RELPATH:RULE:LINE' in the repo-root
+ignore file (.betterleaksignore, or an existing .gitleaksignore) — the native
+format betterleaks reads, so ONE committed list serves the team's pre-commit
+hooks, CI pipeline scans (run 'betterleaks dir .' from the repo root), and this
+gate. An optional --reason is written as a '#' comment above the entry.
+
+The gate honours these ONLY when the repo is VETTED (see 'sandbox vet'): the
+signed attestation covers this whole tree, including this file, so accepting a
+finding carries a reviewer's cryptographic sign-off rather than the say-so of an
+unreviewed workspace — CI tools honor the file unconditionally; the sandbox does
+not. Replacing the value behind an entry dirties the tree (or makes a new HEAD),
+the repo stops being vetted, and re-vetting re-surfaces every matching exception
+for explicit acknowledgment.
+
+'exceptions add' names findings the way the gate prints them (RELPATH, RULE, LINE)
+and re-scans to confirm the finding exists in the current tree. The written entry
+is plain text — a reviewer can add or audit one by hand.
+
+'exceptions migrate' converts a repo's retired accepted_secrets: list (in
+.sandbox/config.yaml) to the root ignore file and removes the old key. The gate
+no longer honors the old list. Review, commit, and re-vet after migrating.
+
+  --repo <PATH>       Repository whose exception list to edit/inspect.
+  --reason <TEXT>     Optional note, stored as a comment above the entry.
+  --help              Show this help
+
+EXAMPLES:
+  # Accept a specific finding the gate flagged (path, rule, line as printed)
+  sandbox exceptions add --repo ~/repos/app \
+      deploy/values.yaml:generic-api-key:155 --reason "sealed secret, reviewed AH"
+
+  # Show the recorded exceptions for a repo
+  sandbox exceptions list --repo ~/repos/app
+
+  # Move a pre-2.12 accepted_secrets: list to .betterleaksignore
+  sandbox exceptions migrate --repo ~/repos/app

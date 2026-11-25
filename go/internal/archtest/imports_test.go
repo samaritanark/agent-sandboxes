@@ -15,6 +15,7 @@ const mod = "github.com/samaritanark/agent-sandboxes/go/internal/"
 
 // allowed lists, per package, the internal packages its production code may import.
 var allowed = map[string][]string{
+	"archtest":   {},
 	"deviation":  {},
 	"bashcompat": {"deviation"},
 	"config":     {"bashcompat", "deviation"},
@@ -28,6 +29,9 @@ var allowed = map[string][]string{
 	"link":       {"bashcompat", "config", "deviation"},
 	"onboard":    {"bashcompat", "config", "deviation"},
 	"agents":     {"deviation", "jqjson"},
+	// the in-VM CLI is the policy layer's front end, so it may use every policy package
+	"cli": {"agents", "audit", "bashcompat", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
+		"link", "onboard", "tier", "vetting"},
 }
 
 func TestImportGraph(t *testing.T) {
@@ -48,6 +52,12 @@ func TestImportGraph(t *testing.T) {
 		name := strings.TrimPrefix(p.ImportPath, mod)
 		rule, ok := allowed[name]
 		if !ok {
+			// Every package needs a rule, so a new one cannot import past the graph unnoticed.
+			// The corpus generators (*/internal/gen*) are test tooling and are exempt.
+			if strings.Contains(name, "/internal/gen") || !strings.HasPrefix(p.ImportPath, mod) {
+				continue
+			}
+			t.Errorf("package %s has no import-graph rule: add one to allowed", name)
 			continue
 		}
 		seen[name] = true

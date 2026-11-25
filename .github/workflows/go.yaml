@@ -5,7 +5,8 @@
 #
 # Besides `go test`, this runs the LIVE ORACLE: SBX_ORACLE=1 makes each unit's tests re-run the v2
 # bash (lib/*.sh) over the same cases and compare it with the committed golden files and with the
-# Go port. With CI set, a live-oracle test that cannot run fails instead of skipping, so a green
+# Go port (the CLI's oracle runs bin/sandbox itself, which also reads setup/versions.sh and
+# config/). With CI set, a live-oracle test that cannot run fails instead of skipping, so a green
 # check here means the port still matches the bash it replaces. The oracle needs Linux, bash 5,
 # git newer than Ubuntu 24.04's 2.43 (that git creates an unsigned tag when its SSH signer fails,
 # which the attestation tests would then mis-compare), ssh-keygen, jq, and python3 (the
@@ -19,6 +20,9 @@ on:  # yamllint disable-line rule:truthy
     paths:
       - "go/**"
       - "lib/**"
+      - "bin/sandbox"
+      - "setup/versions.sh"
+      - "config/**"
       - ".github/workflows/go.yaml"
   push:
     # v3 is TEMPORARY, so the live oracle runs while the port is developed on the v3 branch.
@@ -27,6 +31,9 @@ on:  # yamllint disable-line rule:truthy
     paths:
       - "go/**"
       - "lib/**"
+      - "bin/sandbox"
+      - "setup/versions.sh"
+      - "config/**"
       - ".github/workflows/go.yaml"
 
 jobs:

@@ -1,0 +1,53 @@
+sandbox vet — Attest that a repo is cleared for use with an AI agent
+
+USAGE:
+  sandbox vet --repo <PATH> [--message <MSG>] [--yes]
+  sandbox vet --status --repo <PATH>
+  sandbox vet --help
+
+A trusted reviewer signs a git tag at the repo's current HEAD to record that
+they reviewed that exact tree and cleared it for agent use. 'sandbox run'
+consults this attestation before a Tier 2/3 launch: with 'vetting: required'
+(in ~/.sandbox/config.yaml or a team overlay) a repo without a current,
+verified attestation is refused. An attestation may sit behind HEAD (within
+vetting_max_commits_behind:) and, if vetting_max_age_days: is set, must be
+newer than that many days or it is treated as stale and must be renewed.
+
+The signature is verified host-side against operator-side trust roots — SSH
+allowed_signers files by default (vetting_trust_root:), or a GnuPG home when
+vetting_trust_format: gpg. A linked team overlay can ship the team's reviewer
+list (its config.yaml vetting_trust_root:, resolved relative to the overlay
+root), and your local ~/.sandbox/vetting/allowed_signers adds to it — a
+signature verifying against either counts. The tag is named
+'agent-vetted/<sha>'. A dirty working tree is refused: an attestation covers a
+commit, not uncommitted edits.
+
+First run: if git signing is not configured yet, 'vet' offers to set it up with
+your existing SSH key and prints the allowed_signers line a trust-root
+maintainer needs to enroll you. At launch time, 'sandbox run' makes the same
+offer inline when a required-but-unvetted repo would otherwise refuse and your
+signing identity is available.
+
+GPG-sign your commits? Set 'vetting_signing_key: <path-to-key.pub>' in
+~/.sandbox/config.yaml — attestations (and only attestations) are then signed
+with that SSH key, and your git signing config is never touched. 'vet' offers
+to set this up when it detects an OpenPGP user.signingkey.
+
+If the repo records secret exceptions ('sandbox exceptions'), signing blesses
+them: the secret gate honors that list only on a vetted repo, so before signing
+'vet' lists the finding(s) the agent would then be able to read and asks you to
+acknowledge them. Use --yes to acknowledge non-interactively (e.g. in CI).
+
+  --repo <PATH>       Repository to attest (or inspect with --status).
+  --status            Print the repo's current vetting state instead of signing.
+  --message <MSG>     Tag message (default: "vetted for agent use").
+  --yes, -y           Acknowledge any recorded secret exceptions without prompting.
+  --help              Show this help
+
+EXAMPLES:
+  # Attest the current HEAD, then push the tag so others can verify
+  sandbox vet --repo ~/repos/app
+  git -C ~/repos/app push origin agent-vetted/$(git -C ~/repos/app rev-parse HEAD)
+
+  # Check whether a repo would pass the gate
+  sandbox vet --status --repo ~/repos/app

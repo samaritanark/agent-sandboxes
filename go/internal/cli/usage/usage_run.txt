@@ -1,0 +1,134 @@
+sandbox run — Launch a sandboxed agent session
+
+USAGE:
+  sandbox run [OPTIONS]
+
+OPTIONS:
+  --agent <claude|codex|opencode|copilot|grok>   Agent to run (default: claude)
+  --tier <1|2|3>                    Isolation tier (default: 1)
+  --profile <NAME>                  Named profile or numeric tier alias.
+                                    '1', '2', '3' aliases --tier <N>.
+                                    Other names resolve a YAML in
+                                    ~/.sandbox/profiles/<name>.yaml or the
+                                    overlay's profiles/<name>.yaml and
+                                    contribute: required tier, optional
+                                    default --repo, and extra_allowed_domains
+                                    (subject to the blocked-destinations
+                                    check). Mutually consistent with --tier.
+  --repo <PATH>                     Workspace path (required for tier 2/3;
+                                    repeatable — pass multiple times to mount
+                                    several repos under /workspace/<basename>)
+  --allow-domain <DOMAIN>           Extra allowed egress domain (repeatable)
+  --base-url <URL>                  OpenAI-compatible endpoint URL for the
+                                    opencode agent. Overrides OPENCODE_BASE_URL
+                                    in the host env. Required for opencode
+                                    (via this flag or the env var).
+  --infra-token <[NAME=]PATH>       Path to an infra token file (tier 3, repeatable).
+                                    A bare PATH injects as INFRA_TOKEN; NAME=PATH
+                                    injects as INFRA_TOKEN_<NAME>, so several
+                                    tokens can ride into one session.
+  --infra-kubeconfig <PATH>         Path to a kubeconfig file (tier 3, repeatable).
+                                    Each is minified to a single context; one
+                                    mounts as-is, several are merged into one
+                                    Secret at /home/agent/.kube/config (contexts
+                                    preserved — switch with 'kubectl config
+                                    use-context'). KUBECONFIG is set and each
+                                    cluster's API server host/port is allowlisted.
+  --infra-kube-context <NAME>       Context to extract (only with a single
+                                    --infra-kubeconfig; default: current-context)
+  --allow-exec-plugin               Don't prompt when --infra-kubeconfig uses
+                                    an exec credential plugin (it won't work
+                                    in the pod; useful only if kubectl access
+                                    is best-effort, e.g. you also pass an
+                                    --infra-token for the real auth path)
+  --infra-endpoint <URL>            Extra infra endpoint URL (tier 3, repeatable)
+  --dry-run                         Print manifests without applying
+  --homedir <DIR>                   Host directory to back the agent's home
+                                    (auth tokens, session state); default
+                                    ~/.sandbox/agent-home/<agent>. Linux/WSL only
+  --name <NAME>                     Human-readable session name
+  --keep-alive                      Leave the pod running after disconnect
+                                    (default: tear down on exit to free cluster
+                                    resources; conversation history persists in
+                                    ~/.sandbox/agent-home/<agent>/ and can be
+                                    restored via the agent's /resume command)
+  --i-accept-unmasked-secrets       Launch even if betterleaks finds a secret
+                                    in a workspace file the mask won't hide.
+                                    The findings are printed; the agent WILL
+                                    be able to read them. Without this flag
+                                    such a finding aborts the launch.
+  --i-accept-unvetted-repo          Launch even when 'vetting: required' and a
+                                    --repo has no verified attestation reachable
+                                    from HEAD (or its drift exceeds the cap).
+                                    Accepts everything about the repo, so its
+                                    working-copy .betterleaksignore exceptions are
+                                    honored too (like accepting drift on a vetted
+                                    repo). The repo(s) are printed and the
+                                    acceptance is recorded in the audit log. An
+                                    overlay can disable this override entirely
+                                    (vetting_forbid_unvetted_override).
+  --i-accept-vetting-drift          Non-interactively accept an attestation that
+                                    is behind HEAD (within any cap) or past its
+                                    recency window (vetting_max_age_days:) when
+                                    there is no terminal to prompt on, e.g. in CI.
+                                    Does not accept a wholly unvetted repo or
+                                    over-cap commit drift — use
+                                    --i-accept-unvetted-repo for those.
+  --help                            Show this help
+
+TIERS:
+  1  Ephemeral workspace, agent domains only
+  2  Host repo mounted, agent + project domains (github, pypi, npm, terraform)
+  3  Tier 2 + infra tooling image + dynamic endpoints
+     Requires at least one of --infra-token or --infra-kubeconfig.
+
+PERSISTENT EXTRAS:
+  Operator-side sources contribute additional allowed egress domains on every
+  run, so you don't need --allow-domain for hosts your team always needs:
+    ~/.sandbox/config.yaml         extra_allowed_domains: list (YAML)
+    $SANDBOX_EXTRA_ALLOWED_DOMAINS comma-separated env var
+    overlay profiles              extra_allowed_domains: (reviewed at link time)
+  All are subject to the blocked-destinations check.
+
+  A <repo>/.sandbox/config.yaml may also list extra_allowed_domains, but a repo
+  config is NOT honored by default: its tree is writable by the in-sandbox agent,
+  so a repo cannot widen its own egress (the launch prints what it requested).
+  Set honor_repo_allowed_domains: true in your team overlay to honor each repo's
+  list — and even then only its VETTED committed entries (the domains in the
+  repo's signed HEAD, while an attestation verifies), so an agent editing the
+  working-tree config still cannot self-grant a host without a human re-vetting.
+
+SECRET GATE (tier 2/3):
+  Before launch, each --repo is scanned with betterleaks. A secret in a
+  file the mask would NOT hide aborts the launch with the offending path(s)
+  and a 'sandbox mask add' command to mask them. betterleaks is required;
+  its absence fails the launch closed. Override with
+  --i-accept-unmasked-secrets. See 'sandbox mask --help'.
+
+VETTING GATE (tier 2/3):
+  Each --repo is checked for a signed attestation that a trusted reviewer
+  cleared it for agent use. The attestation tag need not sit at HEAD: a verified
+  tag that is an ANCESTOR of HEAD counts, and the gate reports how many commits
+  behind HEAD it is (the intervening commits are trusted because they reached the
+  branch through code review). Posture is operator-controlled via 'vetting:' in
+  ~/.sandbox/config.yaml (an overlay may ratchet it up):
+    off       no gate.
+    advisory  print status (and any drift) and proceed (default).
+    required  refuse launch unless every --repo carries a verified, reachable
+              attestation. Drift behind HEAD is auto-accepted within
+              vetting_max_commits_behind: (an overlay/config cap; 0 = must be at
+              HEAD), else accepted interactively or with --i-accept-vetting-drift.
+              vetting_max_age_days: expires an attestation after N days (re-vet or
+              accept it the same way). Override anything with
+              --i-accept-unvetted-repo.
+  Attest a repo with 'sandbox vet --repo <PATH>'. See 'sandbox vet --help'.
+
+OVERLAYS:
+  Teams can ship a directory of profiles, GOVERNANCE.md, an additive
+  blocked-destinations.yaml, and extra-ca-certs/ in an overlay. Point at
+  it via $SANDBOX_OVERLAY or 'overlay: <path>' in ~/.sandbox/config.yaml.
+  Overlays only ADD restrictions — nothing in an overlay can weaken the
+  org-level blocked-destinations list or the tier model.
+
+See PRINCIPLES.md for design intent (threat model, tier model, credential
+isolation, never-permitted list).

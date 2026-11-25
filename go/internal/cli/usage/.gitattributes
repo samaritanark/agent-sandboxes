@@ -1,0 +1,4 @@
+# The differential corpus is byte-exact test data: some files deliberately use CRLF line endings,
+# lack a final newline, or carry multibyte text. Git must never normalize them, or the golden answers
+# recorded from the bash oracle would no longer match the files.
+* -text -eol

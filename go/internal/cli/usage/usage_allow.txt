@@ -1,0 +1,31 @@
+sandbox allow — Add domains to a running session's egress allowlist
+
+USAGE:
+  sandbox allow <session-id> --add-domain <DOMAIN> [--add-domain <DOMAIN> ...]
+  sandbox allow --help
+
+WHAT IT DOES:
+  Regenerates the session's CiliumNetworkPolicy with the existing
+  allowed-domain list PLUS the supplied --add-domain values and applies
+  it. Because Cilium identifies the policy by name, the apply is a
+  patch — the live pod is NOT restarted and DNS/HTTPS connections
+  in flight are preserved. Updates session.json's allowed_domains and
+  emits an audit event.
+
+  Every --add-domain still passes through the org-level (and overlay,
+  if configured) blocked-destinations check. The session pod must
+  still be running.
+
+  Add-only by design. Removing a domain from a live session can break
+  in-flight requests in subtle ways and weakens the audit trail; if
+  you need a narrower allowlist, stop the session and re-run with the
+  intended set.
+
+EXAMPLES:
+  # Add a single domain
+  sandbox allow ses-20260527-...-a7b3 --add-domain go.private.example.com
+
+  # Add several at once
+  sandbox allow ses-20260527-...-a7b3 \
+      --add-domain artifactory.example.com \
+      --add-domain pypi.private.example.com

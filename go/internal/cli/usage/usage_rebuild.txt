@@ -1,0 +1,32 @@
+sandbox rebuild — Rebuild sandbox container image(s)
+
+USAGE:
+  sandbox rebuild [OPTIONS]
+
+OPTIONS:
+  --agent <NAME>               Image to rebuild. One of:
+                                 claude, codex, opencode, copilot, grok, shell, base, all
+                                 (default: all)
+  --tier3                      Also rebuild the matching *-infra image(s)
+  --no-cache                   Pass --no-cache to the container builder
+  --codex-version <VER>        Pin @openai/codex npm version (default: latest)
+  --opencode-version <VER>     Pin OpenCode release (default: latest)
+  --copilot-version <VER>      Pin @github/copilot npm version (default: latest)
+  --grok-version <VER>         Pin Grok CLI release, e.g. 0.2.93 (semver only)
+  --help                       Show this help
+
+NOTES:
+  - 'sandbox:base' is only rebuilt when --agent base or --agent all is given.
+    Agent images depend on base; if base is missing, rebuild with --agent all.
+  - By default, rebuilding the claude image cache-busts the Claude Code
+    install layer using a timestamp build arg, so the latest release is
+    always fetched from https://claude.ai/install.sh.
+  - On Linux, rebuilt images are re-imported into k3s containerd automatically.
+  - Version info for rebuilt images is recorded at:
+      @LOGS_DIR@/image-builds.log
+
+EXAMPLES:
+  sandbox rebuild --agent claude
+  sandbox rebuild --agent claude --tier3
+  sandbox rebuild --agent all --no-cache
+  sandbox rebuild --agent codex --codex-version 0.2.1

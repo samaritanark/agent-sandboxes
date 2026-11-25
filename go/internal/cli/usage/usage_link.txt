@@ -1,0 +1,51 @@
+sandbox link — Link a git-backed team overlay (profiles, policies, catalogue)
+
+USAGE:
+  sandbox link <GIT-URL> [--name <NAME>] [--ref <TAG|BRANCH|COMMIT>]
+  sandbox link status
+  sandbox link sync [--ref <TAG|BRANCH|COMMIT>]
+  sandbox link unlink [--keep-clone] [--yes]
+  sandbox link --help
+
+An overlay is a directory a team version-controls (see
+examples/overlay-template/) that layers ADDITIONAL profiles, blocked
+destinations, a vetted MCP/service catalogue, and CA certs on top of the
+org install. 'link' clones that (typically private) repo into
+~/.sandbox/overlays/<name>/, PINS it to a ref, validates its shape, and
+points ~/.sandbox/config.yaml's 'overlay:' key at it.
+
+Overlays are additive-only on the safety side: nothing in one can weaken
+the org's controls or the tier model (enforced at consume time — see
+PRINCIPLES.md, "Default-deny egress").
+
+A link tracks the ref you pin, and only ever advances to that ref's tip.
+'sandbox run' syncs the overlay to the tip before every launch — validated,
+rolled back on a bad tree, fail-safe when offline — so every team member
+launches from the same overlay commit. 'sandbox link sync' is the same step
+run deliberately (it shows a diff of what changes first) and is where you
+move the pin to a new ref.
+
+An overlay's config.yaml may declare 'min_sandbox_version: X.Y.Z'. link,
+sync, and run all refuse while this CLI is older ('sandbox upgrade' fixes).
+
+LINK OPTIONS:
+  --name <NAME>   Directory name under ~/.sandbox/overlays/ (default: derived
+                  from the repo URL). Letters, digits, '.', '_', '-'.
+  --ref <REF>     Tag, branch, or commit to pin. Default: the remote's
+                  default branch. sync tracks this ref until you change it.
+
+SYNC OPTIONS:
+  --ref <REF>     Change the pinned ref before advancing to its tip.
+
+UNLINK OPTIONS:
+  --keep-clone    Leave the cloned directory on disk; only clear the pointer.
+  --yes, -y       Don't prompt for confirmation.
+
+ENV:
+  SANDBOX_NO_LINK_CHECK=1   Skip the run-path overlay sync (CI/air-gap).
+
+EXAMPLES:
+  sandbox link git@github.com:acme/sandbox-overlay.git --ref v1.4.0
+  sandbox link status
+  sandbox link sync --ref v1.5.0
+  sandbox link unlink

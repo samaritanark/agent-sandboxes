@@ -1,0 +1,46 @@
+sandbox upgrade — move your install forward (the CLI app and/or host infra)
+
+USAGE:
+  sandbox upgrade [TARGET] [OPTIONS]
+
+TARGET (default: --app):
+  --app                Update the CLI itself to the latest release (default)
+  --infra              Upgrade all host infra: k3s, Cilium, gVisor, betterleaks
+  --k3s                Upgrade k3s only
+  --cilium             Upgrade Cilium only
+  --gvisor             Upgrade gVisor (runsc) only
+  --betterleaks        Upgrade the betterleaks secret scanner only
+  --all                Both: update the app, then the infra (in that order)
+
+APP OPTIONS (--app):
+  --to <vX.Y.Z>        Update to a specific release tag (default: latest)
+  --remote <name>      Git remote to fetch releases from (default: origin)
+  --rebuild            After updating, rebuild agent images ('sandbox rebuild')
+
+INFRA OPTIONS (--infra / components):
+  --to-k3s <ver>       Override the k3s target (else setup/versions.sh pin)
+  --to-cilium <ver>    Override the Cilium chart target
+  --to-gvisor <rel>    Override the gVisor release id (YYYYMMDD.N)
+  --to-betterleaks <ver>  Override the betterleaks target (bare X.Y.Z)
+  --force              Proceed even if sessions are running (they may be killed)
+
+SHARED OPTIONS:
+  --dry-run            Show the plan and exit; make no changes
+  -y, --yes            Skip the confirmation prompt
+  -h, --help           Show this help
+
+The app phase fast-forwards this checkout to the latest RELEASE tag (never the
+tip of a branch), and only when it is a clean fast-forward — local edits and
+local commits are never discarded. A released tarball (no .git) cannot
+self-update; the command prints the download link instead.
+
+The infra phase re-runs the component installers, which restarts k3s and can
+briefly disrupt the Cilium datapath — hence the running-session guard. Infra
+targets default to the pins in setup/versions.sh (which Renovate keeps current).
+On macOS the k3s/Cilium/gVisor stack lives inside the Lima VM and is not upgraded
+in place yet; re-provision the VM instead (the command prints how). betterleaks
+is the exception: it is a host-side binary, so it upgrades on any platform and
+without the session guard (swapping it neither restarts k3s nor drops sessions).
+
+With --all the app is updated first, then the CLI re-executes itself so the
+infra phase applies the newly pulled pins.

@@ -1,0 +1,52 @@
+sandbox @VERSION@ — AI agent sandboxed execution environment
+
+USAGE:
+  sandbox <COMMAND> [OPTIONS]
+
+COMMANDS:
+  run          Launch a sandboxed agent session
+  resume       Reconnect to a session (recreating the pod if it was torn down)
+  allow        Add domains to a running session's egress allowlist (no restart)
+  list         List active and recent sessions
+  logs         Show audit log for a session
+  flows        Show Hubble network flows for a session
+  stop         Stop a session and run teardown
+  cleanup      Remove old session logs
+  check        Pre-flight workspace check
+  status       Show cluster and sandbox status (incl. infra versions vs pins)
+  install      Install/configure sandbox prerequisites (cluster, CNI, gVisor)
+  uninstall    Tear down the sandbox cluster and host artifacts
+  upgrade      Update the CLI to the latest release (--infra: k3s/Cilium/gVisor/betterleaks)
+  setup        Alias of 'install' (retained for compatibility)
+  onboard      Stage host-side agent OAuth state for first-run convenience
+  secret       Manage host-side secret store (injected per-session by profile)
+  mask         Manage per-repo file masking (add/list masked_paths)
+  exceptions   Record reviewed false positives for the secret gate (add/list/migrate)
+  vet          Attest a repo as cleared for agent use (signed tag; see run gate)
+  profile      Create and manage launch profiles (save/list/show/delete)
+  link         Link a git-backed team overlay and keep it pinned (status/sync/unlink)
+  configure-network   Re-detect host network state and reconcile k3s/Cilium
+                      and CoreDNS split-horizon DNS (run after a VPN reconnects
+                      or the host IP changes; --show-dns previews the DNS plan)
+  setup-proxy-cert    Extract a corporate TLS-intercept proxy's root CA
+                      from the host trust store and drop it in
+                      config/extra-ca-certs/ for the image build
+  rebuild      Rebuild sandbox container image(s)
+  version      Print version
+
+Run 'sandbox <COMMAND> --help' for command-specific help.
+
+EXAMPLES:
+  sandbox run --agent claude --tier 1
+  sandbox run --agent claude --tier 2 --repo ~/repos/my-project
+  sandbox run --agent claude --tier 3 --repo ~/repos/infra \
+      --infra-kubeconfig ~/.kube/config --infra-kube-context dev
+  sandbox run --agent claude --tier 3 --repo ~/repos/infra \
+      --infra-kubeconfig ~/.kube/dev.yaml --infra-kubeconfig ~/.kube/prod.yaml
+  sandbox run --agent opencode --tier 3 --repo ~/repos/infra \
+      --infra-token ~/.infra-token --infra-token vault=~/.vault-token
+  sandbox profile save --tier 2 --agent codex --repo ~/git/public/myapp --name myapp-codex
+  sandbox run --profile myapp-codex
+  sandbox list
+  sandbox logs ses-20260401-143022-a7b3
+  sandbox cleanup --older-than 30

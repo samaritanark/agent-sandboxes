@@ -1,0 +1,31 @@
+sandbox mask — Manage per-repo file masking
+
+USAGE:
+  sandbox mask add --repo <PATH> <RELPATH>...
+  sandbox mask list --repo <PATH>
+  sandbox mask --help
+
+Files in a Tier 2/3 workspace are mounted read-write for the agent. A
+built-in set of root-level paths (.env, .npmrc, kubeconfig, .kube/,
+*-openrc.sh, ...) is replaced with empty overlays so the agent can't read
+them. 'mask add' extends that set per-repo: each RELPATH (relative to the
+repo root) is recorded under masked_paths: in <repo>/.sandbox/config.yaml
+and mounted as an empty overlay at launch.
+
+A RELPATH may be a regular file OR a directory. A directory is masked with
+an empty directory (hiding the whole subtree, like the built-in .kube/); a
+file with an empty file. The type is taken from what's on disk; for a path
+that doesn't exist yet, a trailing slash marks it as a directory.
+
+This is what 'sandbox run' suggests when its betterleaks scan finds a
+secret in a file the mask would not otherwise hide.
+
+EXAMPLES:
+  # Mask a nested config file flagged by the secret gate
+  sandbox mask add --repo ~/repos/app config/prod/secrets.yaml
+
+  # Mask an entire directory (its whole subtree is hidden)
+  sandbox mask add --repo ~/repos/app config/secrets/
+
+  # Show the effective masked set (built-in + configured) for a repo
+  sandbox mask list --repo ~/repos/app
