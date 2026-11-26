@@ -2,6 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -204,5 +207,87 @@ func TestSetUpAgent(t *testing.T) {
 		if rc := runDie(func() { c.setUpAgent(mk(2, "0123456789abcdef"), LaunchSpec{Agent: cc.agent}, SessionRecord{}) }); rc != 1 {
 			t.Errorf("%s: launched", name)
 		}
+	}
+}
+
+// TestSetUpAgentCodex: the login renewed first, a guest auth.json whose access token is a JWT
+// look-alike (the binding's prefix, then the placeholder) expiring with the real one and naming the
+// account, the operator's config.toml with the session defaults, and history in .codex/sessions.
+func TestSetUpAgentCodex(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".sandbox", "agent-config", "codex")
+	os.MkdirAll(dir, 0o700)
+	os.WriteFile(filepath.Join(dir, "identity.json"), []byte(`{"account_id":"acct-1","email":"me@example.com","plan":"plus"}`), 0o600)
+	os.WriteFile(filepath.Join(dir, "config.toml"), []byte("model = \"gpt-6\"\n[tui]\nx = 1\n"), 0o600)
+	var refreshed []string
+	env := Env{Env: config.Env{Home: home}, Now: func() int64 { return 1_800_000_000 },
+		CredentialPresent: func(ref string) bool { return ref == "agent.codex" },
+		CredentialBinding: func(ref string) (brokerseal.Binding, bool) {
+			return brokerseal.Binding{Hosts: []string{"chatgpt.com"}, Inject: "bearer"}, ref == "agent.codex"
+		},
+		Launch: LaunchEnv{RefreshCredential: func(ref string) (int64, error) { refreshed = append(refreshed, ref); return 1_800_900_000, nil }}}
+	c := &cmdCtx{env: env, stdout: io.Discard, stderr: io.Discard}
+	sp := &sessionspec.Spec{ID: "ses-20261126-213445-5114", Agent: "codex", Tier: 2, Egress: sessionspec.Egress{Allow: []string{"chatgpt.com"}},
+		Mounts: []sessionspec.Mount{{Kind: sessionspec.Workspace, Source: sessionspec.WorkspaceStore + "/0123456789abcdef", Target: "/workspace"}}}
+	f := c.setUpAgent(sp, LaunchSpec{Agent: "codex"}, SessionRecord{ID: sp.ID})
+	if strings.Join(refreshed, ",") != "agent.codex" {
+		t.Errorf("refreshed %q", refreshed)
+	}
+	b := sp.Bindings[0]
+	if b.Ref != "agent.codex" || b.EnvVar != "" || !strings.HasSuffix(b.Prefix, ".") || strings.Join(b.Hosts, ",") != "chatgpt.com" {
+		t.Fatalf("%+v", b)
+	}
+	var auth struct {
+		Mode   string `json:"auth_mode"`
+		Tokens struct {
+			Access, ID, Refresh, Account string
+		} `json:"tokens"`
+		LastRefresh string `json:"last_refresh"`
+	}
+	raw := f.Config["auth.json"]
+	if err := json.Unmarshal(raw, &auth); err != nil {
+		t.Fatal(err)
+	}
+	var tok map[string]any
+	json.Unmarshal(raw, &tok)
+	tokens := tok["tokens"].(map[string]any)
+	access := tokens["access_token"].(string)
+	if auth.Mode != "chatgpt" || access != b.Prefix+b.Placeholder || tokens["account_id"] != "acct-1" || auth.LastRefresh != "2027-01-15T08:00:00Z" {
+		t.Errorf("auth.json %s", raw)
+	}
+	payload, _ := base64.RawURLEncoding.DecodeString(strings.Split(access, ".")[1])
+	if !strings.Contains(string(payload), `"exp":1800900000`) || !strings.Contains(string(payload), `"chatgpt_account_id":"acct-1"`) {
+		t.Errorf("claims %s", payload)
+	}
+	if got := string(f.Config["config.toml"]); got != "check_for_update_on_startup = false\ncli_auth_credentials_store = \"file\"\nmodel = \"gpt-6\"\n[tui]\nx = 1\n" {
+		t.Errorf("config %q", got)
+	}
+	if got := string(codexConfig([]byte("check_for_update_on_startup = true\n"))); got != "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = true\n" {
+		t.Errorf("an operator's own setting overridden: %q", got)
+	}
+	if last := sp.Mounts[len(sp.Mounts)-1]; last.Target != "/home/agent/.codex/sessions" || last.Source != sessionspec.AgentHistoryStore+"/codex/tier2/0123456789abcdef" {
+		t.Errorf("%+v", last)
+	}
+	sp.Command, sp.Image, sp.Version, sp.Name = []string{"sleep"}, "x.io/a@sha256:"+strings.Repeat("a", 64), sessionspec.Version, "sandbox-codex-test"
+	sp.Resources = sessionspec.Resources{CPUs: 1, MemoryMiB: 1024}
+	if err := sp.Validate(sessionspec.Options{}); err != nil {
+		t.Errorf("sandboxd refuses it: %v", err)
+	}
+	// a login that cannot be renewed, or no account recorded: the launch stops
+	env.Launch.RefreshCredential = func(string) (int64, error) { return 0, errors.New("invalid_grant") }
+	var errb bytes.Buffer
+	c = &cmdCtx{env: env, stdout: io.Discard, stderr: &errb}
+	if rc := runDie(func() {
+		c.setUpAgent(&sessionspec.Spec{Agent: "codex", Egress: sp.Egress}, LaunchSpec{Agent: "codex"}, SessionRecord{})
+	}); rc != 1 || !strings.Contains(errb.String(), "sandbox onboard --agent codex") {
+		t.Errorf("%d %q", rc, errb.String())
+	}
+	os.Remove(filepath.Join(dir, "identity.json"))
+	env.Launch.RefreshCredential = func(string) (int64, error) { return 1, nil }
+	c = &cmdCtx{env: env, stdout: io.Discard, stderr: io.Discard}
+	if rc := runDie(func() {
+		c.setUpAgent(&sessionspec.Spec{Agent: "codex", Egress: sp.Egress}, LaunchSpec{Agent: "codex"}, SessionRecord{})
+	}); rc != 1 {
+		t.Error("launched without an identity")
 	}
 }

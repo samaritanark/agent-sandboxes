@@ -141,7 +141,7 @@ func receive(c net.Conn, p *gwpolicy.Policy, servers []*broker.Server) error {
 			if !ok || len(v) == 0 {
 				return fmt.Errorf("link %d: no value for %s", i, b.Ref)
 			}
-			bs = append(bs, broker.Binding{Ref: b.Ref, Hosts: b.Hosts, Inject: b.Inject, Placeholder: b.Placeholder, Value: string(v),
+			bs = append(bs, broker.Binding{Ref: b.Ref, Hosts: b.Hosts, Inject: b.Inject, Placeholder: b.Placeholder, Prefix: b.Prefix, Value: string(v),
 				RatePerMinute: b.RatePerMinute, Burst: b.Burst, Quota: b.Quota})
 		}
 		if len(h.Links[i]) != len(l.Bindings) {

@@ -103,29 +103,35 @@ func (b *brokerStore) WriteReadable(ctx context.Context, dir string, uid int, fi
 
 // runHelper runs a short-lived copy of sandboxd with job on its stdin, written synchronously.
 func runHelper(ctx context.Context, mode, what string, job []byte) error {
+	_, err := runHelperOut(ctx, mode, what, job)
+	return err
+}
+
+// runHelperOut is runHelper returning the helper's standard output (its result; never a value).
+func runHelperOut(ctx context.Context, mode, what string, job []byte) ([]byte, error) {
 	self, err := os.Executable()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, self, mode)
 	in, err := cmd.StdinPipe()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Start(); err != nil {
-		return err
+		return nil, err
 	}
 	// written synchronously, and only then wiped (S5: exec's own copy is asynchronous)
 	_, werr := in.Write(job)
 	in.Close()
 	if err := cmd.Wait(); err != nil || werr != nil {
-		return fmt.Errorf("the %s failed: %s", what, strings.TrimSpace(out.String()))
+		return nil, fmt.Errorf("the %s failed: %s", what, strings.TrimSpace(errb.String()+out.String()))
 	}
-	return nil
+	return out.Bytes(), nil
 }
 
 // readableHandover is the readable helper: decrypt each file's reference into its own file,

@@ -119,6 +119,9 @@ type Expiry struct {
 	KeepAliveMax  time.Duration // 0 means DefaultKeepAliveMax
 }
 
+// MaxKeepAlive is the longest a keep-alive session lives.
+func (e Expiry) MaxKeepAlive() time.Duration { return or(e.KeepAliveMax, DefaultKeepAliveMax) }
+
 // Times are what sandboxd observed of a running session (never what the microVM reports).
 type Times struct {
 	Started       time.Time

@@ -92,6 +92,9 @@ type Broker interface {
 	// HandOver decrypts uses[i] (link i's bound credentials) and writes them to the gateway's
 	// handover socket, refusing a use its entry's sealed binding does not allow.
 	HandOver(ctx context.Context, session, socket string, uses [][]Use) error
+	// Refresh renews an agent's OAuth login in the store when its access token expires within
+	// minValid, and returns the access token's expiry (Unix seconds).
+	Refresh(ctx context.Context, ref string, minValid time.Duration) (int64, error)
 	// WriteReadable decrypts each file's reference (files: file name to reference) into its own
 	// file in dir, readable only by uid, then leaves dir readable only by uid; an entry not sealed
 	// as readable is refused.
@@ -110,7 +113,7 @@ type Use struct {
 func policyBindings(bs []sessionspec.Binding) []gwpolicy.Binding {
 	var out []gwpolicy.Binding
 	for _, b := range bs {
-		out = append(out, gwpolicy.Binding{Ref: b.Ref, Hosts: b.Hosts, Inject: b.Inject, Placeholder: b.Placeholder,
+		out = append(out, gwpolicy.Binding{Ref: b.Ref, Hosts: b.Hosts, Inject: b.Inject, Placeholder: b.Placeholder, Prefix: b.Prefix,
 			RatePerMinute: b.RatePerMinute, Burst: b.Burst, Quota: b.Quota})
 	}
 	return out
@@ -815,7 +818,9 @@ func (d *Daemon) Reconcile(ctx context.Context) error {
 	for _, c := range cs {
 		d.logf("removing orphan microVM %s", c)
 		if err := d.Runtime.Destroy(ctx, c, StopGrace); err != nil {
-			return fmt.Errorf("orphan microVM %s: %w", c, err)
+			// one stuck microVM must not keep sandboxd from serving the rest; it is retried at the
+			// next start
+			d.logf("could not remove orphan microVM %s: %v", c, err)
 		}
 	}
 	nss, err := d.NetNS.List(ctx)

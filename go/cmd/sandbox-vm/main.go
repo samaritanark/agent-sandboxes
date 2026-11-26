@@ -145,7 +145,8 @@ func main() {
 	env.Builder = nerdctlBuilder{mapFile: BuiltImages}
 	env.Launch = cli.LaunchEnv{Sessions: sandboxd{}, AgentImage: agentImage(BuiltImages, AgentImages), WorkspaceCopy: workspaceCopyOf("/"),
 		VMMemoryMiB: vmMemory, WriteMCPConfig: writeMCPConfig(sessionspec.SessionStore),
-		WriteAgentFiles: writeAgentFiles(sessionspec.SessionStore, sessionspec.AgentHistoryStore, daemon.AgentUID)}
+		RefreshCredential: refreshCredential,
+		WriteAgentFiles:   writeAgentFiles(sessionspec.SessionStore, sessionspec.AgentHistoryStore, daemon.AgentUID)}
 	os.Exit(cli.Run(os.Args[1:], env, os.Stdout, os.Stderr))
 }
 

@@ -7,8 +7,9 @@ user documentation. State as of 2026-11-26; S8.md "Start here" says what changed
 
 - `sandbox install` (vfkit VM, netd networking), `vm start|stop|status`, `doctor`, `uninstall`.
 - `sandbox rebuild` builds the agent images in the VM (v2's Dockerfiles).
-- `sandbox onboard --agent claude`: Claude Code's login through the credential broker.
-- `sandbox run` with Claude Code: tiers 1 to 3, the workspace gates (vetting, the secret scan with
+- `sandbox onboard --agent claude` and `--agent codex`: the agents' logins through the credential
+  broker (Codex's ChatGPT login is refreshed by the broker in the VM).
+- `sandbox run` with Claude Code or Codex (`--agent codex`): tiers 1 to 3, the workspace gates (vetting, the secret scan with
   betterleaks), your repositories synced into the VM and back (changes the gate withholds wait in
   `sandbox sync review`), profile secrets brokered or readable (`sandbox secret set ... --bind` or
   `--allow-readable`), `--infra-token`, MCP dependencies, your L7 rules in
@@ -18,7 +19,7 @@ user documentation. State as of 2026-11-26; S8.md "Start here" says what changed
 
 ## What does not work yet
 
-- codex, copilot, and grok (their broker adapters are not built); `--infra-kubeconfig`.
+- copilot and grok (their broker adapters are not built); `--infra-kubeconfig`.
 - Resuming a session that was stopped (a live keep-alive session resumes).
 - `sandbox upgrade`, prebuilt agent images in the appliance (you build them once with
   `sandbox rebuild`), Windows and Linux hosts (Linux uses qemu; not part of this trial).
@@ -46,11 +47,18 @@ answer `n` to keep it.
    The credential broker's key is kept in your login keychain (`agent-sandboxes broker key`).
 5. The agent images, once (about 10 minutes, from the network, in the VM):
    `sandbox3 rebuild --agent base && sandbox3 rebuild --agent claude`
-   (add `--tier3` for tier 3's `claude-infra`).
+   (add `--tier3` for tier 3's `claude-infra`). For the other agents of the trial:
+   `sandbox3 rebuild --agent codex` and `sandbox3 rebuild --agent opencode`.
 6. Claude Code's login: in a terminal on the Mac, `claude setup-token` (it signs in through the
    browser and prints a token, `sk-ant-oat01-...`), then `sandbox3 onboard --agent claude` and
    paste it. The token goes only into the VM's broker; sessions see a placeholder. Onboard again
    after reinstalling the VM.
+7. Codex's login: `sandbox3 onboard --agent codex` runs Codex's device login (Codex must be
+   installed on the Mac): open the link it prints and enter the code. This is a login of the
+   sandbox's own, so your Codex on the Mac stays signed in; the broker in the VM refreshes it.
+8. opencode: run it with `OPENCODE_API_KEY` and `OPENCODE_BASE_URL` set in your shell
+   (`sandbox3 run --agent opencode ...`); the key is sealed for that launch and brokered to the
+   endpoint's host, and the model list is fetched on the Mac.
 
 ## Using it
 

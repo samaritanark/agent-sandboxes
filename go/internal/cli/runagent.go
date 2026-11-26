@@ -10,13 +10,16 @@ package cli
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
@@ -28,7 +31,9 @@ func AgentRef(agent string) string { return "agent." + agent }
 // injection, where its configuration and history live, and the files staged from the operator's
 // onboarded copy (~/.sandbox/agent-config/<agent>/).
 type agentAdapter struct {
-	tokenVar   string
+	tokenVar   string // the variable its token goes in ("" for a token in a file: tokenFile)
+	tokenFile  bool   // the token is in a generated file (codex's auth.json), as a JWT look-alike
+	refresh    bool   // the broker refreshes the login before a launch (an OAuth login)
 	hosts      []string
 	inject     string
 	configDir  string // in the guest
@@ -46,6 +51,14 @@ var adapters = map[string]agentAdapter{
 		generated: map[string]string{".claude.json": ""}, // claudeJSON
 		// S2: the harness's own updater stays off in a session (updates come through the image)
 		env: []sessionspec.EnvVar{{Name: "DISABLE_AUTOUPDATER", Value: "1"}, {Name: "DISABLE_UPDATES", Value: "1"}},
+	},
+	// Codex with a ChatGPT login: the broker holds and refreshes it; the guest's auth.json holds a
+	// JWT look-alike access token whose signature is the placeholder (S2: Codex decodes the
+	// token's expiry and account but checks no signature) and sends it only to chatgpt.com.
+	"codex": {
+		tokenFile: true, refresh: true, hosts: []string{"chatgpt.com"}, inject: "bearer",
+		configDir: AgentHome + "/.codex", historyDir: AgentHome + "/.codex/sessions",
+		staged: []string{"config.toml", "AGENTS.md"},
 	},
 }
 
@@ -86,7 +99,11 @@ func (c *cmdCtx) setUpAgent(spec *sessionspec.Spec, s LaunchSpec, rec SessionRec
 	}
 	ref := AgentRef(s.Agent)
 	if c.env.CredentialPresent == nil || !c.env.CredentialPresent(ref) {
-		c.die("%s is not onboarded in this sandbox VM. On the host, run 'claude setup-token', then: sandbox onboard --agent %s", s.Agent, s.Agent)
+		how := "run 'claude setup-token', then: sandbox onboard --agent claude"
+		if s.Agent != "claude" {
+			how = "run: sandbox onboard --agent " + s.Agent
+		}
+		c.die("%s is not onboarded in this sandbox VM. On the host, %s", s.Agent, how)
 	}
 	bound := false
 	if c.env.CredentialBinding != nil {
@@ -100,11 +117,28 @@ func (c *cmdCtx) setUpAgent(spec *sessionspec.Spec, s LaunchSpec, rec SessionRec
 		c.die("%s's credential in this sandbox VM is not bound to %s; run 'sandbox onboard --agent %s' on the host again.", s.Agent, strings.Join(ad.hosts, ", "), s.Agent)
 	}
 	ph := placeholder()
-	spec.Bindings = append(spec.Bindings, sessionspec.Binding{Ref: ref, Hosts: ad.hosts, Inject: ad.inject, Placeholder: ph, EnvVar: ad.tokenVar})
-	spec.Env = append(spec.Env, sessionspec.EnvVar{Name: ad.tokenVar, Value: ph})
+	f := &AgentFiles{Agent: s.Agent, Tier: spec.Tier, Config: map[string][]byte{}}
+	if ad.tokenFile {
+		// an OAuth login: refreshed first if it expires within the launch's longest life
+		var exp int64
+		if ad.refresh {
+			if c.env.Launch.RefreshCredential == nil {
+				c.die("%s's login needs the credential broker in the sandbox VM.", s.Agent)
+			}
+			var err error
+			if exp, err = c.env.Launch.RefreshCredential(ref); err != nil {
+				c.die("%s's login could not be renewed: %v\n  Onboard it again on the host: sandbox onboard --agent %s", s.Agent, err, s.Agent)
+			}
+		}
+		prefix, auth := c.codexAuthJSON(ph, exp)
+		f.Config["auth.json"] = auth
+		spec.Bindings = append(spec.Bindings, sessionspec.Binding{Ref: ref, Hosts: ad.hosts, Inject: ad.inject, Placeholder: ph, Prefix: prefix})
+	} else {
+		spec.Bindings = append(spec.Bindings, sessionspec.Binding{Ref: ref, Hosts: ad.hosts, Inject: ad.inject, Placeholder: ph, EnvVar: ad.tokenVar})
+		spec.Env = append(spec.Env, sessionspec.EnvVar{Name: ad.tokenVar, Value: ph})
+	}
 	spec.Env = append(spec.Env, ad.env...)
 
-	f := &AgentFiles{Agent: s.Agent, Tier: spec.Tier, Config: map[string][]byte{}}
 	src := filepath.Join(c.env.Home, ".sandbox", "agent-config", s.Agent)
 	for _, name := range ad.staged {
 		if b, err := os.ReadFile(filepath.Join(src, name)); err == nil {
@@ -118,6 +152,9 @@ func (c *cmdCtx) setUpAgent(spec *sessionspec.Spec, s LaunchSpec, rec SessionRec
 			}
 			f.Config[name] = []byte(content)
 		}
+	}
+	if s.Agent == "codex" {
+		f.Config["config.toml"] = codexConfig(f.Config["config.toml"])
 	}
 	sess := sessionspec.SessionStore + "/" + rec.ID
 	spec.Mounts = append(spec.Mounts, sessionspec.Mount{Kind: sessionspec.AgentConfig, Source: sess + "/" + AgentConfigDir, Target: ad.configDir})
@@ -159,4 +196,66 @@ func claudeJSON(spec *sessionspec.Spec) string {
 	}
 	b, _ := json.Marshal(map[string]any{"hasCompletedOnboarding": true, "projects": projects})
 	return string(b) + "\n"
+}
+
+// codexDefaults are the settings every codex session has: the harness's own updater off (S2; updates
+// come through the image) and its login read from auth.json, never a keyring.
+var codexDefaults = []string{"check_for_update_on_startup = false", `cli_auth_credentials_store = "file"`}
+
+// codexConfig is the operator's config.toml with codexDefaults put first for each key it does not
+// set (top-level keys before any table, so the file stays valid TOML).
+func codexConfig(op []byte) []byte {
+	var head []string
+	for _, kv := range codexDefaults {
+		key := strings.TrimSpace(strings.SplitN(kv, "=", 2)[0])
+		if !regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(key) + `\s*=`).Match(op) {
+			head = append(head, kv)
+		}
+	}
+	out := strings.Join(head, "\n")
+	if out != "" {
+		out += "\n"
+	}
+	return append([]byte(out), op...)
+}
+
+// codexIdentity is the non-secret account onboarding recorded (the host's
+// ~/.sandbox/agent-config/codex/identity.json).
+type codexIdentity struct {
+	AccountID string `json:"account_id"`
+	Email     string `json:"email"`
+	Plan      string `json:"plan"`
+	UserID    string `json:"user_id"`
+}
+
+// codexAuthJSON is the guest's auth.json: a ChatGPT login whose access token is a JWT look-alike
+// (header and claims, then the placeholder as its signature) expiring when the real one does, an id
+// token carrying only the account's non-secret claims, and no usable refresh token. It returns the
+// access token's prefix (all before the placeholder) and the file.
+func (c *cmdCtx) codexAuthJSON(ph string, exp int64) (string, []byte) {
+	b, err := os.ReadFile(filepath.Join(c.env.Home, ".sandbox", "agent-config", "codex", "identity.json"))
+	var id codexIdentity
+	if err == nil {
+		err = json.Unmarshal(b, &id)
+	}
+	if err != nil || id.AccountID == "" {
+		c.die("codex's account is unknown here; on the host, run: sandbox onboard --agent codex")
+	}
+	seg := func(v any) string {
+		j, _ := json.Marshal(v)
+		return base64.RawURLEncoding.EncodeToString(j)
+	}
+	header := seg(map[string]string{"alg": "none", "typ": "JWT"})
+	claims := map[string]any{"chatgpt_account_id": id.AccountID, "chatgpt_plan_type": id.Plan, "chatgpt_user_id": id.UserID}
+	prefix := header + "." + seg(map[string]any{"exp": exp, "https://api.openai.com/auth": claims}) + "."
+	idToken := header + "." + seg(map[string]any{"exp": exp, "email": id.Email, "https://api.openai.com/auth": claims,
+		"https://api.openai.com/profile": map[string]string{"email": id.Email}}) + ".c2FuZGJveA"
+	auth := map[string]any{
+		"auth_mode": "chatgpt", "OPENAI_API_KEY": nil,
+		"tokens": map[string]any{"id_token": idToken, "access_token": prefix + ph,
+			"refresh_token": "brokered-by-the-sandbox", "account_id": id.AccountID},
+		"last_refresh": c.now().Format(time.RFC3339),
+	}
+	out, _ := json.MarshalIndent(auth, "", "  ")
+	return prefix, append(out, '\n')
 }

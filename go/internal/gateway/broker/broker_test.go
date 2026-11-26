@@ -208,3 +208,31 @@ func TestScrubberCompleteAtChunkEnd(t *testing.T) {
 		t.Errorf("%q", out)
 	}
 }
+
+// TestPrefixedPlaceholder: a bearer credential the guest presents as a prefix and the placeholder
+// (a JWT-shaped token whose signature is the placeholder) is replaced whole; the bare placeholder,
+// another prefix, or the prefix on a non-bearer binding is not.
+func TestPrefixedPlaceholder(t *testing.T) {
+	jwt := "eyJhbGciOiJub25lIn0.eyJleHAiOjE4MDAwMDAwMDB9."
+	s, err := NewSet([]Binding{{Ref: "agent.codex", Hosts: []string{"chatgpt.com"}, Inject: "bearer", Placeholder: phGH, Prefix: jwt, Value: "real.jwt.value"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := s.Decide(Request{Host: "chatgpt.com", Path: "/backend-api/codex/responses", Headers: []Header{{"authorization", "Bearer " + jwt + phGH}}})
+	if !o.Injected || len(o.SetHeaders) != 1 || o.SetHeaders[0].Value != "Bearer real.jwt.value" {
+		t.Fatalf("%+v", o)
+	}
+	for _, v := range []string{"Bearer " + phGH, "Bearer x." + jwt + phGH, "Bearer at-" + phGH} {
+		if o := s.Decide(Request{Host: "chatgpt.com", Path: "/", Headers: []Header{{"authorization", v}}}); !o.Refuse {
+			t.Errorf("%q: %+v", v, o)
+		}
+	}
+	for _, b := range []Binding{
+		{Ref: "x", Hosts: []string{"a.com"}, Inject: "header:x-key", Placeholder: phGH, Prefix: "at-", Value: "v"},
+		{Ref: "x", Hosts: []string{"a.com"}, Inject: "bearer", Placeholder: phGH, Prefix: "a b", Value: "v"},
+	} {
+		if _, err := NewSet([]Binding{b}); err == nil {
+			t.Errorf("%+v accepted", b)
+		}
+	}
+}

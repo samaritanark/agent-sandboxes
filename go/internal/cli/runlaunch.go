@@ -47,6 +47,9 @@ type LaunchEnv struct {
 	// WriteMCPConfig writes the agent's MCP configuration for session id where sandboxd mounts it
 	// from (its session directory) and returns that directory; nil refuses MCP dependencies.
 	WriteMCPConfig func(id string, content []byte) (string, error)
+	// RefreshCredential has the broker renew an agent's OAuth login (sandboxd's broker-refresh) and
+	// returns its access token's expiry (Unix seconds).
+	RefreshCredential func(ref string) (int64, error)
 	// WriteAgentFiles writes a session's agent configuration and makes its history directory
 	// (setUpAgent); nil refuses agents that need them.
 	WriteAgentFiles func(id string, f AgentFiles) error

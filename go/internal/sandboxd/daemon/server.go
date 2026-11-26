@@ -49,6 +49,8 @@ type Response struct {
 	ID       string    `json:"id,omitempty"`
 	Sessions []Summary `json:"sessions,omitempty"`
 	Refs     []string  `json:"refs,omitempty"`
+	// broker-refresh: the refreshed access token's expiry (Unix seconds)
+	Exp int64 `json:"exp,omitempty"`
 	// broker-list: the binding each entry of the second form carries, by reference (unchecked)
 	Bindings map[string]brokerseal.Binding `json:"bindings,omitempty"`
 	Exit     *int                          `json:"exit,omitempty"` // attach: the command's exit status
@@ -194,6 +196,16 @@ func (d *Daemon) call(ctx context.Context, req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, Sessions: l}
+	case "broker-refresh":
+		if d.Broker == nil {
+			return fail(errors.New("sandboxd has no broker store"))
+		}
+		// valid for longer than any session the launch can become (a keep-alive's limit)
+		exp, err := d.Broker.Refresh(ctx, req.ID, d.Expiry.MaxKeepAlive()+time.Hour)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, ID: req.ID, Exp: exp}
 	case "broker-key", "broker-put", "broker-delete", "broker-list":
 		if d.Broker == nil {
 			return fail(errors.New("sandboxd has no broker store"))

@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/agents"
 	"github.com/samaritanark/agent-sandboxes/go/internal/cli"
@@ -246,3 +247,14 @@ var (
 	agentName    = regexp.MustCompile(`^[a-z]{1,16}$`)
 	historyKeyRE = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
 )
+
+// refreshCredential has sandboxd renew an agent's OAuth login and returns its expiry.
+func refreshCredential(ref string) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	resp, err := daemon.Call(ctx, daemon.Socket, daemon.Request{Op: "broker-refresh", ID: ref})
+	if err == nil && !resp.OK {
+		err = errors.New(resp.Error)
+	}
+	return resp.Exp, err
+}

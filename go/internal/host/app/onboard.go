@@ -28,7 +28,7 @@ import (
 const onboardUsage = `sandbox onboard — Put an agent's login into the sandbox VM's credential broker
 
 USAGE:
-  sandbox onboard [--agent claude] [--dry-run]
+  sandbox onboard [--agent claude|codex] [--dry-run] [--from-auth-json FILE]
 
 CLAUDE CODE:
   1. On this machine, run:  claude setup-token
@@ -42,8 +42,15 @@ CLAUDE CODE:
   ~/.sandbox/agent-config/claude/ and given to each session as a fresh, writable copy.
   Onboard again after the sandbox VM is reinstalled.
 
+CODEX (a ChatGPT login):
+  sandbox onboard --agent codex
+  runs Codex's device login (codex login --device-auth) for a login of the sandbox's own: open the
+  link it shows and enter the code. Your Codex login on this machine is not touched. The login is
+  sealed into the sandbox VM's broker, which refreshes it; sessions see placeholders.
+  --from-auth-json FILE imports a Codex auth.json instead (a login nothing else uses).
+
 OTHER AGENTS:
-  codex, copilot, and grok are not yet available in v3 (their broker adapters are not built).
+  copilot and grok are not yet available in v3 (their broker adapters are not built).
   opencode needs no onboarding: run it with OPENCODE_API_KEY and OPENCODE_BASE_URL set.
 `
 
@@ -55,7 +62,7 @@ var claudeToken = regexp.MustCompile(`^sk-ant-oat01-[A-Za-z0-9_-]{20,500}$`)
 var claudeStaged = []string{"settings.json", "CLAUDE.md"}
 
 func (a *app) onboard(args []string) int {
-	agent, dry := "claude", false
+	agent, dry, fromFile := "claude", false, ""
 	for i := 0; i < len(args); i++ {
 		switch v := args[i]; {
 		case v == "--help" || v == "-h":
@@ -68,6 +75,9 @@ func (a *app) onboard(args []string) int {
 			agent = v[len("--agent="):]
 		case v == "--dry-run":
 			dry = true
+		case v == "--from-auth-json" && i+1 < len(args):
+			fromFile = args[i+1]
+			i++
 		case v == "--force" || v == "--skip-config":
 			// v2's flags: nothing to overwrite or write here
 		default:
@@ -76,10 +86,14 @@ func (a *app) onboard(args []string) int {
 	}
 	switch agent {
 	case "claude", "all":
+	case "codex":
+		a.onboardCodex(fromFile, dry)
+		fmt.Fprintln(a.env.Stdout, "Onboard complete. Run 'sandbox run --agent codex' to launch a session.")
+		return 0
 	case "opencode":
 		fmt.Fprintln(a.env.Stdout, "opencode needs no onboarding: run it with OPENCODE_API_KEY and OPENCODE_BASE_URL set on this machine.")
 		return 0
-	case "codex", "copilot", "grok":
+	case "copilot", "grok":
 		a.die("%s is not yet available in v3: its credential broker adapter is not built.", agent)
 	default:
 		a.die("--agent must be one of: claude, codex, opencode, copilot, grok, all")

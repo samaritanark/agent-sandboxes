@@ -28,6 +28,7 @@ type Binding struct {
 	Hosts       []string // exact destinations
 	Inject      string   // "bearer", "header:<name>", "query:<name>", "basic"
 	Placeholder string
+	Prefix      string // what the guest's credential has before the placeholder (bearer only)
 	Value       string // for "basic", "user:password" (the whole pair) or a password alone
 
 	// limits (limits.go): 0 is the default rate and burst, and no quota
@@ -60,6 +61,9 @@ func NewSet(bs []Binding) (*Set, error) {
 		if !injectRE.MatchString(b.Inject) || !placeholderRE.MatchString(b.Placeholder) || len(b.Placeholder) != 49 ||
 			seen[b.Placeholder] || b.Value == "" || len(b.Hosts) == 0 {
 			return nil, fmt.Errorf("broker: binding %q is malformed", b.Ref)
+		}
+		if !prefixRE.MatchString(b.Prefix) || len(b.Prefix) > 2048 || (b.Prefix != "" && b.Inject != "bearer") {
+			return nil, fmt.Errorf("broker: binding %q has a malformed placeholder prefix", b.Ref)
 		}
 		if strings.ContainsAny(b.Value, "\r\n\x00") {
 			return nil, fmt.Errorf("broker: binding %q has a value no header can carry", b.Ref)
@@ -338,7 +342,7 @@ func inject(b Binding, r Request) ([]Header, string, error) {
 		if len(vs) != 1 {
 			return nil, "", errAmbiguous
 		}
-		if rest, ok := cutFold(vs[0], "bearer "); !ok || strings.TrimSpace(rest) != b.Placeholder {
+		if rest, ok := cutFold(vs[0], "bearer "); !ok || strings.TrimSpace(rest) != b.Prefix+b.Placeholder {
 			return nil, "", errors.New("not a bearer placeholder")
 		}
 		return []Header{{"authorization", "Bearer " + b.Value}}, "", nil
@@ -412,3 +416,5 @@ func (s *Set) Reflections() []Replacement {
 	}
 	return out
 }
+
+var prefixRE = regexp.MustCompile(`^[A-Za-z0-9._-]*$`) // and at most 2048 bytes

@@ -58,6 +58,8 @@ type Env struct {
 	// Getenv is the host's environment, for what proxied commands take from it (opencode's key and
 	// endpoint); nil reads nothing.
 	Getenv func(string) string
+	// CodexLogin runs Codex's device login and returns its auth.json (onboard); nil runs codex.
+	CodexLogin func() ([]byte, error)
 	// FetchModels asks an OpenAI-compatible endpoint for its models (opencode); nil uses HTTP.
 	FetchModels func(ctx context.Context, base, key string) ([]byte, error)
 }

@@ -56,6 +56,8 @@ func run(args []string) int {
 		return ctl(args[1:])
 	case "__broker-handover":
 		return brokerHandover()
+	case "__broker-refresh":
+		return brokerRefresh()
 	case "__readable-handover":
 		return readableHandover()
 	}

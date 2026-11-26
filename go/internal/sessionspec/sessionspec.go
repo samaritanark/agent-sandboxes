@@ -126,6 +126,10 @@ type Binding struct {
 	Inject      string   `json:"inject"` // "bearer", "header:<name>", "query:<name>", "basic"
 	Placeholder string   `json:"placeholder"`
 	EnvVar      string   `json:"env_var,omitempty"` // the variable that carries the placeholder, if any
+	// Prefix comes before the placeholder in the credential the guest presents (a client that
+	// checks a token's shape: "at-", or a JWT's header and payload); the broker replaces the whole
+	// prefixed placeholder.
+	Prefix string `json:"prefix,omitempty"`
 	// Limits on the credential's use, enforced by the broker per credential (all bindings of one
 	// Ref must state the same): requests a minute and burst (0: the broker's defaults), and a
 	// quota of requests for the session's life (0: none).
@@ -520,6 +524,9 @@ func checkBindings(bs []Binding, what string, bad func(string, ...any)) map[stri
 		if !IsPlaceholder(b.Placeholder) {
 			bad("%s: invalid placeholder", w)
 		}
+		if !prefixRE.MatchString(b.Prefix) || len(b.Prefix) > 2048 || (b.Prefix != "" && b.Inject != "bearer") {
+			bad("%s: invalid placeholder prefix (bearer only, at most %d of [A-Za-z0-9._-])", w, MaxPrefix)
+		}
 		if seen[b.Placeholder] {
 			bad("%s: placeholder reused", w)
 		}
@@ -528,7 +535,7 @@ func checkBindings(bs []Binding, what string, bad func(string, ...any)) map[stri
 			if !envNameRE.MatchString(b.EnvVar) || vars[b.EnvVar] != "" {
 				bad("%s: invalid or repeated variable %q", w, b.EnvVar)
 			}
-			vars[b.EnvVar] = b.Placeholder
+			vars[b.EnvVar] = b.Prefix + b.Placeholder
 		}
 	}
 	return vars
@@ -642,3 +649,8 @@ var historyKeyRE = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
 func HistoryPath(agent string, tier int, key string) string {
 	return path.Join(AgentHistoryStore, agent, "tier"+strconv.Itoa(tier), key)
 }
+
+// MaxPrefix bounds a binding's placeholder prefix.
+const MaxPrefix = 2048
+
+var prefixRE = regexp.MustCompile(`^[A-Za-z0-9._-]*$`) // and at most 2048 bytes

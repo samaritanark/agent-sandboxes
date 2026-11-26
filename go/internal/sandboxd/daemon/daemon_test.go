@@ -528,6 +528,12 @@ func (f *fakeBroker) SetKey(k []byte) error    { f.key = append([]byte(nil), k..
 func (f *fakeBroker) Put(string, []byte) error { return nil }
 func (f *fakeBroker) Delete(string) error      { return nil }
 func (f *fakeBroker) List() ([]string, error)  { return nil, nil }
+func (f *fakeBroker) Refresh(_ context.Context, ref string, minValid time.Duration) (int64, error) {
+	if ref != "agent.codex" {
+		return 0, errors.New("no such login")
+	}
+	return int64(minValid / time.Second), nil
+}
 func (f *fakeBroker) Bindings() (map[string]brokerseal.Binding, error) {
 	return map[string]brokerseal.Binding{"secret.X": {Readable: true}}, nil
 }
@@ -857,5 +863,32 @@ func TestSessionFilesRemoved(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(r.d.SessionRoot, id, d)); err == nil {
 			t.Errorf("%s left", d)
 		}
+	}
+}
+
+// TestBrokerRefresh: the login must stay valid for longer than a keep-alive session lives.
+func TestBrokerRefresh(t *testing.T) {
+	r := newRig(t)
+	r.d.Broker = &fakeBroker{}
+	resp := r.d.call(context.Background(), Request{Op: "broker-refresh", ID: "agent.codex"})
+	if !resp.OK || resp.Exp != int64((limits.DefaultKeepAliveMax+time.Hour)/time.Second) {
+		t.Errorf("%+v", resp)
+	}
+	if resp := r.d.call(context.Background(), Request{Op: "broker-refresh", ID: "agent.x"}); resp.OK {
+		t.Error("refreshed an unknown login")
+	}
+}
+
+// TestReconcileStuckOrphan: a microVM that cannot be removed is logged and left, and sandboxd still
+// starts serving.
+func TestReconcileStuckOrphan(t *testing.T) {
+	r := newRig(t)
+	r.rt.vms["ses-stuck"] = runtime.MicroVM{ID: "ses-stuck"}
+	r.rt.failKill = "ses-stuck"
+	if err := r.d.Reconcile(context.Background()); err != nil {
+		t.Fatalf("a stuck orphan stopped sandboxd: %v", err)
+	}
+	if !r.d.ready {
+		t.Error("not ready")
 	}
 }

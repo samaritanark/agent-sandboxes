@@ -1411,3 +1411,31 @@ m("internal/sandboxd/daemon/daemon.go", '\t\t\tos.RemoveAll(filepath.Join(d.Sess
 m("internal/host/app/flows.go", '\tif !flowSessionRE.MatchString(id) {', '\tif false {', "TestFlows", pkg="host/app")
 m("internal/host/app/flows.go", '\tif m := str("method"); m != "" {', '\tif m := str("method"); true {', "TestFlows", pkg="host/app")
 m("internal/host/app/flows.go", '\tif p := str("port"); p != "" && p != "443" && !strings.Contains(dest, ":") {', '\tif p := str("port"); p != "" && !strings.Contains(dest, ":") {', "TestFlows", pkg="host/app")
+
+# ---- Codex with a ChatGPT login: prefixed placeholders, the broker's refresh, the guest auth.json (2026-11-26)
+m("internal/gateway/broker/broker.go", 'strings.TrimSpace(rest) != b.Prefix+b.Placeholder {', 'strings.TrimSpace(rest) != b.Placeholder {', "TestPrefixedPlaceholder", pkg="gateway/broker")
+m("internal/gateway/broker/broker.go", '\t\tif !prefixRE.MatchString(b.Prefix) || len(b.Prefix) > 2048 || (b.Prefix != "" && b.Inject != "bearer") {', '\t\tif !prefixRE.MatchString(b.Prefix) {', "TestPrefixedPlaceholder", pkg="gateway/broker")
+m("internal/sessionspec/sessionspec.go", '\t\t\tvars[b.EnvVar] = b.Prefix + b.Placeholder', '\t\t\tvars[b.EnvVar] = b.Placeholder', "TestSetUpAgentCodex", pkg="cli",
+  equivalent="no binding has both a prefix and a variable today (codex's token is in a file)")
+RF = "cmd/sandboxd/refresh.go"
+R_RF = "TestRefreshLogin"
+m(RF, '\tif time.Unix(exp, 0).Sub(now) > minValid {', '\tif time.Unix(exp, 0).Sub(now) > 0 {', R_RF, pkg="../cmd/sandboxd")
+m(RF, '\tif r.RefreshToken != "" {', '\tif false {', R_RF, pkg="../cmd/sandboxd")
+m(RF, '\tsealed, err := brokerseal.SealBound(key, ref, newAccess, binding)', '\tsealed, err := brokerseal.SealBound(key, ref, newAccess, brokerseal.Binding{})', R_RF, pkg="../cmd/sandboxd")
+m(RF, '\tif status != http.StatusOK {', '\tif status >= 500 {', R_RF, pkg="../cmd/sandboxd")
+m(RF, '\tnewExp, err := jwtExp(newAccess)\n\tif err != nil {\n\t\treturn 0, err\n\t}', '\tnewExp, _ := jwtExp(newAccess)', R_RF, pkg="../cmd/sandboxd")
+m(RF, '"refresh_token": string(refresh), "scope": client.scope})', '"refresh_token": string(refresh)})', R_RF, pkg="../cmd/sandboxd")
+m("cmd/sandboxd/kata_proc.go", '\t\t\tif string(args[i]) == "-id" && string(args[i+1]) == id {', '\t\t\tif string(args[i+1]) == id {', "TestMicroVMProcess", pkg="../cmd/sandboxd")
+m("cmd/sandboxd/kata_proc.go", '\t\t\tif bytes.HasPrefix(a, []byte("/run/vc/vm/"+id+"/")) {', '\t\t\tif bytes.Contains(a, []byte(id)) {', "TestMicroVMProcess", pkg="../cmd/sandboxd")
+m("internal/sandboxd/daemon/daemon.go", '\t\t\td.logf("could not remove orphan microVM %s: %v", c, err)', '\t\t\treturn err', "TestReconcileStuckOrphan", pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/server.go", '\t\texp, err := d.Broker.Refresh(ctx, req.ID, d.Expiry.MaxKeepAlive()+time.Hour)', '\t\texp, err := d.Broker.Refresh(ctx, req.ID, time.Hour)', "TestBrokerRefresh", pkg="sandboxd/daemon")
+RC = "internal/cli/runagent.go"
+m(RC, '\t\t\tif exp, err = c.env.Launch.RefreshCredential(ref); err != nil {', '\t\t\tif _, err = c.env.Launch.RefreshCredential(ref); err != nil {', "TestSetUpAgentCodex")
+m(RC, '\t\tspec.Bindings = append(spec.Bindings, sessionspec.Binding{Ref: ref, Hosts: ad.hosts, Inject: ad.inject, Placeholder: ph, Prefix: prefix})', '\t\tspec.Bindings = append(spec.Bindings, sessionspec.Binding{Ref: ref, Hosts: ad.hosts, Inject: ad.inject, Placeholder: ph})', "TestSetUpAgentCodex")
+m(RC, '\t\tif !regexp.MustCompile(`(?m)^\\s*` + regexp.QuoteMeta(key) + `\\s*=`).Match(op) {', '\t\tif true {', "TestSetUpAgentCodex")
+m(RC, '\tif err != nil || id.AccountID == "" {', '\tif false {', "TestSetUpAgentCodex")
+OC2 = "internal/host/app/onboard_codex.go"
+m(OC2, 'a.pushAgentToken(ep, "agent.codex.refresh", refresh, brokerseal.Binding{})', 'a.pushAgentToken(ep, "agent.codex.refresh", refresh, brokerseal.Binding{Hosts: []string{"auth.openai.com"}, Inject: "bearer"})', "TestOnboardCodex", pkg="host/app")
+m(OC2, '\tif err := json.Unmarshal(raw, &auth); err != nil || auth.Tokens == nil || auth.Tokens.AccessToken == "" || auth.Tokens.RefreshToken == "" {', '\tif err := json.Unmarshal(raw, &auth); err != nil || auth.Tokens == nil {', "TestOnboardCodex", pkg="host/app")
+m(OC2, '\t\tid.AccountID = c.Auth.AccountID', '', "TestOnboardCodex", pkg="host/app",
+  equivalent="the test's login gives the account id in tokens.account_id as well as in the claims")
