@@ -45,10 +45,20 @@ func TestBrokerKeyPushedAtStart(t *testing.T) {
 	if r.rc != 0 || len(tr.ctl) != 2 || !bytes.Equal(tr.ctlIn[1], key) || strings.Contains(r.out, "Made") {
 		t.Fatalf("again: %+v %q", r, tr.ctl)
 	}
-	// sandboxd refusing it is a warning: the VM is still usable
-	tr.ctlRC = 1
-	if r = runKey(t, d, tr, k, "", "vm", "start"); r.rc != 0 || !strings.Contains(r.err, "could not give the credential broker its key") {
-		t.Fatalf("refused: %+v", r)
+	// sandboxd refusing it is a warning at once: the VM is still usable
+	tr.ctlRC, tr.ctl = 1, nil
+	if r = runKey(t, d, tr, k, "", "vm", "start"); r.rc != 0 || !strings.Contains(r.err, "could not give the credential broker its key") || len(tr.ctl) != 1 {
+		t.Fatalf("refused: %+v after %d tries", r, len(tr.ctl))
+	}
+	// a connection that keeps failing is tried keyPushTries times
+	tr.ctl, tr.ctlRC, tr.ctlFailFirst = nil, 0, 100
+	if r = runKey(t, d, tr, k, "", "vm", "start"); !strings.Contains(r.err, "could not give") || len(tr.ctl) != keyPushTries {
+		t.Fatalf("down: %+v after %d tries", r, len(tr.ctl))
+	}
+	// a failure that clears (sshd restarting at boot) is retried quietly
+	tr.ctl, tr.ctlRC, tr.ctlFailFirst = nil, 0, 2
+	if r = runKey(t, d, tr, k, "", "vm", "start"); r.rc != 0 || strings.Contains(r.err, "could not give") || len(tr.ctl) != 3 {
+		t.Fatalf("transient: %+v after %d tries", r, len(tr.ctl))
 	}
 }
 

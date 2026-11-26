@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/brokerkey"
@@ -32,6 +33,9 @@ func (a *app) brokerKey() ([]byte, error) {
 	return k, nil
 }
 
+// keyPushTries is how many times a start pushes the key before warning.
+const keyPushTries = 15
+
 // pushBrokerKey gives sandboxd the store key. sandboxd keeps it in memory only, so it is pushed
 // at every VM start (and by `sandbox vm start` on a running VM, which is how a restarted sandboxd
 // gets it back).
@@ -49,8 +53,19 @@ func (a *app) pushBrokerKey(ep driver.SSHEndpoint) error {
 
 // warnBrokerKey is pushBrokerKey for the start paths, where a failure leaves the VM usable except
 // for sessions with credential bindings.
+// Right after boot it is retried for a while: the guest's sshd can restart once as the seed unit
+// applies the host key, and sandboxd may not be listening yet (both seen on vfkit).
 func (a *app) warnBrokerKey(ep driver.SSHEndpoint) {
-	if err := a.pushBrokerKey(ep); err != nil {
+	poll := a.env.Install.Poll
+	if poll == 0 {
+		poll = 2 * time.Second
+	}
+	err := a.pushBrokerKey(ep)
+	for i := 1; err != nil && transient(err) && i < keyPushTries; i++ {
+		time.Sleep(poll)
+		err = a.pushBrokerKey(ep)
+	}
+	if err != nil {
 		fmt.Fprintf(a.env.Stderr, "WARNING: could not give the credential broker its key: %v\n"+
 			"  Sessions with credential bindings will be refused until 'sandbox vm start' succeeds.\n", err)
 	}
@@ -60,9 +75,24 @@ func (a *app) sandboxd(ep driver.SSHEndpoint, stdin io.Reader, args ...string) e
 	var errb strings.Builder
 	rc, err := a.env.Transport.Run(a.ctx, ep, append([]string{SandboxdCommand, "ctl"}, args...), stdin, io.Discard, &errb, false)
 	if err == nil && rc != 0 {
-		err = errors.New(strings.TrimSpace(errb.String()))
+		err = sandboxdError(strings.TrimSpace(errb.String()))
 	}
 	return err
+}
+
+// sandboxdError is sandboxd's own refusal, as against a failure to reach it.
+type sandboxdError string
+
+func (e sandboxdError) Error() string { return string(e) }
+
+// transient is whether a failed sandboxd call may succeed if tried again: the SSH connection
+// failed, or sandboxd is not listening yet. A refusal from sandboxd itself is final.
+func transient(err error) bool {
+	var se sandboxdError
+	if !errors.As(err, &se) {
+		return true
+	}
+	return strings.Contains(string(se), "sandboxd.sock")
 }
 
 // BrokerPut is the hidden `sandbox __broker-put REF`: seal the value on stdin as REF's entry and

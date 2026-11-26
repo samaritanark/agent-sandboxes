@@ -33,6 +33,8 @@ type fakeTransport struct {
 	ctl   [][]string
 	ctlIn [][]byte
 	ctlRC int
+	// the first ctlFailFirst sandboxd calls fail (a transient failure)
+	ctlFailFirst int
 	// the run pre-pass: its output, or an error
 	bindings    string
 	bindingsErr error
@@ -58,6 +60,10 @@ func (f *fakeTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []stri
 		b, _ := io.ReadAll(stdin)
 		f.ctl = append(f.ctl, argv[1:])
 		f.ctlIn = append(f.ctlIn, b)
+		if f.ctlFailFirst > 0 {
+			f.ctlFailFirst--
+			return 0, errors.New("ssh connection failed")
+		}
 		return f.ctlRC, nil
 	}
 	f.runs = append(f.runs, argv)

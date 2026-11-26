@@ -1191,3 +1191,5 @@ m("internal/host/app/syncone.go", '\t\tCopy:      epoch,\n', '\t\tCopy:      epo
 m("cmd/sandbox-vm/gitenv.go", ', {"core.hooksPath", "/dev/null"}', '', "TestProtectGit", pkg="../cmd/sandbox-vm")
 m("cmd/sandbox-vm/gitenv.go", '\t\tn++\n', '', "TestProtectGit", pkg="../cmd/sandbox-vm")
 m("internal/sandboxd/daemon/attach.go", 'return 0, errors.New("attach: " + firstLine(err))', 'return 0, fmt.Errorf("attach: %w", err)', "TestAttachErrorFirstLine", pkg="sandboxd/daemon")
+m(AB, '\tfor i := 1; err != nil && transient(err) && i < keyPushTries; i++ {', '\tfor i := 1; err != nil && transient(err) && i < 1; i++ {', "TestBrokerKeyPushedAtStart", pkg="host/app")
+m(AB, '\tfor i := 1; err != nil && transient(err) && i < keyPushTries; i++ {', '\tfor i := 1; err != nil && i < keyPushTries; i++ {', "TestBrokerKeyPushedAtStart", pkg="host/app")
