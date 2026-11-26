@@ -37,12 +37,20 @@ type fakeTransport struct {
 	bindings    string
 	bindingsErr error
 	bindingArgs [][]string
+	bindingArgv [][]string
+	pushArgs    [][]string
+	mirrors     [][]string
 }
 
 func (f *fakeTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []string, stdin io.Reader, stdout, _ io.Writer, tty bool) (int, error) {
-	if len(argv) == 2 && argv[1] == ReceiveOperatorState {
+	if len(argv) >= 2 && argv[1] == ReceiveOperatorState {
 		b, _ := io.ReadAll(stdin)
 		f.pushes = append(f.pushes, b)
+		f.pushArgs = append(f.pushArgs, argv[2:])
+		return 0, nil
+	}
+	if len(argv) >= 2 && argv[1] == MirrorPath {
+		f.mirrors = append(f.mirrors, argv[2:])
 		return 0, nil
 	}
 	if len(argv) > 1 && argv[0] == SandboxdCommand {
@@ -62,10 +70,11 @@ func (f *fakeTransport) Output(_ context.Context, _ driver.SSHEndpoint, argv []s
 		f.pulls++
 		return []byte(f.auditSessions), nil
 	}
-	if len(argv) > 1 && argv[1] == RunBindings {
-		f.bindingArgs = append(f.bindingArgs, argv[2:])
+	if i := indexOf(argv, RunBindings); i > 0 {
+		f.bindingArgs = append(f.bindingArgs, argv[i+1:])
+		f.bindingArgv = append(f.bindingArgv, argv)
 		if f.bindings == "" && f.bindingsErr == nil {
-			return []byte(`{"secrets":[]}`), nil
+			return []byte(`{"secrets":[],"repos":[]}`), nil
 		}
 		return []byte(f.bindings), f.bindingsErr
 	}
@@ -82,6 +91,15 @@ func (f *fakeTransport) Output(_ context.Context, _ driver.SSHEndpoint, argv []s
 		return nil, errors.New("unexpected Output")
 	}
 	return []byte(f.release), f.relErr
+}
+
+func indexOf(xs []string, x string) int {
+	for i, v := range xs {
+		if v == x {
+			return i
+		}
+	}
+	return -1
 }
 
 type res struct {
@@ -106,7 +124,8 @@ func TestProxy(t *testing.T) {
 	if r.rc != 3 || r.out != "ran\n" || r.err != "" {
 		t.Fatalf("proxy: %+v", r)
 	}
-	if want := []string{"sandbox", "run", "--repo", "a b", "--name", "it's"}; !reflect.DeepEqual(tr.runs[0], want) || !tr.ttys[0] {
+	wd, _ := os.Getwd()
+	if want := []string{"sandbox", "run", "--repo", filepath.Join(wd, "a b"), "--name", "it's"}; !reflect.DeepEqual(tr.runs[0], want) || !tr.ttys[0] {
 		t.Fatalf("proxied %q tty=%v", tr.runs[0], tr.ttys[0])
 	}
 	if len(tr.pushes) != 1 {

@@ -8,12 +8,13 @@ import (
 
 // RunBindings is the in-VM half of the host's pre-pass (owner decision, eighth round): the names
 // of the host-side secrets `sandbox run ARGS` would bind (the profile's secrets: and each
-// profile dependency's), in the order run checks them, without duplicates. It decides as run
+// profile dependency's), in the order run checks them, without duplicates, and the repositories
+// it would mount (as run sees them, `~` expanded), which the host syncs and mirrors first. It decides as run
 // does but prints nothing, prompts for nothing, writes nothing, and does not require the secrets
 // to be present: the host checks and pushes them, and the run that follows checks again. ok is
 // false when run would stop (or only print its usage) before binding anything; status is then
 // the status run would end with.
-func RunBindings(args []string, env Env) (names []string, ok bool, status int) {
+func RunBindings(args []string, env Env) (names, repos []string, ok bool, status int) {
 	c := &cmdCtx{env: env, stdout: io.Discard, stderr: io.Discard, prepass: true}
 	c.env.Stdin, c.env.StdinTTY = nil, false
 	defer func() {
@@ -22,7 +23,7 @@ func RunBindings(args []string, env Env) (names []string, ok bool, status int) {
 			if !isExit {
 				panic(r)
 			}
-			names, ok, status = nil, false, int(e)
+			names, repos, ok, status = nil, nil, false, int(e)
 		}
 	}()
 	s := runDecide(c, args)
@@ -38,14 +39,14 @@ func RunBindings(args []string, env Env) (names []string, ok bool, status int) {
 	}
 	deps, depsOK := c.resolveDependencies("prepass", s.Agent, s.MCPs, s.Services)
 	if !depsOK {
-		return nil, false, 1
+		return nil, nil, false, 1
 	}
 	for _, d := range deps {
 		for _, n := range d.Secrets {
 			add(n)
 		}
 	}
-	return names, true, 0
+	return names, s.Repos, true, 0
 }
 
 // secretPresent is whether the launch has a secret: in the pre-pass every name counts (the host

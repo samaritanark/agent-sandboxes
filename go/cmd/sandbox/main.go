@@ -61,7 +61,7 @@ func main() {
 		Driver: d, Transport: tr, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 		StdinTTY: tty, StateDir: state, User: name,
 		Install:   installDeps(home),
-		BrokerKey: brokerkey.Default(state), SecretsDir: os.Getenv("SANDBOX_SECRETS_DIR"),
+		BrokerKey: brokerkey.Default(state), SecretsDir: os.Getenv("SANDBOX_SECRETS_DIR"), Home: home,
 		HostCommands: map[string]func(context.Context, []string) int{
 			// the secret store stays on the host (design 5.1.4); run's pre-pass pushes from it
 			"secret": func(_ context.Context, args []string) int {

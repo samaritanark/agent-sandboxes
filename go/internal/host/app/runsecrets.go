@@ -16,6 +16,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -39,38 +40,55 @@ const (
 // secretName is v2's secret name rule (lib/secrets.sh): also the variable the agent sees.
 var secretName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
 
-// parseRunBindings reads the pre-pass's output strictly: one JSON object, only the secrets field,
-// valid names, no more than maxBoundSecrets, no duplicates.
-func parseRunBindings(b []byte) ([]string, error) {
+// maxRepos bounds the repositories one launch syncs.
+const maxRepos = 16
+
+// parseRunBindings reads the pre-pass's output strictly: one JSON object with exactly the secrets
+// and repos fields; valid secret names, no more than maxBoundSecrets, no duplicates; clean
+// absolute repository paths, no more than maxRepos, no duplicates.
+func parseRunBindings(b []byte) (names, repos []string, err error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	var out struct {
 		Secrets *[]string `json:"secrets"`
+		Repos   *[]string `json:"repos"`
 	}
 	if err := dec.Decode(&out); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return nil, errors.New("trailing data")
+		return nil, nil, errors.New("trailing data")
 	}
-	if out.Secrets == nil {
-		return nil, errors.New("no secrets field")
+	if out.Secrets == nil || out.Repos == nil {
+		return nil, nil, errors.New("a field is missing")
 	}
-	names := *out.Secrets
+	names, repos = *out.Secrets, *out.Repos
 	if len(names) > maxBoundSecrets {
-		return nil, fmt.Errorf("%d secrets, more than %d", len(names), maxBoundSecrets)
+		return nil, nil, fmt.Errorf("%d secrets, more than %d", len(names), maxBoundSecrets)
+	}
+	if len(repos) > maxRepos {
+		return nil, nil, fmt.Errorf("%d repositories, more than %d", len(repos), maxRepos)
 	}
 	seen := map[string]bool{}
 	for _, n := range names {
 		if !secretName.MatchString(n) {
-			return nil, fmt.Errorf("%q is not a secret name", n)
+			return nil, nil, fmt.Errorf("%q is not a secret name", n)
 		}
 		if seen[n] {
-			return nil, fmt.Errorf("%s named twice", n)
+			return nil, nil, fmt.Errorf("%s named twice", n)
 		}
 		seen[n] = true
 	}
-	return names, nil
+	for _, r := range repos {
+		if !strings.HasPrefix(r, "/") || path.Clean(r) != r || r == "/" || strings.ContainsAny(r, "\x00\n") {
+			return nil, nil, fmt.Errorf("%q is not a clean absolute path", r)
+		}
+		if seen["\x00"+r] {
+			return nil, nil, fmt.Errorf("%s named twice", r)
+		}
+		seen["\x00"+r] = true
+	}
+	return names, repos, nil
 }
 
 // words are the identifier-like words in b: a secret name is mentioned only as a whole word.
@@ -82,18 +100,15 @@ func words(b []byte, into map[string]bool) {
 	}
 }
 
-// mentioned is every word of the command line and of the profile files and config.yaml in the
-// operator state the host pushed: the only places a launch's secret names can come from.
-func mentioned(args []string, archive []byte) (map[string]bool, error) {
-	m := map[string]bool{}
-	for _, a := range args {
-		words([]byte(a), m)
-	}
+// profileTexts are config.yaml and the profile files in the operator state the host pushed: with
+// the command line, the only places a launch's secrets and repositories can come from.
+func profileTexts(archive []byte) ([][]byte, error) {
+	var out [][]byte
 	tr := tar.NewReader(bytes.NewReader(archive))
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
-			return m, nil
+			return out, nil
 		}
 		if err != nil {
 			return nil, err
@@ -105,8 +120,83 @@ func mentioned(args []string, archive []byte) (map[string]bool, error) {
 		if err != nil {
 			return nil, err
 		}
+		out = append(out, b)
+	}
+}
+
+// mentioned is every word of the command line and of the profile texts.
+func mentioned(args []string, texts [][]byte) map[string]bool {
+	m := map[string]bool{}
+	for _, a := range args {
+		words([]byte(a), m)
+	}
+	for _, b := range texts {
 		words(b, m)
 	}
+	return m
+}
+
+// repoValues are the values of run's --repo options in args (both spellings).
+func repoValues(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--repo" && i+1 < len(args):
+			out = append(out, args[i+1])
+			i++
+		case strings.HasPrefix(a, "--repo="):
+			out = append(out, a[len("--repo="):])
+		}
+	}
+	return out
+}
+
+// absRepos makes run's relative --repo values absolute against the host's working directory
+// (design 5.1.1 item 3): the VM cannot resolve them. "~" stays for the VM, which expands it
+// against the mirrored home.
+func absRepos(args []string, wd string) []string {
+	out := append([]string(nil), args...)
+	fix := func(v string) string {
+		if v == "" || strings.HasPrefix(v, "/") || strings.HasPrefix(v, "~") {
+			return v
+		}
+		return filepath.Join(wd, v)
+	}
+	for i := 0; i < len(out); i++ {
+		switch a := out[i]; {
+		case a == "--repo" && i+1 < len(out):
+			out[i+1] = fix(out[i+1])
+			i++
+		case strings.HasPrefix(a, "--repo="):
+			out[i] = "--repo=" + fix(a[len("--repo="):])
+		}
+	}
+	return out
+}
+
+// repoNamed is whether repository path p comes from the command line or a profile: a --repo value
+// (with "~" as the operator's home), or a profile text holding p or its "~/" form.
+func repoNamed(p string, args []string, texts [][]byte, home string) bool {
+	for _, v := range repoValues(args) {
+		if home != "" && (v == "~" || strings.HasPrefix(v, "~/")) {
+			v = home + v[1:]
+		}
+		if path.Clean(v) == p {
+			return true
+		}
+	}
+	forms := []string{p}
+	if home != "" && strings.HasPrefix(p, home+"/") {
+		forms = append(forms, "~"+p[len(home):])
+	}
+	for _, b := range texts {
+		for _, f := range forms {
+			if bytes.Contains(b, []byte(f)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // secretsDir is the host-side store (SANDBOX_SECRETS_DIR, as v2).
@@ -144,31 +234,59 @@ func (a *app) readSecret(name string) (v []byte, absent bool, err error) {
 	return v, false, err
 }
 
-// pushRunSecrets runs the pre-pass for `sandbox run args` and pushes the secrets it names. A
-// secret missing from the host store is removed from the VM's, so the run stops with v2's
-// message instead of binding a stale copy. When the pre-pass fails, nothing is pushed: the run
-// that follows stops the same way and says why.
-func (a *app) pushRunSecrets(ep driver.SSHEndpoint, args []string, archive []byte) {
-	out, err := a.env.Transport.Output(a.ctx, ep, append([]string{VMCommand, RunBindings}, args...), maxBindingsOutput)
+// prepareRun runs the pre-pass for `sandbox run args` and prepares what it names: it pushes the
+// secrets, and syncs each repository and mirrors its host path to the VM copy. A secret missing
+// from the host store is removed from the VM's, so the run stops with v2's message instead of
+// binding a stale copy. When the pre-pass fails, nothing is pushed or synced: the run that follows
+// stops the same way and says why.
+func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) {
+	out, err := a.env.Transport.Output(a.ctx, ep, a.vmArgv(append([]string{RunBindings}, args...)...), maxBindingsOutput)
 	if err != nil {
 		return
 	}
-	names, err := parseRunBindings(out)
+	names, repos, err := parseRunBindings(out)
 	if err != nil {
-		a.die("the sandbox VM's list of secrets for this launch is invalid (%v); nothing was pushed.", err)
+		a.die("the sandbox VM's list of secrets and repositories for this launch is invalid (%v); nothing was pushed.", err)
 	}
-	if len(names) == 0 {
-		return
-	}
-	m, err := mentioned(args, archive)
+	texts, err := profileTexts(archive)
 	if err != nil {
 		a.die("cannot read the operator state: %v", err)
 	}
+	m := mentioned(args, texts)
 	for _, n := range names {
 		if !m[n] {
 			a.die("the sandbox VM asked for secret '%s', which neither this command line nor your profiles in ~/.sandbox/profiles name.\n"+
 				"  Nothing was pushed. If you did not expect this, the sandbox VM may be compromised: see 'sandbox doctor'.", n)
 		}
+	}
+	for _, r := range repos {
+		if !repoNamed(r, args, texts, a.mirrorHome()) {
+			a.die("the sandbox VM asked to sync %s, which neither this command line nor your profiles in ~/.sandbox/profiles name.\n"+
+				"  Nothing was synced. If you did not expect this, the sandbox VM may be compromised: see 'sandbox doctor'.", r)
+		}
+	}
+	a.pushSecrets(ep, names)
+	for _, r := range repos {
+		fmt.Fprintf(a.env.Stdout, "==> Syncing %s into the sandbox VM...\n", r)
+		ws, rep, err := a.syncRepo(ep, r)
+		if err != nil {
+			a.die("%v", err)
+		}
+		if n := len(rep.Quarantined) + len(rep.Conflicts); n > 0 {
+			fmt.Fprintf(a.env.Stdout, "    %d change(s) withheld or in conflict; see: sandbox sync review\n", n)
+		}
+		if a.mirrorHome() != "" {
+			if err := a.vmRun(ep, MirrorPath, r, ws); err != nil {
+				a.die("could not make %s the sandbox VM's path to its copy: %v", r, err)
+			}
+		}
+	}
+}
+
+// pushSecrets seals and pushes the named secrets from the host store.
+func (a *app) pushSecrets(ep driver.SSHEndpoint, names []string) {
+	if len(names) == 0 {
+		return
 	}
 	if a.env.BrokerKey == nil {
 		a.die("this launch binds secrets (%s), but this host has no place to keep the credential broker's key.", strings.Join(names, " "))
@@ -200,4 +318,35 @@ func (a *app) pushRunSecrets(ep driver.SSHEndpoint, args []string, archive []byt
 			a.die("could not store %s in the sandbox VM: %v", n, err)
 		}
 	}
+}
+
+// MirrorPath is the in-VM command that links a host path to its VM counterpart.
+const MirrorPath = "__mirror-path"
+
+// mirrorHome is the operator's home as the VM mirrors it, or "" when it cannot be mirrored (not a
+// clean absolute POSIX path, as on Windows): then proxied commands keep the VM's own HOME.
+func (a *app) mirrorHome() string {
+	h := a.env.Home
+	if h == "" || !strings.HasPrefix(h, "/") || path.Clean(h) != h || h == "/" {
+		return ""
+	}
+	return h
+}
+
+// vmArgv is an in-VM CLI command line, run with HOME set to the mirrored home.
+func (a *app) vmArgv(args ...string) []string {
+	if h := a.mirrorHome(); h != "" {
+		return append([]string{"env", "HOME=" + h, VMCommand}, args...)
+	}
+	return append([]string{VMCommand}, args...)
+}
+
+// vmRun runs an in-VM CLI helper with no input and fails with its stderr.
+func (a *app) vmRun(ep driver.SSHEndpoint, args ...string) error {
+	var errb strings.Builder
+	rc, err := a.env.Transport.Run(a.ctx, ep, append([]string{VMCommand}, args...), strings.NewReader(""), io.Discard, &errb, false)
+	if err == nil && rc != 0 {
+		err = errors.New(strings.TrimSpace(errb.String()))
+	}
+	return err
 }

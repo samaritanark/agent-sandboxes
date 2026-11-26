@@ -97,12 +97,24 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == runBindings {
 		os.Exit(printRunBindings(os.Args[2:], cliEnv()))
 	}
-	if len(os.Args) == 2 && os.Args[1] == receiveOperatorState {
+	if (len(os.Args) == 2 || len(os.Args) == 3) && os.Args[1] == receiveOperatorState {
 		dest := os.Getenv("SANDBOX_OPERATOR_DIR")
 		if dest == "" {
-			dest = "/var/lib/sandbox/operator"
+			dest = OperatorDir
 		}
-		if err := opstate.Receive(os.Stdin, dest); err != nil {
+		err := opstate.Receive(os.Stdin, dest)
+		if err == nil && len(os.Args) == 3 {
+			// the operator's host home, which the proxied command runs with (mirror.go)
+			err = mirror("/", filepath.Join(os.Args[2], ".sandbox"), OperatorDir)
+		}
+		if err != nil {
+			os.Stderr.WriteString("ERROR: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 4 && os.Args[1] == mirrorPath {
+		if err := mirror("/", os.Args[2], os.Args[3]); err != nil {
 			os.Stderr.WriteString("ERROR: " + err.Error() + "\n")
 			os.Exit(1)
 		}
@@ -160,22 +172,27 @@ func cliEnv() cli.Env {
 // checks each against its own command line and profile files before sealing and pushing it.
 const runBindings = "__run-bindings"
 
-// RunBindingsOutput is what runBindings prints.
+// RunBindingsOutput is what runBindings prints: the secrets the launch binds and the repositories
+// it mounts (the host syncs and mirrors those first).
 type RunBindingsOutput struct {
 	Secrets []string `json:"secrets"`
+	Repos   []string `json:"repos"`
 }
 
 // printRunBindings prints the launch's secret names, or nothing (with run's status) when run would
 // stop first: the run that follows then says why.
 func printRunBindings(args []string, env cli.Env) int {
-	names, ok, rc := cli.RunBindings(args, env)
+	names, repos, ok, rc := cli.RunBindings(args, env)
 	if !ok {
 		return rc
 	}
 	if names == nil {
 		names = []string{}
 	}
-	b, _ := json.Marshal(RunBindingsOutput{Secrets: names})
+	if repos == nil {
+		repos = []string{}
+	}
+	b, _ := json.Marshal(RunBindingsOutput{Secrets: names, Repos: repos})
 	os.Stdout.Write(append(b, '\n'))
 	return 0
 }

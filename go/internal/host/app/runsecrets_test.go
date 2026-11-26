@@ -42,7 +42,7 @@ func secretState(t *testing.T) (string, brokerkey.Keeper) {
 // follows.
 func TestRunPushesBoundSecrets(t *testing.T) {
 	state, k := secretState(t)
-	tr := &fakeTransport{release: goodRelease, bindings: `{"secrets":["GH_TOKEN","GONE"]}`}
+	tr := &fakeTransport{release: goodRelease, bindings: `{"secrets":["GH_TOKEN","GONE"],"repos":[]}`}
 	r := runState(t, tr, k, state, "run", "--profile", "p")
 	if r.rc != 0 || !strings.Contains(r.out, "==> Sealing this launch's secrets for the sandbox VM: GH_TOKEN GONE\n") {
 		t.Fatalf("%+v", r)
@@ -67,7 +67,7 @@ func TestRunPushesBoundSecrets(t *testing.T) {
 // profile mentions is refused, and nothing is pushed or run.
 func TestRunRefusesUnnamedSecret(t *testing.T) {
 	state, k := secretState(t)
-	tr := &fakeTransport{release: goodRelease, bindings: `{"secrets":["GH_TOKEN","UNNAMED"]}`}
+	tr := &fakeTransport{release: goodRelease, bindings: `{"secrets":["GH_TOKEN","UNNAMED"],"repos":[]}`}
 	r := runState(t, tr, k, state, "run", "--profile", "p")
 	if r.rc != 1 || !strings.Contains(r.err, "asked for secret 'UNNAMED'") || len(tr.ctl) != 0 || len(tr.runs) != 0 {
 		t.Fatalf("%+v ctl %q runs %q", r, tr.ctl, tr.runs)
@@ -78,12 +78,12 @@ func TestRunRefusesUnnamedSecret(t *testing.T) {
 		t.Errorf("a partial word counted: %+v", r)
 	}
 	// named on the command line, or in config.yaml, it passes
-	tr = &fakeTransport{release: goodRelease, bindings: `{"secrets":["UNNAMED"]}`}
+	tr = &fakeTransport{release: goodRelease, bindings: `{"secrets":["UNNAMED"],"repos":[]}`}
 	if r := runState(t, tr, k, state, "run", "--name", "for-UNNAMED"); r.rc != 0 || len(tr.ctl) != 1 {
 		t.Errorf("on the command line: %+v %q", r, tr.ctl)
 	}
 	os.WriteFile(filepath.Join(state, "config.yaml"), []byte("# UNNAMED\n"), 0o600)
-	tr = &fakeTransport{release: goodRelease, bindings: `{"secrets":["UNNAMED"]}`}
+	tr = &fakeTransport{release: goodRelease, bindings: `{"secrets":["UNNAMED"],"repos":[]}`}
 	if r := runState(t, tr, k, state, "run"); r.rc != 0 || len(tr.ctl) != 1 {
 		t.Errorf("in config.yaml: %+v %q", r, tr.ctl)
 	}
@@ -92,7 +92,7 @@ func TestRunRefusesUnnamedSecret(t *testing.T) {
 	os.WriteFile(filepath.Join(state, "notes.txt"), []byte("UNNAMED\n"), 0o600)
 	os.MkdirAll(filepath.Join(state, "extra-ca-certs"), 0o700)
 	os.WriteFile(filepath.Join(state, "extra-ca-certs", "UNNAMED.pem"), []byte("UNNAMED\n"), 0o600)
-	tr = &fakeTransport{release: goodRelease, bindings: `{"secrets":["UNNAMED"]}`}
+	tr = &fakeTransport{release: goodRelease, bindings: `{"secrets":["UNNAMED"],"repos":[]}`}
 	if r := runState(t, tr, k, state, "run"); r.rc != 1 {
 		t.Errorf("an unpushed file counted: %+v", r)
 	}
@@ -105,8 +105,8 @@ func TestRunBindingsOutputChecked(t *testing.T) {
 	for i := 1; i <= maxBoundSecrets; i++ {
 		many += `,"N` + strconv.Itoa(i) + `"`
 	}
-	for _, bad := range []string{`{"secrets":["gh_token"]}`, `{"secrets":["A","A"]}`, `{"secrets":["A"],"x":1}`,
-		`{}`, `{"secrets":["A"]}{}`, `[]`, `{"secrets":["../x"]}`, many + "]}"} {
+	for _, bad := range []string{`{"secrets":["gh_token"],"repos":[]}`, `{"secrets":["A","A"],"repos":[]}`, `{"secrets":["A"],"x":1}`, `{"secrets":[],"repos":[],"x":1}`,
+		`{}`, `{"secrets":["A"]}{}`, `[]`, `{"secrets":["../x"],"repos":[]}`, many + "]}"} {
 		tr := &fakeTransport{release: goodRelease, bindings: bad}
 		if r := runState(t, tr, k, state, "run", "A", "gh_token"); r.rc != 1 || !strings.Contains(r.err, "invalid") || len(tr.runs) != 0 {
 			t.Errorf("%s: %+v", bad, r)
@@ -118,7 +118,7 @@ func TestRunBindingsOutputChecked(t *testing.T) {
 		t.Errorf("failed pre-pass: %+v", r)
 	}
 	// no secrets: nothing pushed, no key made
-	tr = &fakeTransport{release: goodRelease, bindings: `{"secrets":[]}`}
+	tr = &fakeTransport{release: goodRelease, bindings: `{"secrets":[],"repos":[]}`}
 	if r := runState(t, tr, k, state, "run"); r.rc != 0 || len(tr.ctl) != 0 || strings.Contains(r.out, "Sealing") {
 		t.Errorf("none: %+v", r)
 	}
@@ -126,7 +126,7 @@ func TestRunBindingsOutputChecked(t *testing.T) {
 		t.Error("a key made for a launch without secrets")
 	}
 	// other commands have no pre-pass
-	tr = &fakeTransport{release: goodRelease, bindings: `{"secrets":["GH_TOKEN"]}`}
+	tr = &fakeTransport{release: goodRelease, bindings: `{"secrets":["GH_TOKEN"],"repos":[]}`}
 	runState(t, tr, k, state, "list")
 	if len(tr.bindingArgs) != 0 {
 		t.Error("pre-pass for list")
@@ -137,8 +137,82 @@ func TestRunBindingsOutputChecked(t *testing.T) {
 func TestRunSecretTooLarge(t *testing.T) {
 	state, k := secretState(t)
 	os.WriteFile(filepath.Join(state, "secrets", "GH_TOKEN"), bytes.Repeat([]byte("x"), MaxSecretSize+1), 0o600)
-	tr := &fakeTransport{release: goodRelease, bindings: `{"secrets":["GH_TOKEN"]}`}
+	tr := &fakeTransport{release: goodRelease, bindings: `{"secrets":["GH_TOKEN"],"repos":[]}`}
 	if r := runState(t, tr, k, state, "run", "--profile", "p"); r.rc != 1 || !strings.Contains(r.err, "larger than") || len(tr.ctl) != 0 {
 		t.Errorf("%+v", r)
 	}
+}
+
+// TestMirroredHome: with the operator's home known, the state push names it (the VM links its
+// .sandbox to the pushed state) and every proxied command and the pre-pass run with it as HOME.
+func TestMirroredHome(t *testing.T) {
+	state, _ := secretState(t)
+	tr := &fakeTransport{release: goodRelease}
+	var out, errb bytes.Buffer
+	rc := Run(context.Background(), []string{"run", "--repo", "~/x"}, Env{Driver: &driver.Mock{State: driver.Running}, Transport: tr,
+		Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errb, StateDir: state, Home: "/Users/op",
+		Now: func() time.Time { return time.Unix(1800000000, 0) }})
+	if rc != 0 {
+		t.Fatalf("%d %s", rc, errb.String())
+	}
+	if !reflect.DeepEqual(tr.pushArgs, [][]string{{"/Users/op"}}) {
+		t.Errorf("push args %q", tr.pushArgs)
+	}
+	want := []string{"env", "HOME=/Users/op", "sandbox", "run", "--repo", "~/x"}
+	if !reflect.DeepEqual(tr.runs[0], want) || !reflect.DeepEqual(tr.bindingArgv[0][:3], want[:3]) {
+		t.Errorf("runs %q pre-pass %q", tr.runs, tr.bindingArgv)
+	}
+	// a home the VM cannot mirror (Windows) leaves HOME alone
+	tr = &fakeTransport{release: goodRelease}
+	Run(context.Background(), []string{"list"}, Env{Driver: &driver.Mock{State: driver.Running}, Transport: tr,
+		Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errb, StateDir: state, Home: `C:\Users\op`})
+	if tr.runs[0][0] != "sandbox" || len(tr.pushArgs[0]) != 0 {
+		t.Errorf("windows home: %q %q", tr.runs, tr.pushArgs)
+	}
+}
+
+// TestRepoNamed: a repository the VM asks to sync must be a --repo value (made absolute on the
+// host, "~" as the home) or written in a pushed profile, as itself or in its "~/" form.
+func TestRepoNamed(t *testing.T) {
+	args := absRepos([]string{"--repo", "rel/app", "--repo=~/b", "--repo", "/abs/c", "--name", "/not/a/repo", "--repo=d"}, "/wd")
+	if !reflect.DeepEqual(args, []string{"--repo", "/wd/rel/app", "--repo=~/b", "--repo", "/abs/c", "--name", "/not/a/repo", "--repo=/wd/d"}) {
+		t.Fatalf("%q", args)
+	}
+	texts := [][]byte{[]byte("default_repo: ~/code/app\n"), []byte("default_repo: /srv/full\n")}
+	for p, want := range map[string]bool{
+		"/wd/rel/app": true, "/Users/op/b": true, "/abs/c": true, "/Users/op/code/app": true, "/srv/full": true,
+		"/not/a/repo": false, "/Users/op/secret": false, "/abs": false,
+	} {
+		if got := repoNamed(p, args, texts, "/Users/op"); got != want {
+			t.Errorf("%s: %v", p, got)
+		}
+	}
+}
+
+// TestRunRefusesUnnamedRepo: the pre-pass naming a repository nobody named stops the launch before
+// anything is pushed or synced; so does a path that is not clean and absolute.
+func TestRunRefusesUnnamedRepo(t *testing.T) {
+	state, k := secretState(t)
+	for bindings, want := range map[string]string{
+		`{"secrets":["GH_TOKEN"],"repos":["/Users/op/.ssh"]}`: "asked to sync /Users/op/.ssh",
+		`{"secrets":[],"repos":["rel"]}`:                      "invalid",
+		`{"secrets":[],"repos":["/a/../b"]}`:                  "invalid",
+		`{"secrets":[],"repos":["/a","/a"]}`:                  "invalid",
+		`{"secrets":[]}`:                                      "invalid",
+		`{"secrets":[],"repos":["/r0"` + strings.Repeat(`,"/r"`, 0) + manyRepos() + `]}`: "more than 16",
+	} {
+		tr := &fakeTransport{release: goodRelease, bindings: bindings}
+		r := runState(t, tr, k, state, "run", "--profile", "p")
+		if r.rc != 1 || !strings.Contains(r.err, want) || len(tr.ctl) != 0 || len(tr.runs) != 0 {
+			t.Errorf("%s: %+v ctl %q runs %q", bindings, r, tr.ctl, tr.runs)
+		}
+	}
+}
+
+func manyRepos() string {
+	var b strings.Builder
+	for i := 1; i <= maxRepos; i++ {
+		b.WriteString(`,"/r` + strconv.Itoa(i) + `"`)
+	}
+	return b.String()
 }

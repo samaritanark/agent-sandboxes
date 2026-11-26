@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/syncengine"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/syncgate"
 )
@@ -17,26 +18,15 @@ const WorkspacesDir = "/var/lib/sandbox/workspaces"
 // SyncUser is the VM user the sync agent runs as (design 5.6.2 rule 5).
 const SyncUser = "sandbox-sync"
 
-// syncOnce is `sandbox sync once --repo PATH`: one engine pass between a host repository and its
-// VM copy, for use before `sandbox run` drives the sync itself.
-func (a *app) syncOnce(args []string) int {
-	if len(args) != 2 || args[0] != "--repo" {
-		fmt.Fprint(a.env.Stderr, syncUsage)
-		return 1
-	}
-	repo, err := filepath.Abs(args[1])
-	if err != nil {
-		a.die("%v", err)
-	}
+// syncRepo is one engine pass between host repository repo (absolute) and its VM copy, ws.
+func (a *app) syncRepo(ep driver.SSHEndpoint, repo string) (string, syncengine.Report, error) {
 	if st, err := os.Lstat(filepath.Join(repo, ".git")); err != nil || !st.IsDir() {
-		a.die("%s is not the top of a git work tree", repo)
+		return "", syncengine.Report{}, fmt.Errorf("%s is not the top of a git work tree", repo)
 	}
 	id, err := syncgate.RepoID(repo)
 	if err != nil {
-		a.die("%v", err)
+		return "", syncengine.Report{}, err
 	}
-	ep := a.running()
-	a.handshake(ep)
 	ws := WorkspacesDir + "/" + id
 	// root creates the copy's directory; the agent itself runs unprivileged
 	script := `set -e; install -d -o ` + SyncUser + ` -g ` + SyncUser + ` -m 0700 "$0"; exec runuser -u ` + SyncUser + ` -- sandbox __sync-agent "$0"`
@@ -70,7 +60,27 @@ func (a *app) syncOnce(args []string) int {
 		err = fmt.Errorf("%v (%v)", err, aerr)
 	}
 	if err != nil {
-		a.die("sync of %s failed: %v", repo, err)
+		return "", syncengine.Report{}, fmt.Errorf("sync of %s failed: %v", repo, err)
+	}
+	return ws, rep, nil
+}
+
+// syncOnce is `sandbox sync once --repo PATH`: one engine pass between a host repository and its
+// VM copy, for use before `sandbox run` drives the sync itself.
+func (a *app) syncOnce(args []string) int {
+	if len(args) != 2 || args[0] != "--repo" {
+		fmt.Fprint(a.env.Stderr, syncUsage)
+		return 1
+	}
+	repo, err := filepath.Abs(args[1])
+	if err != nil {
+		a.die("%v", err)
+	}
+	ep := a.running()
+	a.handshake(ep)
+	ws, rep, err := a.syncRepo(ep, repo)
+	if err != nil {
+		a.die("%v", err)
 	}
 	fmt.Fprintf(a.env.Stdout, "Synced %s (VM copy %s): %d to the VM, %d to the host, %d withheld, %d conflicts.\n",
 		repo, ws, len(rep.ToVM), len(rep.ToHost), len(rep.Quarantined), len(rep.Conflicts))

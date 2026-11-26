@@ -52,6 +52,9 @@ type Env struct {
 	BrokerKey brokerkey.Keeper
 	// SecretsDir is the host-side secret store (SANDBOX_SECRETS_DIR; "" is StateDir/secrets).
 	SecretsDir string
+	// Home is the operator's home directory, which the VM mirrors (proxied commands run with it as
+	// HOME, so "~" and host paths mean what they mean on the host); "" keeps the VM's own.
+	Home string
 }
 
 // ReleasePath is the image's release file (5.1.7).
@@ -183,7 +186,11 @@ func (a *app) pushState(ep driver.SSHEndpoint) []byte {
 		fmt.Fprintf(a.env.Stderr, "WARNING: %s\n", w)
 	}
 	var errb strings.Builder
-	rc, err := a.env.Transport.Run(a.ctx, ep, []string{VMCommand, ReceiveOperatorState}, bytes.NewReader(archive), io.Discard, &errb, false)
+	argv := []string{VMCommand, ReceiveOperatorState}
+	if h := a.mirrorHome(); h != "" {
+		argv = append(argv, h) // the VM links <home>/.sandbox to the pushed state
+	}
+	rc, err := a.env.Transport.Run(a.ctx, ep, argv, bytes.NewReader(archive), io.Discard, &errb, false)
 	if err != nil || rc != 0 {
 		a.die("could not push the operator state to the sandbox VM: %v %s", err, strings.TrimSpace(errb.String()))
 	}
@@ -198,9 +205,14 @@ func (a *app) proxy(args []string) int {
 	a.handshake(ep)
 	archive := a.pushState(ep)
 	if len(args) > 0 && args[0] == "run" {
-		a.pushRunSecrets(ep, args[1:], archive)
+		wd, err := os.Getwd()
+		if err != nil {
+			a.die("%v", err)
+		}
+		args = append([]string{"run"}, absRepos(args[1:], wd)...)
+		a.prepareRun(ep, args[1:], archive)
 	}
-	rc, err := a.env.Transport.Run(a.ctx, ep, append([]string{VMCommand}, args...), a.env.Stdin, a.env.Stdout, a.env.Stderr, a.env.StdinTTY)
+	rc, err := a.env.Transport.Run(a.ctx, ep, a.vmArgv(args...), a.env.Stdin, a.env.Stdout, a.env.Stderr, a.env.StdinTTY)
 	if err != nil {
 		a.die("cannot run the command in the sandbox VM: %v", err)
 	}
