@@ -22,6 +22,7 @@ type agentTransport struct {
 	mu      sync.Mutex
 	conns   int
 	scripts []string // each sync connection's and epoch read's shell script
+	resume  string   // the VM's answer to __resume-repos
 }
 
 func (f *agentTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []string, stdin io.Reader, stdout, _ io.Writer, _ bool) (int, error) {
@@ -39,6 +40,9 @@ func (f *agentTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []str
 }
 
 func (f *agentTransport) Output(_ context.Context, _ driver.SSHEndpoint, argv []string, _ int) ([]byte, error) {
+	if indexOf(argv, ResumeRepos) >= 0 {
+		return []byte(f.resume), nil
+	}
 	if len(argv) > 2 {
 		f.mu.Lock()
 		f.scripts = append(f.scripts, argv[2])
@@ -93,5 +97,43 @@ func TestLiveSync(t *testing.T) {
 	}
 	if n := len(tr.scripts); n < 3 {
 		t.Errorf("scripts %q", tr.scripts)
+	}
+}
+
+// TestPrepareResume: a resumed session's repositories are synced before the attach, but only those
+// this host synced before; the VM cannot name another directory, and a bad answer syncs nothing.
+func TestPrepareResume(t *testing.T) {
+	repo, other, vmdir, state := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	for _, r := range []string{repo, other} {
+		if out, err := exec.Command("git", "init", "-q", r).CombinedOutput(); err != nil {
+			t.Fatal(string(out))
+		}
+	}
+	tr := &agentTransport{vmdir: vmdir}
+	var out bytes.Buffer
+	a := &app{env: Env{Transport: tr, StateDir: state, Stdout: &out, Stderr: &out}, ctx: context.Background()}
+	if _, _, err := a.syncRepo(driver.SSHEndpoint{}, repo); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(vmdir, "while-away.txt"), []byte("x\n"), 0o644)
+	tr.resume = `{"repos":["` + repo + `","` + other + `"]}`
+	got := a.prepareResume(driver.SSHEndpoint{}, "ses-20261126-213445-5114")
+	if strings.Join(got, ",") != repo || !strings.Contains(out.String(), "WARNING: not syncing "+other) {
+		t.Errorf("%q\n%s", got, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(repo, "while-away.txt")); err != nil {
+		t.Error("the resume did not sync the session's repository first")
+	}
+	for _, bad := range []string{"", `{"repos":["rel"]}`, `{"repos":["` + repo + `"]} x`, `{"secrets":[],"repos":["` + repo + `"]}`} {
+		tr.resume = bad
+		if got := a.prepareResume(driver.SSHEndpoint{}, "ses-20261126-213445-5114"); len(got) != 0 {
+			t.Errorf("%q synced %q", bad, got)
+		}
+	}
+	for args, want := range map[string]string{"ses-20261126-213445-5114 --keep-alive": "ses-20261126-213445-5114",
+		"--keep-alive ses-20261126-213445-5114": "ses-20261126-213445-5114", "../x": "", "": ""} {
+		if got := resumeSessionID(strings.Fields(args)); got != want {
+			t.Errorf("%q: %q", args, got)
+		}
 	}
 }

@@ -1373,3 +1373,11 @@ m("cmd/sandbox-vm/launch.go", '\t\tif !sessionID.MatchString(id) {', '\t\tif fal
 m("cmd/sandbox-vm/launch.go", '\t\tif st, err := os.Lstat(dir); err != nil || !st.IsDir() {', '\t\tif false {', "TestWriteMCPConfig", pkg="../cmd/sandbox-vm")
 m("internal/sandboxd/daemon/daemon.go", '\t\t\targs, imageArgs = append(append([]string(nil), args...), dep.Args...), nil // command, then args', '\t\t\timageArgs = nil', "TestDependencyArgs", pkg="sandboxd/daemon")
 m("internal/sandboxd/daemon/daemon.go", '\t\tm := runtime.MicroVM{ID: cid, Image: dep.Image, Args: args, ImageArgs: imageArgs, Env:', '\t\tm := runtime.MicroVM{ID: cid, Image: dep.Image, Args: args, Env:', "TestDependencyArgs", pkg="sandboxd/daemon")
+
+# ---- the sync during resume (2026-11-26)
+m("internal/host/app/runsecrets.go", '\t\t\tif _, err = os.Stat(filepath.Join(a.env.StateDir, "sync", rid, "state.json")); err == nil {', '\t\t\tif true {', "TestPrepareResume", pkg="host/app")
+m("internal/host/app/runsecrets.go", '\t\t\tif sessionIDRE.MatchString(a) {\n\t\t\t\treturn a\n\t\t\t}', '\t\t\treturn a', "TestPrepareResume", pkg="host/app")
+m("internal/host/app/runsecrets.go", '\t\treturn nil, err\n\t}\n\tif _, err := dec.Token(); err != io.EOF {\n\t\treturn nil, errors.New("trailing data")', '\t\treturn nil, err\n\t}\n\tif false {\n\t\treturn nil, errors.New("trailing data")', "TestPrepareResume", pkg="host/app")
+m("internal/host/app/app.go", '\t\t\tlive := a.startLiveSync(ep, a.prepareResume(ep, id))', '\t\t\tlive := a.startLiveSync(ep, nil)', "TestPrepareResume|TestResume", pkg="host/app",
+  equivalent="no host test drives a proxied resume; the appliance run covers it")
+m("internal/cli/resume.go", '\tif !resumeSessionIDRE.MatchString(id) {\n\t\treturn nil, false\n\t}', '', "TestSessionRepos")

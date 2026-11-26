@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -108,5 +109,23 @@ func TestResumeOnSandboxd(t *testing.T) {
 	errb.Reset()
 	if rc := Run([]string{"resume", "ses-r"}, e, &bytes.Buffer{}, &errb); rc != 1 || !strings.Contains(errb.String(), "not yet available in v3") || !strings.Contains(errb.String(), "sandbox run --agent claude --tier 1") {
 		t.Errorf("stopped: %d %q", rc, errb.String())
+	}
+}
+
+// TestSessionRepos: the repositories a session's record names, for the host's resume sync.
+func TestSessionRepos(t *testing.T) {
+	logs := t.TempDir()
+	id := "ses-20261126-213445-5114"
+	os.MkdirAll(filepath.Join(logs, id), 0o755)
+	os.WriteFile(filepath.Join(logs, id, "session.json"), []byte(`{"id":"`+id+`","repos":["/h/a","/h/b"]}`), 0o644)
+	if r, ok := SessionRepos(id, Env{LogsDir: logs}); !ok || strings.Join(r, ",") != "/h/a,/h/b" {
+		t.Errorf("%q %v", r, ok)
+	}
+	os.MkdirAll(filepath.Join(logs, "x"), 0o755)
+	os.WriteFile(filepath.Join(logs, "x", "session.json"), []byte(`{"repos":["/h/a"]}`), 0o644)
+	for _, bad := range []string{"ses-20261126-213445-0000", "../" + id, "", "x"} {
+		if _, ok := SessionRepos(bad, Env{LogsDir: logs}); ok {
+			t.Errorf("%q read", bad)
+		}
 	}
 }

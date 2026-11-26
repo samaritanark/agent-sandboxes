@@ -23,6 +23,7 @@ import (
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/syncgate"
 	"github.com/samaritanark/agent-sandboxes/go/internal/secrets"
 )
 
@@ -353,23 +354,7 @@ func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (
 	if pp.OpencodeBaseURL != "" {
 		opencodeConfig = a.prepareOpencode(ep, pp.OpencodeBaseURL, args)
 	}
-	for _, r := range repos {
-		fmt.Fprintf(a.env.Stdout, "==> Syncing %s into the sandbox VM...\n", r)
-		ws, rep, err := a.syncRepo(ep, r)
-		if err != nil {
-			a.die("%v", err)
-		}
-		if n := len(rep.Quarantined) + len(rep.Conflicts); n > 0 {
-			fmt.Fprintf(a.env.Stdout, "    %d change(s) withheld or in conflict; see: sandbox sync review\n", n)
-		}
-		if a.mirrorHome() != "" {
-			if err := a.vmRun(ep, MirrorPath, r, ws); err != nil {
-				a.die("could not make %s the sandbox VM's path to its copy: %v", r, err)
-			}
-		}
-		synced = append(synced, r)
-	}
-	return synced, opencodeConfig
+	return a.syncAndMirror(ep, repos), opencodeConfig
 }
 
 // pushSecrets seals and pushes the named secrets from the host store, each with its binding.
@@ -583,4 +568,92 @@ func readLimited(p string) ([]byte, error) {
 		return nil, fmt.Errorf("larger than %d bytes", MaxSecretSize)
 	}
 	return v, err
+}
+
+// syncAndMirror syncs each repository into the VM and links its host path to the copy there.
+func (a *app) syncAndMirror(ep driver.SSHEndpoint, repos []string) (synced []string) {
+	for _, r := range repos {
+		fmt.Fprintf(a.env.Stdout, "==> Syncing %s into the sandbox VM...\n", r)
+		ws, rep, err := a.syncRepo(ep, r)
+		if err != nil {
+			a.die("%v", err)
+		}
+		if n := len(rep.Quarantined) + len(rep.Conflicts); n > 0 {
+			fmt.Fprintf(a.env.Stdout, "    %d change(s) withheld or in conflict; see: sandbox sync review\n", n)
+		}
+		if a.mirrorHome() != "" {
+			if err := a.vmRun(ep, MirrorPath, r, ws); err != nil {
+				a.die("could not make %s the sandbox VM's path to its copy: %v", r, err)
+			}
+		}
+		synced = append(synced, r)
+	}
+	return synced
+}
+
+// ResumeRepos is the in-VM helper that prints a session's repositories ({"repos":[...]}).
+const ResumeRepos = "__resume-repos"
+
+var sessionIDRE = regexp.MustCompile(`^ses-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$`)
+
+// resumeSessionID is the session `resume ARGS` names: its first argument that is not an option.
+func resumeSessionID(args []string) string {
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			if sessionIDRE.MatchString(a) {
+				return a
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// prepareResume syncs a resumed session's repositories before the attach (and returns them for
+// the live sync). The VM names them from the session's record; the host takes only those it has
+// synced before (it keeps sync state for each), so the VM cannot have it read any other directory,
+// and warns about the rest. When the VM cannot say, nothing is synced and resume goes on.
+func (a *app) prepareResume(ep driver.SSHEndpoint, id string) []string {
+	out, err := a.env.Transport.Output(a.ctx, ep, a.vmArgv(ResumeRepos, id), maxBindingsOutput)
+	if err != nil {
+		return nil
+	}
+	repos, err := parseResumeRepos(out)
+	if err != nil {
+		fmt.Fprintf(a.env.Stderr, "WARNING: the sandbox VM's list of this session's repositories is invalid; they are not synced.\n")
+		return nil
+	}
+	var known []string
+	for _, r := range repos {
+		rid, err := syncgate.RepoID(r)
+		if err == nil {
+			if _, err = os.Stat(filepath.Join(a.env.StateDir, "sync", rid, "state.json")); err == nil {
+				known = append(known, r)
+				continue
+			}
+		}
+		fmt.Fprintf(a.env.Stderr, "WARNING: not syncing %s: this host has not synced it into the sandbox VM before.\n", r)
+	}
+	return a.syncAndMirror(ep, known)
+}
+
+// parseResumeRepos reads the helper's {"repos":[...]} as strictly as the run's pre-pass.
+func parseResumeRepos(b []byte) ([]string, error) {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	var out struct {
+		Repos *[]string `json:"repos"`
+	}
+	if err := dec.Decode(&out); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errors.New("trailing data")
+	}
+	if out.Repos == nil {
+		return nil, errors.New("a field is missing")
+	}
+	raw, _ := json.Marshal(map[string][]string{"secrets": {}, "repos": *out.Repos})
+	p, err := parsePrepass(raw)
+	return p.Repos, err
 }

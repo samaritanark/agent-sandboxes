@@ -49,6 +49,9 @@ const receiveOperatorState = "__receive-operator-state"
 // for one workspace copy under /var/lib/sandbox/workspaces.
 const syncAgent = "__sync-agent"
 
+// resumeRepos prints a session's repositories for the host, which syncs them before a resume.
+const resumeRepos = "__resume-repos"
+
 // auditSessions and auditRead are the VM half of the audit pull (design 5.1.5, 5.12): the host
 // lists sessions and reads each log's records after the last sequence number it holds, and checks
 // everything it is given.
@@ -95,6 +98,18 @@ func main() {
 			os.Stderr.WriteString("ERROR: " + err.Error() + "\n")
 			os.Exit(1)
 		}
+		return
+	}
+	if len(os.Args) == 3 && os.Args[1] == resumeRepos {
+		repos, ok := cli.SessionRepos(os.Args[2], cliEnv())
+		if !ok {
+			os.Exit(1)
+		}
+		if repos == nil {
+			repos = []string{}
+		}
+		b, _ := json.Marshal(map[string][]string{"repos": repos})
+		os.Stdout.Write(append(b, '\n'))
 		return
 	}
 	if len(os.Args) >= 2 && os.Args[1] == runBindings {

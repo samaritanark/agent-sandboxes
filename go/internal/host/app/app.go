@@ -223,6 +223,12 @@ func (a *app) proxy(args []string) int {
 		live := a.startLiveSync(ep, repos)
 		defer live.finish()
 	}
+	if len(args) > 1 && args[0] == "resume" {
+		if id := resumeSessionID(args[1:]); id != "" {
+			live := a.startLiveSync(ep, a.prepareResume(ep, id))
+			defer live.finish()
+		}
+	}
 	rc, err := a.env.Transport.Run(a.ctx, ep, a.vmArgvEnv(extra, args...), a.env.Stdin, a.env.Stdout, a.env.Stderr, a.env.StdinTTY)
 	if err != nil {
 		a.die("cannot run the command in the sandbox VM: %v", err)

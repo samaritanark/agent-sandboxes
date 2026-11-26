@@ -2,6 +2,8 @@ package cli
 
 import (
 	"errors"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/agents"
@@ -285,4 +287,24 @@ func (c *cmdCtx) recreateSession(sessionID string, acceptUnmasked, acceptUnvette
 // tierAtLeast is `[[ "$tier" -ge N ]]` on a recorded tier.
 func tierAtLeast(t, n string) bool {
 	return bashcompat.ArithCmp(t, n, "gt") || bashcompat.ArithCmp(t, n, "eq")
+}
+
+var resumeSessionIDRE = regexp.MustCompile(`^ses-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$`)
+
+// SessionRepos is the repositories session id's record names (the host syncs them before a
+// resume); ok is false when there is no such record.
+func SessionRepos(id string, env Env) (repos []string, ok bool) {
+	if !resumeSessionIDRE.MatchString(id) {
+		return nil, false
+	}
+	rec, ok := sessionRecord(filepath.Join(env.LogsDir, id, "session.json"))
+	if !ok {
+		return nil, false
+	}
+	for _, r := range jqLines(rec.Get("repos")) {
+		if r != "" {
+			repos = append(repos, r)
+		}
+	}
+	return repos, true
 }
