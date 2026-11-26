@@ -81,6 +81,13 @@ func (d *Daemon) handle(ctx context.Context, c net.Conn, auth Authorize) {
 		if err := auth(c); err != nil {
 			d.logf("refused a connection: %v", err)
 			reply(Response{Error: "not allowed: " + err.Error()})
+			// read what the client sent before closing: a socket closed with unread data resets
+			// the connection, and the client would lose the refusal
+			if uc, ok := c.(*net.UnixConn); ok {
+				uc.CloseWrite()
+			}
+			c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			io.Copy(io.Discard, io.LimitReader(c, MaxRequest))
 			return
 		}
 	}

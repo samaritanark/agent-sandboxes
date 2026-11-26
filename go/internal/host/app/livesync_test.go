@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -103,6 +104,9 @@ func TestLiveSync(t *testing.T) {
 // TestPrepareResume: a resumed session's repositories are synced before the attach, but only those
 // this host synced before; the VM cannot name another directory, and a bad answer syncs nothing.
 func TestPrepareResume(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("host paths are POSIX paths the VM mirrors; v3 does not run sessions from a Windows host yet")
+	}
 	repo, other, vmdir, state := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	for _, r := range []string{repo, other} {
 		if out, err := exec.Command("git", "init", "-q", r).CombinedOutput(); err != nil {

@@ -54,6 +54,9 @@ jobs:
       - name: Install the build tools
         run: |
           set -eu
+          # the hosted runner's third-party repositories are not needed here, and one going away
+          # (packages.microsoft.com answered 403, 2026-11-26) fails apt-get update for all of them
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources
           sudo apt-get update -qq
           sudo apt-get install -y -qq systemd-ukify systemd-boot systemd-boot-efi mtools dosfstools zstd cpio \
             qemu-utils python3-venv bubblewrap dpkg-dev

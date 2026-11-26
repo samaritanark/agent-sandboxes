@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -194,6 +195,9 @@ func TestMirroredHome(t *testing.T) {
 // TestRepoNamed: a repository the VM asks to sync must be a --repo value (made absolute on the
 // host, "~" as the home) or written in a pushed profile, as itself or in its "~/" form.
 func TestRepoNamed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("host paths are POSIX paths the VM mirrors; v3 does not run sessions from a Windows host yet")
+	}
 	args := absRepos([]string{"--repo", "rel/app", "--repo=~/b", "--repo", "/abs/c", "--name", "/not/a/repo", "--repo=d"}, "/wd")
 	if !reflect.DeepEqual(args, []string{"--repo", "/wd/rel/app", "--repo=~/b", "--repo", "/abs/c", "--name", "/not/a/repo", "--repo=/wd/d"}) {
 		t.Fatalf("%q", args)
@@ -253,6 +257,9 @@ func TestCopyEpoch(t *testing.T) {
 // its file, sealed as a bearer token bound to the --infra-endpoint hosts, and pushed; a token or
 // host the command line does not name stops the launch before anything is pushed.
 func TestRunPushesInfraTokens(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("host paths are POSIX paths the VM mirrors; v3 does not run sessions from a Windows host yet")
+	}
 	state, k := secretState(t)
 	tok := filepath.Join(t.TempDir(), "vault-token")
 	os.WriteFile(tok, []byte("hvs.secret\n"), 0o600)
@@ -369,6 +376,9 @@ func TestRunOpencode(t *testing.T) {
 // and the proxied command pointed at its copy; one under ~/.sandbox (a linked overlay) is passed on
 // as it is; the operator's settings variables are forwarded, and nothing else of the environment.
 func TestOverlayAndSettings(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("host paths are POSIX paths the VM mirrors; v3 does not run sessions from a Windows host yet")
+	}
 	home := t.TempDir()
 	state := filepath.Join(home, ".sandbox")
 	os.MkdirAll(state, 0o700)
