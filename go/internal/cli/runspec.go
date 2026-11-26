@@ -14,14 +14,15 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/allowlist"
 	"github.com/samaritanark/agent-sandboxes/go/internal/catalogue"
 	"github.com/samaritanark/agent-sandboxes/go/internal/mounts"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/limits"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 	"github.com/samaritanark/agent-sandboxes/go/internal/tier"
 )
 
-// The agent microVM's limits: v2's pod limits (lib/resources.sh).
+// The agent microVM's limits: v2's pod limits (lib/resources.sh), except memory, which scales
+// with the VM (limits.Budget.AgentMemory).
 const (
 	agentCPUs         = 4
-	agentMemoryMiB    = 6 << 10
 	agentEphemeralGiB = 20
 )
 
@@ -37,11 +38,12 @@ const (
 const AgentHome = "/home/agent"
 
 // SpecInputs is what a spec needs beyond run's decisions and its session record: the agent image
-// pinned by digest, and the VM copy of each repository (the sync engine's, under
-// sessionspec.WorkspaceStore).
+// pinned by digest, the VM copy of each repository (the sync engine's, under
+// sessionspec.WorkspaceStore), and the VM's memory (0: unknown, so v2's 6 GiB).
 type SpecInputs struct {
 	Image         string
 	WorkspaceCopy func(repo string) (string, error)
+	VMMemoryMiB   int
 }
 
 var (
@@ -94,7 +96,7 @@ func (c *cmdCtx) buildSpec(s LaunchSpec, rec SessionRecord, in SpecInputs) (*ses
 	}
 	spec := &sessionspec.Spec{Version: sessionspec.Version, ID: rec.ID, Name: specName(rec.PodName), Agent: s.Agent, Tier: tierN,
 		Image: in.Image, Command: []string{"sleep", "infinity"},
-		Resources: sessionspec.Resources{CPUs: agentCPUs, MemoryMiB: agentMemoryMiB, EphemeralGiB: agentEphemeralGiB},
+		Resources: sessionspec.Resources{CPUs: agentCPUs, EphemeralGiB: agentEphemeralGiB},
 		Bindings:  []sessionspec.Binding{}, KeepAlive: s.KeepAlive,
 		Audit: map[string]string{"name": s.Name}}
 	if s.Profile != "" {
@@ -142,7 +144,21 @@ func (c *cmdCtx) buildSpec(s LaunchSpec, rec SessionRecord, in SpecInputs) (*ses
 		}
 		spec.Dependencies = append(spec.Dependencies, dep)
 	}
+	spec.Resources.MemoryMiB = agentMemory(in.VMMemoryMiB, spec.Dependencies)
 	return spec, nil
+}
+
+// agentMemory is the agent microVM's memory in a VM of vm MiB (0: unknown, so v2's 6 GiB) beside
+// the session's dependencies.
+func agentMemory(vm int, deps []sessionspec.Dependency) int {
+	if vm <= 0 {
+		return limits.AgentMaxMiB
+	}
+	var mem []int
+	for _, d := range deps {
+		mem = append(mem, d.Resources.MemoryMiB)
+	}
+	return limits.Budget{VMMemoryMiB: vm}.AgentMemory(mem)
 }
 
 // specDependency is a profile dependency's microVM, from its catalogue entry.

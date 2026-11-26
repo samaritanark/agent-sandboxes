@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -14,7 +13,6 @@ import (
 	"os/user"
 	"slices"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -84,14 +82,7 @@ func memTotalMiB() (int, error) {
 		return 0, err
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if fs := strings.Fields(sc.Text()); len(fs) >= 2 && fs[0] == "MemTotal:" {
-			kb, err := strconv.Atoi(fs[1])
-			return kb / 1024, err
-		}
-	}
-	return 0, errors.New("no MemTotal in /proc/meminfo")
+	return limits.MemTotalMiB(f)
 }
 
 // authorize lets root and members of ClientGroup in, by the peer's kernel credentials.

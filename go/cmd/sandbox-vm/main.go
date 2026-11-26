@@ -123,7 +123,8 @@ func main() {
 	}
 	env := cliEnv()
 	env.SecretPresent = pushedSecret
-	env.Launch = cli.LaunchEnv{Sessions: sandboxd{}, AgentImage: agentImage(AgentImages), WorkspaceCopy: workspaceCopyOf("/")}
+	env.Launch = cli.LaunchEnv{Sessions: sandboxd{}, AgentImage: agentImage(AgentImages), WorkspaceCopy: workspaceCopyOf("/"),
+		VMMemoryMiB: vmMemory}
 	os.Exit(cli.Run(os.Args[1:], env, os.Stdout, os.Stderr))
 }
 

@@ -43,6 +43,9 @@ type LaunchEnv struct {
 	AgentImage func(tag string) (string, error)
 	// WorkspaceCopy is the VM copy of a repository the run names (design 5.6).
 	WorkspaceCopy func(repo string) (string, error)
+	// VMMemoryMiB is the VM's memory, which the agent's default limit scales with; nil means
+	// v2's fixed 6 GiB.
+	VMMemoryMiB func() (int, error)
 }
 
 // agentDesc and tierDesc are print_session_banner's descriptions.
@@ -120,7 +123,13 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	if err != nil {
 		c.die("No runnable image for agent '%s' (tier %s): %v", s.Agent, s.Tier, err)
 	}
-	spec, err := c.buildSpec(s, rec, SpecInputs{Image: image, WorkspaceCopy: l.WorkspaceCopy})
+	in := SpecInputs{Image: image, WorkspaceCopy: l.WorkspaceCopy}
+	if l.VMMemoryMiB != nil {
+		if in.VMMemoryMiB, err = l.VMMemoryMiB(); err != nil {
+			c.die("The VM's memory: %v", err)
+		}
+	}
+	spec, err := c.buildSpec(s, rec, in)
 	if err != nil {
 		c.die("%v", err)
 	}

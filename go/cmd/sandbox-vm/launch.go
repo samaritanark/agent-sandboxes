@@ -16,6 +16,7 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/cli"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/attachclient"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/limits"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
 
@@ -124,4 +125,14 @@ func workspaceCopyOf(root string) func(string) (string, error) {
 		}
 		return p, nil
 	}
+}
+
+// vmMemory is the VM's memory, which the agent's default limit scales with.
+func vmMemory() (int, error) {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	return limits.MemTotalMiB(f)
 }

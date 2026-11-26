@@ -89,6 +89,26 @@ func TestBuildSpec(t *testing.T) {
 	}
 }
 
+func TestAgentMemory(t *testing.T) {
+	dep := func(mem int) sessionspec.Dependency {
+		return sessionspec.Dependency{Resources: sessionspec.Resources{MemoryMiB: mem}}
+	}
+	for _, c := range []struct {
+		vm   int
+		deps []sessionspec.Dependency
+		want int
+	}{
+		{0, nil, 6144},     // unknown: v2's limit
+		{7936, nil, 5632},  // an 8 GiB VM's MemTotal, less 2048 and 256
+		{16384, nil, 6144}, // capped
+		{7936, []sessionspec.Dependency{dep(512)}, 4864}, // 5632 - 768
+	} {
+		if got := agentMemory(c.vm, c.deps); got != c.want {
+			t.Errorf("agentMemory(%d, %d deps) = %d, want %d", c.vm, len(c.deps), got, c.want)
+		}
+	}
+}
+
 func TestQuantities(t *testing.T) {
 	for q, want := range map[string]float64{"1": 1, "250m": 0.25, "2000m": 2} {
 		if got, err := cpus(q); err != nil || got != want {

@@ -4,7 +4,12 @@
 package limits
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"io"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
@@ -70,6 +75,41 @@ func (b Budget) Admit(holding []*sessionspec.Spec, spec *sessionspec.Spec) error
 			need, len(spec.Dependencies), max(avail-used, 0), avail, b.VMMemoryMiB, b.reserve())
 	}
 	return nil
+}
+
+// AgentMaxMiB is the agent microVM's default memory on a VM with room for it: v2's pod limit.
+// AgentMinMiB is the floor of the scaled default; a VM too small for it is refused at admission.
+const (
+	AgentMaxMiB = 6 << 10
+	AgentMinMiB = 1 << 10
+)
+
+// AgentMemory is the agent microVM's default memory (owner decision, 2026-11-26): what the VM has
+// for one session after the reserve, the agent's overhead, and its dependencies' cost (depMiB is
+// their guest memory; each also costs an overhead), rounded down to 256 MiB and capped at
+// AgentMaxMiB. Other sessions do not shrink it: admission refuses a launch that does not fit.
+func (b Budget) AgentMemory(depMiB []int) int {
+	n := b.VMMemoryMiB - b.reserve() - b.overhead()
+	for _, d := range depMiB {
+		n -= d + b.overhead()
+	}
+	n &^= 255
+	return max(min(n, AgentMaxMiB), AgentMinMiB)
+}
+
+// MemTotalMiB reads MemTotal from /proc/meminfo's text.
+func MemTotalMiB(r io.Reader) (int, error) {
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		if fs := strings.Fields(sc.Text()); len(fs) >= 2 && fs[0] == "MemTotal:" {
+			kb, err := strconv.Atoi(fs[1])
+			return kb / 1024, err
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return 0, err
+	}
+	return 0, errors.New("no MemTotal in /proc/meminfo")
 }
 
 // Expiry is the operator's limits on how long sessions live.

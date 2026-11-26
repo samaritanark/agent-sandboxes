@@ -75,7 +75,7 @@ var allowed = map[string][]string{
 	"mounts": {"bashcompat", "config", "gate"},
 	// the in-VM CLI is the policy layer's front end, so it may use every policy package
 	"cli": {"agents", "allowlist", "audit", "bashcompat", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
-		"link", "mounts", "onboard", "secretcmd", "secrets", "sessionspec", "tier", "vetting", "workspace"},
+		"link", "mounts", "onboard", "sandboxd/limits", "secretcmd", "secrets", "sessionspec", "tier", "vetting", "workspace"},
 
 	// The host binary's packages (design 5.1). They import only each other.
 	"host/driver":     {},

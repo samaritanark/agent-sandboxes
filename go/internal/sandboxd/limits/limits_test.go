@@ -77,3 +77,51 @@ func TestExpiry(t *testing.T) {
 		t.Error("a configured grace was ignored")
 	}
 }
+
+func TestAgentMemory(t *testing.T) {
+	for _, c := range []struct {
+		vm   int
+		deps []int
+		want int
+	}{
+		{16384, nil, AgentMaxMiB},
+		{8192, nil, 5888},        // 8192 - 2048 - 256
+		{7936, nil, 5632},        // a minimum VM's MemTotal
+		{7900, nil, 5376},        // 5596 rounded down to 256
+		{8448, nil, AgentMaxMiB}, // exactly the cap
+		{8447, nil, 5888},        // just under it
+		{7936, []int{512}, 4864}, // a dependency's memory and overhead
+		{7936, []int{512, 1024}, 3584},
+		{3000, nil, AgentMinMiB}, // too small: the floor, refused at admission
+	} {
+		if got := (Budget{VMMemoryMiB: c.vm}).AgentMemory(c.deps); got != c.want {
+			t.Errorf("AgentMemory(%d, %v) = %d, want %d", c.vm, c.deps, got, c.want)
+		}
+	}
+	// the default always fits an otherwise idle VM, down to the floor
+	for vm := 3328; vm <= 20000; vm += 7 {
+		for _, deps := range [][]int{nil, {512}, {512, 1024}} {
+			b := Budget{VMMemoryMiB: vm}
+			m := b.AgentMemory(deps)
+			if m == AgentMinMiB {
+				continue
+			}
+			if err := b.Admit(nil, sess(m, deps...)); err != nil {
+				t.Fatalf("vm %d deps %v: default %d refused: %v", vm, deps, m, err)
+			}
+		}
+	}
+}
+
+func TestMemTotalMiB(t *testing.T) {
+	n, err := MemTotalMiB(strings.NewReader("MemFree:  100 kB\nMemTotal:        8126464 kB\n"))
+	if err != nil || n != 7936 {
+		t.Errorf("%d %v", n, err)
+	}
+	if _, err := MemTotalMiB(strings.NewReader("MemFree: 1 kB\n")); err == nil {
+		t.Error("no MemTotal accepted")
+	}
+	if _, err := MemTotalMiB(strings.NewReader("MemTotal: x kB\n")); err == nil {
+		t.Error("a bad number accepted")
+	}
+}

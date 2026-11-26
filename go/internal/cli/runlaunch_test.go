@@ -73,8 +73,19 @@ func launchEnv(t *testing.T) (Env, *fakeSessions, string) {
 			}
 			return "docker.io/library/sandbox" + testDigest, nil
 		},
-		WorkspaceCopy: func(string) (string, error) { return "", errors.New("no repos in this test") }}
+		WorkspaceCopy: func(string) (string, error) { return "", errors.New("no repos in this test") },
+		VMMemoryMiB:   func() (int, error) { return 7936, nil }}
 	return e, fs, home
+}
+
+// TestLaunchMemoryError: run stops before starting anything when the VM's memory is unreadable.
+func TestLaunchMemoryError(t *testing.T) {
+	e, fs, _ := launchEnv(t)
+	e.Launch.VMMemoryMiB = func() (int, error) { return 0, errors.New("no meminfo") }
+	var errb bytes.Buffer
+	if rc := Run([]string{"run"}, e, &bytes.Buffer{}, &errb); rc != 1 || !strings.Contains(errb.String(), "The VM's memory: no meminfo") || len(fs.started) != 0 {
+		t.Errorf("%d %s", rc, errb.String())
+	}
 }
 
 // TestLaunch: a tier 1 run starts the spec, shows v2's banner, attaches the agent with its pinned
@@ -87,6 +98,9 @@ func TestLaunch(t *testing.T) {
 	}
 	if len(fs.started) != 1 || fs.started[0].Image != "docker.io/library/sandbox"+testDigest || len(fs.started[0].Mounts) != 0 {
 		t.Fatalf("started %+v", fs.started)
+	}
+	if m := fs.started[0].Resources.MemoryMiB; m != 5632 { // scaled to the VM's 7936 MiB
+		t.Errorf("agent memory %d", m)
 	}
 	id := fs.started[0].ID
 	if len(fs.attached) != 1 || fs.attached[0][0] != id || fs.attached[0][1] != "claude" || len(fs.attached[0]) != 4 || fs.attached[0][2] != "--session-id" {

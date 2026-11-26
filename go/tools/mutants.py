@@ -1225,3 +1225,18 @@ m("internal/host/app/syncone.go", '\tif live != nil {\n\t\te.Run(live, LiveSyncI
 m("internal/host/app/livesync.go", '\tl.toHost += len(rep.ToHost)', '\tl.toHost += 0', "TestLiveSync", pkg="host/app")
 m("internal/host/app/app.go", '\t\tdefer live.finish()\n', '', "TestLiveSync|TestRun", pkg="host/app",
   equivalent="no host test drives a proxied run with repositories through a live sync")
+
+# ---- the agent's memory default scaled to the VM (internal/sandboxd/limits, cli/runspec.go)
+LM = "internal/sandboxd/limits/limits.go"
+R_LM = "TestAgentMemory|TestMemTotalMiB"
+m(LM, '\tn := b.VMMemoryMiB - b.reserve() - b.overhead()', '\tn := b.VMMemoryMiB - b.reserve()', R_LM, pkg="sandboxd/limits")
+m(LM, '\t\tn -= d + b.overhead()', '\t\tn -= d', R_LM, pkg="sandboxd/limits")
+m(LM, '\tn &^= 255\n', '', R_LM, pkg="sandboxd/limits")
+m(LM, '\treturn max(min(n, AgentMaxMiB), AgentMinMiB)', '\treturn min(n, AgentMaxMiB)', R_LM, pkg="sandboxd/limits")
+m(LM, '\t\t\treturn kb / 1024, err', '\t\t\treturn kb / 1000, err', R_LM, pkg="sandboxd/limits")
+m(LM, 'fs[0] == "MemTotal:" {', 'strings.HasPrefix(fs[0], "Mem") {', R_LM, pkg="sandboxd/limits")
+m("internal/cli/runspec.go", '\tif vm <= 0 {\n\t\treturn limits.AgentMaxMiB\n\t}', '', "TestAgentMemory|TestBuildSpec")
+m("internal/cli/runspec.go", '\t\tmem = append(mem, d.Resources.MemoryMiB)', '', "TestAgentMemory")
+m("internal/cli/runspec.go", '\tspec.Resources.MemoryMiB = agentMemory(in.VMMemoryMiB, spec.Dependencies)', '\tspec.Resources.MemoryMiB = agentMemory(0, spec.Dependencies)', "TestAgentMemory|TestBuildSpec|TestLaunch")
+m("internal/cli/runlaunch.go", '\t\tif in.VMMemoryMiB, err = l.VMMemoryMiB(); err != nil {', '\t\tif _, err = l.VMMemoryMiB(); err != nil {', "TestLaunch")
+m("internal/cli/runlaunch.go", '\t\t\tc.die("The VM\'s memory: %v", err)', '\t\t\t_ = err', "TestLaunch")
