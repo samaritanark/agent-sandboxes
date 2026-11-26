@@ -6,6 +6,32 @@ The CLI reads defaults from three `config.yaml` sources and a handful of
 environment variables. This page is a key-by-key reference; the how-to guides
 linked from each section show them in context.
 
+v3 reads `~/.sandbox` in v2's formats: your `config.yaml`, profiles, overlays,
+vetting files, and secrets carry over unchanged. Before each command the host
+copies the settings the VM needs (`config.yaml`, `profiles/`, `vetting/`,
+`extra-ca-certs/`, `egress-rules.yaml`, `agent-config/`) into the VM; secrets
+never go there in bulk (see [Secrets](../how-to/secrets.md)).
+
+## ~/.sandbox in v3
+
+| Path | What it is |
+|------|------------|
+| `config.yaml`, `profiles/`, `overlays/`, `vetting/` | as in v2 |
+| `extra-ca-certs/` | CAs added to every session's trust store (for example `proxy-ca.crt` from `sandbox setup-proxy-cert`) |
+| `egress-rules.yaml` | your L7 rules (see [Egress rules](../how-to/egress-rules.md)) |
+| `secrets/` | the secret store: one file per secret, mode 0600 |
+| `secrets/.bindings/` | each secret's binding (hosts and injection, or readable) |
+| `agent-config/<agent>/` | the agent settings `sandbox onboard` copied (`settings.json` and `CLAUDE.md` for Claude Code; `config.toml`, `AGENTS.md`, and the account's `identity.json` for Codex). No logins. |
+| `vm/` | the VM's driver state, SSH keys, and pinned host key |
+| `sync/` | the sync engine's state per repository |
+| `quarantine/` | workspace changes the sync gate withheld (`sandbox sync review`) |
+| `logs/` | session records pulled from the VM (see [Audit logs](audit-logs.md)), and `vm-shell.log` |
+| `agent-home/` | v2 only. v3 does not use it; `sandbox migrate --remove-v2` archives it to `v2-archive/` |
+
+The credential broker's key is kept in the macOS keychain (item
+`agent-sandboxes broker key`), and on Linux in `~/.sandbox/broker.key`
+(mode 0600).
+
 ## config.yaml locations
 
 | Location | Scope | Notes |
@@ -82,22 +108,31 @@ min_sandbox_version: 2.12.0          # oldest CLI allowed to use this overlay
 - The overlay may also ship a `.betterleaksignore` / `.gitleaksignore` **file** at its root (not a `config.yaml` key) — a baseline of betterleaks fingerprints the secret gate should accept. Like `leakscan_extra_dep_dirs` it is operator-only, since suppressing a finding loosens the scan; see [Owning betterleaks' allowlist inputs](../explanation/security-model.md#owning-betterleaks-allowlist-inputs).
 - `leakscan_inline_allow` — whether the secret gate honors inline `# gitleaks:allow` / `# betterleaks:allow` comments on a flagged line. **Default is on** (honored): a reviewed, annotated line is suppressed, matching how the team's CI and pre-commit betterleaks runs treat the same comment. Set it to `off` to make the gate ignore inline comments and re-flag those lines — the stricter posture for an org that does not trust workspace-authored suppression. Read **only** from the overlay: the knob only tightens, so a repo or user config cannot change it. It governs only the workspace scan — the explicit `.git/config` scan never honors inline comments regardless of this setting. See [Owning betterleaks' allowlist inputs](../explanation/security-model.md#owning-betterleaks-allowlist-inputs).
 - `leakscan_config_url` — a URL to a betterleaks config the secret gate uses **verbatim** in place of the one it generates, so the gate and another betterleaks-based tool (CI, a GitOps scanner) can share a single source of truth — point both at the same file. It is fetched, validated (`betterleaks config check`), and cached locally at `sandbox link` / `sandbox link sync` time and before each launch — never inside the scan, so the fail-closed gate never touches the network. The cache is sha256-pinned (recorded with its source URL in `~/.sandbox/config.yaml`); a changed remote is announced on the next fetch, not silently adopted. Fail-safe on a bad or unreachable fetch: the previous cached copy stands, or the gate falls back to its generated (strict) config and warns — it never skips scanning. Read **only** from the overlay, since supplying the scan config is a loosening authority (like `leakscan_inline_allow`). An operator who prefers to ship the file directly can instead commit a `betterleaks.toml` at the overlay root, used the same way with no fetch. See [Owning betterleaks' allowlist inputs](../explanation/security-model.md#owning-betterleaks-allowlist-inputs).
-- `min_sandbox_version` — the minimum CLI version the overlay needs. An older CLI silently ignores overlay keys it does not know, so once an overlay relies on a newer feature this key makes "too old" a hard refusal instead: `sandbox link`, `sandbox link sync`, and `sandbox run` all refuse while the installed CLI is older (`sandbox upgrade` is the fix). A leading `v` is accepted; an unversioned dev checkout warns and proceeds (nothing to compare).
+- `min_sandbox_version` — the minimum CLI version the overlay needs. An older CLI silently ignores overlay keys it does not know, so once an overlay relies on a newer feature this key makes "too old" a hard refusal instead: `sandbox link`, `sandbox link sync`, and `sandbox run` all refuse while the installed CLI is older (the fix is a newer CLI; `sandbox upgrade` is not available in v3 yet). A leading `v` is accepted; an unversioned dev checkout warns and proceeds (nothing to compare).
 - `trusted_inference_endpoints` — exact bare hosts of internal model endpoints trusted to receive secret-bearing prompts. When a session's inference endpoint is on this list, a would-be-blocking secret finding is downgraded from a hard refusal to a single interactive confirmation (fails closed with no TTY). Read only from the overlay (an operator-side input, never a repo-local config, so the in-sandbox agent cannot add one), no wildcards; today only the `opencode` agent (`OPENCODE_BASE_URL`) can match. See [Trusted internal model endpoints](../how-to/secret-exceptions.md#trusted-internal-model-endpoints-a-different-lever).
 
 ## Environment variables
 
 | Variable | Equivalent |
 |----------|------------|
-| `SANDBOX_EXTRA_ALLOWED_DOMAINS` | comma-separated `extra_allowed_domains` (convenient for CI / shell-rc) |
+| `SANDBOX_EXTRA_ALLOWED_DOMAINS` | comma-separated `extra_allowed_domains` |
 | `SANDBOX_OVERLAY` | `overlay:` |
-| `SANDBOX_TEARDOWN_REMINDER_GRACE` | seconds a just-launched session may be pod-less before `sandbox list` warns it ended without teardown (default 120); a large value effectively disables the reminder. Non-numeric values fall back to the default. |
-| `OPENCODE_API_KEY` | required in host env for the opencode agent |
-| `OPENCODE_BASE_URL` | opencode endpoint (or `--base-url`) |
+
+In v3 the two variables above are read by the policy layer in the VM, and the
+host does not pass your shell's environment on to it (only `OPENCODE_BASE_URL`),
+so set them in `config.yaml` instead.
+
+| Variable | Read on the host |
+|----------|------------------|
+| `SANDBOX_SECRETS_DIR` | the secret store (default `~/.sandbox/secrets`) |
+| `OPENCODE_API_KEY` | opencode's key, read from your shell on the host at each opencode launch; sealed for the broker, never given to the agent |
+| `OPENCODE_BASE_URL` | opencode's endpoint (or `--base-url`); forwarded to the VM |
+| `CLAUDE_CODE_OAUTH_TOKEN` | read by `sandbox onboard --agent claude` instead of asking for the token |
 
 ## Profiles
 
 A profile is a named YAML bundle (`tier`, and optionally `agent`,
-`default_repo`, `extra_allowed_domains`, `secrets`, `mcps`, `services`). See
+`default_repo`, `extra_allowed_domains`, `secrets`, `mcps`, `services`). In v3
+a profile's `secrets:` reach a session only through each secret's binding. See
 [Profiles and overlays](../how-to/profiles-and-overlays.md) for the full field
 reference and `sandbox profile save`.

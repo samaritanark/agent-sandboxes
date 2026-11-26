@@ -2,100 +2,72 @@
 
 [← Documentation](../index.md)
 
-If your laptop egresses through a TLS-intercepting proxy — Zscaler is
-the common case, also Netskope, Forcepoint, Cisco Umbrella, Palo Alto
-Prisma, internal MITM appliances — the sandbox image build and the
-running agents will fail TLS validation against the re-signed certs
-unless the proxy's root CA is trusted inside the sandbox image.
+If your machine egresses through a TLS-intercepting proxy (Zscaler is the common case, also
+Netskope, Forcepoint, Cisco Umbrella, Palo Alto Prisma, internal MITM appliances), connections from
+the sandbox VM and its sessions fail TLS validation against the re-signed certificates unless the
+proxy's root CA is trusted there.
 
-Symptom during the image build (most often hit on **first-time
-`./setup.sh`**):
-
-```
-curl: (60) SSL certificate problem: unable to get local issuer certificate
-```
-
-Symptom at runtime: `claude` / `codex` / `opencode` failing to
-authenticate, or `npm install` / `pip install` / `git clone` inside a
-sandbox failing to reach its registry.
-
-`./setup.sh` runs a TLS probe before the image build and aborts early
-with a pointer here if it sees interception, so you don't lose a build
-to it.
+Symptoms: `sandbox rebuild` failing to download packages
+(`curl: (60) SSL certificate problem: unable to get local issuer certificate`), agents failing to
+reach their APIs, or `npm install` / `pip install` / `git clone` failing inside a session.
 
 ## Fix
 
-Drop the proxy's root CA into `config/extra-ca-certs/` as a PEM `.crt`
-file, then run (or re-run) setup:
+Save the proxy's root CA into `~/.sandbox/extra-ca-certs/` (a PEM `.crt` or `.pem` file), before
+you install the sandbox VM:
 
 ```bash
-./setup.sh             # first-time install
-sandbox rebuild        # already installed, refreshing the images
+sandbox setup-proxy-cert      # finds it in your machine's trust store and saves it
+sandbox install ...           # the VM trusts it from the start
 ```
 
-`Dockerfile.base` copies anything in `config/extra-ca-certs/` into the
-image's trust store via `update-ca-certificates`. Because all the agent
-images (`:claude`, `:codex`, `:opencode`, `:shell`, `:*-infra`) derive
-from `:base`, the same trust applies inside every running pod — one
-fix, build-time and runtime.
+v2 baked the CA into the agent images at build time. v3 delivers it at runtime instead, so the
+images are the same everywhere and no rebuild is needed for a new CA:
+
+- the sandbox VM itself trusts it (for `sandbox rebuild`'s downloads and the gateway's own
+  upstream connections);
+- every session gets one trust bundle (the system roots, your CAs, and the session gateway's
+  certificate authority) read-only under `/etc/ssl/sandbox/`, with `SSL_CERT_FILE`,
+  `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `PIP_CERT`, `GIT_SSL_CAINFO`, and
+  `NODE_EXTRA_CA_CERTS` pointing at it.
+
+**In this build the VM takes the CAs in `~/.sandbox/extra-ca-certs/` when it is installed.** A CA
+you add later reaches the VM and its sessions only after the VM is installed again:
+`sandbox uninstall` (answer `n` to keep each kind of state; never `--purge` while you use v2 on the
+same machine), then `sandbox install` again. (`setup-proxy-cert`'s closing message says "from the
+next session"; that is the design's intent, not yet what this build does.) The repository's
+`config/extra-ca-certs/` and an overlay's `extra-ca-certs/` are not read yet either; put the CA in
+`~/.sandbox/extra-ca-certs/`.
 
 ## Getting the cert
 
-The repo ships a helper that auto-extracts the cert from the host. It
-runs straight out of the checkout (no PATH setup needed) so you can use
-it during a first-time install before the `sandbox` CLI is on PATH:
+`sandbox setup-proxy-cert` runs on your machine and writes `~/.sandbox/extra-ca-certs/proxy-ca.crt`:
 
-```bash
-./bin/sandbox setup-proxy-cert        # first time, before setup.sh
-sandbox setup-proxy-cert              # already installed
-```
+- **Linux**: scans `/usr/local/share/ca-certificates/` and the system bundle for certificates whose
+  subject matches known proxy vendors.
+- **macOS**: queries the System keychain.
+- **Windows**: the `LocalMachine\Root` and `CurrentUser\Root` stores.
 
-It writes `config/extra-ca-certs/proxy-ca.crt` and tells you what to
-do next. Behavior by platform:
+Options (`sandbox setup-proxy-cert --help`):
 
-- **Linux**: scans `/usr/local/share/ca-certificates/` and the system
-  bundle for certs whose Subject matches known proxy-vendor names.
-- **macOS**: queries the System keychain via the `security` command.
-- **WSL2**: tries the Linux distro store first; if empty, falls back to
-  the Windows `LocalMachine\Root` store via `powershell.exe` (which is
-  always on PATH inside WSL). This handles the common case where the
-  corporate root was installed only on Windows, not in the distro.
-
-Useful flags (see `./bin/sandbox setup-proxy-cert --help`):
-
-- `--vendor <substring>` — Subject filter when your org's CA doesn't
-  match the built-in vendor list (Zscaler, Netskope, Forcepoint, Cisco
-  Umbrella, Palo Alto/Prisma, Symantec/Blue Coat, iboss, Menlo).
-- `--from-wire <host[:port]>` — last-resort extraction by opening a
-  TLS connection to a known-public host (e.g. `deb.nodesource.com`)
-  and capturing whatever proxy chain the network actually presents.
-  Useful when nothing matches in the trust store.
-- `--list` — print what was found without writing the file.
+- `--vendor <name>`: the subject substring to match when your org's CA is not in the built-in
+  list (Zscaler, Netskope, Forcepoint, Cisco Umbrella, Palo Alto/Prisma, Symantec/Blue Coat,
+  iboss, Menlo).
+- `--from-wire <host[:port]>`: last resort; opens a TLS connection to a public host (for example
+  `deb.nodesource.com`) and saves the proxy chain the network presents.
+- `--output <path>`: write elsewhere.
+- `--list`: print what was found without writing.
+- `--force`: overwrite an existing file without asking.
 
 ## Doing it by hand
 
-If `setup-proxy-cert` doesn't fit (e.g. you already know the cert
-location), the equivalent one-liners are:
-
 ```bash
-# Linux — IT often pre-installs corporate roots here:
-cp /usr/local/share/ca-certificates/Zscaler*.crt config/extra-ca-certs/
+# Linux: IT often pre-installs corporate roots here
+cp /usr/local/share/ca-certificates/Zscaler*.crt ~/.sandbox/extra-ca-certs/
 
-# macOS — System keychain via the Security framework CLI:
+# macOS: the System keychain
 security find-certificate -a -c Zscaler -p /Library/Keychains/System.keychain \
-  > config/extra-ca-certs/zscaler.crt
+  > ~/.sandbox/extra-ca-certs/zscaler.crt
 ```
 
-```powershell
-# Windows — run in PowerShell BEFORE setup.ps1, since WSL doesn't inherit
-# the Windows trust store:
-Get-ChildItem Cert:\LocalMachine\Root |
-  Where-Object { $_.Subject -like '*Zscaler*' } |
-  ForEach-Object {
-    $b64 = [Convert]::ToBase64String($_.RawData, 'InsertLineBreaks')
-    "-----BEGIN CERTIFICATE-----`n$b64`n-----END CERTIFICATE-----"
-  } | Out-File -Encoding ascii config\extra-ca-certs\zscaler.crt
-```
-
-The certs themselves are gitignored — your org's MITM root is unique to
-your environment and shouldn't be committed.
+Your org's root is specific to your environment; keep it out of any repository.

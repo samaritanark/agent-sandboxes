@@ -7,7 +7,9 @@
 If your team always needs the same extra domain reachable (an internal Git
 host, an artifact registry, etc.), you don't have to type `--allow-domain`
 on every invocation. These **operator-side** sources are loaded automatically
-on every `sandbox run` and merged with the built-in tier allowlist:
+on every `sandbox run` and merged with the built-in tier allowlist. (In v3 the allowlist is
+enforced by each session's own gateway in the sandbox VM; see
+[Architecture](../explanation/architecture.md).)
 
 ```yaml
 # ~/.sandbox/config.yaml — per-user defaults
@@ -16,10 +18,10 @@ extra_allowed_domains:
   - artifactory.example.com
 ```
 
-```bash
-# Shell env (comma-separated) — convenient for CI / shell-rc
-export SANDBOX_EXTRA_ALLOWED_DOMAINS="git.example.com,artifactory.example.com"
-```
+v2 also read a `SANDBOX_EXTRA_ALLOWED_DOMAINS` environment variable. In v3 the policy layer runs
+in the sandbox VM, and the host passes it none of your shell's environment (only
+`OPENCODE_BASE_URL`), so that variable has no effect: use `~/.sandbox/config.yaml`, which the host
+pushes to the VM before every command.
 
 ```yaml
 # <overlay>/profiles/<name>.yaml — team overlay profile (reviewed at link time)
@@ -122,7 +124,7 @@ blocked_cidrs:
 
 This is **deny-only and additive**: your entries are unioned with the org and
 overlay block lists and can never weaken them (a block always beats an allow).
-The check runs at `sandbox run` **before any cluster resource is created**, and
+The check runs at `sandbox run` **before the session is created**, and
 covers every egress target — including ones auto-derived from a kubeconfig or
 `--infra-endpoint`, and IP-literal endpoints matched against `blocked_cidrs`. So
 a kubeconfig whose API server is `https://10.0.3.7:6443` fails fast:
@@ -132,22 +134,20 @@ ERROR: 10.0.3.7 falls inside blocked CIDR '10.0.0.0/8'.
 ```
 
 instead of launching and leaving you to discover at runtime that egress is
-blocked. (IPv6-literal endpoints are matched only by Cilium's runtime
-`egressDeny`, not at create time.)
+blocked. The session's gateway applies the same block lists to every connection at runtime, so an
+address the launch could not see (a name that resolves into a blocked range, an IPv6 literal) is
+refused there.
 
 ## Live-updating a running session
 
-If a session hits a domain that's not in its allowlist, you don't have
-to stop and restart the pod. `sandbox allow` regenerates the
-CiliumNetworkPolicy with extra entries and applies it in place — the
-pod isn't restarted and in-flight connections are preserved:
+v2's `sandbox allow <SESSION_ID> --add-domain <domain>` widened a running session's allowlist in
+place. **It is not available in v3 yet**: the domains still go through the same checks, then the
+command stops, because the running session's gateway cannot take a new allowlist yet. Stop the
+session and start a new one with `--allow-domain` (or add the domain to
+`extra_allowed_domains:`). With `--keep-alive` and `--tier 2` or `3`, the agent's conversation
+history is kept, so you can pick it up with the agent's `/resume`.
 
-```bash
-sandbox allow ses-20260527-...-a7b3 --add-domain go.private.example.com
-```
+## Rules for a domain's requests
 
-Each `--add-domain` goes through the same blocked-destinations check
-as `--allow-domain` at launch. The change is recorded in
-`~/.sandbox/logs/<session>/session.json` (both in `allowed_domains` and
-as an event). `sandbox allow` is add-only — narrowing a live
-allowlist requires `sandbox stop` and a fresh `sandbox run`.
+An allowlisted domain is reachable for any method and path. To limit what the agent may do there
+(read-only, a few paths), add L7 rules: see [Egress L7 rules](egress-rules.md).

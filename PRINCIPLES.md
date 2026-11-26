@@ -46,8 +46,9 @@ If the answer to any of these is no, stop and ask for help.
 
 ## Core principles
 
-1. **Agents are untrusted by default.** Every session runs inside a
-   gVisor-isolated pod with a default-deny egress policy. The tool does
+1. **Agents are untrusted by default.** Every session runs in its own
+   microVM, inside a VM that has nothing of your machine mounted, and its
+   only way out is a per-session gateway that denies by default. The tool does
    not rely on agent-side configuration or cooperative behavior for any
    security property.
 
@@ -81,7 +82,7 @@ If the answer to any of these is no, stop and ask for help.
   sandbox enforces controls at the kernel, network, and filesystem
   layer, so agent-side persuasion cannot weaken them.
 - A subtly wrong agent suggestion that an inattentive operator might
-  accept — making the blast radius of a mistake one pod, not one host.
+  accept — making the blast radius of a mistake one session, not one host.
 - Workspace-resident secrets the operator forgot about — masked file
   paths hide `.env`, `.npmrc`, kubeconfigs, OpenStack RC files, etc.
 
@@ -94,9 +95,9 @@ If the answer to any of these is no, stop and ask for help.
   are your sandbox sessions.
 - Compromise of the LLM provider or the model weights — the sandbox
   cannot tell a "good" instruction stream from a poisoned one.
-- Supply-chain compromise of this tool, its container images, gVisor,
-  or Cilium — keep your install current and source from a trusted
-  upstream.
+- Supply-chain compromise of this tool, its appliance or container
+  images, Kata, or Envoy — keep your install current and source from a
+  trusted upstream.
 - An operator who deliberately weakens the configuration ("just add
   the production cluster to the allowlist for this one task") — the
   tool will not stop you, but you accept the consequences.
@@ -108,12 +109,12 @@ first list, not the second.
 
 Three tiers, lowest-privilege by default:
 
-- **Tier 1 — ephemeral.** Disposable workspace (`emptyDir`), agent
-  domains only. For exploratory work, learning a tool, throwaway
+- **Tier 1 — ephemeral.** Disposable session, agent domains only; the
+  agent's history goes with the session. For exploratory work, learning a tool, throwaway
   experiments. Use when no real codebase is involved.
 
-- **Tier 2 — project.** A host repo (or several) mounted read-write,
-  plus package-registry and GitHub egress. For real development work
+- **Tier 2 — project.** A host repo (or several), synced into the
+  session, plus package-registry and GitHub egress. For real development work
   against your own code. No cloud or infrastructure access.
 
 - **Tier 3 — infrastructure.** Tier 2 plus operator-supplied,
@@ -129,12 +130,19 @@ allowlist contents and CLI flags per tier.
 
 ## Credential isolation
 
-Five rules govern what credentials can enter the sandbox:
+Six rules govern what credentials can enter the sandbox:
 
-1. **Agents never hold long-lived API keys directly.** Provider
-   credentials (LLM keys, cloud tokens) are injected at runtime via
-   Kubernetes Secrets keyed to the session, not baked into images,
-   config files, or shell rcs that the agent could read.
+1. **Agents never hold credentials; they hold placeholders.** The agent's
+   own login, profile secrets, infra tokens, and API keys are brokered:
+   the agent's variable or file holds a placeholder, and the session's
+   gateway puts the real value into requests to the hosts the credential
+   is bound to, and takes it back out of responses. A placeholder sent
+   anywhere else is refused. Credentials are stored sealed in the
+   appliance VM under a key that lives on your machine, and are never
+   baked into images, config files, or anything the agent can read. The
+   one exception is a secret the operator explicitly marks
+   `--allow-readable`, which the agent receives as a file; that is
+   recorded per session.
 
 2. **Infrastructure credentials are session-scoped or absent.** If a
    Tier 3 session needs cluster or cloud access, the credentials are
@@ -144,9 +152,10 @@ Five rules govern what credentials can enter the sandbox:
 
    The same rule applies to user-managed secrets (Jira PATs, Gitea
    tokens, internal API keys). They live in the host-side store at
-   `~/.sandbox/secrets/` (mode 0600) and only enter the cluster as a
-   session-scoped Secret when a profile declares them — created at
-   launch, deleted at teardown. See `sandbox secret --help` and
+   `~/.sandbox/secrets/` (mode 0600), each with a binding that names the
+   hosts it may reach. They enter the appliance VM, sealed, only when a
+   launch's command line or profile names them, and a secret with no
+   binding is withheld. See `sandbox secret --help` and
    `docs/how-to/secrets.md`.
 
 3. **Auth-provider sessions never enter the sandbox.** If your
@@ -155,27 +164,37 @@ Five rules govern what credentials can enter the sandbox:
    none of them should be runnable inside the sandbox. Their host-side
    state (`~/.tsh/`, `~/.aws/`, exec credential plugins, etc.) is
    never mounted or forwarded. If a Tier 3 session needs API access,
-   produce a static kubeconfig or scoped token on the host first and
-   pass it in via `--infra-kubeconfig` / `--infra-token`; see
+   produce a scoped token on the host first and pass it in via
+   `--infra-token` (`--infra-kubeconfig` is not available in v3 yet); see
    `examples/teleport/` for one such recipe.
 
 4. **SSH keys, SSH agent sockets, and Git credential helpers stay on
    the host.** `~/.ssh/`, `SSH_AUTH_SOCK`, and host credential helpers
-   are never forwarded. `~/.gitconfig` is mounted read-only so the
-   agent can produce commits with your identity but cannot rewrite it.
+   are never forwarded. Nothing of your home directory is mounted into
+   the appliance VM.
 
 5. **Git host CLI auth is ephemeral.** If you `gh auth login` or the
    equivalent inside a session, the credentials live and die with that
    session — they are not persisted across sessions.
 
+6. **Agent configuration and history do not carry code between
+   sessions.** An agent's settings and global instructions are copied
+   into each session as a writable copy and discarded at the end, so an
+   agent cannot plant a hook or setting a later session runs. Its
+   conversation history is kept per agent, tier, and repository set, and
+   never crosses tiers: a lower-tier conversation never feeds an agent
+   holding higher-tier access. History is the one channel kept between
+   sessions on purpose (it is what the agent's own resume needs), so
+   sessions sharing it are one trust domain.
+
 ## Default-deny egress
 
-Every session starts with all outbound network access denied. Cilium
-FQDN policy then opens exactly the domains required by the agent and
-tier, plus any explicit additions:
+Every session starts with all outbound network access denied. The
+session's gateway, its only route out, then opens exactly the domains
+required by the agent and tier, plus any explicit additions:
 
-- Per-tier allowlists are defined in `lib/tier.sh` and `lib/agents.sh`
-  and shipped as conservative defaults.
+- Per-tier allowlists are defined in `go/internal/tier` and
+  `go/internal/agents` and shipped as conservative defaults.
 - Per-invocation additions: `--allow-domain <DOMAIN>` (repeatable).
 - Persistent operator-supplied extras: `~/.sandbox/config.yaml`,
   `SANDBOX_EXTRA_ALLOWED_DOMAINS`, or `<repo>/.sandbox/config.yaml`
@@ -192,7 +211,11 @@ an overlay is configured (`$SANDBOX_OVERLAY` or the `overlay:` key in
 **Overlays are additive only on the safety side** — they can extend the
 block list and narrow profile allow-lists, but nothing in an overlay
 can remove an org-level block or weaken the tier model.
-Operators should populate that file with hosts that must never be
+The same additive rule holds for L7 rules: the org baseline
+(`config/egress-baseline.yaml`) refuses git pushes, package and image
+registry writes, and `TRACE` on every intercepted host, and neither an
+overlay nor an operator can remove one of its denies.
+Operators should populate the block list with hosts that must never be
 reachable from a sandbox: production environment hostnames, internal
 SSO / identity-provider endpoints, communication platforms, email
 relays. The defaults that ship cover the obvious universal cases
@@ -202,15 +225,15 @@ relays. The defaults that ship cover the obvious universal cases
 
 The sandbox enforces three filesystem rules:
 
-1. **The workspace is the only writable host path** the agent sees.
-   Tier 1 gets an `emptyDir`; Tier 2/3 mount your repository
-   read-write at `/workspace` (or `/workspace/<basename>` for
-   multi-repo). Nothing else from the host is writable from inside the
-   pod. (On macOS the agent writes a VM-local copy that syncs back to
-   your repo, rather than the repo directly — same guarantee, see
-   "macOS workspace sync" in the README. The agent still sees exactly
-   one writable workspace and nothing else of the host; the sync runs
-   outside the pod.)
+1. **The workspace is the only thing of yours the agent sees.** The
+   agent works on a copy of your repository inside the appliance VM, at
+   `/workspace` (or `/workspace/<basename>` for multi-repo); nothing of
+   your machine is mounted. The copy is synced back to your repository
+   by the `sandbox` binary on your machine, through a **sync gate** that
+   holds back any change that could run code on your machine or change
+   how git behaves there (git config and hooks, filters, submodules,
+   IDE and devcontainer configuration) until you review it with
+   `sandbox sync review`.
 
 2. **Sensitive paths in the workspace are masked**, even though the
    workspace itself is mounted from the host. The following are
@@ -221,7 +244,7 @@ The sandbox enforces three filesystem rules:
    | `.env`, `.env.*`               | Hidden (empty file overlay)                     |
    | `.npmrc`                       | Hidden (empty file overlay)                     |
    | `*-openrc.sh`, `clouds.yaml`   | Hidden (empty file overlay)                     |
-   | `kubeconfig`, `.kube/`         | Hidden (empty file / emptyDir)                  |
+   | `kubeconfig`, `.kube/`         | Hidden (empty file / empty directory)           |
    | `.git/config`, `.git/hooks/`   | Read-only when present                          |
    | `.gitmodules`                  | Read-only when present                          |
    | `.vscode/`, `.idea/`           | Read-only when present                          |
@@ -230,19 +253,13 @@ The sandbox enforces three filesystem rules:
    The read-only rows are host-exec vectors: git runs `.git/hooks/*` and
    reads `core.fsmonitor` from `.git/config` on a routine `git status`;
    `.gitmodules`, `.vscode/`, `.idea/`, and `.devcontainer/` are executed
-   by an IDE or `git submodule`. Because the pod runs as the operator's uid
-   on the hostPath workspace, the agent would otherwise be able to rewrite
-   them and get host code execution as the operator the next time they run
-   git or open the repo. Each is bind-mounted **read-only** so the agent
-   cannot modify it. The coverage is "when present": a path that exists at
-   launch is protected, but one that is *absent* at launch is not created
-   (a read-only hostPath cannot shadow a missing file, and creating it would
-   write into the operator's repo), so the agent can still introduce a *new*
-   `.gitmodules` / `.vscode/` / `.idea/` / `.devcontainer/` — which matters
-   only on a deliberate operator action (opening the repo in an IDE,
-   reopening in a devcontainer, or running a submodule command). `.git/config`
-   and `.git/hooks/` exist in every real checkout, so the routine git vectors
-   are always covered.
+   by an IDE or `git submodule`. In v3 the agent writes a copy, and the
+   sync gate is what keeps a changed (or newly created) vector from
+   reaching your checkout without your review; the read-only covers in
+   the agent's view are defense in depth (today the directories are
+   read-only inside the agent's microVM, but read-only files such as
+   `.git/config` and `.gitmodules` are not yet; the sync gate still holds
+   back any change to them).
 
    The built-in set is extensible per-repo: `sandbox mask add --repo
    <PATH> <RELPATH>` records additional paths (including nested ones)
@@ -260,8 +277,10 @@ The sandbox enforces three filesystem rules:
    an explicit, audited acceptance of the risk.
 
 3. **Nothing else on the host is visible.** Other repositories, your
-   home directory, system directories, the container runtime socket,
-   and other sandbox sessions are not reachable from inside the pod.
+   home directory, system directories, any container runtime, and other
+   sandbox sessions are not reachable from inside a session. The
+   appliance VM itself cannot reach your machine's network services
+   (`sandbox netd` refuses them).
 
 ## Repo vetting
 
@@ -284,7 +303,7 @@ Three things keep it honest:
    a workspace author can commit weakens the gate, because a repo-resident
    flag would be a cooperative-behavior control, and no security property
    here depends on that (see Core principle 1). Verification runs host-side,
-   before the pod starts, against the operator's signer list.
+   before the session starts, against the operator's signer list.
 
 2. **An overlay may only tighten it.** A team overlay can raise the posture
    (`advisory → required`) but never relax it — the same "additive on the
@@ -292,7 +311,7 @@ Three things keep it honest:
 
 3. **Vetted is not a substitute for the sandbox.** Vetting addresses a
    different axis — repo-borne prompt-injection payloads, org compliance —
-   than isolation. It is additive to gVisor, default-deny egress, and
+   than isolation. It is additive to the microVM, default-deny egress, and
    masking, never a replacement. A vetted repo is not thereby cleared to run
    an agent outside a session; isolation is still mandatory (Core principle
    4). Read a "vetted" marker as "reviewed," not as "trusted enough to skip
@@ -403,61 +422,33 @@ apply:
 ## Audit logs
 
 Every session produces an audit log under `~/.sandbox/logs/<session>/`
-containing start/stop times, allowed-domain list, the resolved tier
-and credentials path, and (for agents that support it) a copy of the
-conversation transcript. Retention is the operator's responsibility;
-the tool does not auto-prune.
+containing start/stop times, the allowed-domain list, the resolved
+tier, and the gateway's records described below. Retention is the
+operator's responsibility; `sandbox cleanup` prunes old records in the
+VM on request.
 
 If you observe unexpected agent behavior during a session, the
 recommended sequence is: stop the session (`sandbox stop <id>`), do
 not push any changes from it, preserve the audit log, and review what
 happened before deciding whether any of the work is salvageable.
 
-A session's audit log is written by `sandbox stop`, and most abnormal
-endings still reach it. For a normal (non-`--keep-alive`) session,
-teardown runs whether the session ends cleanly or the pod crashes or is
-evicted while you are attached (the broken `kubectl exec` falls through
-to teardown). While you are attached, teardown also runs if the `sandbox`
-CLI process is signalled — a closed terminal, a dropped ssh, a laptop
-suspend, or `kill` raises `SIGHUP`/`SIGTERM`/`SIGINT`, which the CLI traps
-for the duration of the attach and runs teardown from, revoking
-credentials and exporting the Hubble flows. Several cases still bypass
-teardown:
+Records of what a session did are written by `sandboxd` and the
+session's gateway in the appliance VM, from their own observations, and
+pulled to `~/.sandbox/logs/<session>/` on your machine after each
+command: lifecycle events, every connection and intercepted request, and
+every credential injection, misuse, and reflection (see
+`docs/reference/audit-logs.md`). The pull is append-only and numbered, so
+records removed in the VM before the pull show up as a gap. Nothing the
+agent writes is treated as evidence.
 
-- **A `--keep-alive` session evicted under node pressure.** Keep-alive
-  deliberately leaves the pod running after you disconnect, so nothing
-  runs teardown when the node then evicts it. The Hubble flow export is
-  lost ***and the session's credentials are not revoked automatically***.
-  A node-pressure eviction leaves the pod object behind in
-  `Failed`/`Evicted` state rather than deleting it, so the ownerReference
-  on the session Secrets never triggers garbage collection — the infra
-  token and any kubeconfig stay live in the namespace until an operator
-  acts.
-- **A signal during launch, before the attach.** The teardown trap covers
-  the attached session only; if the CLI is signalled while the pod is
-  still starting up (the readiness wait or dependency bring-up), that
-  window is not trapped and the just-created pod and Secrets can be left
-  live.
-- **A hard kill of the `sandbox` process** (`SIGKILL`, an OOM of the CLI
-  itself, or host power loss) — no trap can run at all, so a non-keep-alive
-  session can leave its pod and Secrets live too. Rarer, but treat it the
-  same way.
-
-In every case, run `sandbox stop <id>` to close the session: it deletes
-the leftover pod and its Secrets after the fact, records *how* the
-session ended (`end_reason`), and captures whatever audit state still
-survives. Note that the conversation transcript is only copied into the
-session log by `sandbox stop`; until you run it, the transcript exists
-only in the per-agent agent-home, which the sandboxed agent can rewrite
-and the next session using the same agent overwrites — so it is not a
-reliable record for a session that ended by eviction. Treat any session
-that ended by eviction as one whose network-flow record *and* transcript
-may be incomplete.
-
-To find these sessions, rely on operator-side state, not on anything
-the pod wrote: a session whose `session.json` has no `end_time` and
-whose pod is absent or `Failed` ended without teardown. The pod also
-tries to drop a `.sandbox-termination` breadcrumb in its agent-home,
-but that file lives in a directory the sandboxed agent can write, so
-treat it as a hint an eviction happened, never as evidence of what
-happened.
+Teardown is `sandboxd`'s, not the CLI's. A session ends when you stop it,
+two minutes after its terminal goes away (a closed terminal, a dropped
+ssh, a laptop suspend, a killed `sandbox` process: the attach is a lease
+the host keeps renewing), or, for `--keep-alive`, after 24 hours detached
+or 7 days in all. Ending a session removes its microVMs, its gateway with
+the credentials it held, its readable-secret files, and its configuration
+copy. `sandboxd` records every resource before creating it, so after a
+crash or a reboot of the appliance VM it ends every session it did not
+see finish and removes what they left, recording `sandboxd restarted` as
+the end reason. Sessions therefore cannot be left running with live
+credentials by a dropped connection or a killed CLI, as v2's could.

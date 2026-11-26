@@ -2,160 +2,134 @@
 
 [← Documentation](../index.md)
 
-This walks Linux and macOS users from a clean checkout through Tier 1, 2, and 3
-sessions. **Windows users:** follow the [Windows / WSL2 setup](../how-to/platforms/windows.md)
-guide instead (it uses a dedicated WSL2 distro), then rejoin at step 4 here.
+This walks macOS and Linux users from a clean checkout through Tier 1, 2, and 3
+sessions with Claude Code. Windows is not available in v3 yet. Coming from v2?
+Read [Upgrading from v2](../how-to/upgrading-from-v2.md) as well.
 
 > **Behind a TLS-intercepting proxy (Zscaler, Netskope, etc.)?** Run
-> `./bin/sandbox setup-proxy-cert` before `./setup.sh`. Without it, the
-> image build's HTTPS fetches will fail. See [Corporate TLS-intercept
-> proxies](../how-to/tls-intercept-proxies.md). `./setup.sh` also runs a TLS
-> probe up front and aborts with a pointer there if it detects interception.
+> `sandbox setup-proxy-cert` before you install. See [Corporate TLS-intercept
+> proxies](../how-to/tls-intercept-proxies.md).
 
-## 1. Install prerequisites
+## 1. Install
 
-k3s + Cilium + gVisor on Linux; a Lima VM on macOS (Homebrew + Lima are
-installed automatically if missing).
+Build the host binary, build an appliance image, and install it. The details
+are in [Installing](../how-to/installing.md); in short:
 
 ```bash
-./setup.sh
-
-# If your host network uses 100.64.0.0/10 (CGNAT), pick a non-overlapping pod CIDR:
-./setup.sh --pod-cidr 172.16.128.0/17
-
-# If your host network overlaps the default service CIDR (10.43.0.0/16):
-./setup.sh --service-cidr 172.16.0.0/20
-
-# If you already run another local Kubernetes endpoint on 6443 (e.g. Ansible
-# or kubectl tooling pointed at a cluster on OpenStack), move the sandbox
-# cluster's API server off 6443 so the two don't collide:
-./setup.sh --apiserver-port 7443
+(cd go && go build -o ~/bin/sandbox ./cmd/sandbox)
+image/build-in-lima.sh <lima-vm> 3.0.0-dev.1 ~/sandbox-appliance.raw   # macOS
+sudo image/build.sh 3.0.0-dev.1                                        # or on Linux
+sandbox install --dev-image ~/sandbox-appliance.raw
 ```
 
-See [Cluster CIDRs](../explanation/architecture.md#cluster-cidrs) and [API
-server port](../explanation/architecture.md#api-server-port) for the reasoning.
-
-Once the CLI is on your PATH (step 2), `sandbox install` is the exact equivalent
-of `./setup.sh` (same flags), and `sandbox uninstall` tears everything back
-down. `./setup.sh` still works — use whichever you prefer.
-
-## 2. Put the CLI on PATH
-
-Add `bin/` to PATH and load completions for this shell:
+## 2. Check it
 
 ```bash
-export PATH="$(pwd)/bin:$PATH"
-source bin/completions/sandbox.bash   # or sandbox.zsh
+sandbox doctor
 ```
 
-To make it permanent, append *absolute* paths to your `~/.bashrc` or `~/.zshrc`
-rather than copying the lines above. A shell rc runs on every new shell and
-re-evaluates `$(pwd)` and the relative `source` path against whatever directory
-that shell starts in - which may be a repo a sandbox session can write to, not
-this checkout. Expanding the path once, now, pins it to this directory:
+Every line should say `ok`. `sandbox vm status` shows the VM and its image
+version.
+
+## 3. Build the agent image
 
 ```bash
-# bash (~/.bashrc). %q quotes the path, so a checkout path with spaces is safe.
-printf 'export PATH=%q/bin:"$PATH"\n' "$(pwd)" >> ~/.bashrc
-printf 'source %q/bin/completions/sandbox.bash\n' "$(pwd)" >> ~/.bashrc
+sandbox rebuild --agent base
+sandbox rebuild --agent claude
 ```
+
+This runs in the VM and downloads from the network; give it about 10 minutes.
+
+## 4. Sign Claude Code in
 
 ```bash
-# zsh (~/.zshrc) — the default macOS shell, which never reads ~/.bashrc.
-printf 'export PATH=%q/bin:"$PATH"\n' "$(pwd)" >> ~/.zshrc
-printf 'source %q/bin/completions/sandbox.zsh\n' "$(pwd)" >> ~/.zshrc
+claude setup-token             # on your machine; prints sk-ant-oat01-...
+sandbox onboard --agent claude # paste the token
 ```
 
-## 3. Smoke-test the install
+The token goes into the sandbox VM's credential broker. The agent only ever
+sees a placeholder. See [Signing agents in](../how-to/onboarding-agents.md),
+which also covers Codex and OpenCode.
 
-Cluster, Cilium, gVisor, and namespace should all be green (and an **Infra
-versions** section shows what's installed vs pinned). If any are missing, re-run
-`./setup.sh` (or `sandbox install`) before continuing.
-
-```bash
-sandbox status
-```
-
-### 3b. (Optional) Stage existing OAuth tokens
-
-If you've already logged into Claude Code or Codex on the host, this stages
-those OAuth tokens into `~/.sandbox/agent-home/<agent>/` so your first sandbox
-session doesn't make you re-auth. It also writes a starter
-`~/.sandbox/config.yaml`. It skips opencode (API key — use
-[`sandbox secret`](../how-to/secrets.md) for that).
-
-```bash
-sandbox onboard
-```
-
-## 4. Launch a Tier 1 session
-
-First run prints an OAuth URL — open it in a browser, log in, paste the returned
-code back. (If you ran `sandbox onboard` above and the host-side OAuth was
-valid, this just works.) Tokens persist in `~/.sandbox/agent-home/<agent>/` so
-you only do this once per agent.
+## 5. Launch a Tier 1 session
 
 ```bash
 sandbox run --agent claude --tier 1
 ```
 
-## 5. Launch a Tier 2 session with your repo
+The banner shows the session, its tier, and its egress. Claude Code starts
+signed in. When you leave it (`/exit`, or Ctrl-D), the session is torn down.
+Tier 1 keeps no history beyond the session.
 
-Tier 2 requires a git repo (so changes can be diffed against a baseline). If
-your project isn't one yet, run `git init` in it.
+## 6. Launch a Tier 2 session with your repository
+
+Tier 2 needs a git repository. If your project isn't one, run `git init` in it.
 
 ```bash
 sandbox run --agent claude --tier 2 --repo ~/repos/my-project
 ```
 
-Working across more than one repo in a single session — pass `--repo` more than
-once. With one `--repo` the workspace is `/workspace` (as above); with two or
-more, each is mounted at `/workspace/<basename>` so the agent can `cd` between
-them. Basenames across `--repo` flags must be unique; the tool refuses on
-collision.
+The repository is copied into the VM (`==> Syncing ... into the sandbox VM...`)
+and mounted at `/workspace`. While the agent works, its changes come back to
+your repository every few seconds and once more when the session ends.
+Changes to executable configuration (`.git/config`, hooks, and the like) and
+conflicts with your own edits are withheld instead; `run` says how many, and
+you review them with:
+
+```bash
+sandbox sync review
+```
+
+Claude's conversation history for this repository at Tier 2 is kept, so a later
+session can continue it with `/resume`.
+
+Several repositories in one session: pass `--repo` more than once. Each is
+mounted at `/workspace/<basename>`; basenames must be unique.
 
 ```bash
 sandbox run --agent claude --tier 2 \
   --repo ~/repos/frontend --repo ~/repos/backend
 ```
 
-## 6. Launch a Tier 3 session against a dev cluster
+## 7. Launch a Tier 3 session
 
-`--infra-kubeconfig` is minified to one context and mounted at
-`/home/agent/.kube/config` inside the pod; the API server hostname/port is
-auto-added to the egress allowlist.
-
-> **Most ambient kubeconfigs won't work as-is.** Kubeconfigs written by
-> `tsh kube login`, `aws eks update-kubeconfig`, `gcloud container clusters
-> get-credentials`, or `az aks get-credentials` use exec credential plugins
-> that cannot run in the pod. `sandbox run` detects this and prompts — pressing
-> `y` launches a session that loads but every kubectl call fails. See [Tier 3
-> Infra Credentials](../how-to/tier3-infra-credentials.md) for how to produce a
-> kubeconfig with static credentials.
+Tier 3 adds infrastructure access. Give the token as a file and the endpoint it
+is for; the agent gets a placeholder in `INFRA_TOKEN_<NAME>`, and the gateway
+puts the token into its requests to that endpoint's host:
 
 ```bash
+sandbox rebuild --agent claude --tier3     # once: the claude-infra image
 sandbox run --agent claude --tier 3 --repo ~/repos/infra \
-  --infra-kubeconfig ~/.kube/sandbox-dev.yaml
+  --infra-token vault=~/.vault-token --infra-endpoint https://vault.example.com
 ```
 
-## 7. List sessions / view logs
+`--infra-kubeconfig` is not available in v3 yet. See [Tier 3 infra
+credentials](../how-to/tier3-infra-credentials.md).
+
+## 8. List sessions, view logs and flows
 
 ```bash
 sandbox list
-sandbox logs ses-20260401-143022-a7b3
+sandbox logs  ses-20261126-143022-a7b3
+sandbox flows ses-20261126-143022-a7b3    # every connection and request the gateway saw
 ```
 
-## 8. Resume a session
-
-Only works while the pod is still running; see [Resuming
-Sessions](../how-to/resuming-sessions.md) for how sessions behave on disconnect.
+## 9. Keep a session alive and resume it
 
 ```bash
-sandbox resume ses-20260401-143022-a7b3
+sandbox run --agent claude --tier 2 --repo ~/repos/my-project --keep-alive
+# leave the agent; the session keeps running. Later:
+sandbox resume ses-20261126-143022-a7b3
+sandbox stop   ses-20261126-143022-a7b3
 ```
+
+`resume` syncs the repositories first. It works while the session is running;
+resuming a session that was stopped is not available in v3 yet. See [Resuming
+sessions](../how-to/resuming-sessions.md).
 
 ## Where to next
 
 - [Profiles](../how-to/profiles-and-overlays.md) so you don't retype flags.
 - [Persistent extra domains](../how-to/persistent-domains.md) for internal hosts.
-- [Secrets](../how-to/secrets.md) for non-OAuth credentials.
+- [Secrets](../how-to/secrets.md) for API tokens your agent needs, bound to the hosts they are for.
+- [Egress (L7) rules](../how-to/egress-rules.md) to limit what an agent may do on an allowed host.

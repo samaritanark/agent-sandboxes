@@ -7,14 +7,14 @@ the allowlist — an **MCP server** (a process that advertises tools the agent
 can call, like browser automation or a ticket-system bridge), or a plain
 **service** the session talks to directly (a dev database, a message broker).
 A profile can declare those, and the sandbox brings each one up as its **own
-locked-down pod** for the life of the session, then tears it down.
+microVM** for the life of the session, then tears it down.
 
-The rule the whole feature rests on: **a dependency gets no more network reach
-than the session pod has.** Each dependency runs under gVisor like everything
-else, carries its own CiliumNetworkPolicy that is a clone-or-subset of the
-session's egress (default-deny, the same blocked-CIDR backstop, DNS scoped to
-the same allowlist), accepts traffic **only** from its owning session, mounts
-no workspace and no host path, and holds no long-lived credentials. Adding a
+The rule the whole feature rests on: **a dependency gets no more network reach than the
+session has.** In v3 each dependency is its own Kata microVM with its own link to the session's
+gateway. Its egress is its catalogue entry's allowlist, checked against the same block lists; it
+mounts no workspace and no host path; the agent reaches it only through the gateway, at
+`<name>.deps.sandbox.internal:<port>`, and it cannot reach the agent, the other dependencies, or
+other sessions. Each connection to it is in the session's flow log (`sandbox flows`). Adding a
 dependency adds capability, not an exit the session didn't already have.
 
 Dependencies are not free-form YAML a user writes inline. They come from a
@@ -35,9 +35,15 @@ mcp_transport: http                    # http | sse — how the agent connects
 mcp_path: /mcp
 egress:                                # the dependency's OWN egress (443). Omit
   - example-api.internal.example.com #   entirely for a DNS-only dependency.
-secrets:                               # provisioned from the host-side store
-  - INNKEEPER_TOKEN                    #   (see Secret store), session-scoped
+args: [node, dist/sse.js]              # optional: after the image's entrypoint
+secrets:                               # from the host-side store (see Secret store),
+  - INNKEEPER_TOKEN                    #   brokered toward the entry's egress hosts
 ```
+
+`command:` replaces the image's entrypoint and `args:` its default command, as in Kubernetes. A
+secret a dependency declares is a placeholder in its environment that the gateway replaces toward
+the hosts its binding names (and that its egress reaches); a dependency cannot be given a readable
+secret.
 
 A profile then asks for it by name. `mcps:` entries are registered with the
 agent (it can call their tools); `services:` entries are reachable by the
@@ -54,21 +60,21 @@ services:
   - dev-postgres
 ```
 
-At `sandbox run`, once the session pod is ready and its per-session network
-identity is verified, each dependency is created (pod + Service + policy, all
-labelled with the session and owned by it), the agent's MCP config is written to
-point at the in-cluster Service URL, and the session's policy is extended with a
-single rule to reach each one. If any dependency fails to come up the launch is
-aborted and torn down — a profile asked for it for a reason. Everything is
-reaped at `sandbox stop` (by owner reference, with a label-keyed sweep as
-backstop), and each dependency's resolved version, egress allowlist, and
-up/down times are written to the session's audit record.
+At `sandbox run` (`==> Profile dependencies: ...`), each dependency's microVM is started with the
+session, before the agent's. For MCP servers the agent's MCP configuration is written for the
+session, naming each server at its address through the gateway
+(`http://<name>.deps.sandbox.internal:<port><mcp_path>`), mounted read-only at
+`/home/agent/.sandbox-mcp/config.json`, and Claude Code is started with
+`--mcp-config /home/agent/.sandbox-mcp/config.json --strict-mcp-config`, so it registers those
+servers and nothing else. If a dependency fails to start, the launch fails and everything is torn
+down. Everything goes at `sandbox stop` (or when the session ends), and each dependency's image and
+up and down times are in the session's audit record. (`sandbox resume` does not add the MCP flags,
+as in v2.)
 
 > **A browser is the hard case.** A Playwright MCP is a general-purpose egress
-> engine, so it's only safe under a specific shape (separate pod, QUIC/DoH off,
+> engine, so it's only safe under a specific shape (its own microVM, QUIC/DoH off,
 > `--no-sandbox` but never added capabilities, signature-verified image, no
-> mounts). The catalogue supports it as a `class: browser` entry, and the design
-> reasoning lives in `docs/design/phase5-mcp-dependencies.md`. Even fully
+> mounts). The catalogue supports it as a `class: browser` entry. Even fully
 > contained it widens the in-allowlist exfil surface, which the CLI warns about
 > at launch — enable it deliberately.
 

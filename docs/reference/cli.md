@@ -2,197 +2,177 @@
 
 [← Documentation](../index.md)
 
+In v3, `sandbox` is a single binary on your machine (the host). Some commands run
+on the host itself; the rest are forwarded over SSH to the policy layer inside
+the sandbox VM, which runs them and streams the output back. You type every
+command the same way; the split only matters when you read an error message.
+
+Every command takes `--help`.
+
+## Host commands
+
+These run on your machine. They manage the VM, your secrets, agent logins, and
+the files that sync between your repositories and the VM.
+
+```text
+sandbox install --dev-image <PATH> [OPTIONS]
+  --dev-image <PATH>        appliance image (raw; qcow2 for --driver lima).
+                            Development builds only: the signature is not checked
+  --vm-cpus <N>             default: host CPUs less 2, at least 4
+  --vm-memory <GiB>         default: host memory less 6 GiB, at least 8
+  --vm-disk <GiB>           state disk, default 60
+  --driver <vfkit|qemu|lima>
+                            vfkit (macOS) and qemu (Linux) are the defaults;
+                            their only network is sandbox netd, which keeps the
+                            VM from reaching this machine. lima cannot block
+                            your LAN address
+  --vfkit <PATH> | --qemu <PATH> | --limactl <PATH>
+                            the hypervisor binary to use (default: on PATH)
+  --skip-v2-migration       do not look for a v2 install to carry over
+sandbox setup ...           alias of install
+
+sandbox uninstall [--keep-vm] [--purge]
+  Deletes the VM and its SSH keys. On a terminal it then asks, kind by kind,
+  whether to delete your state in ~/.sandbox (secrets, withheld changes and
+  sync state, logs, settings and profiles). Without a terminal it keeps them.
+  --purge deletes all of them without asking. ~/.sandbox is shared with a v2
+  install: --purge deletes v2's secrets, agent homes, logs, and profiles too.
+
+sandbox migrate [--remove-v2] [--yes]
+  Carries a v2 install over (install runs this when it finds one). See
+  Upgrading from v2.
+
+sandbox vm start | stop | status | shell
+  shell opens a root shell in the VM for debugging; it is recorded on the host
+  in ~/.sandbox/logs/vm-shell.log.
+sandbox status              same as: sandbox vm status
+sandbox doctor              checks the driver, netd, the VM's reachability and
+                            version, /dev/kvm in the VM, and that the VM cannot
+                            reach this machine
+
+sandbox onboard [--agent claude|codex] [--dry-run] [--from-auth-json FILE]
+  Seals an agent's login into the VM's credential broker. See
+  Onboarding agents.
+
+sandbox secret set <NAME> [--from-file PATH | --from-env[=VAR]]
+                   [--bind HOST[,HOST]... [--inject KIND] | --allow-readable]
+sandbox secret bind <NAME> (--bind HOST [--inject KIND] | --allow-readable | --withhold)
+sandbox secret list
+sandbox secret delete <NAME>
+  KIND is bearer (default), basic, header:NAME, or query:NAME. See Secrets.
+
+sandbox sync review [--apply <ID> | --discard <ID>]
+sandbox sync once --repo <PATH>
+  review lists the workspace changes the sync gate withheld from your
+  checkouts, with a diff, and applies or discards one. once runs one sync pass.
+
+sandbox flows <SESSION_ID>  the session's gateway records (see Audit logs)
+
+sandbox setup-proxy-cert [...]
+  Finds a corporate TLS-intercept proxy's root CA in this machine's trust
+  store and writes it to ~/.sandbox/extra-ca-certs/proxy-ca.crt. It applies
+  from the next session; nothing is rebuilt.
+```
+
+## Commands run in the VM
+
 ```text
 sandbox run [OPTIONS]
-  --agent <claude|codex|opencode|copilot|grok>    default: claude
-  --tier <1|2|3>                     default: 1
-  --profile <NAME>                   numeric (1|2|3) aliases --tier; named
-                                     resolves ~/.sandbox/profiles/<name>.yaml
-                                     or <overlay>/profiles/<name>.yaml
-  --repo <PATH>                      required for tier 2/3; repeatable —
-                                     with one repo the workspace is
-                                     /workspace, with two or more each
-                                     mounts at /workspace/<basename>
-  --allow-domain <DOMAIN>            repeatable; blocked list applies
-  --base-url <URL>                   opencode: OpenAI-compatible endpoint;
-                                     overrides OPENCODE_BASE_URL env var
-  --infra-token <PATH>               tier 3; injected as $INFRA_TOKEN
-  --infra-kubeconfig <PATH>          tier 3; mounted at /home/agent/.kube/config
-                                     (auto-minified to a single context,
-                                     API server host/port auto-allowlisted)
-  --infra-kube-context <NAME>        context inside --infra-kubeconfig
-                                     (default: kubeconfig's current-context)
-  --allow-exec-plugin                skip the exec-plugin confirmation prompt
-                                     (only useful for scripted runs; plugin
-                                     will still fail at auth time)
-  --infra-endpoint <URL>             tier 3, repeatable
-  --dry-run
-  --name <name>                      human-readable label (auto-set if omitted)
-  --keep-alive                       leave pod running after disconnect
-                                     (default: tear down to free cluster resources)
-  --i-accept-unmasked-secrets        launch despite secrets the mask won't
-                                     hide (printed; the agent will see them)
+  --agent <claude|codex|opencode>   default: claude
+  --tier <1|2|3>                    default: 1
+  --profile <NAME>                  numeric 1|2|3 aliases --tier; a name resolves
+                                    ~/.sandbox/profiles/<name>.yaml or the
+                                    overlay's profiles/<name>.yaml
+  --repo <PATH>                     required for tier 2 and 3; repeatable. One repo
+                                    is mounted at /workspace; several at
+                                    /workspace/<basename>
+  --allow-domain <DOMAIN>           repeatable; the block list still applies
+  --base-url <URL>                  opencode's endpoint (overrides OPENCODE_BASE_URL)
+  --infra-token <[NAME=]PATH>       tier 3; brokered to the --infra-endpoint hosts
+                                    as $INFRA_TOKEN or $INFRA_TOKEN_<NAME>
+  --infra-endpoint <URL>            tier 3, repeatable
+  --name <NAME>                     a label for the session
+  --keep-alive                      keep the session after you detach
+  --dry-run                         print the session spec and start nothing
+  --i-accept-unmasked-secrets       see Vetting and secret exceptions
+  --i-accept-unvetted-repo
+  --i-accept-vetting-drift
 
 sandbox resume <SESSION_ID> [--keep-alive]
 sandbox list
-sandbox logs <SESSION_ID>
-sandbox flows <SESSION_ID>
 sandbox stop <SESSION_ID>
-sandbox profile save [--tier N] [--agent NAME] [--repo PATH]
-                     [--allow-domain DOMAIN]... [--name NAME]
-                     [--force] [--dry-run]
-                     # --tier required; --agent and --repo optional.
-                     # name auto-derived from repo + agent if omitted.
-sandbox profile list
-sandbox profile show <NAME>
-sandbox profile delete <NAME> [--yes]
-sandbox secret set <NAME> [--from-file PATH | --from-env[=VAR]]  # else reads stdin
-                     # NAME must match [A-Z_][A-Z0-9_]* — it's the env var
-                     # the agent sees inside the pod. --from-env defaults
-                     # the source var to NAME; use =VAR to override.
-sandbox secret list                           # names + sizes + mtimes; values never printed
-sandbox secret delete <NAME>
-sandbox mask add --repo <PATH> <RELPATH>...    # hide file(s) from the agent (per-repo)
-sandbox mask list --repo <PATH>               # built-in + configured masked paths
-sandbox exceptions add --repo <PATH> <RELPATH:RULE:LINE>... [--reason TEXT]
-                     # record reviewed secret-gate false positive(s) into the
-                     # repo-root .betterleaksignore (native betterleaks format,
-                     # shared with CI/pre-commit). Sandbox honors them only on a
-                     # vetted repo. RELPATH:RULE:LINE is what the gate prints.
-sandbox exceptions list --repo <PATH>         # recorded .betterleaksignore fingerprints
-sandbox exceptions migrate --repo <PATH>      # convert a legacy accepted_secrets: list
-sandbox vet --repo <PATH> [--message MSG] [--yes]   # sign an agent-vetted/<sha> tag
-                     # --yes: acknowledge recorded secret exceptions non-interactively
-sandbox vet --status --repo <PATH>            # print vetting state, sign nothing
-sandbox cleanup [--older-than DAYS]            default: 90
+sandbox logs <SESSION_ID>
+sandbox cleanup [--older-than DAYS]       default: 90
 sandbox check <WORKSPACE_PATH>
-sandbox status
-sandbox install [--pod-cidr CIDR] [--service-cidr CIDR] [--apiserver-port PORT] [--dns IPS]
-                [--vm-cpus N] [--vm-memory GIB] [--vm-disk GIB]   # macOS/Lima only
-sandbox setup   [...]                           # alias of `install` (compat)
-sandbox uninstall [--yes] [--keep-logs] [--keep-images]
-                  [--keep-lima] [--keep-kubetools]
-sandbox upgrade [--app]                          # default: update the CLI itself
-                [--to vX.Y.Z] [--remote NAME] [--rebuild]
-sandbox upgrade --infra | --k3s | --cilium | --gvisor | --betterleaks | --all
-                [--to-k3s VER] [--to-cilium VER] [--to-gvisor REL] [--to-betterleaks VER]
-                [--force]
-                [--dry-run] [--yes]              # shared by both phases
-sandbox configure-network                       # Linux only; re-detect host
-                                                # interfaces, re-apply to Cilium
-                                                # (also auto-run by `sandbox run`)
 sandbox rebuild [--agent NAME] [--tier3] [--no-cache]
                 [--codex-version VER] [--opencode-version VER]
-                [--copilot-version VER] [--grok-version VER]
-sandbox version [--short | --json]              # reads the identity embedded at
-                                                # release/install time; a fresh,
-                                                # never-installed checkout: "dev"
+sandbox profile save | list | show | delete ...
+sandbox mask add --repo <PATH> <RELPATH>...
+sandbox mask list --repo <PATH>
+sandbox exceptions add | list | migrate --repo <PATH> ...
+sandbox vet --status --repo <PATH>
+sandbox link ...
+sandbox version
 ```
 
-## Versioning
+The flags, messages, and exit codes of these commands are v2's, except where
+this page says otherwise.
 
-`sandbox version` reports an identity that is **resolved once and embedded**, never
-recomputed from git at runtime (so two clones of the same commit can't disagree
-because one hasn't fetched tags):
+### What changed from v2
 
-- **Released tarball** — `task release` stamps the exact release version into a
-  `.version` file in the artifact.
-- **Source checkout** — `sandbox install` runs `scripts/stamp-version.sh`, which
-  derives the version from git (`describe --tags --always --dirty`) and writes
-  `.version` (gitignored). Re-run it any time with `task stamp` — e.g. after
-  committing or switching branches.
-- **Fresh checkout, never installed** — no `.version`, so it honestly reports
-  `dev`.
+- **`run`** starts a session as Kata microVMs in the VM instead of a pod. The
+  repositories you name are synced into the VM before the launch and back while
+  the agent runs; see [Architecture](../explanation/architecture.md#workspace-sync).
+  The agent's login comes from the credential broker (`sandbox onboard`), not
+  from a directory the agent can read. A profile's `secrets:` are brokered,
+  readable, or withheld according to each secret's binding, and `run` prints
+  which. `--dry-run` prints the session spec (JSON) instead of v2's manifests.
+- **`--infra-token`** is brokered: the agent's variable holds a placeholder, and
+  the gateway puts the token into requests to the `--infra-endpoint` hosts as a
+  bearer token.
+- **`resume`** syncs the session's repositories before it reattaches.
+- **`flows`** reads the gateway's records, not Hubble.
+- **`status`** reports the VM; there is no cluster to report.
+- **`rebuild`** builds the agent images inside the VM. Each image is recorded by
+  digest, and `image-builds.log` records the digest rather than the agent's
+  version.
+- **`onboard`** puts a login into the broker; it no longer copies files into
+  `~/.sandbox/agent-home`.
 
-Because the stamp is frozen at install time, `sandbox version` won't reflect
-edits made afterward until you re-stamp (`task stamp`); use `git status` for the
-live working-tree state.
+### Removed
 
-## Diagnostic subcommands
+- `configure-network`: the VM follows your machine's networking.
+- `install` and `uninstall` no longer take v2's cluster flags (`--pod-cidr`,
+  `--service-cidr`, `--apiserver-port`, `--dns`, `--keep-*`).
+- `run --homedir` is still accepted but has no effect: there is no agent home
+  to point at.
 
-- **`sandbox status`** — single-screen health check: cluster reachable,
-  Cilium policy mode, gVisor RuntimeClass present, sandbox namespace
-  exists, running session count. Also shows an **Infra versions** section —
-  the k3s / Cilium / gVisor versions pinned in `setup/versions.sh` next to
-  what is actually running, flagging drift. Run this first when anything looks
-  wrong, or right after `sandbox install` to confirm install succeeded.
-- **`sandbox check <PATH>`** — dry-run of the pre-session workspace
-  scan. Reports which files in the directory would be masked
-  (`.env`, `.npmrc`, `kubeconfig`, `*.pem`, …) and previews the
-  betterleaks secret gate (which **unmasked** secrets would block a real
-  `sandbox run`) before you actually launch a Tier 2/3 session against it.
-  Useful for catching credentials in a repo you've never sandboxed before.
-- **`sandbox flows <SESSION_ID>`** — dumps the Hubble network flow
-  records captured for that session (`~/.sandbox/logs/<id>/flows.json`,
-  or live from Hubble if the pod is still running). Use this when a
-  network request from inside the pod is silently failing — flow records
-  show whether the packet was allowed, dropped by policy, or never sent.
+### Not available yet
 
-## Lifecycle subcommands
-
-- **`sandbox install`** — installs and configures everything a host needs to
-  run sessions: the k3s cluster, Cilium (CNI + network policy), the gVisor
-  runtime, and the container images. Idempotent — safe to re-run to reconcile.
-  Thin wrapper over `setup.sh`; `sandbox setup` is a retained alias, and running
-  `./setup.sh` directly still works. Component versions come from
-  `setup/versions.sh` (see [Upgrading infrastructure](../how-to/upgrading-infra.md)).
-  On **macOS** the cluster runs inside a Lima VM, and how many sandboxes run at
-  once is bounded by that VM's resources. By default the VM is sized from the
-  Mac's own hardware (host cores/RAM minus a reserve for macOS), so a larger Mac
-  gets more concurrent sandboxes automatically. Override with `--vm-cpus N`,
-  `--vm-memory GIB`, `--vm-disk GIB` (or the `SANDBOX_VM_CPUS` /
-  `SANDBOX_VM_MEMORY_GI` / `SANDBOX_VM_DISK_GI` environment). Lima sizes the VM
-  only at creation, so changing these on an existing VM needs a recreate
-  (`limactl delete sandbox-vm && sandbox install`). These flags are inert on
-  Linux, where the cluster runs directly on the host.
-
-  On **Windows** the cluster runs inside a WSL2 distro, and concurrency is
-  bounded the same way — by the WSL2 VM's RAM. WSL2 sizes that VM from the
-  **global** `%UserProfile%\.wslconfig` (default: `min(50% of host RAM, 8 GB)`),
-  not from our tooling, so by default even a large machine may only fit one
-  sandbox. `setup.ps1` prints a sizing advisory, and accepts opt-in
-  `-VmMemory <GB>` / `-VmCpus <N>` that write `[wsl2] memory=` / `processors=`
-  into `.wslconfig` and run `wsl --shutdown` for you. Note this file is
-  **global to every WSL2 distro**, not just the sandbox distro; `setup.ps1`
-  never edits it unless you pass one of those flags (and backs it up first).
-- **`sandbox uninstall`** — tears the cluster and host artifacts back down
-  (mirror of install). `--yes` skips the prompt; `--keep-logs` / `--keep-images`
-  / `--keep-lima` / `--keep-kubetools` preserve individual pieces. Wrapper over
-  `uninstall.sh`.
-- **`sandbox upgrade`** — moves your install forward. Two phases, one verb:
-  - **App (default, `--app`)** — fast-forwards this CLI checkout to the latest
-    release tag (or `--to vX.Y.Z`), only when it's a clean fast-forward, so
-    local edits and commits are never discarded. `--remote` picks the git remote
-    (default `origin`); `--rebuild` rebuilds agent images afterward. A released
-    tarball (no `.git`) can't self-update — the command prints the download link.
-    See [Updating the CLI](../how-to/updating-the-cli.md).
-  - **Infra (`--infra`, or `--k3s` / `--cilium` / `--gvisor` / `--betterleaks`)**
-    — moves the pinned host components to the versions in `setup/versions.sh`
-    (which Renovate keeps current), or to an explicit `--to-*` target. The
-    isolation stack (k3s/Cilium/gVisor) restarts k3s and can briefly disrupt the
-    Cilium datapath, so it **refuses to run while sessions are active** unless
-    `--force`; on macOS that stack runs inside the Lima VM and is not upgraded in
-    place yet — the command prints the re-provisioning steps instead.
-    `--betterleaks` is the exception: the secret scanner is a host binary, so it
-    upgrades on any platform without the session guard. See
-    [Upgrading infrastructure](../how-to/upgrading-infra.md).
-  - **`--all`** — does the app first, then re-executes the updated CLI so the
-    infra phase applies the newly pulled pins.
-
-  `--dry-run` (show the plan, change nothing) and `-y`/`--yes` are shared.
+- `upgrade` (reinstall with a newer image for now) and `ca`.
+- `allow` (adding domains to a running session).
+- Resuming a session that has stopped. A `--keep-alive` session that is still
+  running resumes.
+- `run --infra-kubeconfig`, `--infra-kube-context`, and `--allow-exec-plugin`.
+- The copilot and grok agents.
+- Signing an attestation with `vet --repo` (`vet --status` works).
 
 ## Session naming
 
-Sessions are automatically named for easy identification:
+- Tier 1: `<agent>`, for example `claude`
+- Tier 2 or 3, one repo: `<repo-basename>/<agent>`, for example `my-project/claude`
+- Tier 2 or 3, several repos: `multi/<agent>`
 
-- **Tier 1**: `<agent>` — e.g. `claude`
-- **Tier 2/3, single repo**: `<repo-basename>/<agent>` — e.g. `my-project/claude`
-- **Tier 2/3, multiple repos**: `multi/<agent>` — e.g. `multi/claude`
-
-The name is used as the pod name prefix, making `kubectl get pods` output
-readable. Override with `--name <label>` to set a custom name. The name
-appears in the session banner at launch and in `sandbox list`.
+`--name` sets your own label. The name appears in the launch banner and in
+`sandbox list`.
 
 ## Session ID format
 
-`ses-<YYYYMMDD>-<HHMMSS>-<4hex>` — e.g. `ses-20260401-143022-a7b3`
+`ses-<YYYYMMDD>-<HHMMSS>-<4hex>`, for example `ses-20260401-143022-a7b3`.
+
+## Related
+
+- [Installing](../how-to/installing.md) and [Upgrading from v2](../how-to/upgrading-from-v2.md)
+- [Onboarding agents](../how-to/onboarding-agents.md)
+- [Secrets](../how-to/secrets.md) and [Egress rules](../how-to/egress-rules.md)
+- [Configuration](configuration.md)

@@ -1,157 +1,143 @@
-# Architecture Notes
+# Architecture
 
 [← Documentation](../index.md)
 
-Background on the trickier choices in the install. Operators don't
-need to read this to use the sandbox; it's here so that whoever has
-to debug an unfamiliar failure mode has the rationale on hand.
+v3 runs every agent in a microVM inside a dedicated Linux VM on your machine,
+the **appliance VM**. Nothing of your machine is mounted into that VM: your
+repositories are synced into it, your settings are copied in, and logs are
+pulled back, each by the `sandbox` binary on your machine over SSH. v3 runs on
+macOS and Linux; Windows follows in a later release. The full design is
+[docs/design/v3-architecture.md](../design/v3-architecture.md).
 
-## macOS workspace sync
-
-On Linux/WSL, a tier 2/3 `--repo` is bind-mounted straight into the pod and the
-agent reads and writes your working tree directly. macOS can't do that. The
-repo reaches the pod through Lima's 9p mount of your home directory, and over
-that mount the gVisor gofer (which runs as root) presents every file the
-container creates as root-owned — so the uid-1000 agent can't create or modify
-files, including the objects every `git commit` writes into `.git/`. (This is
-the same layer that previously broke agent credential persistence.) We mount
-the home share with 9p `securityModel: mapped-xattr` on purpose: it keeps the
-sandbox's file-ownership bookkeeping in xattrs instead of writing it through to
-your real files, which an earlier passthrough mount did — corrupting host file
-ownership during and after sessions. Switching to virtiofs would reintroduce
-that, so it's not an option.
-
-Instead, on macOS the agent works on a **per-session VM-local ext4 copy** of
-each repo (at `/var/lib/sandbox/workspaces/<session>/<repo>` inside the VM),
-which is genuinely writable by the agent. A [Mutagen](https://mutagen.io)
-daemon **running inside the VM** keeps that copy in near-live two-way sync with
-your host repo. Because your home directory is already visible inside the VM
-via the 9p mount, both sync endpoints are VM-local — there's no host-side
-agent and no SSH — and because Mutagen is an ordinary VM process rather than
-the gVisor gofer, it writes the 9p mount normally while mapped-xattr keeps your
-host file ownership intact. Mutagen is installed into the VM automatically on
-your first tier 2/3 session (a one-time download; no Homebrew dependency on the
-host).
-
-Practical notes:
-
-- Your host repo reflects the agent's edits within a couple of seconds, and the
-  agent picks up host-side edits just as quickly — close to the Linux feel.
-- The masked secret paths (`.env`, `kubeconfig`, `.kube/`, `*-openrc.sh`, etc.)
-  are excluded from the sync, so they never reach the VM-local copy — on top of
-  the existing mount-level masking.
-- Sync mode is `two-way-safe`: if the same file is changed on both sides at
-  once, Mutagen flags the conflict rather than silently picking a winner. Resolve
-  it on the host (or just let the agent rewrite the file).
-- On a large repo the first session pauses briefly while the initial copy
-  populates; subsequent edits are incremental.
-
-## Cluster CIDRs
-
-The setup script passes `--cluster-cidr` and `--service-cidr` to k3s
-explicitly:
-
-- **Pod CIDR** (default `100.64.0.0/10`): allocated by Cilium IPAM in
-  cluster-pool mode and used by the egress MASQUERADE rule. Also passed
-  as k3s `--cluster-cidr` so the Node's `.spec.podCIDR` matches the
-  range Cilium actually allocates from — otherwise `kubectl get nodes`
-  reports k3s' default `10.42.0.0/24` and operators waste triage time
-  chasing a phantom mismatch.
-- **Service CIDR** (default `10.43.0.0/16`, k3s' default): used for
-  Kubernetes Service VIPs. Override with `--service-cidr` if your host
-  network overlaps.
-
-CIDRs are baked in at install time. To change them on an existing
-cluster, run `./uninstall.sh` and re-run `./setup.sh` with the new
-flags.
-
-## API server port
-
-The Kubernetes API server listens on `6443` by default — the k3s and
-upstream-Kubernetes default. That default collides with anything else
-on the host that expects a Kubernetes endpoint on `6443`: a common
-case is local Ansible or `kubectl` tooling pointed at a cluster on
-OpenStack, which silently talks to the sandbox cluster instead once
-the sandbox is up.
-
-`--apiserver-port` moves the sandbox cluster off `6443`:
-
-```bash
-./setup.sh --apiserver-port 7443
+```
+ YOUR MACHINE (macOS or Linux)
+ ┌───────────────────────────────────────────────────────────────────────┐
+ │ sandbox (host binary)                                                 │
+ │  ├─ VM driver: vfkit (macOS) or qemu (Linux); lima on request         │
+ │  ├─ sandbox netd: the VM's only network; keeps it from your machine   │
+ │  ├─ SSH to the VM: pinned host key, a key of its own                  │
+ │  ├─ workspace sync and the sync gate (withheld changes: sync review)  │
+ │  ├─ settings copied in before each command (config, profiles, ...)    │
+ │  ├─ audit records pulled back (append-only)                           │
+ │  └─ secret store, credential sealing, agent onboarding               │
+ └───────────────┬───────────────────────────────────────────────────────┘
+                 │ SSH and the sync only. No mounts.
+ APPLIANCE VM (Ubuntu 24.04, built by image/build.sh)
+ ┌───────────────▼───────────────────────────────────────────────────────┐
+ │ policy layer (`sandbox` in the VM): tiers, gates, vetting, masks,      │
+ │   overlays, catalogue, profiles  ──►  session spec (JSON)              │
+ │ sandboxd: containerd + Kata, networks, gateways, the broker store,     │
+ │   lifecycle, teardown, audit                                           │
+ │ /var/lib/sandbox/{workspaces, agent-history, broker, logs, operator}   │
+ │                                                                        │
+ │  session A                               session B                     │
+ │  ┌─ gateway: resolver, check, Envoy, broker ─┐   ┌─ gateway ─┐          │
+ │  │   ▲ link A (the only route)                │   │  ▲ link B │          │
+ │  │ ┌─┴──────────────────────┐                 │   │ ┌┴───────┐│          │
+ │  │ │ Kata microVM: agent    │                 │   │ │ agent  ││          │
+ │  │ │ (non-root, placeholders│                 │   │ └────────┘│          │
+ │  │ │  instead of credentials)                 │   └───────────┘          │
+ │  │ └────────────────────────┘                 │                          │
+ │  │ ┌──────────────────┐ link A.dep            │                          │
+ │  │ │ Kata: dependency │──────────────────────►│                          │
+ │  │ └──────────────────┘                       │                          │
+ │  └────────────────────────────────────────────┘                          │
+ │  gateway uplink → the VM's network → netd → the internet                 │
+ └────────────────────────────────────────────────────────────────────────┘
 ```
 
-Unlike the CIDRs, the port can be changed on an existing cluster —
-just re-run setup with the new value:
+## The pieces
 
-- **Linux:** `./setup.sh --apiserver-port <PORT>` is idempotent. If
-  k3s is already installed on a different port it rewrites the k3s
-  config (`/etc/rancher/k3s/config.yaml`, the `https-listen-port`
-  key), restarts k3s, refreshes `~/.sandbox/kubeconfig`, and
-  `helm upgrade`s Cilium's `k8sServicePort` to match. Running pods
-  survive the restart.
-- **macOS:** the port is baked into the Lima VM's host port forward
-  at VM-creation time. To change it, recreate the VM:
-  `limactl delete sandbox-vm` then `./setup.sh --apiserver-port <PORT>`.
+**The host binary** (`sandbox`) manages the VM, holds your secret store and the
+credential broker's key, onboards agents, and runs the workspace sync. It
+decides no policy: tiers, allowlists, gates, and vetting are decided in the VM.
+Commands it does not handle itself it runs in the VM over SSH, with your
+terminal attached. Before each one it copies your settings into the VM
+(`config.yaml`, `profiles/`, `vetting/`, `extra-ca-certs/`,
+`egress-rules.yaml`, `agent-config/`), and after it pulls the sessions' new
+audit records.
 
-The chosen port is recorded in `~/.sandbox/kubeconfig` (the `server:`
-URL), so every `sandbox` command picks it up automatically.
+**sandbox netd** is a process on your machine that is the VM's only network
+interface (on vfkit and qemu). It forwards the VM's traffic to the internet and
+refuses anything addressed to your machine: its loopback, its LAN address, the
+host subnet's broadcast. If netd stops, the VM has no network until it is
+restarted; `sandbox vm start` restarts it, and `sandbox doctor` checks it. The
+Lima driver (`--driver lima`) cannot block your LAN address and is there for
+compatibility only.
 
-## Resource quota sizing
+**The policy layer** is v2's CLI ported to Go and runs inside the VM. It makes
+the same decisions with the same messages, and turns a launch into a **session
+spec**: the image (pinned by digest), the mounts, the allowlist and block
+lists, the L7 rules, the credential bindings, the dependencies, and the limits.
 
-The namespace `ResourceQuota` is **sized to the node at setup time**,
-not hardcoded. `lib/resources.sh` reads the node's allocatable
-CPU/memory, subtracts a host reservation (default `2` CPU / `6Gi` for
-the OS, the k3s/Cilium stack, and your IDE/browser), and derives how
-many concurrent sandbox pods fit. `setup` then generates and applies
-the quota — re-run `sandbox setup` after a hardware change to resize.
+**sandboxd** is the session supervisor. It checks the spec again, then builds
+the session: a network namespace and gateway for it, a Kata microVM (Cloud
+Hypervisor) for the agent and one per dependency, the interception
+certificates, and the credential handover. It journals every resource before it
+creates it, so a crash or a reboot never leaves one behind: at start it tears
+down whatever it did not see finish. It ends a session when you stop it, when
+its terminal has been gone for two minutes, or for a `--keep-alive` session
+after 24 hours detached or 7 days in all.
 
-Memory and CPU are treated differently, on purpose:
+**The gateway** is per session and the session's only route out. It runs in
+the session's own network namespace as an unprivileged user and holds:
 
-- **Memory is not overcommitted.** The quota's `limits.memory` equals
-  the per-pod memory limit times the pod ceiling, so even if every
-  sandbox bursts to its full limit at once it still fits in RAM — no
-  host OOM. This is what gates concurrency.
-- **CPU is overcommitted.** CPU is compressible: an over-subscribed
-  core just throttles, it never OOM-kills. Per-pod CPU limits are
-  allowed to sum past the core count, so CPU is not the limiter.
+- a resolver that answers only allowed names;
+- a connection check that admits only allowed destinations and refuses the
+  block lists;
+- Envoy, which passes allowed TLS connections through or, for a host with a
+  credential binding or an L7 rule, terminates TLS with a certificate issued
+  for that session, applies the L7 rules, and forwards;
+- the broker, which replaces placeholders with credentials on the way out and
+  takes the credentials back out of responses.
 
-With the defaults (per-pod `2Gi` request / `6Gi` limit), the ceiling
-is `floor((allocatable_RAM − 6Gi) ÷ 6Gi)` — e.g. a 30Gi laptop fits
-4 concurrent sandboxes. To retune, edit the constants at the top of
-`lib/resources.sh` (`POD_MEM_LIMIT_GI`, `HOST_RESERVE_MEM_GI`, …) and
-re-run `sandbox setup`: a smaller per-pod memory limit trades single-
-session burst headroom for more concurrent sessions.
+The agent's microVM reaches its dependencies through the gateway too, at
+`<name>.deps.sandbox.internal`; dependencies cannot reach the agent or each
+other.
 
-## gVisor + Cilium ClusterIP routing
+## Workspace sync
 
-Cilium is installed with `socketLB.hostNamespaceOnly=true`. This is
-**required** for gVisor pods to reach ClusterIP services (including
-CoreDNS).
+The agent works on a copy of each repository in the VM
+(`/var/lib/sandbox/workspaces/<id>`), mounted at `/workspace` in its microVM.
 
-Cilium's default socket-LB rewrites Service ClusterIPs at the host
-kernel's cgroup `connect()` hook. gVisor pods never reach that hook
-because their `connect()` syscall is handled by gVisor's userspace
-netstack, not the host kernel — so without this flag, ClusterIP→PodIP
-translation never happens for sandbox pods. Symptoms include `nslookup`
-hangs, TLS handshake timeouts to external services (because DNS to the
-in-cluster CoreDNS service times out), and silent packet loss to
-`10.43.0.10:53`. The pattern is especially severe on hosts with an
-active VPN (`tun0` etc.), where the untranslated ClusterIP packet falls
-through to the VPN as the default route and is dropped at the corporate
-edge.
+- Before a launch (and a resume) the host syncs your repository into the copy.
+- While the agent runs, the host syncs about every 3 seconds, and once more at
+  the end, so the agent's changes appear in your checkout as it works.
+- Changes from the VM pass the **sync gate** on your machine first. Files that
+  could run code on your machine or change how git behaves there
+  (`.git/config`, hooks, `.gitattributes` filters, `.gitmodules`, and the like)
+  are held back in `~/.sandbox/quarantine`; `sandbox sync review` shows the diff
+  and applies or discards each.
+- A change made on both sides at once is a conflict and is held the same way.
 
-With `socketLB.hostNamespaceOnly=true`, Cilium installs TC-based LB
-programs on pod veths instead. These run on the host side of the veth
-and DNAT the packet in transit — after gVisor builds it, before host
-routing — so gVisor pods can reach Service VIPs normally.
+The copy belongs to an unprivileged sync user in the VM; the gates' own git in
+the VM runs as another unprivileged user, so a repository's configuration
+cannot act as root there.
 
-To apply this on an existing cluster without a full reinstall:
+## Agent logins, configuration, and history
 
-```bash
-helm upgrade cilium cilium/cilium \
-  --kubeconfig ~/.sandbox/kubeconfig \
-  --namespace kube-system \
-  --reuse-values \
-  --set socketLB.hostNamespaceOnly=true
-kubectl --kubeconfig ~/.sandbox/kubeconfig -n kube-system rollout restart ds/cilium
-```
+An agent's login lives in the broker store in the VM, sealed with a key kept on
+your machine and given to the VM only in memory. A session's agent gets a
+placeholder; see [Security model](security-model.md#credential-brokering).
+
+Each launch copies the agent's configuration (from
+`~/.sandbox/agent-config/<agent>/`, which `sandbox onboard` fills) into the
+session as a writable copy, discarded at the end. The agent's conversation
+history is kept per agent, tier, and repository set in
+`/var/lib/sandbox/agent-history`, and for tier 1 only for the session.
+
+## Images
+
+The appliance image carries Kata, containerd, Envoy, betterleaks, and the Go
+binaries, built from pinned, checksummed inputs (`image/artifacts.lock`,
+`image/packages.*.lock`). Agent images are built in the VM with
+`sandbox rebuild` and run by digest. Releasing signed images, and
+`sandbox upgrade` to move between them, are not built yet.
+
+## What v2 had that v3 does not
+
+k3s, Cilium, Hubble, gVisor, CoreDNS, Helm, and the per-host setup scripts are
+gone. So are host mounts: on macOS v2 mounted parts of your home into its VM; on
+Linux v2 ran the cluster on your machine itself. In v3 nothing on your machine
+is reachable from the VM except the SSH channel and the sync, which the host
+drives.

@@ -14,7 +14,7 @@ operator-held trust root before it will start a Tier 2/3 session.
 
 This is a compliance / prompt-injection control, and it is **orthogonal to
 isolation** — a vetted repo is not thereby safe to run outside a sandbox. Every
-session still runs gVisor-isolated with default-deny egress and workspace
+session still runs in its own microVM with default-deny egress and workspace
 masking. Vetting decides *whether to load a repo*, not whether the sandbox's
 other guarantees apply. See PRINCIPLES.md ("Repo vetting").
 
@@ -23,8 +23,12 @@ other guarantees apply. See PRINCIPLES.md ("Repo vetting").
 The repo carries only the *artifact* — a signed tag named `agent-vetted/<sha>`.
 The *requirement* (is vetting enforced?) and the *trust roots* (whose signatures
 count?) live operator-side, so nothing a workspace author can commit weakens the
-decision. Verification runs on the host, before the pod starts, against signer
-lists you control — never the ambient keyring. The tag need not point at the
+decision. Verification runs before the session starts, against signer
+lists you control — never the ambient keyring. (In v3 it runs in the sandbox VM, on
+the VM's copy of the repository, which the host syncs, tags included, just before; the
+trust roots come from your `~/.sandbox` and the overlay. The git that reads the copy
+runs as an unprivileged user, and the signature is checked in a separate scratch
+repository, so nothing in a repository's own git config takes part.) The tag need not point at the
 current `HEAD`: a verified tag that is an **ancestor** of `HEAD` counts, and the
 gate reports how many commits behind `HEAD` it is. What the gate actually checks
 about the commits in between is only that they are *ancestors* of the local
@@ -241,7 +245,25 @@ follow.
 
 ## Attest a repo
 
-A reviewer, after reading the tree, signs the current `HEAD`:
+> **Not yet in v3:** creating the attestation with `sandbox vet`, and the
+> launch-time attest below. Signing needs your key, which stays on your machine,
+> and the part of the VM's CLI that would ask the host to sign is not built. Until
+> it is, a reviewer signs the tag with git on the host, which is the same
+> artifact the gate verifies:
+>
+> ```bash
+> cd ~/repos/app
+> git -c gpg.format=ssh -c user.signingkey=~/.ssh/id_ed25519.pub \
+>   tag -s -m "agent-vetted" agent-vetted/$(git rev-parse HEAD)
+> git push origin agent-vetted/$(git rev-parse HEAD)
+> ```
+>
+> The next `sandbox run` sees the tag (it syncs the repository, tags included,
+> into the VM's copy first). `sandbox vet --status` reads the VM's copy as of its
+> last sync, so run `sandbox sync once --repo ~/repos/app` first after tagging.
+> Every check below works as described.
+
+In v2, a reviewer, after reading the tree, signs the current `HEAD`:
 
 ```bash
 sandbox vet --repo ~/repos/app
@@ -274,6 +296,7 @@ key an operator signs with.
 Check a repo's state without signing anything:
 
 ```bash
+sandbox sync once --repo ~/repos/app   # v3: refresh the VM's copy first
 sandbox vet --status --repo ~/repos/app
 # vetted:   /home/you/repos/app
 #   HEAD:   1ff36c4...
@@ -360,6 +383,8 @@ of posture: they decide only *which* exceptions count, not whether vetting is
 enforced.
 
 ## Attest at launch (authorized signers)
+
+(Not yet in v3; see [Attest a repo](#attest-a-repo).)
 
 Sometimes you'd rather sign than accept drift — or the repo is unvetted, or the
 drift is over the cap. So when `required` would refuse an interactive launch and

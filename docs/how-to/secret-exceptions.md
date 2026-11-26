@@ -19,6 +19,18 @@ You have three ways to get past a finding, and they are not equal:
 
 This page is about the third one.
 
+In v3 the gate runs in the sandbox VM, against its copy of each repository (synced from your
+checkout just before the scan), with the betterleaks the appliance ships (1.8.1). The rules,
+messages, and files below are v2's. Two things differ in this build:
+
+- `sandbox exceptions add` writes `.betterleaksignore` in the VM's copy; the change comes back to
+  your checkout with the next sync (`sandbox sync once --repo <path>` brings it now). Commit it
+  there.
+- Signing the attestation with `sandbox vet` (step 4) is not available yet; see
+  [Vetting](vetting.md#attest-a-repo) for signing the tag with git on your machine. Signing a tag
+  by hand skips `vet`'s acknowledgment prompt, so read the repository's `.betterleaksignore`
+  before you sign: every entry there is a value the agent will be able to read.
+
 ## What an exception is
 
 An exception records a single finding as a reviewed false positive. Each entry
@@ -159,6 +171,8 @@ git -C ~/repos/app commit -m "Accept reviewed secret-gate false positive in valu
 ```
 
 ### 4. A reviewer vets the repo
+
+(In v3, sign by hand for now: see the note at the top of this page.)
 
 The list only takes effect once the tree is [vetted](vetting.md). When a reviewer
 signs, `sandbox vet` surfaces exactly what they're signing off on and asks them

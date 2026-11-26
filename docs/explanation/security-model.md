@@ -3,43 +3,141 @@
 [← Documentation](../index.md)
 
 For the design intent and threat model behind these controls, read
-[PRINCIPLES.md](../../PRINCIPLES.md).
+[PRINCIPLES.md](../../PRINCIPLES.md); the full v3 design and its threat model
+by escape depth are in [docs/design/v3-architecture.md](../design/v3-architecture.md).
 
-- **Kernel isolation**: gVisor (runsc) for all pods
-- **Network**: Cilium with `policyEnforcementMode: always`;
-  per-session CiliumNetworkPolicy
-- **Filesystem**: `.env`, `.npmrc`, `clouds.yaml`, and any `kubeconfig`/`.kube/`
-  in the workspace are masked with emptyDir overlays. The only kubeconfig that
-  ever enters the pod is one explicitly passed via `--infra-kubeconfig`, which
-  is minified to a single context, mounted as a K8s Secret at
-  `/home/agent/.kube/config`, and deleted on teardown.
-- **Secret gate**: before every Tier 2/3 launch each `--repo` is scanned
-  with [betterleaks](https://github.com/betterleaks/betterleaks). A secret
-  found in a file the mask would **not** hide aborts the launch — the agent
-  never sees a workspace secret you forgot about. The error names the
-  offending path and gives a `sandbox mask add` command to hide it (see
-  [Extending the mask](#extending-the-mask) below). betterleaks is required for
-  Tier 2/3; if it is missing, the launch fails closed. `sandbox setup` installs
-  the pinned version (`setup/versions.sh`) when it is absent or older, so you
-  normally never have to install it by hand. The scan covers your tracked and
-  untracked files but skips gitignored dependency trees (`node_modules`,
-  `.venv`, `vendor`, ...) — upstream-managed code that holds none of your
-  secrets (see [Dependency-tree exclusion](#dependency-tree-exclusion)).
-  `--i-accept-unmasked-secrets` on `sandbox run` prints the findings and
-  launches anyway. Values that are **encrypted at rest** are exempt — a hit
-  inside a Bitnami SealedSecret's `spec.encryptedData` or a Mozilla SOPS
-  `ENC[...]` envelope is ciphertext the agent can read harmlessly, so it does
-  not gate (see [Encrypted-at-rest exemption](#encrypted-at-rest-exemption)). A
-  genuine false positive can instead be recorded per-finding as an exception
-  that the gate honors only once the repo is vetted (see
-  [Accepting a reviewed false positive](#accepting-a-reviewed-false-positive)).
-- **Credentials**: claude/codex use OAuth (no API key injection);
-  opencode key via K8s Secret; tier 3 infra creds via per-session Secrets
-  (`--infra-token` → `$INFRA_TOKEN`; `--infra-kubeconfig` → mounted file)
-- **Pod security**: non-root UID 1000, all capabilities dropped,
-  no privilege escalation
-- **Service account**: `automountServiceAccountToken: false`,
-  no RBAC bindings
+v3 defends against an agent that is rogue, mistaken, prompt-injected, or
+jailbroken. It does not defend against a malicious operator, a compromised
+machine, a compromised model provider, or a compromise of this tool's own
+supply chain.
+
+## Boundaries
+
+From the agent outward:
+
+- **The agent's microVM.** Each session's agent runs in a Kata microVM (Cloud
+  Hypervisor, its own guest kernel) as uid 1000 with no capabilities, no
+  privilege escalation, and guest seccomp on. Each dependency runs in a
+  microVM of its own.
+- **The session's gateway.** The microVM's only network link goes to the
+  session's gateway, in a network namespace of its own, running as an
+  unprivileged user that differs per session. Every name the agent resolves and
+  every connection it opens goes through it: names not on the allowlist get no
+  answer, destinations on the block lists or off the allowlist are refused, and
+  a packet that tries any other way is dropped and recorded (`link_drop`). An
+  attacker who exploits a gateway gets that session's bindings and nothing else.
+- **The appliance VM.** Sessions, `sandboxd`, the policy layer, and the
+  workspace copies live in a Linux VM. Nothing of your machine is mounted into
+  it. On the default drivers (vfkit, qemu) its only network is `sandbox netd`
+  on your machine, which refuses everything addressed to your machine
+  (loopback, LAN address, broadcast) and fails closed when it stops.
+- **Your machine.** The host binary talks to the VM over SSH with a pinned host
+  key, and treats everything that comes back as untrusted: audit records are
+  validated and appended, never rewritten; workspace changes pass the sync gate.
+
+## Credential brokering
+
+The agent never holds a real credential. A session's credentials (the agent's
+login, profile secrets with a binding, `--infra-token`, opencode's key) are
+**bindings**: the agent's variable or file holds a placeholder, and the session's
+gateway puts the real value into requests to the hosts the binding names, in the
+way it names (a bearer token, basic auth, a header, a query parameter).
+
+- A placeholder sent anywhere else is refused (`credential_misuse`).
+- A request to a bound host that carries a credential of its own instead of the
+  placeholder is refused (`credential_missing`). A request that carries no
+  credential at all is relayed as it is (clients make unauthenticated calls to
+  the same hosts).
+- Responses are scanned for the real value, in its common encodings, and it is
+  replaced by the placeholder before the agent sees it
+  (`credential_reflection`).
+- `TRACE` and `TRACK` are refused on every intercepted host, as are git pushes
+  and package-registry writes by the [org baseline](../how-to/egress-rules.md).
+- Per-credential rate limits and quotas apply.
+
+Credentials are stored in the VM's broker store, each sealed (AES-256-GCM) with a
+key that is made on your machine, kept in its keychain (or a 0600 file on
+Linux), and given to the VM only in memory. Each secret's binding is sealed with
+its value, so the VM can use a value only as it was bound on your machine. Values
+are decrypted only by short-lived helper processes, straight into the gateway.
+
+The host pushes a launch's secrets only after checking that your command line
+or profiles name them. A secret with no binding is withheld; one marked
+`--allow-readable` is given to the agent as a file and recorded
+(`secret_readable`). See [Secrets](../how-to/secrets.md) and
+[Onboarding agents](../how-to/onboarding-agents.md).
+
+Brokering stops credential **theft**, not credential **use**: the agent can still
+act with a bound credential toward its bound hosts, within the L7 rules. Tiers,
+bindings, and L7 rules bound what that use can do.
+
+## Agent history and configuration
+
+An agent's configuration is copied into each session as a writable copy and
+discarded at the end, so an agent cannot plant a setting or hook that a later
+session runs. Its conversation history is kept per agent, tier, and repository
+set, and never crosses tiers. Sessions of the same agent on the same repositories
+at the same tier share that history and are one trust domain for it: a
+conversation can carry an injected instruction from one session to the next,
+which is the cost of the agent's own `/resume`.
+
+## The sync gate
+
+The agent edits a copy of your repository in the VM. Its changes reach your
+checkout only through the sync gate on your machine, which holds back anything
+that could run code there or change how git behaves (git config and hooks,
+filters, submodules, executable bits on such files, and the like) for you to
+review with `sandbox sync review`. The agent never writes your checkout
+directly; the host applies what passes the gate. See [Architecture](architecture.md#workspace-sync).
+
+## Teardown
+
+A session ends when you stop it, when its terminal has been detached for two
+minutes, or, for `--keep-alive`, after 24 hours idle or 7 days. Its microVMs,
+gateway, credentials in memory, readable-secret files, and configuration copy go
+with it. `sandboxd` journals each resource before it creates it, so a crash or
+reboot of the VM ends every session it cannot vouch for at the next start.
+
+## Accepted risks
+
+- **Root in the appliance VM** (a microVM escape that also escapes Kata) can
+  read the broker store and the brokers' memory: every onboarded agent login,
+  the secrets pushed for running sessions, and the other sessions' workspace
+  copies. It cannot reach your machine's files, processes, or network services
+  beyond the SSH channel and the sync, and it cannot plant credentials on your
+  machine: nothing flows from the VM into your keychain or secret store.
+- **Audit integrity against VM root is not claimed.** Sequence numbers make
+  records deleted before the pull show up as a gap; they cannot stop an
+  attacker who already holds VM root from writing false records.
+- **Passthrough destinations are not inspected.** A host you allow with no
+  binding and no L7 rule is passed through after the name check; it carries no
+  brokered credential, but the agent can send it what it reads.
+- **The working tree is shared.** Sessions on the same repository, and you, read
+  what an agent writes there; the sync gate protects your machine, not your
+  review of the content.
+
+## Workspace gates
+
+- **Filesystem masks:** `.env`, `.npmrc`, `clouds.yaml`, and any
+  `kubeconfig`/`.kube/` in a workspace are covered in the agent's view, and
+  `.git/hooks`, `.vscode`, `.idea`, and `.devcontainer` are read-only to it.
+  Read-only *files* (`.git/config`, `.gitmodules`) are not yet enforced inside
+  the microVM; the sync gate holds back any change to them either way.
+- **Secret gate:** before every tier 2 and 3 launch each `--repo` is scanned
+  with [betterleaks](https://github.com/betterleaks/betterleaks), which ships
+  in the appliance image. A secret found in a file the mask would **not** hide
+  aborts the launch; the error names the path and gives a `sandbox mask add`
+  command to hide it (see [Extending the mask](#extending-the-mask)). The scan
+  covers your tracked and untracked files but skips gitignored dependency trees
+  (`node_modules`, `.venv`, `vendor`, ...; see
+  [Dependency-tree exclusion](#dependency-tree-exclusion)).
+  `--i-accept-unmasked-secrets` prints the findings and launches anyway. Values
+  **encrypted at rest** are exempt (a hit inside a Bitnami SealedSecret's
+  `spec.encryptedData` or a Mozilla SOPS `ENC[...]` envelope; see
+  [Encrypted-at-rest exemption](#encrypted-at-rest-exemption)). A genuine false
+  positive can be recorded as an exception the gate honors only once the repo
+  is vetted (see [Accepting a reviewed false positive](#accepting-a-reviewed-false-positive)).
+- **Vetting:** see [Vetting](../how-to/vetting.md).
 
 ## Extending the mask
 

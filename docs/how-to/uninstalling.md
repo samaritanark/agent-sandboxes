@@ -3,36 +3,35 @@
 [← Documentation](../index.md)
 
 ```bash
-sandbox uninstall              # Interactive — prompts before each destructive step
-sandbox uninstall --yes        # Non-interactive (skip all prompts)
-sandbox uninstall --keep-logs  # Remove everything except ~/.sandbox/logs/
+sandbox uninstall              # delete the VM; ask about each kind of state
+sandbox uninstall --keep-vm    # keep the VM; ask about the state
+sandbox uninstall --purge      # delete the VM and all the state below, without asking
 ```
 
-`sandbox uninstall` is a thin wrapper over `./uninstall.sh` (same flags);
-running `./uninstall.sh` directly continues to work, which is handy in scripts
-or if the CLI isn't on your PATH.
+`uninstall` stops and deletes the sandbox VM, with everything in it (workspace
+copies, agent history, the credential broker's store), and its SSH keys in
+`~/.sandbox/vm/`. Then, on a terminal, it asks about each kind of state in
+`~/.sandbox`; without a terminal it keeps them all:
 
-| Option             | Effect                                          |
-|--------------------|-------------------------------------------------|
-| `--yes` / `-y`     | Skip all confirmation prompts                   |
-| `--keep-logs`      | Preserve `~/.sandbox/logs/` (audit records)     |
-| `--keep-images`    | Skip sandbox container image removal            |
-| `--keep-lima`      | macOS: delete the Lima VM but leave Lima        |
-| `--keep-kubetools` | Leave Helm (and kubectl on Linux) in place      |
+| Asked about | Paths in `~/.sandbox` |
+|---|---|
+| secrets and agent tokens | `secrets/`, `agent-home/` |
+| withheld workspace changes and sync state | `quarantine/`, `sync/` |
+| logs | `logs/` |
+| settings and profiles | `config.yaml`, `profiles/`, `vetting/`, `extra-ca-certs/`, `overlays/`, `egress-rules.yaml`, `agent-config/` |
 
-The uninstaller removes, in order:
+> **If v2 is still installed, don't use `--purge`.** v2 uses the same
+> `~/.sandbox`: its secrets, agent homes, logs, and profiles would go with it.
+> Answer `n` to each question instead. See [Upgrading from v2](upgrading-from-v2.md).
 
-1. Active pods, CiliumNetworkPolicies, and secrets from the cluster
-2. The `sandbox` namespace, ServiceAccount, and `gvisor` RuntimeClass
-3. Container images (`sandbox:*`) from k3s containerd (and from Docker if a
-   legacy install left copies there)
-4. **Linux**: k3s (and Cilium), gVisor binaries, runsc config,
-   `sandbox-masquerade.service`, and the nerdctl/buildkit image builder
-   (`buildkit.service` + `/etc/buildkit`; the binaries under `/usr/local/bin`
-   are left in place)
-5. **macOS**: Lima VM `sandbox-vm` (and optionally Lima itself)
-6. `~/.sandbox/` — config, kubeconfig, and session logs
-7. Helm from `/usr/local/bin/helm` if setup.sh installed it (optional)
+Review withheld workspace changes (`sandbox sync review`) before you remove
+`quarantine/`: they exist nowhere else.
 
-The uninstaller does **not** remove this repository directory,
-Homebrew, or other Lima VMs.
+`uninstall` does not remove the host binary, vfkit or qemu, this repository, or
+the broker's key (the keychain item `agent-sandboxes broker key` on macOS,
+`~/.sandbox/broker.key` on Linux; the latter goes if you remove `~/.sandbox`
+yourself). v2's flags `--keep-lima` and `--keep-kubetools` are gone; use
+`--keep-vm`.
+
+To remove v2 after upgrading, use `sandbox migrate --remove-v2`
+([Upgrading from v2](upgrading-from-v2.md#removing-v2)).

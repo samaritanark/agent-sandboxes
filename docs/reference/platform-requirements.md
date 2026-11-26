@@ -2,17 +2,29 @@
 
 [← Documentation](../index.md)
 
-**Linux**: k3s, gVisor, Cilium, kubectl, helm, jq, xxd, sha256sum,
-curl, git. Also nerdctl + buildkit (the image builder — `sandbox setup`
-installs the pinned `nerdctl-full` release and wires buildkit to k3s's
-containerd, so **no host Docker or Podman is required**) and betterleaks
-(the Tier 2/3 pre-launch secret gate fails closed without it). Both are
-installed from the pins in `setup/versions.sh` if missing, so neither is a
-manual prerequisite.
+**macOS**: macOS 15 or later on Apple M3 or later, and [vfkit](https://github.com/crc-org/vfkit)
+(`brew install vfkit`) for the default driver. `--driver lima` needs Lima
+instead. The sandbox VM needs nested virtualization (Kata runs a microVM per
+session inside it), which Apple's Virtualization framework offers on M3 and
+later.
 
-**macOS**: Lima (`brew install lima`) — provisions an Ubuntu 24.04 VM
-with identical stack
+**Linux**: arm64 or x86_64, `qemu-system-<arch>` for the default driver, and
+`/dev/kvm` with nested virtualization enabled; your user must be in the `kvm`
+group. `--driver lima` needs Lima instead. Only the arm64 image has been tested
+end to end so far.
 
-**Windows**: WSL2 (`wsl --install`) plus an installed Ubuntu-24.04 distro
-(`wsl --install -d Ubuntu-24.04`) used as a one-time seed. See the
-[Windows / WSL2 setup](../how-to/platforms/windows.md) guide.
+**Windows**: not available in v3 yet. See [Windows](../how-to/platforms/windows.md).
+
+**The VM**: at least 4 CPUs and 8 GiB of memory (defaults: the host's CPUs less
+2, its memory less 6 GiB), and a 60 GiB disk by default. Everything else (Kata,
+containerd, buildkit, Envoy, betterleaks) is in the appliance image; nothing is
+installed on the host besides the `sandbox` binary.
+
+**Building**: Go 1.27 for the host binary. The appliance image is built on
+Linux as root with mkosi v27.1 and the tools in
+[image/README.md](../../image/README.md); on a Mac, build it in a Linux Lima VM
+with `image/build-in-lima.sh`.
+
+**Agents on the host**: `claude` to make Claude Code's token (`claude
+setup-token`), and `codex` for Codex's device login (`sandbox onboard --agent
+codex`). See [Signing agents in](../how-to/onboarding-agents.md).

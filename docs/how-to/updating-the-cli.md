@@ -1,61 +1,50 @@
-# Updating the CLI
+# Updating the sandbox
 
 [← Documentation](../index.md)
 
-The `sandbox` CLI runs directly from your git checkout — there's no separate
-"installed" copy. So updating the app means moving that checkout forward to the
-latest release, which is exactly what `sandbox upgrade` does by default:
+v3 has two parts to update: the host binary and the appliance image. The
+planned `sandbox upgrade`, which will update both and keep the VM's state, is
+not built yet. Until it is:
+
+## The host binary
+
+Move your checkout forward and rebuild:
 
 ```bash
-# Update the CLI to the latest release (the default target).
-sandbox upgrade
-
-# Preview only — show current -> target, change nothing.
-sandbox upgrade --dry-run
-
-# Pin an exact release instead of the newest.
-sandbox upgrade --to v2.4.0
-
-# Update the CLI, then rebuild the agent images from the new code.
-sandbox upgrade --rebuild
+git pull --ff-only
+(cd go && go build -o ~/bin/sandbox ./cmd/sandbox)
 ```
 
-`--app` is the explicit spelling of the default, for when you want to be
-unambiguous or pair it with infra work (`sandbox upgrade --all`).
+The binary and the image check each other's control API version at every
+command. If they no longer match, the command stops and says which side is
+older.
 
-## What it does, and what it won't
+## The appliance image
 
-The app phase **fast-forwards** your checkout to the latest release **tag** —
-never the tip of a branch, and only when it's a clean fast-forward. That means:
+Build a new image ([Installing](installing.md#3-build-the-appliance-image)), then
+replace the VM:
 
-- **Local edits are safe.** A dirty working tree is refused up front; commit or
-  stash first.
-- **Local commits are safe.** If your checkout has diverged from the release
-  line, the update refuses rather than merging or rewriting. Reconcile with git
-  (or re-clone) and try again.
-- **It stays on your branch.** A fast-forward moves the branch to the release
-  commit; it doesn't detach HEAD or switch branches.
+```bash
+sandbox uninstall      # answer n to every question to keep your ~/.sandbox state
+sandbox install --dev-image ~/sandbox-appliance.raw
+```
 
-After a successful update the CLI re-stamps its embedded version, so
-`sandbox version` and `sandbox status` immediately report the new release.
+Replacing the VM loses what lives only in it:
 
-## Rebuild images if needed
+- **Agent logins** in the credential broker: run `sandbox onboard` again for
+  each agent ([Signing agents in](onboarding-agents.md)).
+- **Agent images**: `sandbox rebuild --agent base` and each agent again.
+- **Conversation history** from tier 2 and 3 sessions.
+- **Workspace copies**: the next `run` copies your repositories in again. Your
+  repositories on the host are not touched. Review withheld changes
+  (`sandbox sync review`) first; keep `quarantine/` and `sync/` when
+  `uninstall` asks.
 
-The agent container images are built from this code. A CLI update that changes
-`docker/` or bumps a pinned agent version leaves the images stale until you
-rebuild — `sandbox upgrade --rebuild` chains it, or run
-[`sandbox rebuild`](rebuilding-images.md) yourself when convenient.
+Stop your sessions first: `uninstall` deletes the VM with whatever is running in
+it.
 
-## Released tarballs
+## Agent harnesses
 
-If you installed from a downloaded release tarball rather than a git clone,
-there's no history to fast-forward. `sandbox upgrade` detects this and points
-you at the [releases page](https://github.com/samaritanark/agent-sandboxes/releases/latest)
-to download the newer tarball and re-run `./setup.sh`.
-
-## Related
-
-- [Upgrading infrastructure (k3s / Cilium / gVisor)](upgrading-infra.md) — the
-  `--infra` side of the same command.
-- [Rebuilding agent images](rebuilding-images.md) — refresh the agent CLIs that
-  live inside the container images.
+The agents' CLIs (Claude Code, Codex, OpenCode) update when you rebuild their
+images; Claude Code's and Codex's own updaters are turned off in sessions. See
+[Rebuilding images](rebuilding-images.md).

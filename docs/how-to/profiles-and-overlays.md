@@ -19,13 +19,18 @@ agent: codex                      # optional — used when --agent is absent; if
 default_repo: ~/repos/dev-app     # optional; used when --repo is absent
 extra_allowed_domains:            # optional; merged with --allow-domain
   - api.dev-app.example.com
-secrets: []                       # host-side secrets to inject (see Secret store)
+secrets: []                       # host-side secrets the session gets (see Secret store)
 mcps: []                          # MCP servers run alongside the session
 services: []                      # non-MCP service deps (DB, broker, …)
 ```
 
 `secrets`, `mcps`, and `services` are covered in [Secrets](secrets.md) and
 [MCP & service dependencies](mcp-and-dependencies.md).
+
+Profiles live on your machine. In v3 the policy layer runs in the sandbox VM, and the host pushes
+`~/.sandbox/config.yaml`, `~/.sandbox/profiles/`, and the rest of your operator state to it before
+every command; `~` in a profile means your home on the host (the VM mirrors its path), so
+`default_repo: ~/repos/dev-app` works as before.
 
 **Only `tier` is required** — every other field, `agent` included, is
 optional. An explicit `--agent` / `--repo` / `--tier` on the command
@@ -64,22 +69,25 @@ still use `run --repo … --repo …`.
 ## Overlays
 
 An **overlay** is a directory a team ships to layer their own profiles,
-governance doc, and additional blocked-destinations on top of the org
-install. Point at it via either source:
-
-```bash
-export SANDBOX_OVERLAY=/path/to/overlay-myteam
-```
+governance doc, catalogue entries, egress rules, and additional blocked-destinations on top of the
+org install. Point at it in your config:
 
 ```yaml
 # ~/.sandbox/config.yaml
 overlay: /path/to/overlay-myteam
 ```
 
+In v3 the overlay is read in the sandbox VM, so it has to be there: a team overlay kept in a git
+repository is cloned into the VM by `sandbox link` (which also keeps it up to date), under
+`~/.sandbox/overlays/`. A directory that exists only on your machine is not copied to the VM in
+this build, and v2's `SANDBOX_OVERLAY` environment variable does not reach it (the host passes the
+VM none of your shell's environment).
+
 The CLI searches `~/.sandbox/profiles/<name>.yaml` first, then
 `<overlay>/profiles/<name>.yaml`. Overlay
 `blocked-destinations.yaml` is unioned with the org's at session-launch
 time — overlays are **additive only on the safety side**, they cannot
-weaken the org's controls or the tier model. See
+weaken the org's controls or the tier model. An overlay's `egress-rules.yaml` adds L7 rules (see
+[Egress L7 rules](egress-rules.md)). See
 `examples/overlay-template/` for the layout and a starter
 `GOVERNANCE.md`.

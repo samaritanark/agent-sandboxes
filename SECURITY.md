@@ -14,23 +14,31 @@ updates, and discuss disclosure timing.
 
 **In scope:**
 
-- Sandbox escape or privilege escalation from inside the agent pod
-  into the host or other pods.
-- Bypasses of the default-deny network egress (the agent reaching
-  hosts not on its tier allowlist).
-- Bypasses of the filesystem mask (sensitive paths visible inside the
-  pod that should not be).
-- Credential leakage — host-side secrets becoming readable inside a
-  session that should not have them.
-- Vulnerabilities specific to the container images built by this
-  repository (not upstream-introduced).
+- Escape from an agent's or a dependency's microVM, or from a session's
+  gateway, into the appliance VM, another session, or your machine.
+- Reaching your machine from the appliance VM beyond the SSH channel and
+  the workspace sync (for example a `sandbox netd` bypass), or a VM-to-host
+  data flow the host binary accepts without validating.
+- Bypasses of the default-deny network egress (the agent reaching hosts
+  not on its tier allowlist, or around its gateway).
+- Credential leakage: a brokered credential's value reaching the agent, a
+  placeholder working toward a host it is not bound to, or a host-side
+  secret pushed to the VM for a launch that did not name it.
+- Bypasses of the sync gate (an agent's change to a host-exec vector
+  reaching your checkout without review) or of the filesystem mask.
+- Vulnerabilities specific to the appliance image or the agent images
+  built by this repository (not upstream-introduced).
 
 **Out of scope:**
 
-- Vulnerabilities in third-party components (gVisor, Cilium, k3s, the
-  LLM provider, agent binaries). Report those upstream; we'll track
+- Vulnerabilities in third-party components (Kata Containers, Cloud
+  Hypervisor, containerd, Envoy, the hypervisor on your machine, the LLM
+  provider, agent binaries). Report those upstream; we'll track
   and integrate upstream fixes.
-- Issues that require host root access to exploit.
+- Issues that require root on your machine to exploit.
+- What root in the appliance VM can do that PRINCIPLES.md and the
+  security model already list as accepted (reading the broker store and
+  other sessions' workspace copies).
 - Issues that arise only when an operator deliberately weakens the
   configuration. See PRINCIPLES.md "Never permitted regardless of
   tier" — the design does not protect against operator decisions that
@@ -50,9 +58,9 @@ misconfigurations, secrets, and known CVEs. Findings surface in the
 repository's "Security" tab.
 
 CI does not currently build and scan the agent container images
-themselves. Adopters who build the images locally should run their own
-image scanner (e.g. `trivy image sandbox:base`) as part of their build
-pipeline.
+themselves; they are built in the appliance VM with `sandbox rebuild`.
+Adopters should run their own image scanner on them as part of their
+build pipeline.
 
 ## Disclosure
 
