@@ -1398,8 +1398,8 @@ m(RA, '\tspec.Env = append(spec.Env, ad.env...)\n', '', "TestLaunch|TestSetUpAge
 WA = "cmd/sandbox-vm/launch.go"
 m(WA, '\t\tif err := freshDir(dir, uid); err != nil {', '\t\tif err := os.MkdirAll(dir, 0o700); err != nil {', "TestWriteAgentFiles", pkg="../cmd/sandbox-vm")
 m(WA, '\t\t\tif name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\x00") {', '\t\t\tif name == "" {', "TestWriteAgentFiles", pkg="../cmd/sandbox-vm")
-m(WA, '\t\t\tif !historyKeyRE.MatchString(f.HistoryKey) || f.Tier < 2 || f.Tier > 3 {', '\t\t\tif f.Tier > 3 {', "TestWriteAgentFiles", pkg="../cmd/sandbox-vm")
-m(WA, '\t\t\t\tif st, err := os.Lstat(p); err != nil || !st.IsDir() {', '\t\t\t\tif _, err := os.Stat(p); err != nil {', "TestWriteAgentFiles", pkg="../cmd/sandbox-vm")
+m(WA, '\tif !agentName.MatchString(agent) || !historyKeyRE.MatchString(key) || tier < 2 || tier > 3 {', '\tif tier > 3 {', "TestWriteAgentFiles", pkg="../cmd/sandbox-vm")
+m(WA, '\t\tif st, err := os.Lstat(p); err != nil || !st.IsDir() {\n\t\t\treturn "", fmt.Errorf', '\t\tif _, err := os.Stat(p); err != nil {\n\t\t\treturn "", fmt.Errorf', "TestWriteAgentFiles", pkg="../cmd/sandbox-vm")
 OB2 = "internal/host/app/onboard.go"
 m(OB2, '\tif !claudeToken.Match(tok) {', '\tif len(tok) == 0 {', "TestOnboardClaude", pkg="host/app")
 m(OB2, '\ta.pushAgentToken(ep, "agent.claude", tok, brokerseal.Binding{Hosts: []string{"api.anthropic.com"}, Inject: "bearer"})', '\ta.pushAgentToken(ep, "agent.claude", tok, brokerseal.Binding{})', "TestOnboardClaude", pkg="host/app")
@@ -1439,3 +1439,26 @@ m(OC2, 'a.pushAgentToken(ep, "agent.codex.refresh", refresh, brokerseal.Binding{
 m(OC2, '\tif err := json.Unmarshal(raw, &auth); err != nil || auth.Tokens == nil || auth.Tokens.AccessToken == "" || auth.Tokens.RefreshToken == "" {', '\tif err := json.Unmarshal(raw, &auth); err != nil || auth.Tokens == nil {', "TestOnboardCodex", pkg="host/app")
 m(OC2, '\t\tid.AccountID = c.Auth.AccountID', '', "TestOnboardCodex", pkg="host/app",
   equivalent="the test's login gives the account id in tokens.account_id as well as in the claims")
+
+# ---- the v2 to v3 migration (2026-11-26)
+MG = "internal/host/app/migrate.go"
+R_MG = "TestMigrate|TestRemoveV2|TestInstallFindsV2"
+m(MG, '\t\tif tier < 2 || tier > 3 {', '\t\tif tier > 3 {', R_MG, pkg="host/app")
+m(MG, '\t\tif json.Unmarshal(b, &s) != nil || s.Agent != "claude" || !uuidRE.MatchString(s.AgentSessionID) {', '\t\tif json.Unmarshal(b, &s) != nil || !uuidRE.MatchString(s.AgentSessionID) {', R_MG, pkg="host/app")
+m(MG, '\t\tif st, err := os.Stat(r); err != nil || !st.IsDir() {\n\t\t\treturn "", false\n\t\t}', '', R_MG, pkg="host/app")
+m(MG, '\tsort.Strings(ids)\n\th := sha256', '\th := sha256', R_MG, pkg="host/app")
+m(MG, '\t\tcase fi.Mode().IsRegular():', '\t\tcase !fi.IsDir():', R_MG, pkg="host/app")
+m(MG, '\t\t\tif b, err := st.Binding(e.Name()); err != nil || len(b.Hosts) > 0 || b.Readable {', '\t\t\tif b, err := st.Binding(e.Name()); err != nil || b.Readable {', R_MG, pkg="host/app")
+m(MG, '\t\t\tif !a.env.StdinTTY {\n\t\t\t\ta.die(', '\t\t\tif false {\n\t\t\t\ta.die(', R_MG, pkg="host/app")
+m(MG, '\t\t\tif r := strings.TrimSpace(reply); r != "y" && r != "Y" && r != "yes" {', '\t\t\tif r := strings.TrimSpace(reply); r == "x" {', R_MG, pkg="host/app")
+m(MG, '\t\t\t\tos.Remove(filepath.Join(v.agentHome, agent, f))', '', R_MG, pkg="host/app")
+m(MG, '\t\tif _, err := d.Limactl(a.ctx, "delete", "--force", V2LimaInstance); err != nil {\n\t\t\ta.die(', '\t\tif _, err := d.Limactl(a.ctx, "delete", "--force", V2LimaInstance); false && err != nil {\n\t\t\ta.die(', R_MG, pkg="host/app")
+m(MG, '\t\t\t\tv.limaVM = v.limaVM || n == V2LimaInstance', '\t\t\t\tv.limaVM = true', R_MG, pkg="host/app")
+m("internal/host/app/install.go", '\tif !skipV2 {', '\tif true {', R_MG, pkg="host/app")
+IH = "cmd/sandbox-vm/importhistory.go"
+m(IH, '\t\tif name == "." || strings.HasPrefix(name, "/") || name == ".." || strings.HasPrefix(name, "../") || strings.ContainsRune(name, 0) {', '\t\tif name == "." {', "TestImportHistory", pkg="../cmd/sandbox-vm",
+  equivalent="the os.Root refuses a path that leaves it; the check is defense in depth with a clearer error")
+m(IH, '\t\t\tif errors.Is(err, fs.ErrExist) {\n\t\t\t\tcontinue', '\t\t\tif false {\n\t\t\t\tcontinue', "TestImportHistory", pkg="../cmd/sandbox-vm")
+m(IH, '\troot, err := os.OpenRoot(dir)', '\troot, err := os.OpenRoot("/")', "TestImportHistory", pkg="../cmd/sandbox-vm")
+m(IH, '\t\tif st, err := root.Lstat(p); err != nil || !st.IsDir() {', '\t\tif false {', "TestImportHistory", pkg="../cmd/sandbox-vm",
+  equivalent="the Root refuses to open a file through a link anyway; the check names the path in the error")

@@ -24,7 +24,9 @@ func installEnv(t *testing.T, d *driver.Mock, tr *fakeTransport) (Env, *bytes.Bu
 				return "PRIVATE-" + comment, "ssh-ed25519 AAAA" + comment, nil
 			},
 			HostCPUs: 10, HostMemGiB: 32, ReadyTimeout: 50 * time.Millisecond, Poll: time.Millisecond,
-		}}, &out, &errb
+		},
+		// never the machine's own v2 (its Lima VM or k3s)
+		Migration: MigrationDeps{GOOS: "test"}}, &out, &errb
 }
 
 func image(t *testing.T) string {
@@ -215,6 +217,27 @@ func TestInstallDriverChoice(t *testing.T) {
 		}
 		if rc != 0 || kind != c.kind || tool != c.tool {
 			t.Errorf("%v: rc=%d kind=%q tool=%q\n%s%s", c.args, rc, kind, tool, out, errb)
+		}
+	}
+}
+
+// TestInstallFindsV2: after the install, a v2 install found is carried over (reported, history
+// imported); --skip-v2-migration leaves it for `sandbox migrate`.
+func TestInstallFindsV2(t *testing.T) {
+	for _, skip := range []bool{false, true} {
+		d := &driver.Mock{Caps: driver.Capabilities{NestedVirt: true}, EP: driver.SSHEndpoint{Host: "h", Port: 1, User: "root", HostKey: "k"}}
+		env, out, errb := installEnv(t, d, &fakeTransport{release: goodRelease})
+		os.MkdirAll(filepath.Join(env.StateDir, "agent-home", "claude"), 0o700)
+		os.WriteFile(filepath.Join(env.StateDir, "agent-home", "claude", ".credentials.json"), []byte("{}"), 0o600)
+		args := []string{"install", "--dev-image", image(t)}
+		if skip {
+			args = append(args, "--skip-v2-migration")
+		}
+		if rc := Run(context.Background(), args, env); rc != 0 {
+			t.Fatalf("%d %s", rc, errb)
+		}
+		if got := strings.Contains(out.String(), "==> Found a v2 install"); got == skip {
+			t.Errorf("skip=%v: %s", skip, out)
 		}
 	}
 }

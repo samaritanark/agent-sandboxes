@@ -57,10 +57,13 @@ Options:
   --vfkit <path>       The vfkit binary to use (default: vfkit on PATH)
   --qemu <path>        The qemu-system binary to use (default: on PATH)
   --limactl <path>     The Lima binary to use (default: limactl on PATH)
+  --skip-v2-migration  Do not look for a v2 install to carry over (run
+                       'sandbox migrate' later instead)
 `
 
 func (a *app) install(args []string) int {
 	var image, tool, kind string
+	skipV2 := false
 	tools := map[string]string{} // driver -> tool path given
 	var o sizing.Overrides
 	for len(args) > 0 {
@@ -85,6 +88,9 @@ func (a *app) install(args []string) int {
 		case "-h", "--help":
 			fmt.Fprint(a.env.Stdout, installUsage)
 			return 0
+		case "--skip-v2-migration":
+			skipV2 = true
+			continue
 		case "--dev-image":
 			image = value()
 		case "--vm-cpus":
@@ -205,6 +211,13 @@ func (a *app) install(args []string) int {
 	}
 	a.warnBrokerKey(a.running())
 	fmt.Fprintf(a.env.Stdout, "The sandbox VM is installed and running (image %s, control API %d).\n", info.ImageVersion, info.ControlAPI)
+	if !skipV2 {
+		if v, found := a.findV2(); found {
+			fmt.Fprintln(a.env.Stdout)
+			a.migrateV2(v)
+			fmt.Fprintln(a.env.Stdout, "v2 is still installed. When you no longer need it: sandbox migrate --remove-v2")
+		}
+	}
 	return 0
 }
 

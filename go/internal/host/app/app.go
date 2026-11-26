@@ -58,6 +58,8 @@ type Env struct {
 	// Getenv is the host's environment, for what proxied commands take from it (opencode's key and
 	// endpoint); nil reads nothing.
 	Getenv func(string) string
+	// Migration is what the v2 migration reads of the machine (zero: the real one).
+	Migration MigrationDeps
 	// CodexLogin runs Codex's device login and returns its auth.json (onboard); nil runs codex.
 	CodexLogin func() ([]byte, error)
 	// FetchModels asks an OpenAI-compatible endpoint for its models (opencode); nil uses HTTP.
@@ -119,6 +121,8 @@ func Run(ctx context.Context, args []string, env Env) (rc int) {
 			return a.brokerPut(args[1:])
 		case "onboard":
 			return a.onboard(args[1:])
+		case "migrate":
+			return a.migrate(args[1:])
 		case "flows":
 			return a.flows(args[1:])
 		case "status":

@@ -49,6 +49,10 @@ const receiveOperatorState = "__receive-operator-state"
 // for one workspace copy under /var/lib/sandbox/workspaces.
 const syncAgent = "__sync-agent"
 
+// importHistoryCmd adds an agent's v2 conversation history (a tar on stdin) to its history in the
+// VM (importhistory.go).
+const importHistoryCmd = "__import-history"
+
 // resumeRepos prints a session's repositories for the host, which syncs them before a resume.
 const resumeRepos = "__resume-repos"
 
@@ -98,6 +102,15 @@ func main() {
 			os.Stderr.WriteString("ERROR: " + err.Error() + "\n")
 			os.Exit(1)
 		}
+		return
+	}
+	if len(os.Args) == 5 && os.Args[1] == importHistoryCmd {
+		n, err := importHistory(sessionspec.AgentHistoryStore, os.Args[2], os.Args[3], os.Args[4], daemon.AgentUID, os.Stdin)
+		if err != nil {
+			os.Stderr.WriteString("ERROR: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		os.Stdout.WriteString(strconv.Itoa(n) + "\n")
 		return
 	}
 	if len(os.Args) == 3 && os.Args[1] == resumeRepos {

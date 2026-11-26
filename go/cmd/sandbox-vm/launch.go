@@ -207,19 +207,11 @@ func writeAgentFiles(store, historyStore string, uid int) func(string, cli.Agent
 		}
 		history := filepath.Join(sess, cli.SessionHistoryDir)
 		if f.HistoryKey != "" {
-			if !historyKeyRE.MatchString(f.HistoryKey) || f.Tier < 2 || f.Tier > 3 {
-				return fmt.Errorf("bad history key %q at tier %d", f.HistoryKey, f.Tier)
-			}
-			history = filepath.Join(historyStore, f.Agent, "tier"+strconv.Itoa(f.Tier), f.HistoryKey)
-			if err := os.MkdirAll(filepath.Dir(history), 0o700); err != nil {
+			var err error
+			if history, err = historyDir(historyStore, f.Agent, f.Tier, f.HistoryKey, uid); err != nil {
 				return err
 			}
-			// no component below the store may be a link: the agent's history goes nowhere else
-			for p := filepath.Dir(history); p != historyStore; p = filepath.Dir(p) {
-				if st, err := os.Lstat(p); err != nil || !st.IsDir() {
-					return fmt.Errorf("%s is not a directory", p)
-				}
-			}
+			return nil
 		}
 		if err := os.Mkdir(history, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 			return err
@@ -257,4 +249,28 @@ func refreshCredential(ref string) (int64, error) {
 		err = errors.New(resp.Error)
 	}
 	return resp.Exp, err
+}
+
+// historyDir makes (if needed) agent's history directory for tier and repository-set key under
+// historyStore, owned by uid, with no link anywhere below the store, and returns it.
+func historyDir(historyStore, agent string, tier int, key string, uid int) (string, error) {
+	if !agentName.MatchString(agent) || !historyKeyRE.MatchString(key) || tier < 2 || tier > 3 {
+		return "", fmt.Errorf("bad history key %q for %s at tier %d", key, agent, tier)
+	}
+	history := filepath.Join(historyStore, agent, "tier"+strconv.Itoa(tier), key)
+	if err := os.MkdirAll(filepath.Dir(history), 0o700); err != nil {
+		return "", err
+	}
+	for p := filepath.Dir(history); p != historyStore; p = filepath.Dir(p) {
+		if st, err := os.Lstat(p); err != nil || !st.IsDir() {
+			return "", fmt.Errorf("%s is not a directory", p)
+		}
+	}
+	if err := os.Mkdir(history, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return "", err
+	}
+	if st, err := os.Lstat(history); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", history)
+	}
+	return history, os.Lchown(history, uid, -1)
 }
