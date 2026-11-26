@@ -48,48 +48,92 @@ const maxRepos = 16
 // and repos fields; valid secret names, no more than maxBoundSecrets, no duplicates; clean
 // absolute repository paths, no more than maxRepos, no duplicates.
 func parseRunBindings(b []byte) (names, repos []string, err error) {
+	names, repos, _, _, err = parsePrepass(b)
+	return names, repos, err
+}
+
+// infraToken is one --infra-token the VM says the launch fills: its variable and its file on the
+// host.
+type infraToken struct {
+	Env  string `json:"env"`
+	Path string `json:"path"`
+}
+
+// infraEnv is an infra token's variable: INFRA_TOKEN, or INFRA_TOKEN_<NAME> (v2's naming).
+var infraEnv = regexp.MustCompile(`^INFRA_TOKEN(_[A-Za-z_][A-Za-z0-9_]{0,63})?$`)
+
+// hostName is a destination host as the pre-pass gives it: lower-case DNS labels.
+var hostName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
+
+// maxInfra bounds a launch's infra tokens and their hosts.
+const maxInfra = 16
+
+// parsePrepass is parseRunBindings with the infra tokens and their hosts (optional fields): clean
+// absolute token paths, v2's variable names, no repeats, at most maxInfra of each.
+func parsePrepass(b []byte) (names, repos []string, tokens []infraToken, hosts []string, err error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	var out struct {
-		Secrets *[]string `json:"secrets"`
-		Repos   *[]string `json:"repos"`
+		Secrets     *[]string    `json:"secrets"`
+		Repos       *[]string    `json:"repos"`
+		InfraTokens []infraToken `json:"infra_tokens"`
+		InfraHosts  []string     `json:"infra_hosts"`
 	}
+	fail := func(e error) ([]string, []string, []infraToken, []string, error) { return nil, nil, nil, nil, e }
 	if err := dec.Decode(&out); err != nil {
-		return nil, nil, err
+		return fail(err)
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return nil, nil, errors.New("trailing data")
+		return fail(errors.New("trailing data"))
 	}
 	if out.Secrets == nil || out.Repos == nil {
-		return nil, nil, errors.New("a field is missing")
+		return fail(errors.New("a field is missing"))
 	}
 	names, repos = *out.Secrets, *out.Repos
 	if len(names) > maxBoundSecrets {
-		return nil, nil, fmt.Errorf("%d secrets, more than %d", len(names), maxBoundSecrets)
+		return fail(fmt.Errorf("%d secrets, more than %d", len(names), maxBoundSecrets))
 	}
 	if len(repos) > maxRepos {
-		return nil, nil, fmt.Errorf("%d repositories, more than %d", len(repos), maxRepos)
+		return fail(fmt.Errorf("%d repositories, more than %d", len(repos), maxRepos))
+	}
+	if len(out.InfraTokens) > maxInfra || len(out.InfraHosts) > maxInfra {
+		return fail(fmt.Errorf("more than %d infra tokens or hosts", maxInfra))
 	}
 	seen := map[string]bool{}
 	for _, n := range names {
 		if !secretName.MatchString(n) {
-			return nil, nil, fmt.Errorf("%q is not a secret name", n)
+			return fail(fmt.Errorf("%q is not a secret name", n))
 		}
 		if seen[n] {
-			return nil, nil, fmt.Errorf("%s named twice", n)
+			return fail(fmt.Errorf("%s named twice", n))
 		}
 		seen[n] = true
 	}
 	for _, r := range repos {
 		if !strings.HasPrefix(r, "/") || path.Clean(r) != r || r == "/" || strings.ContainsAny(r, "\x00\n") {
-			return nil, nil, fmt.Errorf("%q is not a clean absolute path", r)
+			return fail(fmt.Errorf("%q is not a clean absolute path", r))
 		}
 		if seen["\x00"+r] {
-			return nil, nil, fmt.Errorf("%s named twice", r)
+			return fail(fmt.Errorf("%s named twice", r))
 		}
 		seen["\x00"+r] = true
 	}
-	return names, repos, nil
+	for _, t := range out.InfraTokens {
+		if !infraEnv.MatchString(t.Env) || seen["\x01"+t.Env] {
+			return fail(fmt.Errorf("%q is not an infra token variable, or is repeated", t.Env))
+		}
+		seen["\x01"+t.Env] = true
+		if !strings.HasPrefix(t.Path, "/") || path.Clean(t.Path) != t.Path || strings.ContainsAny(t.Path, "\x00\n") {
+			return fail(fmt.Errorf("%q is not a clean absolute path", t.Path))
+		}
+	}
+	for _, h := range out.InfraHosts {
+		if !hostName.MatchString(h) || len(h) > 253 || seen["\x02"+h] {
+			return fail(fmt.Errorf("%q is not a host name, or is repeated", h))
+		}
+		seen["\x02"+h] = true
+	}
+	return names, repos, out.InfraTokens, out.InfraHosts, nil
 }
 
 // words are the identifier-like words in b: a secret name is mentioned only as a whole word.
@@ -152,7 +196,7 @@ func repoValues(args []string) []string {
 	return out
 }
 
-// absRepos makes run's relative --repo values absolute against the host's working directory
+// absRepos makes run's relative --repo (and --infra-token) values absolute against the host's working directory
 // (design 5.1.1 item 3): the VM cannot resolve them. "~" stays for the VM, which expands it
 // against the mirrored home.
 func absRepos(args []string, wd string) []string {
@@ -163,6 +207,13 @@ func absRepos(args []string, wd string) []string {
 		}
 		return filepath.Join(wd, v)
 	}
+	// an --infra-token's path follows its NAME= when it has one
+	token := func(v string) string {
+		if i := strings.Index(v, "="); i >= 0 && envNameRE.MatchString(v[:i]) {
+			return v[:i+1] + fix(v[i+1:])
+		}
+		return fix(v)
+	}
 	for i := 0; i < len(out); i++ {
 		switch a := out[i]; {
 		case a == "--repo" && i+1 < len(out):
@@ -170,6 +221,11 @@ func absRepos(args []string, wd string) []string {
 			i++
 		case strings.HasPrefix(a, "--repo="):
 			out[i] = "--repo=" + fix(a[len("--repo="):])
+		case a == "--infra-token" && i+1 < len(out):
+			out[i+1] = token(out[i+1])
+			i++
+		case strings.HasPrefix(a, "--infra-token="):
+			out[i] = "--infra-token=" + token(a[len("--infra-token="):])
 		}
 	}
 	return out
@@ -245,7 +301,7 @@ func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (
 	if err != nil {
 		return nil
 	}
-	names, repos, err := parseRunBindings(out)
+	names, repos, tokens, infraHosts, err := parsePrepass(out)
 	if err != nil {
 		a.die("the sandbox VM's list of secrets and repositories for this launch is invalid (%v); nothing was pushed.", err)
 	}
@@ -266,7 +322,20 @@ func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (
 				"  Nothing was synced. If you did not expect this, the sandbox VM may be compromised: see 'sandbox doctor'.", r)
 		}
 	}
+	for _, t := range tokens {
+		if !infraTokenNamed(t, args, a.mirrorHome()) {
+			a.die("the sandbox VM asked for infra token %s from %s, which this command line does not name.\n"+
+				"  Nothing was pushed. If you did not expect this, the sandbox VM may be compromised: see 'sandbox doctor'.", t.Env, t.Path)
+		}
+	}
+	for _, h := range infraHosts {
+		if !infraHostNamed(h, args) {
+			a.die("the sandbox VM asked to bind infra tokens to %s, which no --infra-endpoint on this command line names.\n"+
+				"  Nothing was pushed. If you did not expect this, the sandbox VM may be compromised: see 'sandbox doctor'.", h)
+		}
+	}
 	a.pushSecrets(ep, names)
+	a.pushInfraTokens(ep, tokens, infraHosts)
 	for _, r := range repos {
 		fmt.Fprintf(a.env.Stdout, "==> Syncing %s into the sandbox VM...\n", r)
 		ws, rep, err := a.syncRepo(ep, r)
@@ -358,4 +427,124 @@ func (a *app) vmRun(ep driver.SSHEndpoint, args ...string) error {
 		err = errors.New(strings.TrimSpace(errb.String()))
 	}
 	return err
+}
+
+// optionValues are the values of option flag in args (both spellings).
+func optionValues(args []string, flag string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == flag && i+1 < len(args):
+			out = append(out, args[i+1])
+			i++
+		case strings.HasPrefix(a, flag+"="):
+			out = append(out, a[len(flag)+1:])
+		}
+	}
+	return out
+}
+
+// infraTokenNamed is whether an --infra-token on the command line is t: a bare PATH for
+// INFRA_TOKEN, or NAME=PATH for INFRA_TOKEN_NAME, with "~" as the operator's home.
+func infraTokenNamed(t infraToken, args []string, home string) bool {
+	for _, v := range optionValues(args, "--infra-token") {
+		env, p := "INFRA_TOKEN", v
+		if i := strings.Index(v, "="); i >= 0 && envNameRE.MatchString(v[:i]) {
+			env, p = "INFRA_TOKEN_"+v[:i], v[i+1:]
+		}
+		if home != "" && (p == "~" || strings.HasPrefix(p, "~/")) {
+			p = home + p[1:]
+		}
+		if env == t.Env && path.Clean(p) == t.Path {
+			return true
+		}
+	}
+	return false
+}
+
+var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// infraHostNamed is whether an --infra-endpoint on the command line has host h.
+func infraHostNamed(h string, args []string) bool {
+	for _, v := range optionValues(args, "--infra-endpoint") {
+		r := v
+		if i := strings.Index(r, "://"); i >= 0 {
+			r = r[i+3:]
+		}
+		if i := strings.IndexAny(r, "/?#"); i >= 0 {
+			r = r[:i]
+		}
+		if i := strings.LastIndex(r, "@"); i >= 0 {
+			r = r[i+1:]
+		}
+		if i := strings.LastIndex(r, ":"); i >= 0 {
+			r = r[:i]
+		}
+		if strings.EqualFold(r, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// pushInfraTokens seals each infra token from its file, bound as a bearer token to the launch's
+// --infra-endpoint hosts (withheld when there are none), and pushes it.
+func (a *app) pushInfraTokens(ep driver.SSHEndpoint, tokens []infraToken, hosts []string) {
+	if len(tokens) == 0 {
+		return
+	}
+	if a.env.BrokerKey == nil {
+		a.die("this launch binds infra tokens, but this host has no place to keep the credential broker's key.")
+	}
+	var envs []string
+	for _, t := range tokens {
+		envs = append(envs, t.Env)
+	}
+	fmt.Fprintf(a.env.Stdout, "==> Sealing this launch's infra tokens for the sandbox VM: %s\n", strings.Join(envs, " "))
+	k, err := a.brokerKey()
+	if err != nil {
+		a.die("%v", err)
+	}
+	defer brokerseal.Wipe(k)
+	b := brokerseal.Binding{}
+	if len(hosts) > 0 {
+		b = brokerseal.Binding{Hosts: hosts, Inject: "bearer"}
+	}
+	for _, t := range tokens {
+		v, err := readLimited(t.Path)
+		if err != nil {
+			a.die("infra token %s: %v", t.Path, err)
+		}
+		ref := "infra." + t.Env
+		sealed, err := brokerseal.SealBound(k, ref, []byte(strings.TrimRight(string(v), "\r\n")), b)
+		brokerseal.Wipe(v)
+		if err != nil {
+			a.die("%v", err)
+		}
+		if err := a.sandboxd(ep, bytes.NewReader(sealed), "broker-put", ref); err != nil {
+			a.die("could not store infra token %s in the sandbox VM: %v", t.Env, err)
+		}
+	}
+}
+
+// readLimited reads a regular file of at most MaxSecretSize bytes, following a link.
+func readLimited(p string) ([]byte, error) {
+	st, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, errors.New("not a regular file")
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	v, err := io.ReadAll(io.LimitReader(f, MaxSecretSize+1))
+	if err == nil && len(v) > MaxSecretSize {
+		brokerseal.Wipe(v)
+		return nil, fmt.Errorf("larger than %d bytes", MaxSecretSize)
+	}
+	return v, err
 }

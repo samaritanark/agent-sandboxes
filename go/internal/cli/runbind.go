@@ -38,10 +38,10 @@ func placeholder() string {
 func (c *cmdCtx) bindSecrets(spec *sessionspec.Spec, s LaunchSpec, rec SessionRecord) []string {
 	var lines []string
 	add := func(name, what string) { lines = append(lines, fmt.Sprintf("==> Secret %s: %s", name, what)) }
-	bind := func(name string, egress sessionspec.Egress, readableOK bool) (*sessionspec.Binding, *sessionspec.Readable) {
-		ref := brokerseal.SecretRef(name)
-		b, ok := c.secretBinding(name)
+	bindRef := func(name, ref string, b brokerseal.Binding, ok bool, egress sessionspec.Egress, readableOK bool) (*sessionspec.Binding, *sessionspec.Readable) {
 		switch {
+		case (!ok || (!b.Readable && len(b.Hosts) == 0)) && strings.HasPrefix(ref, "infra."):
+			add(name, "withheld (no --infra-endpoint to bind it to)")
 		case !ok || (!b.Readable && len(b.Hosts) == 0):
 			add(name, fmt.Sprintf("withheld (no binding; see 'sandbox secret bind %s --bind HOST')", name))
 		case b.Readable && !readableOK:
@@ -71,6 +71,10 @@ func (c *cmdCtx) bindSecrets(spec *sessionspec.Spec, s LaunchSpec, rec SessionRe
 		}
 		return nil, nil
 	}
+	bind := func(name string, egress sessionspec.Egress, readableOK bool) (*sessionspec.Binding, *sessionspec.Readable) {
+		b, ok := c.secretBinding(name)
+		return bindRef(name, brokerseal.SecretRef(name), b, ok, egress, readableOK)
+	}
 	for _, name := range s.Secrets {
 		b, r := bind(name, spec.Egress, true)
 		if b != nil {
@@ -79,6 +83,19 @@ func (c *cmdCtx) bindSecrets(spec *sessionspec.Spec, s LaunchSpec, rec SessionRe
 		}
 		if r != nil {
 			spec.Readable = append(spec.Readable, *r)
+		}
+	}
+	// infra tokens (tier 3): bound by the host to the --infra-endpoint hosts
+	for _, t := range s.InfraTokens {
+		env := t[:strings.Index(t, "=")]
+		var b brokerseal.Binding
+		var ok bool
+		if c.env.CredentialBinding != nil {
+			b, ok = c.env.CredentialBinding(InfraRef(env))
+		}
+		if bb, _ := bindRef(env, InfraRef(env), b, ok, spec.Egress, false); bb != nil {
+			spec.Bindings = append(spec.Bindings, *bb)
+			spec.Env = append(spec.Env, sessionspec.EnvVar{Name: env, Value: bb.Placeholder})
 		}
 	}
 	for i, d := range rec.Dependencies {

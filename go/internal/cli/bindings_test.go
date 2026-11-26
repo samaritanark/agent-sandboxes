@@ -90,3 +90,21 @@ func TestRunSecretPresent(t *testing.T) {
 		t.Errorf("asked %q", asked)
 	}
 }
+
+// TestRunPrepassInfra: a tier 3 launch names its infra tokens (variable and host path, though the
+// file is not in the VM) and its --infra-endpoint hosts; below tier 3 there are none.
+func TestRunPrepassInfra(t *testing.T) {
+	e := bindingsHome(t)
+	p, ok, rc := RunPrepass([]string{"--tier", "3", "--repo", "/not/synced/yet", "--infra-token", "vault=/host/tok", "--infra-token", "/host/plain",
+		"--infra-endpoint", "https://Vault.corp.example:8200/v1", "--infra-endpoint", "https://vault.corp.example/x"}, e)
+	if !ok || rc != 0 {
+		t.Fatalf("%v %d", ok, rc)
+	}
+	if len(p.InfraTokens) != 2 || p.InfraTokens[0] != (InfraToken{Env: "INFRA_TOKEN_vault", Path: "/host/tok"}) ||
+		p.InfraTokens[1] != (InfraToken{Env: "INFRA_TOKEN", Path: "/host/plain"}) || strings.Join(p.InfraHosts, ",") != "vault.corp.example" {
+		t.Errorf("%+v", p)
+	}
+	if p, ok, _ := RunPrepass([]string{"--infra-token", "/host/tok"}, e); !ok || len(p.InfraTokens) != 0 {
+		t.Errorf("tier 1: %+v %v", p, ok)
+	}
+}

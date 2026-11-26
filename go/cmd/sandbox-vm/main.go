@@ -123,7 +123,9 @@ func main() {
 		return
 	}
 	env := cliEnv()
-	env.SecretPresent, env.SecretBinding = pushedSecret, pushedBinding
+	env.SecretPresent = func(n string) bool { return broker.present(brokerseal.SecretRef(n)) }
+	env.SecretBinding = func(n string) (brokerseal.Binding, bool) { return broker.binding(brokerseal.SecretRef(n)) }
+	env.CredentialPresent, env.CredentialBinding = broker.present, broker.binding
 	env.Builder = nerdctlBuilder{mapFile: BuiltImages}
 	env.Launch = cli.LaunchEnv{Sessions: sandboxd{}, AgentImage: agentImage(BuiltImages, AgentImages), WorkspaceCopy: workspaceCopyOf("/"),
 		VMMemoryMiB: vmMemory}
@@ -176,64 +178,60 @@ func cliEnv() cli.Env {
 // checks each against its own command line and profile files before sealing and pushing it.
 const runBindings = "__run-bindings"
 
-// RunBindingsOutput is what runBindings prints: the secrets the launch binds and the repositories
-// it mounts (the host syncs and mirrors those first).
-type RunBindingsOutput struct {
-	Secrets []string `json:"secrets"`
-	Repos   []string `json:"repos"`
-}
-
-// printRunBindings prints the launch's secret names, or nothing (with run's status) when run would
-// stop first: the run that follows then says why.
+// printRunBindings prints the launch's pre-pass (cli.Prepass), or nothing (with run's status)
+// when run would stop first: the run that follows then says why.
 func printRunBindings(args []string, env cli.Env) int {
-	names, repos, ok, rc := cli.RunBindings(args, env)
+	p, ok, rc := cli.RunPrepass(args, env)
 	if !ok {
 		return rc
 	}
-	if names == nil {
-		names = []string{}
+	if p.Secrets == nil {
+		p.Secrets = []string{}
 	}
-	if repos == nil {
-		repos = []string{}
+	if p.Repos == nil {
+		p.Repos = []string{}
 	}
-	b, _ := json.Marshal(RunBindingsOutput{Secrets: names, Repos: repos})
+	b, _ := json.Marshal(p)
 	os.Stdout.Write(append(b, '\n'))
 	return 0
 }
 
-// pushedSecret is whether the host sealed name into the broker store for this launch, and
-// pushedBinding the binding it sealed with it. The store's list is read from sandboxd once; when
-// sandboxd cannot answer, no secret is present, and run stops with v2's message after a warning.
-var pushedSecret, pushedBinding = func() (func(string) bool, func(string) (brokerseal.Binding, bool)) {
-	var once sync.Once
-	var have map[string]bool
-	var bindings map[string]brokerseal.Binding
-	load := func() {
-		once.Do(func() {
-			have = map[string]bool{}
-			resp, err := daemon.Call(context.Background(), daemon.Socket, daemon.Request{Op: "broker-list"})
-			if err == nil && !resp.OK {
-				err = errors.New(resp.Error)
-			}
-			if err != nil {
-				os.Stderr.WriteString("WARN: cannot read the credential broker's store from sandboxd: " + err.Error() + "\n")
-				return
-			}
-			for _, r := range resp.Refs {
-				if n, ok := brokerseal.SecretName(r); ok {
-					have[n] = true
-				}
-			}
-			bindings = resp.Bindings
-		})
-	}
-	return func(name string) bool { load(); return have[name] },
-		func(name string) (brokerseal.Binding, bool) {
-			load()
-			b, ok := bindings[brokerseal.SecretRef(name)]
-			return b, ok && have[name]
+// brokerView is the broker store as sandboxd lists it, read once: the references the host pushed
+// and the bindings sealed with them. When sandboxd cannot answer, nothing is present, and run stops
+// with v2's message after a warning.
+type brokerView struct {
+	once     sync.Once
+	refs     map[string]bool
+	bindings map[string]brokerseal.Binding
+}
+
+func (v *brokerView) load() {
+	v.once.Do(func() {
+		v.refs = map[string]bool{}
+		resp, err := daemon.Call(context.Background(), daemon.Socket, daemon.Request{Op: "broker-list"})
+		if err == nil && !resp.OK {
+			err = errors.New(resp.Error)
 		}
-}()
+		if err != nil {
+			os.Stderr.WriteString("WARN: cannot read the credential broker's store from sandboxd: " + err.Error() + "\n")
+			return
+		}
+		for _, r := range resp.Refs {
+			v.refs[r] = true
+		}
+		v.bindings = resp.Bindings
+	})
+}
+
+func (v *brokerView) present(ref string) bool { v.load(); return v.refs[ref] }
+
+func (v *brokerView) binding(ref string) (brokerseal.Binding, bool) {
+	v.load()
+	b, ok := v.bindings[ref]
+	return b, ok && v.refs[ref]
+}
+
+var broker = &brokerView{}
 
 func or(v, d string) string {
 	if v == "" {

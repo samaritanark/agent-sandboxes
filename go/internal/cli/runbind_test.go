@@ -62,3 +62,22 @@ func TestBindSecrets(t *testing.T) {
 		t.Errorf("%q %+v", l, spec2)
 	}
 }
+
+// TestBindInfraTokens: each infra token becomes a bearer binding to the endpoint hosts the host
+// sealed it with, in its variable; one sealed with no hosts is withheld.
+func TestBindInfraTokens(t *testing.T) {
+	bound := map[string]brokerseal.Binding{
+		"infra.INFRA_TOKEN_vault": {Hosts: []string{"vault.corp.example"}, Inject: "bearer"},
+		"infra.INFRA_TOKEN":       {},
+	}
+	c := &cmdCtx{env: Env{CredentialBinding: func(ref string) (brokerseal.Binding, bool) { b, ok := bound[ref]; return b, ok }}}
+	spec := &sessionspec.Spec{Egress: sessionspec.Egress{Allow: []string{"vault.corp.example"}}}
+	lines := c.bindSecrets(spec, LaunchSpec{InfraTokens: []string{"INFRA_TOKEN_vault=/h/t", "INFRA_TOKEN=/h/p"}}, SessionRecord{})
+	if strings.Join(lines, "\n") != "==> Secret INFRA_TOKEN_vault: brokered to vault.corp.example (bearer)\n==> Secret INFRA_TOKEN: withheld (no --infra-endpoint to bind it to)" {
+		t.Errorf("%q", lines)
+	}
+	if len(spec.Bindings) != 1 || spec.Bindings[0].Ref != "infra.INFRA_TOKEN_vault" || spec.Bindings[0].EnvVar != "INFRA_TOKEN_vault" ||
+		len(spec.Env) != 1 || spec.Env[0].Value != spec.Bindings[0].Placeholder {
+		t.Errorf("%+v %+v", spec.Bindings, spec.Env)
+	}
+}

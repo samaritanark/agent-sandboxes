@@ -1087,10 +1087,10 @@ m("internal/sandboxd/limits/limits.go", '\tif t.Attached {\n\t\treturn false, ""
 CB = "internal/cli/bindings.go"
 R_CB = "TestRunBindings|TestRunSecretPresent"
 m(CB, '\t\tif !seen[n] {', '\t\tif true {', R_CB)
-m(CB, '\tcase c.prepass:\n\t\treturn true\n', '', R_CB)
+m(CB, '\tcase c.prepass:\n\t\treturn true\n\tcase c.env.SecretPresent != nil:', '\tcase c.env.SecretPresent != nil:', R_CB)
 m(CB, '\tcase c.env.SecretPresent != nil:', '\tcase false:', R_CB)
 m(CB, '\t\tfor _, n := range d.Secrets {\n\t\t\tadd(n)\n\t\t}', '', R_CB)
-m(CB, '\tif !depsOK {\n\t\treturn nil, nil, false, 1\n\t}', '', R_CB)
+m(CB, '\tif !depsOK {\n\t\treturn Prepass{}, false, 1\n\t}', '', R_CB)
 m(RN, '\tif !c.prepass {\n\t\trunSyncs(c)\n\t}', '\trunSyncs(c)', R_CB + "|TestCLIGolden",
   equivalent="the test cases have no linked overlays or leakscan config to fetch, so the pre-pass's syncs change nothing observable")
 HR = "internal/host/app/runsecrets.go"
@@ -1107,7 +1107,7 @@ m(HR, '\t\treturn !(r == \'_\' ||', '\t\treturn !(', R_HR, pkg="host/app")
 m(HR, '\t\twords([]byte(a), m)', '', R_HR, pkg="host/app")
 m(HR, '\tif len(names) == 0 {\n\t\treturn\n\t}', '', R_HR, pkg="host/app")
 m(HR, '\t\tif absent {', '\t\tif false {', R_HR, pkg="host/app")
-m(HR, '\tif err == nil && len(v) > MaxSecretSize {', '\tif false {', R_HR, pkg="host/app")
+m(HR, '\tv, err = io.ReadAll(io.LimitReader(f, MaxSecretSize+1))\n\tif err == nil && len(v) > MaxSecretSize {', '\tv, err = io.ReadAll(io.LimitReader(f, MaxSecretSize+1))\n\tif false {', R_HR, pkg="host/app")
 m(AA, '\tif len(args) > 0 && args[0] == "run" {', '\tif len(args) > 0 {', R_HR, pkg="host/app")
 
 # ---- readable secrets (internal/sandboxd/daemon/readable.go, cmd/sandboxd/broker.go, sessionspec)
@@ -1332,3 +1332,16 @@ m(RL, '\t\tif r.Action != l7.Deny || r.Host == l7.AnyHost || !l7.HostMatches(r.H
 m(RL, '\t\t\tif m == "PUT" {', '\t\t\tif m == "DELETE" {', "TestRegistryWarnings")
 m(RL, '\tfor _, b := range spec.Bindings {\n\t\thosts = append(hosts, b.Hosts...)\n\t}', '', "TestRegistryWarnings")
 m("internal/l7/l7.go", '\t\t\tif denyOnly && r.Action != Deny {', '\t\t\tif false && r.Action != Deny {', "TestBaseline|TestParse", pkg="l7")
+
+# ---- infra tokens through the broker (2026-11-26)
+m("internal/host/app/runsecrets.go", '\t\tif !infraTokenNamed(t, args, a.mirrorHome()) {', '\t\tif false {', "TestRunPushesInfraTokens", pkg="host/app")
+m("internal/host/app/runsecrets.go", '\t\tif !infraHostNamed(h, args) {', '\t\tif false {', "TestRunPushesInfraTokens", pkg="host/app")
+m("internal/host/app/runsecrets.go", '\t\tif env == t.Env && path.Clean(p) == t.Path {', '\t\tif path.Clean(p) == t.Path {', "TestRunPushesInfraTokens", pkg="host/app")
+m("internal/host/app/runsecrets.go", '\t\tif !infraEnv.MatchString(t.Env) || seen["\\x01"+t.Env] {', '\t\tif seen["\\x01"+t.Env] {', "TestRunPushesInfraTokens|TestParsePrepassInfra", pkg="host/app")
+m("internal/host/app/runsecrets.go", '\t\tif !hostName.MatchString(h) || len(h) > 253 || seen["\\x02"+h] {', '\t\tif seen["\\x02"+h] {', "TestRunPushesInfraTokens|TestParsePrepassInfra", pkg="host/app")
+m("internal/host/app/runsecrets.go", '\t\tb = brokerseal.Binding{Hosts: hosts, Inject: "bearer"}', '\t\tb = brokerseal.Binding{}', "TestRunPushesInfraTokens", pkg="host/app")
+m("internal/host/app/runsecrets.go", '\t\tcase a == "--infra-token" && i+1 < len(out):\n\t\t\tout[i+1] = token(out[i+1])', '\t\tcase a == "--infra-token" && i+1 < len(out):\n\t\t\tout[i+1] = out[i+1]', "TestRunPushesInfraTokens", pkg="host/app")
+m("internal/cli/bindings.go", '\tif s.Tier == "3" {\n\t\tfor _, t := range s.InfraTokens {', '\tif true {\n\t\tfor _, t := range s.InfraTokens {', "TestRunPrepassInfra")
+m("internal/cli/bindings.go", '\t\tif h := strings.ToLower(urlHost(ep)); h != "" && !slices.Contains(out, h) {', '\t\tif h := strings.ToLower(urlHost(ep)); h != "" {', "TestRunPrepassInfra")
+m("internal/cli/runbind.go", '\t\t\tspec.Env = append(spec.Env, sessionspec.EnvVar{Name: env, Value: bb.Placeholder})', '', "TestBindInfraTokens")
+m("internal/cli/runbind.go", '\t\t\tb, ok = c.env.CredentialBinding(InfraRef(env))', '\t\t\tb, ok = c.env.CredentialBinding(env)', "TestBindInfraTokens")

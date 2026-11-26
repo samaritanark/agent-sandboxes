@@ -245,3 +245,63 @@ func TestCopyEpoch(t *testing.T) {
 		}
 	}
 }
+
+// TestRunPushesInfraTokens: each infra token the VM names and the command line names is read from
+// its file, sealed as a bearer token bound to the --infra-endpoint hosts, and pushed; a token or
+// host the command line does not name stops the launch before anything is pushed.
+func TestRunPushesInfraTokens(t *testing.T) {
+	state, k := secretState(t)
+	tok := filepath.Join(t.TempDir(), "vault-token")
+	os.WriteFile(tok, []byte("hvs.secret\n"), 0o600)
+	args := []string{"run", "--tier", "3", "--infra-token", "vault=" + tok, "--infra-endpoint", "https://Vault.Corp.Example:8200/v1"}
+	pp := `{"secrets":[],"repos":[],"infra_tokens":[{"env":"INFRA_TOKEN_vault","path":"` + tok + `"}],"infra_hosts":["vault.corp.example"]}`
+	tr := &fakeTransport{release: goodRelease, bindings: pp}
+	r := runState(t, tr, k, state, args...)
+	if r.rc != 0 || !strings.Contains(r.out, "==> Sealing this launch's infra tokens for the sandbox VM: INFRA_TOKEN_vault\n") {
+		t.Fatalf("%+v", r)
+	}
+	if !reflect.DeepEqual(tr.ctl, [][]string{{"ctl", "broker-put", "infra.INFRA_TOKEN_vault"}}) {
+		t.Fatalf("ctl %q", tr.ctl)
+	}
+	key, _ := k.Load()
+	v, b, bound, err := brokerseal.OpenBound(key, "infra.INFRA_TOKEN_vault", tr.ctlIn[0])
+	if err != nil || string(v) != "hvs.secret" || !bound || strings.Join(b.Hosts, ",") != "vault.corp.example" || b.Inject != "bearer" {
+		t.Errorf("%q %+v %v %v", v, b, bound, err)
+	}
+	for name, out := range map[string]string{
+		"unnamed token": `{"secrets":[],"repos":[],"infra_tokens":[{"env":"INFRA_TOKEN_vault","path":"/etc/shadow"}],"infra_hosts":[]}`,
+		"renamed token": `{"secrets":[],"repos":[],"infra_tokens":[{"env":"INFRA_TOKEN","path":"` + tok + `"}],"infra_hosts":[]}`,
+		"unnamed host":  `{"secrets":[],"repos":[],"infra_tokens":[],"infra_hosts":["evil.example.com"]}`,
+		"bad variable":  `{"secrets":[],"repos":[],"infra_tokens":[{"env":"PATH","path":"` + tok + `"}],"infra_hosts":[]}`,
+		"bad host":      `{"secrets":[],"repos":[],"infra_tokens":[],"infra_hosts":["EVIL.example.com"]}`,
+		"relative path": `{"secrets":[],"repos":[],"infra_tokens":[{"env":"INFRA_TOKEN","path":"x/../y"}],"infra_hosts":[]}`,
+	} {
+		tr := &fakeTransport{release: goodRelease, bindings: out}
+		if r := runState(t, tr, k, state, args...); r.rc != 1 || len(tr.ctl) != 0 || len(tr.runs) != 0 {
+			t.Errorf("%s: %+v ctl %q", name, r, tr.ctl)
+		}
+	}
+	// a relative token path is made absolute on the host, after its NAME=
+	if got := absRepos([]string{"--infra-token", "v=rel/tok", "--infra-token=~/t", "--infra-token=other"}, "/wd"); strings.Join(got, " ") != "--infra-token v=/wd/rel/tok --infra-token=~/t --infra-token=/wd/other" {
+		t.Errorf("abs %q", got)
+	}
+}
+
+// TestParsePrepassInfra: the parser's own checks on infra tokens and hosts.
+func TestParsePrepassInfra(t *testing.T) {
+	base := `{"secrets":[],"repos":[],`
+	if _, _, tk, hs, err := parsePrepass([]byte(base + `"infra_tokens":[{"env":"INFRA_TOKEN_a","path":"/t"}],"infra_hosts":["a.example.com"]}`)); err != nil || len(tk) != 1 || len(hs) != 1 {
+		t.Fatalf("%v", err)
+	}
+	for _, bad := range []string{
+		`"infra_tokens":[{"env":"PATH","path":"/t"}]}`,
+		`"infra_tokens":[{"env":"INFRA_TOKEN","path":"/t"},{"env":"INFRA_TOKEN","path":"/u"}]}`,
+		`"infra_hosts":["A.example.com"]}`,
+		`"infra_hosts":["a.example.com","a.example.com"]}`,
+		`"infra_hosts":["localhost"]}`,
+	} {
+		if _, _, _, _, err := parsePrepass([]byte(base + bad)); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+}

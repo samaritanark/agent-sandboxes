@@ -49,6 +49,10 @@ type Env struct {
 	// SecretBinding is the binding the host sealed with a pushed secret (brokerseal.Peek, through
 	// sandboxd); ok is false when there is none. nil: every secret is withheld.
 	SecretBinding func(name string) (b brokerseal.Binding, ok bool)
+	// CredentialPresent and CredentialBinding are the same for any broker reference (an infra
+	// token's, InfraRef). nil: tokens are checked as files, as v2 did, and withheld.
+	CredentialPresent func(ref string) bool
+	CredentialBinding func(ref string) (b brokerseal.Binding, ok bool)
 	// Builder builds agent images in the VM for `rebuild`; nil refuses it.
 	Builder ImageBuilder
 	// ImagePresent is k3s_image_present: 0 present, 1 absent, 2 cannot tell. nil skips the check

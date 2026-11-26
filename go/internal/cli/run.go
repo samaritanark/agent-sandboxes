@@ -352,8 +352,8 @@ func runDecide(c *cmdCtx, args []string) LaunchSpec {
 			c.die("Tier 3 requires at least one of --infra-token <[NAME=]PATH> or --infra-kubeconfig <PATH>.")
 		}
 		for _, p := range pairs {
-			if f := p[strings.Index(p, "=")+1:]; !config.IsFile(f) {
-				c.die("Infra token file not found: %s.", f)
+			if i := strings.Index(p, "="); !c.infraTokenPresent(p[:i], p[i+1:]) {
+				c.die("Infra token file not found: %s.", p[i+1:])
 			}
 		}
 		for _, k := range s.InfraKubeconfigs {
