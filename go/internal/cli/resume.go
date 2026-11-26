@@ -231,8 +231,7 @@ func (c *cmdCtx) resumeHooks() {
 		c.stopSession(r.SessionID)
 		c.out("")
 		agent := jqAlt(c.env.LogsDir+"/"+r.SessionID+"/session.json", "agent", "claude")
-		c.out("    Conversation history preserved in ~/.sandbox/agent-home/%s/", agent)
-		c.out("    To continue: start a new session and use the agent's /resume command.")
+		c.closingHistory(agent, jqAlt(c.env.LogsDir+"/"+r.SessionID+"/session.json", "tier", "1"))
 	}
 }
 

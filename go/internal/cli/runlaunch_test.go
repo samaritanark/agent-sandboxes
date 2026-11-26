@@ -118,7 +118,7 @@ func TestLaunch(t *testing.T) {
 	if err := sp.Validate(sessionspec.Options{}); err != nil {
 		t.Errorf("sandboxd refuses it: %v", err)
 	}
-	if len(fs.agentFiles) != 1 || string(fs.agentFiles[0].Config[".claude.json"]) != `{"hasCompletedOnboarding": true}`+"\n" || fs.agentFiles[0].HistoryKey != "" {
+	if len(fs.agentFiles) != 1 || string(fs.agentFiles[0].Config[".claude.json"]) != `{"hasCompletedOnboarding":true,"projects":{}}`+"\n" || fs.agentFiles[0].HistoryKey != "" {
 		t.Errorf("files %+v", fs.agentFiles)
 	}
 	if m := fs.started[0].Resources.MemoryMiB; m != 5632 { // scaled to the VM's 7936 MiB
@@ -136,7 +136,7 @@ func TestLaunch(t *testing.T) {
 		"  Agent      claude (Anthropic OAuth)\n", "  Repo       emptyDir (ephemeral)\n", "  Runtime    kata\n",
 		"  Log        ~/logs/" + id + "\n", "==> Attaching to session (Ctrl-D or 'exit' to end)...\n",
 		"==> Disconnected — tearing down session to free cluster resources...\n",
-		"    Conversation history preserved in ~/.sandbox/agent-home/claude/\n"} {
+		"    Conversation history went with the session (tier 1 keeps none).\n"} {
 		if !strings.Contains(o, want) {
 			t.Errorf("missing %q in\n%s", want, o)
 		}

@@ -165,6 +165,9 @@ func TestSetUpAgent(t *testing.T) {
 	if f == nil || f.HistoryKey != "0123456789abcdef" || string(f.Config["CLAUDE.md"]) != "be brief" || f.Config[".credentials.json"] != nil || f.Config[".claude.json"] == nil {
 		t.Fatalf("%+v", f)
 	}
+	if got := string(f.Config[".claude.json"]); got != `{"hasCompletedOnboarding":true,"projects":{"/workspace/0123456789abcdef":{"hasTrustDialogAccepted":true}}}`+"\n" {
+		t.Errorf(".claude.json %s", got)
+	}
 	last := sp.Mounts[len(sp.Mounts)-1]
 	if last.Kind != sessionspec.History || last.Source != sessionspec.AgentHistoryStore+"/claude/tier2/0123456789abcdef" {
 		t.Errorf("%+v", last)

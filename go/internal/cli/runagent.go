@@ -10,6 +10,7 @@ package cli
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"encoding/hex"
 	"os"
 	"path"
@@ -42,7 +43,7 @@ var adapters = map[string]agentAdapter{
 		tokenVar: "CLAUDE_CODE_OAUTH_TOKEN", hosts: []string{"api.anthropic.com"}, inject: "bearer",
 		configDir: AgentHome + "/.claude", historyDir: AgentHome + "/.claude/projects",
 		staged:    []string{"settings.json", "CLAUDE.md"},
-		generated: map[string]string{".claude.json": `{"hasCompletedOnboarding": true}` + "\n"},
+		generated: map[string]string{".claude.json": ""}, // claudeJSON
 		// S2: the harness's own updater stays off in a session (updates come through the image)
 		env: []sessionspec.EnvVar{{Name: "DISABLE_AUTOUPDATER", Value: "1"}, {Name: "DISABLE_UPDATES", Value: "1"}},
 	},
@@ -112,6 +113,9 @@ func (c *cmdCtx) setUpAgent(spec *sessionspec.Spec, s LaunchSpec, rec SessionRec
 	}
 	for name, content := range ad.generated {
 		if _, have := f.Config[name]; !have {
+			if s.Agent == "claude" && name == ".claude.json" {
+				content = claudeJSON(spec)
+			}
 			f.Config[name] = []byte(content)
 		}
 	}
@@ -142,3 +146,17 @@ const (
 	AgentConfigDir    = "agent-config"
 	SessionHistoryDir = "history"
 )
+
+// claudeJSON is the .claude.json a claude session starts with: the first-run wizard done, and the
+// session's workspaces trusted (the session is the boundary; a fresh copy at every launch would
+// otherwise ask at every launch).
+func claudeJSON(spec *sessionspec.Spec) string {
+	projects := map[string]any{}
+	for _, m := range spec.Mounts {
+		if m.Kind == sessionspec.Workspace {
+			projects[m.Target] = map[string]bool{"hasTrustDialogAccepted": true}
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"hasCompletedOnboarding": true, "projects": projects})
+	return string(b) + "\n"
+}

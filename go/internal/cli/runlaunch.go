@@ -205,8 +205,7 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	c.out("==> Disconnected — tearing down session to free cluster resources...")
 	c.stopSession(rec.ID)
 	c.out("")
-	c.out("    Conversation history preserved in ~/.sandbox/agent-home/%s/", s.Agent)
-	c.out("    To continue: start a new session and use the agent's /resume command.")
+	c.closingHistory(s.Agent, s.Tier)
 }
 
 // MCPDir is where in the session's directory its MCP configuration goes (sandboxd's
@@ -234,4 +233,21 @@ func (c *cmdCtx) mcpConfig(s LaunchSpec, rec SessionRecord) string {
 		c.die("%v", err)
 	}
 	return cfg
+}
+
+// closingHistory says where the agent's conversation history is (design 5.7): with an adapter,
+// in the VM per agent, tier, and repository set, or gone with a tier 1 session; otherwise v2's
+// line.
+func (c *cmdCtx) closingHistory(agent, tierV string) {
+	if _, ok := adapters[agent]; !ok {
+		c.out("    Conversation history preserved in ~/.sandbox/agent-home/%s/", agent)
+		c.out("    To continue: start a new session and use the agent's /resume command.")
+		return
+	}
+	if tierV == "1" {
+		c.out("    Conversation history went with the session (tier 1 keeps none).")
+		return
+	}
+	c.out("    Conversation history is kept in the sandbox VM for this agent, tier %s, and repository.", tierV)
+	c.out("    To continue: start a new session at tier %s on the same repository and use the agent's /resume command.", tierV)
 }
