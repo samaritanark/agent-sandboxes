@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
@@ -73,7 +74,7 @@ func sessionDirs(logs string) []string {
 func cmdList(c *cmdCtx, args []string) {
 	c.out("Active pods in namespace 'sandbox':")
 	c.out("")
-	c.out("(could not reach cluster)")
+	c.activeSessions()
 	c.out("")
 	logs := c.env.LogsDir
 	c.out("Recent sessions (%s):", logs)
@@ -202,4 +203,45 @@ func cmdCleanup(c *cmdCtx, args []string) {
 		}
 	}
 	c.out("Removed %d session(s).", count)
+}
+
+// phases are v2's pod phases for sandboxd's session states.
+var phases = map[string]string{"REQUESTED": "Pending", "ADMITTED": "Pending", "STARTING": "Pending",
+	"RUNNING": "Running", "STOPPING": "Terminating", "FAILED": "Failed"}
+
+// activeSessions is cmd_list's `kubectl get pods -o custom-columns=...` over sandboxd's sessions:
+// the session, and from its record the agent, tier, name, and start time; nothing when there are
+// none (kubectl said so on stderr), "(could not reach cluster)" when sandboxd cannot be asked.
+func (c *cmdCtx) activeSessions() {
+	s := c.env.Launch.Sessions
+	if s == nil {
+		c.out("(could not reach cluster)")
+		return
+	}
+	live, err := s.List()
+	if err != nil {
+		c.out("(could not reach cluster)")
+		return
+	}
+	if len(live) == 0 {
+		return
+	}
+	none := func(v string) string {
+		if v == "" {
+			return "<none>"
+		}
+		return v
+	}
+	tw := tabwriter.NewWriter(c.stdout, 0, 8, 3, ' ', 0)
+	fmt.Fprintln(tw, "SESSION\tAGENT\tTIER\tNAME\tSTATUS\tAGE")
+	for _, l := range live {
+		sj := filepath.Join(c.env.LogsDir, l.ID, "session.json")
+		phase, ok := phases[l.State]
+		if !ok {
+			phase = "Unknown"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", l.ID, none(jqAlt(sj, "agent", "")), none(jqAlt(sj, "tier", "")),
+			none(jqAlt(sj, "name", "")), phase, none(jqAlt(sj, "start_time", "")))
+	}
+	tw.Flush()
 }

@@ -16,6 +16,8 @@ type fakeSessions struct {
 	attached [][]string
 	stopped  []string
 	startErr error
+	stopErr  error
+	listErr  error
 }
 
 func (f *fakeSessions) Start(s *sessionspec.Spec) error {
@@ -28,7 +30,33 @@ func (f *fakeSessions) Attach(id string, cmd []string) (int, error) {
 }
 func (f *fakeSessions) Stop(id, reason string) error {
 	f.stopped = append(f.stopped, id+" "+reason)
-	return nil
+	return f.stopErr
+}
+func (f *fakeSessions) List() ([]SessionState, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	var out []SessionState
+	for _, s := range f.started {
+		if live, _ := f.Live(s.ID); live {
+			out = append(out, SessionState{ID: s.ID, State: "RUNNING"})
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeSessions) Live(id string) (bool, error) {
+	for _, s := range f.started {
+		if s.ID == id {
+			for _, st := range f.stopped {
+				if strings.HasPrefix(st, id+" ") {
+					return false, nil
+				}
+			}
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func launchEnv(t *testing.T) (Env, *fakeSessions, string) {
@@ -64,7 +92,7 @@ func TestLaunch(t *testing.T) {
 	if len(fs.attached) != 1 || fs.attached[0][0] != id || fs.attached[0][1] != "claude" || len(fs.attached[0]) != 4 || fs.attached[0][2] != "--session-id" {
 		t.Errorf("attached %q", fs.attached)
 	}
-	if strings.Join(fs.stopped, ",") != id+" detached" {
+	if strings.Join(fs.stopped, ",") != id+" operator stop" {
 		t.Errorf("stopped %q", fs.stopped)
 	}
 	o := out.String()

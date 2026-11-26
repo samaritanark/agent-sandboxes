@@ -24,7 +24,15 @@ type Sessions interface {
 	Attach(id string, cmd []string) (int, error)
 	// Stop ends a session.
 	Stop(id, reason string) error
+	// Live is whether sandboxd holds the session and it has not ended.
+	Live(id string) (bool, error)
+	// List is every session sandboxd holds that has not ended, with its state (sandboxd's:
+	// REQUESTED, ADMITTED, STARTING, RUNNING, STOPPING, FAILED).
+	List() ([]SessionState, error)
 }
+
+// SessionState is one session as sandboxd reports it.
+type SessionState struct{ ID, State string }
 
 // LaunchEnv is what run needs from the VM to launch: sandboxd, the pinned agent images, and the
 // workspace copies. Each is nil in the differential tests, where RunHandoff stands in.
@@ -149,9 +157,7 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 		return
 	}
 	c.out("==> Disconnected — tearing down session to free cluster resources...")
-	if err := l.Sessions.Stop(rec.ID, "detached"); err != nil {
-		c.warn("could not stop session %s: %v (sandboxd ends it when its attach lease runs out)", rec.ID, err)
-	}
+	c.stopSession(rec.ID)
 	c.out("")
 	c.out("    Conversation history preserved in ~/.sandbox/agent-home/%s/", s.Agent)
 	c.out("    To continue: start a new session and use the agent's /resume command.")

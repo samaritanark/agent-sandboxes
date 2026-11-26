@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/cli"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/attachclient"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
@@ -45,6 +46,39 @@ func (sandboxd) Start(spec *sessionspec.Spec) error {
 
 func (sandboxd) Attach(id string, cmd []string) (int, error) {
 	return attachclient.Attach(daemon.Socket, id, cmd)
+}
+
+func (sandboxd) List() ([]cli.SessionState, error) {
+	resp, err := daemon.Call(context.Background(), daemon.Socket, daemon.Request{Op: "list"})
+	if err != nil {
+		return nil, fmt.Errorf("cannot reach sandboxd: %w", err)
+	}
+	if !resp.OK {
+		return nil, errors.New(strings.TrimSpace(resp.Error))
+	}
+	var out []cli.SessionState
+	for _, s := range resp.Sessions {
+		if !s.State.Ended() {
+			out = append(out, cli.SessionState{ID: s.ID, State: string(s.State)})
+		}
+	}
+	return out, nil
+}
+
+func (sandboxd) Live(id string) (bool, error) {
+	resp, err := daemon.Call(context.Background(), daemon.Socket, daemon.Request{Op: "list"})
+	if err != nil {
+		return false, fmt.Errorf("cannot reach sandboxd: %w", err)
+	}
+	if !resp.OK {
+		return false, errors.New(strings.TrimSpace(resp.Error))
+	}
+	for _, s := range resp.Sessions {
+		if s.ID == id {
+			return !s.State.Ended(), nil
+		}
+	}
+	return false, nil
 }
 
 func (sandboxd) Stop(id, reason string) error {

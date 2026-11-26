@@ -1155,7 +1155,6 @@ m(RL, '\tif sessionID != "" {\n\t\tcmd = append(cmd, agents.SessionIDFlag(agent)
 m(RL, '\trow("Runtime", "kata")', '\trow("Runtime", "gvisor")', R_RS)
 m(RL, '\trow("Log", c.tilde(rec.LogDir))', '\trow("Log", rec.LogDir)', R_RS)
 m(RL, '\tcase 0:\n\t\trow("Repo", "emptyDir (ephemeral)")', '\tcase 0:', R_RS)
-m(RL, '\tif err := l.Sessions.Stop(rec.ID, "detached"); err != nil {', '\tif false {', R_RS)
 VL = "cmd/sandbox-vm/launch.go"
 m(VL, '`/[0-9a-f]{16}$`', '`/[0-9a-f]{16}`', "TestWorkspaceCopyOf", pkg="../cmd/sandbox-vm")
 m(VL, '\t\tif err != nil || !workspaceCopy.MatchString(p) {', '\t\tif err != nil {', "TestWorkspaceCopyOf", pkg="../cmd/sandbox-vm")
@@ -1204,3 +1203,16 @@ m("internal/sandboxd/daemon/daemon.go", '\t\tcase KindView:\n\t\t\terr = d.dropV
 m("internal/sandboxd/daemon/daemon.go", '\t\t\t\tcover = src\n', '', R_VW, pkg="sandboxd/daemon")
 m(VW, '\tif err := d.Mounter.Unmount(v); err != nil {\n\t\treturn err\n\t}\n', '', R_VW, pkg="sandboxd/daemon")
 m(VW, '\tos.Remove(filepath.Dir(v)) // the views directory, once empty\n', '', R_VW, pkg="sandboxd/daemon")
+
+# ---- stop and list on sandboxd (internal/cli/stop.go, sessions.go)
+ST = "internal/cli/stop.go"
+R_ST = "TestStop|TestListActive|TestLaunch"
+m(ST, '\tcase !live:', '\tcase false:', R_ST)
+m(ST, '\t\t\tendReason, endDetail = "teardown-incomplete", "sandboxd stop failed: "+firstErrLine(err)', '\t\t\t_ = endDetail', R_ST)
+m(ST, '\tif hadToken {', '\tif false {', R_ST)
+m(ST, '\t\taudit.UpdateEndTime(logDir, end)\n', '', R_ST)
+m(ST, '\t\tif err := s.Stop(id, "operator stop"); err != nil {', '\t\tif err := s.Stop(id, "operator stop"); false && err != nil {', R_ST)
+m("internal/cli/runlaunch.go", '\tc.stopSession(rec.ID)\n', '', R_ST)
+m("internal/cli/sessions.go", '\tif len(live) == 0 {\n\t\treturn\n\t}', '', R_ST)
+m("internal/cli/sessions.go", '"RUNNING": "Running",', '"RUNNING": "Pending",', R_ST)
+m("internal/cli/sessions.go", 'tabwriter.NewWriter(c.stdout, 0, 8, 3,', 'tabwriter.NewWriter(c.stdout, 0, 8, 2,', R_ST)
