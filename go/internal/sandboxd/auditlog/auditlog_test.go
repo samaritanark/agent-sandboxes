@@ -181,6 +181,11 @@ func TestFlowNoRequest(t *testing.T) {
 }
 
 func TestBrokerEvent(t *testing.T) {
+	for _, ty := range []string{"credential_injected", "credential_missing", "credential_reflection", "credential_rate_limited", "credential_quota_exhausted"} {
+		if typ, _, ok := BrokerEvent([]byte(`{"type":"` + ty + `","ref":"gh"}`)); !ok || typ != ty {
+			t.Errorf("%s dropped", ty)
+		}
+	}
 	typ, rec, ok := BrokerEvent([]byte(`{"type":"credential_misuse","ref":"gh","host":"evil.com","method":"GET","path":"/x?t=sbxph_x","reason":"r","value":"v"}`))
 	if !ok || typ != "credential_misuse" || rec["path"] != "/x" || rec["value"] != nil || rec["ref"] != "gh" {
 		t.Errorf("%s %v %v", typ, rec, ok)

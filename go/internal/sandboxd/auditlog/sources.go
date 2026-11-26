@@ -65,7 +65,7 @@ func Flow(line []byte) (typ string, rec map[string]any, ok bool) {
 
 // brokerTypes are the broker's event types (the broker package's Event).
 var brokerTypes = map[string]bool{"credential_injected": true, "credential_missing": true, "credential_misuse": true,
-	"credential_reflection": true, "refused": true}
+	"credential_reflection": true, "credential_rate_limited": true, "credential_quota_exhausted": true, "refused": true}
 
 // BrokerEvent turns one line of a gateway's broker log into an event record: the type, the
 // binding's reference, and the request's host, method, and path (never a value, a placeholder, or

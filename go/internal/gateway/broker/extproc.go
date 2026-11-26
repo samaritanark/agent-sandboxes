@@ -133,7 +133,11 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 					e.Type = "refused"
 				}
 				s.record(e)
-				resp = immediate(typev3.StatusCode_Forbidden, "broker_refused")
+				if o.TooMany {
+					resp = immediate(typev3.StatusCode_TooManyRequests, "broker_limited")
+				} else {
+					resp = immediate(typev3.StatusCode_Forbidden, "broker_refused")
+				}
 				break
 			}
 			mut := &extprocv3.HeaderMutation{RemoveHeaders: o.RemoveHeaders}

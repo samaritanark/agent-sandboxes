@@ -32,6 +32,10 @@ type Binding struct {
 	Hosts       []string `json:"hosts"`
 	Inject      string   `json:"inject"`
 	Placeholder string   `json:"placeholder"`
+	// the broker's limits (sessionspec.Binding)
+	RatePerMinute int `json:"rate_per_minute,omitempty"`
+	Burst         int `json:"burst,omitempty"`
+	Quota         int `json:"quota,omitempty"`
 }
 
 // HandoverSocket is the socket in the gateway's directory the helper writes the values to; only

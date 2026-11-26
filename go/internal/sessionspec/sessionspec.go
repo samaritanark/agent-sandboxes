@@ -122,7 +122,16 @@ type Binding struct {
 	Inject      string   `json:"inject"` // "bearer", "header:<name>", "query:<name>", "basic"
 	Placeholder string   `json:"placeholder"`
 	EnvVar      string   `json:"env_var,omitempty"` // the variable that carries the placeholder, if any
+	// Limits on the credential's use, enforced by the broker per credential (all bindings of one
+	// Ref must state the same): requests a minute and burst (0: the broker's defaults), and a
+	// quota of requests for the session's life (0: none).
+	RatePerMinute int `json:"rate_per_minute,omitempty"`
+	Burst         int `json:"burst,omitempty"`
+	Quota         int `json:"quota,omitempty"`
 }
+
+// MaxLimit bounds a binding's limits (broker.MaxLimit).
+const MaxLimit = 1_000_000
 
 // Readable is a secret the operator explicitly allowed the agent to read (--allow-readable):
 // sandboxd resolves Ref from the broker store into EnvVar at start. The value is never in the spec.
@@ -443,8 +452,19 @@ func checkBindingReach(bs []Binding, e Egress, what string, bad func(string, ...
 func checkBindings(bs []Binding, what string, bad func(string, ...any)) map[string]string {
 	vars := map[string]string{}
 	seen := map[string]bool{}
+	limits := map[string][3]int{}
 	for i, b := range bs {
 		w := fmt.Sprintf("%s %d (%s)", what, i, b.Ref)
+		l := [3]int{b.RatePerMinute, b.Burst, b.Quota}
+		for _, v := range l {
+			if v < 0 || v > MaxLimit {
+				bad("%s: a limit must be between 0 and %d", w, MaxLimit)
+			}
+		}
+		if prev, ok := limits[b.Ref]; ok && prev != l {
+			bad("%s: every binding of a credential must state the same limits", w)
+		}
+		limits[b.Ref] = l
 		if !refRE.MatchString(b.Ref) {
 			bad("%s: invalid credential reference", w)
 		}

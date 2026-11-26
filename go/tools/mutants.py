@@ -1035,3 +1035,22 @@ m(BR, '&& (hb != "connection" || !upgrade) {', '{', R_BR, pkg="gateway/broker")
 IC = "internal/gateway/envoyconf/intercept.go"
 m(IC, '\t\treturn []obj{{"name": name, "match": um, "route": upgrade}, {"name": name, "match": match, "route": forward}}', '\t\treturn []obj{{"name": name, "match": match, "route": forward}}', "TestUpgradeCluster|TestEnvoyAccepts", pkg="gateway/envoyconf")
 m(IC, '\t\tname, alpn = upgradeCluster, []string{"http/1.1"}', '\t\tname = upgradeCluster', "TestUpgradeCluster|TestEnvoyAccepts", pkg="gateway/envoyconf")
+
+# ---- per-credential limits (internal/gateway/broker/limits.go) and their plumbing
+LM = "internal/gateway/broker/limits.go"
+R_LM = "Limit|Quota|Process"
+m(LM, '\t\t\tif b.tokens > b.burst {', '\t\t\tif false {', R_LM, pkg="gateway/broker")
+m(LM, '\t\tif b.quota > 0 && b.injected >= b.quota {', '\t\tif b.quota > 0 && b.injected > b.quota {', R_LM, pkg="gateway/broker")
+m(LM, '\t\tif b.tokens < 1 {', '\t\tif b.tokens < 0 {', R_LM, pkg="gateway/broker")
+m(LM, '\t\tl.buckets[r].tokens--\n', '', R_LM, pkg="gateway/broker")
+m(LM, '\t\tl.buckets[r].injected++\n', '', R_LM, pkg="gateway/broker")
+m(LM, '\t\tif rate == 0 {\n\t\t\trate = DefaultRatePerMinute\n\t\t}', '', R_LM, pkg="gateway/broker")
+m(LM, '\t\tif burst == 0 {\n\t\t\tburst = DefaultBurst\n\t\t}', '', R_LM, pkg="gateway/broker")
+m(LM, 'perSec: float64(rate) / 60,', 'perSec: float64(rate),', R_LM, pkg="gateway/broker")
+m(BR, '\t\t\tif !slices.Contains(refs, b.Ref) {', '\t\t\tif true {', R_LM, pkg="gateway/broker")
+m(BR, '\t\t\tif v < 0 || v > MaxLimit {', '\t\t\tif v < 0 {', R_LM, pkg="gateway/broker")
+m(EP, '\t\t\t\tif o.TooMany {', '\t\t\t\tif false {', R_LM, pkg="gateway/broker")
+m("internal/sessionspec/sessionspec.go", '\t\tif prev, ok := limits[b.Ref]; ok && prev != l {', '\t\tif false {', "TestValidateRefuses|TestBindingLimits")
+m("internal/sessionspec/sessionspec.go", '\t\t\tif v < 0 || v > MaxLimit {', '\t\t\tif v > MaxLimit {', "TestValidateRefuses|TestBindingLimits")
+m("internal/sandboxd/daemon/daemon.go", '\t\t\tRatePerMinute: b.RatePerMinute, Burst: b.Burst, Quota: b.Quota})', '\t\t})', "TestBrokerHandover", pkg="sandboxd/daemon")
+m("internal/sandboxd/auditlog/sources.go", '"credential_rate_limited": true, ', '', ".", pkg="sandboxd/auditlog")

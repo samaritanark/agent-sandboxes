@@ -17,7 +17,9 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
+	"time"
 )
 
 // Binding is one brokered credential of the session, with its value.
@@ -27,10 +29,18 @@ type Binding struct {
 	Inject      string   // "bearer", "header:<name>", "query:<name>", "basic"
 	Placeholder string
 	Value       string // for "basic", "user:password" (the whole pair) or a password alone
+
+	// limits (limits.go): 0 is the default rate and burst, and no quota
+	RatePerMinute int
+	Burst         int
+	Quota         int // injections for the session's life
 }
 
 // Set is a session's bindings.
-type Set struct{ bindings []Binding }
+type Set struct {
+	bindings []Binding
+	limits   *limiter
+}
 
 var injectRE = regexp.MustCompile(`^(bearer|basic|header:[A-Za-z0-9-]{1,64}|query:[A-Za-z0-9_.-]{1,64})$`)
 
@@ -54,6 +64,12 @@ func NewSet(bs []Binding) (*Set, error) {
 		if strings.ContainsAny(b.Value, "\r\n\x00") {
 			return nil, fmt.Errorf("broker: binding %q has a value no header can carry", b.Ref)
 		}
+		for _, v := range []int{b.RatePerMinute, b.Burst, b.Quota} {
+			if v < 0 || v > MaxLimit {
+				return nil, fmt.Errorf("broker: binding %q has a limit out of range", b.Ref)
+			}
+		}
+
 		for _, h := range b.Hosts {
 			if h == "" || strings.Contains(h, "*") || h != strings.ToLower(h) {
 				return nil, fmt.Errorf("broker: binding %q has a non-exact destination %q", b.Ref, h)
@@ -61,7 +77,7 @@ func NewSet(bs []Binding) (*Set, error) {
 		}
 		seen[b.Placeholder] = true
 	}
-	return &Set{bindings: append([]Binding(nil), bs...)}, nil
+	return &Set{bindings: append([]Binding(nil), bs...), limits: newLimiter(bs, time.Now)}, nil
 }
 
 // Header is one request header as Envoy presents it (lower-case name).
@@ -86,6 +102,8 @@ type Outcome struct {
 	RemoveHeaders []string // hop-by-hop and duplicates
 	Path          string   // the new ":path" when a query parameter was injected ("" to keep it)
 	Injected      bool
+
+	TooMany bool // refused by a rate limit or quota (HTTP 429, not 403)
 }
 
 func refuse(event, ref, reason string) Outcome {
@@ -200,6 +218,19 @@ func (s *Set) Decide(r Request) Outcome {
 		}
 		out.Ref = b.Ref
 		out.Injected = true
+	}
+	if out.Injected {
+		var refs []string // each credential once, however many of its bindings apply
+		for _, b := range bound {
+			if !slices.Contains(refs, b.Ref) {
+				refs = append(refs, b.Ref)
+			}
+		}
+		if ev, ref := s.limits.spend(refs); ev != "" {
+			o := refuse(ev, ref, "the credential's "+map[bool]string{true: "quota", false: "rate limit"}[ev == "credential_quota_exhausted"]+" is spent")
+			o.TooMany = true
+			return o
+		}
 	}
 	// a header the broker sets is overwritten, never removed (a Connection header may name it)
 	var keep []string

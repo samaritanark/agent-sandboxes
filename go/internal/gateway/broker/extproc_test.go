@@ -124,3 +124,26 @@ func TestProcessWebSocketRefusals(t *testing.T) {
 		t.Errorf("a cut frame: %v", out[2])
 	}
 }
+
+// TestProcessRateLimited: a spent credential answers 429, not 403, and records why.
+func TestProcessRateLimited(t *testing.T) {
+	var evs []Event
+	srv := &Server{Record: func(e Event) { evs = append(evs, e) }}
+	set, err := NewSet([]Binding{{Ref: "github", Hosts: []string{"api.github.com"}, Inject: "bearer", Placeholder: phGH, Value: ghReal, Burst: 1, RatePerMinute: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetBindings(set)
+	req := reqHeaders(":authority", "api.github.com", ":path", "/", ":method", "GET", "authorization", "Bearer "+phGH)
+	for i, want := range []int32{0, 429} {
+		st := &fakeStream{in: []*extprocv3.ProcessingRequest{req}}
+		srv.Process(st)
+		got := int32(st.out[0].GetImmediateResponse().GetStatus().GetCode())
+		if got != want {
+			t.Errorf("request %d: status %d", i, got)
+		}
+	}
+	if e := evs[len(evs)-1]; e.Type != "credential_rate_limited" || e.Ref != "github" {
+		t.Errorf("%+v", e)
+	}
+}

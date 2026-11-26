@@ -87,7 +87,8 @@ type Broker interface {
 func policyBindings(bs []sessionspec.Binding) []gwpolicy.Binding {
 	var out []gwpolicy.Binding
 	for _, b := range bs {
-		out = append(out, gwpolicy.Binding{Ref: b.Ref, Hosts: b.Hosts, Inject: b.Inject, Placeholder: b.Placeholder})
+		out = append(out, gwpolicy.Binding{Ref: b.Ref, Hosts: b.Hosts, Inject: b.Inject, Placeholder: b.Placeholder,
+			RatePerMinute: b.RatePerMinute, Burst: b.Burst, Quota: b.Quota})
 	}
 	return out
 }

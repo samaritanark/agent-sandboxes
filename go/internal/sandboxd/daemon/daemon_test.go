@@ -603,7 +603,7 @@ func TestBrokerHandover(t *testing.T) {
 	mk := func(id string) []byte {
 		sp, _ := sessionspec.Decode(bytes.NewReader(spec(id, 2048, "db")))
 		sp.Bindings = []sessionspec.Binding{{Ref: "anthropic", Hosts: []string{"api.anthropic.com"}, Inject: "header:x-api-key",
-			Placeholder: "sbxph_" + strings.Repeat("A", 43)}}
+			Placeholder: "sbxph_" + strings.Repeat("A", 43), RatePerMinute: 30, Burst: 4, Quota: 500}}
 		sp.Dependencies[0].Bindings = []sessionspec.Binding{{Ref: "pypi", Hosts: []string{"pypi.org"}, Inject: "bearer",
 			Placeholder: "sbxph_" + strings.Repeat("B", 43)}}
 		b, _ := sp.Encode()
@@ -629,6 +629,9 @@ func TestBrokerHandover(t *testing.T) {
 		t.Errorf("socket %v", fb.sockets)
 	}
 	p := r.gw.policies[id]
+	if b := p.Links[0].Bindings; len(b) != 1 || b[0].RatePerMinute != 30 || b[0].Burst != 4 || b[0].Quota != 500 {
+		t.Errorf("the limits did not reach the gateway: %+v", b)
+	}
 	if len(p.Links[0].Bindings) != 1 || p.Links[0].Bindings[0].Inject != "header:x-api-key" || len(p.Links[1].Bindings) != 1 ||
 		len(p.Links[0].Intercept) != 1 || p.Links[0].Intercept[0].Name != "api.anthropic.com" {
 		t.Errorf("policy %+v", p.Links)

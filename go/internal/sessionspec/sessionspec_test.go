@@ -110,7 +110,14 @@ func refusalCases() map[string]func(*Spec) {
 		"reused placeholder": func(s *Spec) {
 			s.Bindings = append(s.Bindings, Binding{Ref: "x", Hosts: []string{"a.b"}, Inject: "bearer", Placeholder: ph1})
 		},
-		"bad injection":             func(s *Spec) { s.Bindings[0].Inject = "cookie" },
+		"bad injection":   func(s *Spec) { s.Bindings[0].Inject = "cookie" },
+		"negative rate":   func(s *Spec) { s.Bindings[0].RatePerMinute = -1 },
+		"quota too large": func(s *Spec) { s.Bindings[0].Quota = MaxLimit + 1 },
+		"one credential, two limits": func(s *Spec) {
+			b := s.Bindings[0]
+			b.Placeholder, b.EnvVar, b.Inject, b.Burst = "sbxph_"+strings.Repeat("Z", 43), "", "bearer", 7
+			s.Bindings = append(s.Bindings, b)
+		},
 		"readable clashes with env": func(s *Spec) { s.Readable[0].EnvVar = "TERM" },
 		"root dependency":           func(s *Spec) { s.Dependencies[0].RunAsUser = 0 },
 		"dependency port":           func(s *Spec) { s.Dependencies[0].Port = 0 },
@@ -188,5 +195,17 @@ func TestCredentialFormats(t *testing.T) {
 	}
 	if !IsPlaceholder(ph1) || IsPlaceholder("sbxph_short") {
 		t.Error("placeholder form")
+	}
+}
+
+// TestBindingLimits: limits within range, stated alike by every binding of a credential, pass.
+func TestBindingLimits(t *testing.T) {
+	s := good()
+	s.Bindings[0].RatePerMinute, s.Bindings[0].Burst, s.Bindings[0].Quota = 30, 5, 1000
+	b := s.Bindings[0]
+	b.Placeholder, b.EnvVar, b.Inject = "sbxph_"+strings.Repeat("Z", 43), "", "bearer"
+	s.Bindings = append(s.Bindings, b)
+	if err := s.Validate(Options{}); err != nil {
+		t.Fatal(err)
 	}
 }
