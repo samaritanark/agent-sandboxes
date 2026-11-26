@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/gwpolicy"
 	"github.com/samaritanark/agent-sandboxes/go/internal/l7"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/auditlog"
@@ -85,12 +86,24 @@ type Broker interface {
 	Put(ref string, sealed []byte) error
 	Delete(ref string) error
 	List() ([]string, error)
-	// HandOver decrypts refs[i] (link i's bound references) and writes them to the gateway's
-	// handover socket.
-	HandOver(ctx context.Context, session, socket string, refs [][]string) error
+	// Bindings are the bindings the entries of the second form carry (brokerseal.Peek), by
+	// reference: unchecked, for planning a launch.
+	Bindings() (map[string]brokerseal.Binding, error)
+	// HandOver decrypts uses[i] (link i's bound credentials) and writes them to the gateway's
+	// handover socket, refusing a use its entry's sealed binding does not allow.
+	HandOver(ctx context.Context, session, socket string, uses [][]Use) error
 	// WriteReadable decrypts each file's reference (files: file name to reference) into its own
-	// file in dir, readable only by uid, then leaves dir readable only by uid.
+	// file in dir, readable only by uid, then leaves dir readable only by uid; an entry not sealed
+	// as readable is refused.
 	WriteReadable(ctx context.Context, dir string, uid int, files map[string]string) error
+}
+
+// Use is one binding of a credential, as the handover helper checks it against the binding the
+// host sealed with the value (brokerseal.Binding.Allows).
+type Use struct {
+	Ref    string   `json:"ref"`
+	Hosts  []string `json:"hosts"`
+	Inject string   `json:"inject"`
 }
 
 // policyBindings are a microVM's bindings as its gateway gets them: no values.
@@ -516,11 +529,11 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 		return err
 	}
 	// the bound credentials' values, decrypted by a short-lived helper straight into the gateway
-	refs := make([][]string, len(pol.Links))
+	refs := make([][]Use, len(pol.Links))
 	anyBinding := false
 	for i, l := range pol.Links {
 		for _, b := range l.Bindings {
-			refs[i] = append(refs[i], b.Ref)
+			refs[i] = append(refs[i], Use{Ref: b.Ref, Hosts: b.Hosts, Inject: b.Inject})
 			anyBinding = true
 		}
 	}

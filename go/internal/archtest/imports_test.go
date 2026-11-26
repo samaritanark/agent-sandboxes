@@ -42,7 +42,7 @@ var allowed = map[string][]string{
 	"sandboxd/attachclient": {"sandboxd/daemon", "tty"},
 	"sandboxd/pki":          {},
 	"sandboxd/netsetup":     {},
-	"sandboxd/daemon":       {"egressmatch", "gateway/gwpolicy", "l7", "sandboxd/auditlog", "sandboxd/journal", "sandboxd/limits", "sandboxd/netsetup", "sandboxd/pki", "sandboxd/runtime", "sessionspec"},
+	"sandboxd/daemon":       {"brokerseal", "egressmatch", "gateway/gwpolicy", "l7", "sandboxd/auditlog", "sandboxd/journal", "sandboxd/limits", "sandboxd/netsetup", "sandboxd/pki", "sandboxd/runtime", "sessionspec"},
 	// the sync protocol (host engine and in-VM agent) and the in-VM agent itself
 	"syncproto": {},
 	"syncagent": {"syncproto"},

@@ -11,6 +11,8 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 )
 
 // MaxRequest bounds one request (a session spec is a few KiB).
@@ -47,7 +49,9 @@ type Response struct {
 	ID       string    `json:"id,omitempty"`
 	Sessions []Summary `json:"sessions,omitempty"`
 	Refs     []string  `json:"refs,omitempty"`
-	Exit     *int      `json:"exit,omitempty"` // attach: the command's exit status
+	// broker-list: the binding each entry of the second form carries, by reference (unchecked)
+	Bindings map[string]brokerseal.Binding `json:"bindings,omitempty"`
+	Exit     *int                          `json:"exit,omitempty"` // attach: the command's exit status
 }
 
 // Authorize decides whether a connection's peer may use sandboxd (SO_PEERCRED on Linux).
@@ -196,6 +200,7 @@ func (d *Daemon) call(ctx context.Context, req Request) Response {
 		}
 		var err error
 		var refs []string
+		var bindings map[string]brokerseal.Binding
 		switch req.Op {
 		case "broker-key":
 			err = d.Broker.SetKey(req.Key)
@@ -207,12 +212,14 @@ func (d *Daemon) call(ctx context.Context, req Request) Response {
 		case "broker-delete":
 			err = d.Broker.Delete(req.ID)
 		case "broker-list":
-			refs, err = d.Broker.List()
+			if refs, err = d.Broker.List(); err == nil {
+				bindings, err = d.Broker.Bindings()
+			}
 		}
 		if err != nil {
 			return fail(err)
 		}
-		return Response{OK: true, ID: req.ID, Refs: refs}
+		return Response{OK: true, ID: req.ID, Refs: refs, Bindings: bindings}
 	}
 	return fail(errors.New("unknown op " + req.Op))
 }

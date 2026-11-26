@@ -95,3 +95,23 @@ func (s Store) List() ([]string, error) {
 	}
 	return out, nil
 }
+
+// Bindings reads the binding each entry of the second form carries (brokerseal.Peek), by
+// reference. An entry that cannot be read is left out: opening it fails anyway.
+func (s Store) Bindings() (map[string]brokerseal.Binding, error) {
+	refs, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]brokerseal.Binding{}
+	for _, ref := range refs {
+		blob, err := s.Get(ref)
+		if err != nil {
+			continue
+		}
+		if b, bound, err := brokerseal.Peek(blob); err == nil && bound {
+			out[ref] = b
+		}
+	}
+	return out, nil
+}

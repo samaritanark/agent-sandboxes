@@ -24,8 +24,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/gwpolicy"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/brokerstore"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
 )
 
 type brokerStore struct {
@@ -46,18 +48,21 @@ func (b *brokerStore) SetKey(k []byte) error {
 }
 
 func (b *brokerStore) Put(ref string, sealed []byte) error { return b.store.Put(ref, sealed) }
-func (b *brokerStore) Delete(ref string) error             { return b.store.Delete(ref) }
-func (b *brokerStore) List() ([]string, error)             { return b.store.List() }
+func (b *brokerStore) Bindings() (map[string]brokerseal.Binding, error) {
+	return b.store.Bindings()
+}
+func (b *brokerStore) Delete(ref string) error { return b.store.Delete(ref) }
+func (b *brokerStore) List() ([]string, error) { return b.store.List() }
 
 // handoverJob is what the helper reads on its stdin.
 type handoverJob struct {
-	Key    []byte     `json:"key"`
-	Store  string     `json:"store"`
-	Socket string     `json:"socket"`
-	Links  [][]string `json:"links"`
+	Key    []byte         `json:"key"`
+	Store  string         `json:"store"`
+	Socket string         `json:"socket"`
+	Links  [][]daemon.Use `json:"links"`
 }
 
-func (b *brokerStore) HandOver(ctx context.Context, session, socket string, refs [][]string) error {
+func (b *brokerStore) HandOver(ctx context.Context, session, socket string, refs [][]daemon.Use) error {
 	b.mu.Lock()
 	if b.key == nil {
 		b.mu.Unlock()
@@ -154,9 +159,16 @@ func writeReadable(job readableJob) error {
 		if err != nil {
 			return fmt.Errorf("credential %s is not in the broker store", ref)
 		}
-		v, err := brokerstore.Open(job.Key, ref, sealed)
+		v, b, bound, err := brokerseal.OpenBound(job.Key, ref, sealed)
 		if err != nil {
 			return err
+		}
+		if err = b.Allows(nil, "", true); !bound {
+			err = errors.New("it was sealed without a binding")
+		}
+		if err != nil {
+			brokerstore.Wipe(v)
+			return fmt.Errorf("credential %s may not be read by the agent: %w", ref, err)
 		}
 		err = writeOwned(filepath.Join(job.Dir, name), v, job.UID)
 		brokerstore.Wipe(v)
@@ -204,29 +216,14 @@ func brokerHandover() int {
 		return fail(fmt.Errorf("unreadable job: %w", err))
 	}
 	defer brokerstore.Wipe(job.Key)
-	st := brokerstore.Store{Dir: job.Store}
-	h := gwpolicy.Handover{}
-	var opened [][]byte
+	h, opened, err := openLinks(brokerstore.Store{Dir: job.Store}, job.Key, job.Links)
 	defer func() {
 		for _, v := range opened {
 			brokerstore.Wipe(v)
 		}
 	}()
-	for _, refs := range job.Links {
-		m := map[string][]byte{}
-		for _, ref := range refs {
-			sealed, err := st.Get(ref)
-			if err != nil {
-				return fail(fmt.Errorf("credential %s is not in the broker store", ref))
-			}
-			v, err := brokerstore.Open(job.Key, ref, sealed)
-			if err != nil {
-				return fail(err)
-			}
-			opened = append(opened, v)
-			m[ref] = v
-		}
-		h.Links = append(h.Links, m)
+	if err != nil {
+		return fail(err)
 	}
 	msg, err := json.Marshal(h)
 	if err != nil {
@@ -254,4 +251,35 @@ func brokerHandover() int {
 		return fail(fmt.Errorf("the gateway refused the handover: %s", strings.TrimSpace(reply)))
 	}
 	return 0
+}
+
+// openLinks opens each link's credentials for the gateway, each checked against the binding the
+// host sealed with it: an operator secret must carry one, and every binding of it in the spec must
+// be one its binding allows. opened is every value opened, for the caller to wipe, error or not.
+func openLinks(st brokerstore.Store, key []byte, links [][]daemon.Use) (h gwpolicy.Handover, opened [][]byte, err error) {
+	for _, uses := range links {
+		m := map[string][]byte{}
+		for _, u := range uses {
+			sealed, err := st.Get(u.Ref)
+			if err != nil {
+				return h, opened, fmt.Errorf("credential %s is not in the broker store", u.Ref)
+			}
+			v, b, bound, err := brokerseal.OpenBound(key, u.Ref, sealed)
+			if err != nil {
+				return h, opened, err
+			}
+			opened = append(opened, v)
+			if _, secret := brokerseal.SecretName(u.Ref); secret && !bound {
+				return h, opened, fmt.Errorf("credential %s was sealed without a binding", u.Ref)
+			}
+			if bound {
+				if err := b.Allows(u.Hosts, u.Inject, false); err != nil {
+					return h, opened, fmt.Errorf("credential %s: %w", u.Ref, err)
+				}
+			}
+			m[u.Ref] = v
+		}
+		h.Links = append(h.Links, m)
+	}
+	return h, opened, nil
 }

@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/gwpolicy"
 	"github.com/samaritanark/agent-sandboxes/go/internal/l7"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/journal"
@@ -516,7 +517,7 @@ func auditTypes(t *testing.T, root, id, file string) []string {
 // fakeBroker records handovers.
 type fakeBroker struct {
 	key      []byte
-	handed   map[string][][]string
+	handed   map[string][][]Use
 	sockets  []string
 	failWith error
 	// the uid the readable files were written for
@@ -527,6 +528,9 @@ func (f *fakeBroker) SetKey(k []byte) error    { f.key = append([]byte(nil), k..
 func (f *fakeBroker) Put(string, []byte) error { return nil }
 func (f *fakeBroker) Delete(string) error      { return nil }
 func (f *fakeBroker) List() ([]string, error)  { return nil, nil }
+func (f *fakeBroker) Bindings() (map[string]brokerseal.Binding, error) {
+	return map[string]brokerseal.Binding{"secret.X": {Readable: true}}, nil
+}
 
 // WriteReadable writes "value of <ref>\n" for each file, as the helper would write the value.
 func (f *fakeBroker) WriteReadable(_ context.Context, dir string, uid int, files map[string]string) error {
@@ -542,12 +546,12 @@ func (f *fakeBroker) WriteReadable(_ context.Context, dir string, uid int, files
 	return nil
 }
 
-func (f *fakeBroker) HandOver(_ context.Context, id, socket string, refs [][]string) error {
+func (f *fakeBroker) HandOver(_ context.Context, id, socket string, refs [][]Use) error {
 	if f.failWith != nil {
 		return f.failWith
 	}
 	if f.handed == nil {
-		f.handed = map[string][][]string{}
+		f.handed = map[string][][]Use{}
 	}
 	f.handed[id] = refs
 	f.sockets = append(f.sockets, socket)
@@ -680,7 +684,8 @@ func TestBrokerHandover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if refs := fb.handed[id]; len(refs) != 2 || len(refs[0]) != 1 || refs[0][0] != "anthropic" || refs[1][0] != "pypi" {
+	if refs := fb.handed[id]; len(refs) != 2 || len(refs[0]) != 1 || len(refs[1]) != 1 ||
+		fmt.Sprint(refs[0][0]) != "{anthropic [api.anthropic.com] header:x-api-key}" || fmt.Sprint(refs[1][0]) != "{pypi [pypi.org] bearer}" {
 		t.Errorf("handed %v", refs)
 	}
 	if !strings.HasSuffix(fb.sockets[0], "/gateway/handover.sock") {
@@ -791,5 +796,18 @@ func TestRenewBefore(t *testing.T) {
 	d.Expiry.KeepAliveMax = time.Hour
 	if d.renewBefore() != 25*time.Hour/2 {
 		t.Errorf("short leaves %v", d.renewBefore())
+	}
+}
+
+// TestBrokerList: broker-list answers the store's references and the bindings their entries carry.
+func TestBrokerList(t *testing.T) {
+	r := newRig(t)
+	if resp := r.d.call(context.Background(), Request{Op: "broker-list"}); resp.OK {
+		t.Error("answered with no broker store")
+	}
+	r.d.Broker = &fakeBroker{}
+	resp := r.d.call(context.Background(), Request{Op: "broker-list"})
+	if !resp.OK || len(resp.Bindings) != 1 || !resp.Bindings["secret.X"].Readable {
+		t.Errorf("%+v", resp)
 	}
 }
