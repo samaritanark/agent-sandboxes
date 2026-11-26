@@ -1461,9 +1461,10 @@ rest; the key lives in the operator's host keychain and is pushed by the host
 binary over the control channel at VM start, held only in `sandboxd` memory or
 a tmpfs and never written to the state disk; D-32) and hands them to the broker
 at start. A stolen or backed-up state disk is therefore not enough to read the
-store. Where no host keychain exists (headless Linux), the key is a 0600 file
+store. On Windows the key is kept in Credential Manager. Where no host keychain exists (headless Linux), the key is a 0600 file
 under `~/.sandbox` pushed the same way, and `sandbox doctor` reports the
-weaker protection. VM root can still read the key from memory (§5.9.8). The broker never has
+weaker protection. The host seals entries itself; the VM stores them and never
+holds the key on disk. VM root can still read the key from memory (§5.9.8). The broker never has
 read access to the store. It is destroyed with the session (§5.4.3).
 
 S5 prototyped this handover (`docs/design/spikes/S5.md`). Entries are
