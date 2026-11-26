@@ -117,6 +117,10 @@ func Run(ctx context.Context, args []string, env Env) (rc int) {
 			return a.brokerPut(args[1:])
 		case "onboard":
 			return a.onboard(args[1:])
+		case "flows":
+			return a.flows(args[1:])
+		case "status":
+			return a.vm([]string{"status"})
 		}
 		if f, ok := env.HostCommands[args[0]]; ok {
 			return f(ctx, args[1:])

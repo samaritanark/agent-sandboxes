@@ -1406,3 +1406,8 @@ m(OB2, '\ta.pushAgentToken(ep, "agent.claude", tok, brokerseal.Binding{Hosts: []
 m(OB2, 'var claudeStaged = []string{"settings.json", "CLAUDE.md"}', 'var claudeStaged = []string{"settings.json", "CLAUDE.md", ".credentials.json"}', "TestOnboardClaude", pkg="host/app")
 m("internal/sessionspec/sessionspec.go", '\t\t\tif !own && (s.Tier < 2 || m.Source != HistoryPath(s.Agent, s.Tier, path.Base(m.Source)) || !historyKeyRE.MatchString(path.Base(m.Source))) {', '\t\t\tif !own && !historyKeyRE.MatchString(path.Base(m.Source)) {', "TestHistoryMounts", pkg="sessionspec")
 m("internal/sandboxd/daemon/daemon.go", '\t\t\tos.RemoveAll(filepath.Join(d.SessionRoot, id, AgentConfigDir))\n', '', "TestSessionFilesRemoved", pkg="sandboxd/daemon")
+
+# ---- flows and status on the host (2026-11-26)
+m("internal/host/app/flows.go", '\tif !flowSessionRE.MatchString(id) {', '\tif false {', "TestFlows", pkg="host/app")
+m("internal/host/app/flows.go", '\tif m := str("method"); m != "" {', '\tif m := str("method"); true {', "TestFlows", pkg="host/app")
+m("internal/host/app/flows.go", '\tif p := str("port"); p != "" && p != "443" && !strings.Contains(dest, ":") {', '\tif p := str("port"); p != "" && !strings.Contains(dest, ":") {', "TestFlows", pkg="host/app")
