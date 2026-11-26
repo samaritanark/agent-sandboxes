@@ -31,12 +31,13 @@ images are the same everywhere and no rebuild is needed for a new CA:
   `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `PIP_CERT`, `GIT_SSL_CAINFO`, and
   `NODE_EXTRA_CA_CERTS` pointing at it.
 
-**In this build the VM takes the CAs in `~/.sandbox/extra-ca-certs/` when it is installed.** A CA
-you add later reaches the VM and its sessions only after the VM is installed again:
-`sandbox uninstall` (answer `n` to keep each kind of state; never `--purge` while you use v2 on the
-same machine), then `sandbox install` again. (`setup-proxy-cert`'s closing message says "from the
-next session"; that is the design's intent, not yet what this build does.) The repository's
-`config/extra-ca-certs/` and an overlay's `extra-ca-certs/` are not read yet either; put the CA in
+**A CA you add applies from the next session.** Every command sends `~/.sandbox/extra-ca-certs/`
+to the VM, and each session's trust bundle and its gateway's upstream trust are built at the
+session's start from the VM's system roots, your CAs (`*.crt` and `*.pem` files; anything that is
+not a certificate is skipped), and the image's `config/extra-ca-certs/`. Nothing is rebuilt or
+reinstalled. The VM's own system store (what `sandbox rebuild` and the broker's token refresh
+trust) takes the CAs present when the VM was installed; a proxy CA added later reaches them only
+after a reinstall. An overlay's `extra-ca-certs/` is not read yet; put the CA in
 `~/.sandbox/extra-ca-certs/`.
 
 ## Getting the cert

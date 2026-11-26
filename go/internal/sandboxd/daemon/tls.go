@@ -5,6 +5,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,6 +32,53 @@ type TLS struct {
 	CA          *pki.CA
 	Baseline    []l7.Rule
 	SystemRoots []byte
+	// ExtraCADirs hold corporate CAs read again at every session start (the operator's
+	// ~/.sandbox/extra-ca-certs as pushed, the image's config/extra-ca-certs): a CA added with
+	// `sandbox setup-proxy-cert` applies from the next session, with no reinstall.
+	ExtraCADirs []string
+}
+
+// MaxExtraCA bounds one extra CA file.
+const MaxExtraCA = 1 << 20
+
+// roots are the system roots and the extra CAs: each certificate of each *.crt or *.pem file in
+// ExtraCADirs that parses, a file that does not being skipped.
+func (t *TLS) roots() []byte {
+	out := append([]byte(nil), t.SystemRoots...)
+	for _, dir := range t.ExtraCADirs {
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			n := e.Name()
+			if !e.Type().IsRegular() || strings.HasPrefix(n, ".") || !(strings.HasSuffix(n, ".crt") || strings.HasSuffix(n, ".pem")) {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(dir, n))
+			if err != nil || len(b) > MaxExtraCA {
+				continue
+			}
+			for rest := b; ; {
+				var blk *pem.Block
+				blk, rest = pem.Decode(rest)
+				if blk == nil {
+					break
+				}
+				if blk.Type != "CERTIFICATE" {
+					continue
+				}
+				if _, err := x509.ParseCertificate(blk.Bytes); err != nil {
+					continue
+				}
+				if len(out) > 0 && out[len(out)-1] != '\n' {
+					out = append(out, '\n')
+				}
+				out = append(out, pem.EncodeToMemory(blk)...)
+			}
+		}
+	}
+	return out
 }
 
 // Where the guests find the session's trust: the bundle (system roots, corporate CAs, and the
@@ -178,7 +227,7 @@ func (d *Daemon) gatewayTLS(id, dir string, names [][]string, rules [][]l7.Rule,
 		order = append(order, l.Name)
 	}
 	leafFiles(leaves, leafOut)
-	files["upstream-cas.pem"] = d.TLS.SystemRoots
+	files["upstream-cas.pem"] = d.TLS.roots()
 	pol.UpstreamCAs = filepath.Join(dir, "upstream-cas.pem")
 	for i, ns := range names {
 		for _, n := range ns {
@@ -202,7 +251,7 @@ func (d *Daemon) guestTrust(id string) ([]runtime.Mount, []string, error) {
 	}
 	bundle := filepath.Join(d.maskDir(id), "ca-bundle.pem")
 	ca := filepath.Join(d.maskDir(id), "gateway-ca.pem")
-	if err := os.WriteFile(bundle, pki.Bundle(d.TLS.SystemRoots, d.TLS.CA), 0o444); err != nil {
+	if err := os.WriteFile(bundle, pki.Bundle(d.TLS.roots(), d.TLS.CA), 0o444); err != nil {
 		return nil, nil, err
 	}
 	if err := os.WriteFile(ca, d.TLS.CA.CertPEM, 0o444); err != nil {

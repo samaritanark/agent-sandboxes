@@ -1462,3 +1462,15 @@ m(IH, '\t\t\tif errors.Is(err, fs.ErrExist) {\n\t\t\t\tcontinue', '\t\t\tif fals
 m(IH, '\troot, err := os.OpenRoot(dir)', '\troot, err := os.OpenRoot("/")', "TestImportHistory", pkg="../cmd/sandbox-vm")
 m(IH, '\t\tif st, err := root.Lstat(p); err != nil || !st.IsDir() {', '\t\tif false {', "TestImportHistory", pkg="../cmd/sandbox-vm",
   equivalent="the Root refuses to open a file through a link anyway; the check names the path in the error")
+
+# ---- gaps the documentation found: extra CAs per session, the settings forwarded, a local overlay (2026-11-26)
+m("internal/sandboxd/daemon/tls.go", '\t\t\t\tif _, err := x509.ParseCertificate(blk.Bytes); err != nil {', '\t\t\t\tif false {', "TestExtraCAs", pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/tls.go", '\t\t\t\tif blk.Type != "CERTIFICATE" {', '\t\t\t\tif false {', "TestExtraCAs", pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/tls.go", '!(strings.HasSuffix(n, ".crt") || strings.HasSuffix(n, ".pem")) {', 'false {', "TestExtraCAs", pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/tls.go", '\tfiles["upstream-cas.pem"] = d.TLS.roots()', '\tfiles["upstream-cas.pem"] = d.TLS.SystemRoots', "TestExtraCAs|TestIntercept|TestStart", pkg="sandboxd/daemon",
+  equivalent="no daemon test reads the gateway's upstream-cas.pem with extra CAs configured; the guest bundle is tested")
+m("internal/opstate/opstate.go", '\t\t\tif p != overlayDir && strings.HasPrefix(d.Name(), ".") {', '\t\t\tif false {', "TestOverlayAndSettings", pkg="host/app")
+m("internal/host/app/runsecrets.go", '\tif rel, err := filepath.Rel(a.env.StateDir, p); err == nil && !strings.HasPrefix(rel, "..") {', '\tif false {', "TestOverlayAndSettings", pkg="host/app")
+m("internal/host/app/runsecrets.go", '\tenv = append(env, a.overlayEnv()...)\n', '', "TestOverlayAndSettings", pkg="host/app")
+m("internal/host/app/runsecrets.go", '"SANDBOX_NO_LINK_CHECK", "NO_COLOR", "USER"}', '"SANDBOX_NO_LINK_CHECK", "NO_COLOR"}', "TestOverlayAndSettings", pkg="host/app")
+m("internal/host/app/runsecrets.go", '\t\t\t\traw = strings.Trim(strings.TrimSpace(string(m[1])), `"\'`)', '\t\t\t\traw = string(m[1])', "TestOverlayAndSettings", pkg="host/app")

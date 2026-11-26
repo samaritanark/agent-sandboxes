@@ -118,9 +118,12 @@ min_sandbox_version: 2.12.0          # oldest CLI allowed to use this overlay
 | `SANDBOX_EXTRA_ALLOWED_DOMAINS` | comma-separated `extra_allowed_domains` |
 | `SANDBOX_OVERLAY` | `overlay:` |
 
-In v3 the two variables above are read by the policy layer in the VM, and the
-host does not pass your shell's environment on to it (only `OPENCODE_BASE_URL`),
-so set them in `config.yaml` instead.
+In v3 the policy layer runs in the VM; the host passes it these settings from
+your shell: `SANDBOX_EXTRA_ALLOWED_DOMAINS`, `SANDBOX_MAX_DEPS_PER_SESSION`,
+`SANDBOX_NO_LINK_CHECK`, `NO_COLOR`, `USER`, and `OPENCODE_BASE_URL`. An
+overlay directory on your machine (`SANDBOX_OVERLAY` or `overlay:`) is sent to
+the VM with your settings and used from there. Nothing else of your environment
+reaches the VM.
 
 | Variable | Read on the host |
 |----------|------------------|

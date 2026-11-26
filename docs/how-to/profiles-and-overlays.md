@@ -77,11 +77,11 @@ org install. Point at it in your config:
 overlay: /path/to/overlay-myteam
 ```
 
-In v3 the overlay is read in the sandbox VM, so it has to be there: a team overlay kept in a git
-repository is cloned into the VM by `sandbox link` (which also keeps it up to date), under
-`~/.sandbox/overlays/`. A directory that exists only on your machine is not copied to the VM in
-this build, and v2's `SANDBOX_OVERLAY` environment variable does not reach it (the host passes the
-VM none of your shell's environment).
+In v3 the overlay is read in the sandbox VM. A team overlay kept in a git repository is cloned
+into the VM by `sandbox link` (which also keeps it up to date), under `~/.sandbox/overlays/`. An
+overlay directory on your machine (`overlay:` or `SANDBOX_OVERLAY` naming a path outside
+`~/.sandbox`) is sent to the VM with your other settings before every command, without its hidden
+files (`.git`), and the command uses that copy.
 
 The CLI searches `~/.sandbox/profiles/<name>.yaml` first, then
 `<overlay>/profiles/<name>.yaml`. Overlay

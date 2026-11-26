@@ -159,7 +159,7 @@ func Open(stateDir, kind string) (*Driver, error) {
 	}
 	p := strings.TrimSuffix(string(b), "\n")
 	if err := hostbin.Verify(kind, p, os.Getuid()); err != nil {
-		return nil, fmt.Errorf("%w (if %s was reinstalled, run 'sandbox upgrade' to record it again)", err, kind)
+		return nil, fmt.Errorf("%w (if %s was reinstalled or moved, reinstall the sandbox VM with --%s <path>)", err, kind, kind)
 	}
 	self, err := os.Executable()
 	if err != nil {

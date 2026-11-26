@@ -21,8 +21,7 @@ machine sleeps for a long time.
 
 **`the sandbox VM image ... speaks control API N, older (or newer) than this
 sandbox binary supports`.** The host binary and the image are from different
-builds. The message suggests `sandbox upgrade`, which is not available in v3 yet.
-Instead, run `sandbox uninstall` (answer `n` to keep each kind of state) and
+builds (`sandbox upgrade` is not available in v3 yet). Run `sandbox uninstall` (answer `n` to keep each kind of state) and
 install an image built from the same version (see
 [Installing](../how-to/installing.md)).
 

@@ -892,3 +892,31 @@ func TestReconcileStuckOrphan(t *testing.T) {
 		t.Error("not ready")
 	}
 }
+
+// TestExtraCAs: the operator's corporate CAs are read again at every session start (a CA added
+// later applies to the next session); a file that is not a certificate, or another name, is
+// skipped.
+func TestExtraCAs(t *testing.T) {
+	ca1, _, _ := pki.LoadOrCreate(t.TempDir(), time.Now())
+	ca2, _, _ := pki.LoadOrCreate(t.TempDir(), time.Now())
+	dir := t.TempDir()
+	tl := &TLS{SystemRoots: []byte("SYSTEM\n"), ExtraCADirs: []string{dir, filepath.Join(dir, "missing")}}
+	if got := string(tl.roots()); got != "SYSTEM\n" {
+		t.Errorf("none: %q", got)
+	}
+	os.WriteFile(filepath.Join(dir, "proxy.crt"), ca1.CertPEM, 0o644)
+	os.WriteFile(filepath.Join(dir, "junk.pem"), []byte("-----BEGIN CERTIFICATE-----\nnotbase64\n-----END CERTIFICATE-----\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "notes.txt"), ca2.CertPEM, 0o644)
+	blk, _ := pem.Decode(ca2.CertPEM)
+	os.WriteFile(filepath.Join(dir, "key.pem"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: blk.Bytes}), 0o644)
+	got := string(tl.roots())
+	if !strings.HasPrefix(got, "SYSTEM\n") || !strings.Contains(got, string(ca1.CertPEM)) || strings.Contains(got, string(ca2.CertPEM)) ||
+		strings.Contains(got, "PRIVATE") || strings.Contains(got, "notbase64") {
+		t.Errorf("%q", got)
+	}
+	// added after start: the next session has it
+	os.WriteFile(filepath.Join(dir, "second.pem"), ca2.CertPEM, 0o644)
+	if !strings.Contains(string(tl.roots()), string(ca2.CertPEM)) {
+		t.Error("a CA added later was not read")
+	}
+}

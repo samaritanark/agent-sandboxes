@@ -18,10 +18,8 @@ extra_allowed_domains:
   - artifactory.example.com
 ```
 
-v2 also read a `SANDBOX_EXTRA_ALLOWED_DOMAINS` environment variable. In v3 the policy layer runs
-in the sandbox VM, and the host passes it none of your shell's environment (only
-`OPENCODE_BASE_URL`), so that variable has no effect: use `~/.sandbox/config.yaml`, which the host
-pushes to the VM before every command.
+The `SANDBOX_EXTRA_ALLOWED_DOMAINS` environment variable works as in v2 (a comma-separated list):
+the host passes it, with the other settings variables, to the policy layer in the sandbox VM.
 
 ```yaml
 # <overlay>/profiles/<name>.yaml — team overlay profile (reviewed at link time)

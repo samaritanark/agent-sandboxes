@@ -30,7 +30,12 @@ type Item struct {
 }
 
 // Managed is the pushed set.
-var Managed = []Item{{"config.yaml", false}, {"profiles", true}, {"vetting", true}, {"extra-ca-certs", true}, {"egress-rules.yaml", false}, {"agent-config", true}}
+var Managed = []Item{{"config.yaml", false}, {"profiles", true}, {"vetting", true}, {"extra-ca-certs", true}, {"egress-rules.yaml", false}, {"agent-config", true},
+	// a local overlay directory outside ~/.sandbox (BuildWith), pushed in its place
+	{OverlayLocal, true}}
+
+// OverlayLocal is where a pushed local overlay lands in the operator state.
+const OverlayLocal = "overlay-local"
 
 // Limits.
 const (
@@ -77,7 +82,12 @@ func validName(name string) bool {
 // Build collects the managed set from stateDir (~/.sandbox) into a tar stream. A symlink or other
 // non-regular file is left out with a warning (the push never follows links); a missing item is
 // simply absent, which tells the VM to remove its copy.
-func Build(stateDir string) ([]byte, []string, error) {
+func Build(stateDir string) ([]byte, []string, error) { return BuildWith(stateDir, "") }
+
+// BuildWith is Build plus, when overlayDir is set, that directory's files under OverlayLocal (an
+// overlay that lives outside ~/.sandbox, where the VM could not see it). Hidden files and
+// directories (.git) are left out, and links are never followed.
+func BuildWith(stateDir, overlayDir string) ([]byte, []string, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	var warnings []string
@@ -158,6 +168,42 @@ func Build(stateDir string) ([]byte, []string, error) {
 			}
 			rel, _ := filepath.Rel(stateDir, p)
 			if err := readFile(p, filepath.ToSlash(rel), st); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	if overlayDir != "" {
+		var files []string
+		err := filepath.WalkDir(overlayDir, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if p != overlayDir && strings.HasPrefix(d.Name(), ".") {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if d.Type()&fs.ModeSymlink != 0 {
+				warnings = append(warnings, "not pushed to the VM (a symlink): "+p)
+				return nil
+			}
+			if !d.IsDir() {
+				files = append(files, p)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("the overlay %s: %w", overlayDir, err)
+		}
+		sort.Strings(files)
+		for _, p := range files {
+			st, err := os.Lstat(p)
+			if err != nil {
+				return nil, nil, err
+			}
+			rel, _ := filepath.Rel(overlayDir, p)
+			if err := readFile(p, OverlayLocal+"/"+filepath.ToSlash(rel), st); err != nil {
 				return nil, nil, err
 			}
 		}

@@ -93,7 +93,7 @@ func Open(stateDir string) (*Driver, error) {
 	}
 	p := strings.TrimSuffix(string(b), "\n")
 	if err := hostbin.Verify("limactl", p, os.Getuid()); err != nil {
-		return nil, fmt.Errorf("%w (if Lima was reinstalled, run 'sandbox upgrade' to record it again)", err)
+		return nil, fmt.Errorf("%w (if Lima was reinstalled or moved, reinstall the sandbox VM with --limactl <path>)", err)
 	}
 	return &Driver{Limactl: p, Instance: Instance, StateDir: stateDir, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Exec: execLimactl}, nil
 }

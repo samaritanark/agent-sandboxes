@@ -195,7 +195,7 @@ func (a *app) handshake(ep driver.SSHEndpoint) release.Info {
 
 // pushState sends the operator state (design 5.1.4) before a proxied command, and returns it.
 func (a *app) pushState(ep driver.SSHEndpoint) []byte {
-	archive, warnings, err := opstate.Build(a.env.StateDir)
+	archive, warnings, err := opstate.BuildWith(a.env.StateDir, a.localOverlay())
 	if err != nil {
 		a.die("cannot collect the operator state in ~/.sandbox: %v", err)
 	}

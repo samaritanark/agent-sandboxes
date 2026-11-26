@@ -24,6 +24,7 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/syncgate"
+	"github.com/samaritanark/agent-sandboxes/go/internal/opstate"
 	"github.com/samaritanark/agent-sandboxes/go/internal/secrets"
 )
 
@@ -418,9 +419,11 @@ func (a *app) vmArgv(args ...string) []string {
 	return a.vmArgvEnv(nil, args...)
 }
 
-// forwarded are the host environment variables proxied commands get (not secrets: opencode's
-// endpoint, which run reads as v2 did).
-var forwarded = []string{"OPENCODE_BASE_URL"}
+// forwarded are the host environment variables proxied commands get, as v2's CLI read them from
+// the operator's shell: settings, never secrets or host paths (SANDBOX_OVERLAY is a path; see
+// overlayEnv).
+var forwarded = []string{"OPENCODE_BASE_URL", "SANDBOX_EXTRA_ALLOWED_DOMAINS", "SANDBOX_MAX_DEPS_PER_SESSION",
+	"SANDBOX_NO_LINK_CHECK", "NO_COLOR", "USER"}
 
 // vmArgvEnv is vmArgv with extra NAME=VALUE settings.
 func (a *app) vmArgvEnv(extra []string, args ...string) []string {
@@ -433,6 +436,7 @@ func (a *app) vmArgvEnv(extra []string, args ...string) []string {
 			env = append(env, k+"="+v)
 		}
 	}
+	env = append(env, a.overlayEnv()...)
 	env = append(env, extra...)
 	if len(env) == 0 {
 		return append([]string{VMCommand}, args...)
@@ -656,4 +660,55 @@ func parseResumeRepos(b []byte) ([]string, error) {
 	raw, _ := json.Marshal(map[string][]string{"secrets": {}, "repos": *out.Repos})
 	p, err := parsePrepass(raw)
 	return p.Repos, err
+}
+
+// overlaySetting is the operator's overlay as v2 resolved it (resolve_overlay_path):
+// SANDBOX_OVERLAY, else config.yaml's top-level overlay:, with "~" as the home.
+func (a *app) overlaySetting() string {
+	raw := a.getenv("SANDBOX_OVERLAY")
+	if raw == "" {
+		if b, err := os.ReadFile(filepath.Join(a.env.StateDir, "config.yaml")); err == nil {
+			if m := overlayKey.FindSubmatch(b); m != nil {
+				raw = strings.Trim(strings.TrimSpace(string(m[1])), `"'`)
+			}
+		}
+	}
+	if strings.HasPrefix(raw, "~") && a.env.Home != "" {
+		raw = a.env.Home + raw[1:]
+	}
+	return raw
+}
+
+var overlayKey = regexp.MustCompile(`(?m)^overlay:[ \t]*([^#\n]*)`)
+
+// localOverlay is the overlay directory the push carries (opstate.OverlayLocal): one on this
+// machine outside ~/.sandbox, which the VM could not see otherwise. "" when there is none.
+func (a *app) localOverlay() string {
+	p := a.overlaySetting()
+	if p == "" || !filepath.IsAbs(p) {
+		return ""
+	}
+	if rel, err := filepath.Rel(a.env.StateDir, p); err == nil && !strings.HasPrefix(rel, "..") {
+		return "" // under ~/.sandbox: the VM's own (a linked overlay)
+	}
+	if st, err := os.Stat(p); err != nil || !st.IsDir() {
+		return ""
+	}
+	return p
+}
+
+// overlayEnv points the proxied command at the pushed copy of a local overlay, or passes
+// SANDBOX_OVERLAY on when it names a place the VM has (under the mirrored ~/.sandbox).
+func (a *app) overlayEnv() []string {
+	h := a.mirrorHome()
+	if h == "" {
+		return nil
+	}
+	if a.localOverlay() != "" {
+		return []string{"SANDBOX_OVERLAY=" + h + "/.sandbox/" + opstate.OverlayLocal}
+	}
+	if v := a.getenv("SANDBOX_OVERLAY"); v != "" && len(v) <= 2048 && !strings.ContainsAny(v, "\x00\n\r") {
+		return []string{"SANDBOX_OVERLAY=" + v}
+	}
+	return nil
 }

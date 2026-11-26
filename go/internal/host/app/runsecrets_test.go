@@ -1,12 +1,15 @@
 package app
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -359,5 +362,64 @@ func TestRunOpencode(t *testing.T) {
 	cfg, n := opencodeConfig("https://h/v1", []byte(`{"data":[{"id":"a"},{"id":""}]}`))
 	if n != 1 || cfg != `{"enabled_providers":["openai-compat"],"provider":{"openai-compat":{"models":{"a":{"limit":{"context":131072,"output":8192},"name":"a"}},"name":"OpenAI-compatible endpoint","npm":"@ai-sdk/openai-compatible","options":{"apiKey":"{env:OPENAI_API_KEY}","baseURL":"https://h/v1"}}}}` {
 		t.Errorf("%d %s", n, cfg)
+	}
+}
+
+// TestOverlayAndSettings: an overlay directory outside ~/.sandbox is pushed with the operator state
+// and the proxied command pointed at its copy; one under ~/.sandbox (a linked overlay) is passed on
+// as it is; the operator's settings variables are forwarded, and nothing else of the environment.
+func TestOverlayAndSettings(t *testing.T) {
+	home := t.TempDir()
+	state := filepath.Join(home, ".sandbox")
+	os.MkdirAll(state, 0o700)
+	ov := filepath.Join(t.TempDir(), "org-overlay")
+	os.MkdirAll(filepath.Join(ov, "catalogue"), 0o755)
+	os.MkdirAll(filepath.Join(ov, ".git"), 0o755)
+	os.WriteFile(filepath.Join(ov, "config.yaml"), []byte("blocked_domains: []\n"), 0o644)
+	os.WriteFile(filepath.Join(ov, "catalogue", "pg.yaml"), []byte("name: pg\n"), 0o644)
+	os.WriteFile(filepath.Join(ov, ".git", "config"), []byte("[core]\n"), 0o644)
+	os.WriteFile(filepath.Join(state, "config.yaml"), []byte("overlay: \""+ov+"\"  # the org's\n"), 0o600)
+	run := func(envs map[string]string) *fakeTransport {
+		tr := &fakeTransport{release: goodRelease}
+		Run(context.Background(), []string{"list"}, Env{Driver: &driver.Mock{State: driver.Running}, Transport: tr,
+			Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard, StateDir: state, Home: home,
+			Getenv: func(k string) string { return envs[k] }, Now: func() time.Time { return time.Unix(1800000000, 0) }})
+		return tr
+	}
+	tr := run(map[string]string{"SANDBOX_EXTRA_ALLOWED_DOMAINS": "a.example.com", "AWS_SECRET_ACCESS_KEY": "nope", "USER": "op"})
+	names := tarNames(t, tr.pushes[0])
+	if !slices.Contains(names, "overlay-local/config.yaml") || !slices.Contains(names, "overlay-local/catalogue/pg.yaml") || slices.Contains(names, "overlay-local/.git/config") {
+		t.Errorf("pushed %q", names)
+	}
+	argv := strings.Join(tr.runs[len(tr.runs)-1], " ")
+	if !strings.Contains(argv, "SANDBOX_OVERLAY="+home+"/.sandbox/overlay-local") || !strings.Contains(argv, "SANDBOX_EXTRA_ALLOWED_DOMAINS=a.example.com") ||
+		!strings.Contains(argv, "USER=op") || strings.Contains(argv, "AWS_SECRET") {
+		t.Errorf("argv %q", argv)
+	}
+	// a linked overlay (under ~/.sandbox) is the VM's own: named, not pushed
+	linked := filepath.Join(state, "overlays", "org")
+	os.MkdirAll(linked, 0o700)
+	tr = run(map[string]string{"SANDBOX_OVERLAY": linked})
+	if slices.Contains(tarNames(t, tr.pushes[0]), "overlay-local/config.yaml") || !strings.Contains(strings.Join(tr.runs[len(tr.runs)-1], " "), "SANDBOX_OVERLAY="+linked) {
+		t.Errorf("linked: %q", tr.runs[len(tr.runs)-1])
+	}
+	// none: nothing pushed or set
+	os.Remove(filepath.Join(state, "config.yaml"))
+	tr = run(nil)
+	if strings.Contains(strings.Join(tr.runs[len(tr.runs)-1], " "), "SANDBOX_OVERLAY") {
+		t.Error("an overlay set with none configured")
+	}
+}
+
+func tarNames(t *testing.T, b []byte) []string {
+	t.Helper()
+	tr := tar.NewReader(bytes.NewReader(b))
+	var out []string
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			return out
+		}
+		out = append(out, h.Name)
 	}
 }

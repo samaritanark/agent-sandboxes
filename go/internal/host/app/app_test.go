@@ -158,7 +158,7 @@ func TestProxyRefusals(t *testing.T) {
 		{driver.NotCreated, goodRelease, "Run: sandbox install"},
 		{driver.Stopped, goodRelease, "sandbox vm start"},
 		{driver.Broken, goodRelease, "broken"},
-		{driver.Running, "IMAGE_VERSION=3.0.0\nCONTROL_API=2\n", "sandbox upgrade --app"},
+		{driver.Running, "IMAGE_VERSION=3.0.0\nCONTROL_API=2\n", "Use a newer sandbox binary"},
 		{driver.Running, "IMAGE_VERSION=3.0.0\n", "invalid"},
 	} {
 		tr := &fakeTransport{release: c.release}

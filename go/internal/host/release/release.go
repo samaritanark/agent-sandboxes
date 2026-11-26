@@ -1,6 +1,7 @@
 // Package release reads the appliance image's /etc/sandbox/release and runs the version
 // handshake of design 5.1.7: the host binary proxies commands only to an image whose CONTROL_API
-// is in the range it supports, and otherwise prints the sandbox upgrade invocation that fixes it.
+// is in the range it supports, and otherwise says how to fix it (sandbox upgrade, which design 10
+// has do it, is not built yet).
 //
 // The file is os-release style: KEY=VALUE lines, a value optionally in double quotes, # comments
 // and blank lines ignored. The VM is not trusted, so parsing is strict and bounded: a malformed
@@ -91,10 +92,10 @@ func Parse(b []byte) (Info, error) {
 func Check(info Info) error {
 	switch {
 	case info.ControlAPI < MinControlAPI:
-		return fmt.Errorf("the sandbox VM image %s speaks control API %d, older than this sandbox binary supports (%d-%d).\n  Upgrade the image: sandbox upgrade --image",
+		return fmt.Errorf("the sandbox VM image %s speaks control API %d, older than this sandbox binary supports (%d-%d).\n  Install a newer image: sandbox uninstall (keep your state when asked), then sandbox install --dev-image <newer image>.",
 			info.ImageVersion, info.ControlAPI, MinControlAPI, MaxControlAPI)
 	case info.ControlAPI > MaxControlAPI:
-		return fmt.Errorf("the sandbox VM image %s speaks control API %d, newer than this sandbox binary supports (%d-%d).\n  Upgrade the binary: sandbox upgrade --app",
+		return fmt.Errorf("the sandbox VM image %s speaks control API %d, newer than this sandbox binary supports (%d-%d).\n  Use a newer sandbox binary (build go/cmd/sandbox from the same checkout as the image).",
 			info.ImageVersion, info.ControlAPI, MinControlAPI, MaxControlAPI)
 	}
 	return nil

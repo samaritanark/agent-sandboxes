@@ -38,10 +38,10 @@ func TestCheck(t *testing.T) {
 	if err := Check(Info{"3.0.0", MinControlAPI}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Check(Info{"2.9", MinControlAPI - 1}); err == nil || !strings.Contains(err.Error(), "sandbox upgrade --image") {
+	if err := Check(Info{"2.9", MinControlAPI - 1}); err == nil || !strings.Contains(err.Error(), "sandbox install --dev-image <newer image>") {
 		t.Errorf("older image: %v", err)
 	}
-	if err := Check(Info{"4.0", MaxControlAPI + 1}); err == nil || !strings.Contains(err.Error(), "sandbox upgrade --app") {
+	if err := Check(Info{"4.0", MaxControlAPI + 1}); err == nil || !strings.Contains(err.Error(), "Use a newer sandbox binary") {
 		t.Errorf("newer image: %v", err)
 	}
 }

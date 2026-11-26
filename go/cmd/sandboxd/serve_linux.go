@@ -63,7 +63,8 @@ func loadTLS(l *log.Logger) (*daemon.TLS, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &daemon.TLS{CA: ca, Baseline: rules, SystemRoots: roots}, nil
+	return &daemon.TLS{CA: ca, Baseline: rules, SystemRoots: roots,
+		ExtraCADirs: []string{"/var/lib/sandbox/operator/extra-ca-certs", "/usr/lib/sandbox/config/extra-ca-certs"}}, nil
 }
 
 // ClientGroup's members may use the socket besides root (the policy CLI's user).
