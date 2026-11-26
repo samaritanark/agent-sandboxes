@@ -26,6 +26,7 @@ func TestProtectGit(t *testing.T) {
 	hook := "#!/bin/sh\ntouch " + mark + "\n"
 	os.WriteFile(filepath.Join(repo, ".git", "hooks", "pre-commit"), []byte(hook), 0o755)
 	run(base, "config", "core.fsmonitor", "touch "+mark+" #")
+	run(base, "config", "core.pager", "touch "+mark+" #")
 	env := map[string]string{"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name", "GIT_CONFIG_VALUE_0": "t"}
 	protectGit(func(k string) string { return env[k] }, func(k, v string) error { env[k] = v; return nil })
 	full := base
@@ -42,7 +43,10 @@ func TestProtectGit(t *testing.T) {
 	if _, err := os.Stat(mark); err == nil {
 		t.Error("the repository's hook or fsmonitor ran")
 	}
-	if out, _ := run(full, "config", "user.name"); strings.TrimSpace(out) != "t" || env["GIT_CONFIG_COUNT"] != "4" {
+	if out, _ := run(full, "config", "core.pager"); strings.TrimSpace(out) != "cat" {
+		t.Errorf("pager %q", out)
+	}
+	if out, _ := run(full, "config", "user.name"); strings.TrimSpace(out) != "t" || env["GIT_CONFIG_COUNT"] != "8" {
 		t.Errorf("earlier entries: %q %v", out, env)
 	}
 	// without it, the hook runs (the test can see a hook run)
