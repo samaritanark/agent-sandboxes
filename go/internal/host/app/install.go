@@ -384,7 +384,7 @@ func (a *app) removeState(purge bool) []string {
 			continue
 		}
 		for _, p := range present {
-			if err := os.RemoveAll(filepath.Join(a.env.StateDir, p)); err != nil {
+			if err := removeAll(filepath.Join(a.env.StateDir, p)); err != nil {
 				a.die("could not remove ~/.sandbox/%s: %v", p, err)
 			}
 		}

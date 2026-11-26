@@ -1474,3 +1474,10 @@ m("internal/host/app/runsecrets.go", '\tif rel, err := filepath.Rel(a.env.StateD
 m("internal/host/app/runsecrets.go", '\tenv = append(env, a.overlayEnv()...)\n', '', "TestOverlayAndSettings", pkg="host/app")
 m("internal/host/app/runsecrets.go", '"SANDBOX_NO_LINK_CHECK", "NO_COLOR", "USER"}', '"SANDBOX_NO_LINK_CHECK", "NO_COLOR"}', "TestOverlayAndSettings", pkg="host/app")
 m("internal/host/app/runsecrets.go", '\t\t\t\traw = strings.Trim(strings.TrimSpace(string(m[1])), `"\'`)', '\t\t\t\traw = string(m[1])', "TestOverlayAndSettings", pkg="host/app")
+
+# ---- uninstall past macOS immutable files; a refused sandboxd client (2026-11-26)
+m("internal/host/app/remove_darwin.go", '\t\tif err == nil {\n\t\t\tsyscall.Chflags(q, 0)\n\t\t}', '', "TestRemoveAllImmutable", pkg="host/app")
+m("internal/host/app/install.go", 'removeAll(filepath.Join(a.env.StateDir, p))', 'os.RemoveAll(filepath.Join(a.env.StateDir, p))', "TestUninstall", pkg="host/app",
+  equivalent="no uninstall test has a flagged file; removeAll's own test covers the flags")
+m("internal/sandboxd/daemon/server.go", '\t\t\tio.Copy(io.Discard, io.LimitReader(c, MaxRequest))\n', '', "TestServer", pkg="sandboxd/daemon",
+  equivalent="the race it closes (a refused client's request write failing) does not show on these machines")
