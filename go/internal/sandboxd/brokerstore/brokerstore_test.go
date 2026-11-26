@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 )
 
 func key(b byte) []byte { return bytes.Repeat([]byte{b}, KeySize) }
@@ -41,5 +43,24 @@ func TestStore(t *testing.T) {
 	Wipe(b)
 	if !bytes.Equal(b, make([]byte, 6)) {
 		t.Error("not wiped")
+	}
+}
+
+// TestBindings: the bindings entries of the second form carry, by reference; the first form has
+// none listed.
+func TestBindings(t *testing.T) {
+	s := Store{Dir: filepath.Join(t.TempDir(), "broker")}
+	old, _ := Seal(key(1), "anthropic", []byte("tok"))
+	bound, _ := brokerseal.SealBound(key(1), "secret.GH", []byte("v"), brokerseal.Binding{Hosts: []string{"api.github.com"}, Inject: "bearer"})
+	withheld, _ := brokerseal.SealBound(key(1), "secret.W", []byte("v"), brokerseal.Binding{})
+	s.Put("anthropic", old)
+	s.Put("secret.GH", bound)
+	s.Put("secret.W", withheld)
+	b, err := s.Bindings()
+	if err != nil || len(b) != 2 || b["secret.GH"].Inject != "bearer" || len(b["secret.W"].Hosts) != 0 {
+		t.Errorf("%+v %v", b, err)
+	}
+	if _, ok := b["anthropic"]; ok {
+		t.Error("the first form listed")
 	}
 }

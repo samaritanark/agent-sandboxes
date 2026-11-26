@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/checks"
 	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
@@ -45,6 +46,9 @@ type Env struct {
 	// the store stays on the host, which seals a launch's secrets into the broker store before the
 	// run). nil looks in SecretsDir, as v2 did.
 	SecretPresent func(name string) bool
+	// SecretBinding is the binding the host sealed with a pushed secret (brokerseal.Peek, through
+	// sandboxd); ok is false when there is none. nil: every secret is withheld.
+	SecretBinding func(name string) (b brokerseal.Binding, ok bool)
 	// ImagePresent is k3s_image_present: 0 present, 1 absent, 2 cannot tell. nil skips the check
 	// (v3 has no k3s image store; sandboxd reports a missing image).
 	ImagePresent func(tag string) int

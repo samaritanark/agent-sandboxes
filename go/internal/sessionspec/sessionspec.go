@@ -451,6 +451,9 @@ func l7Reachable(host string, e Egress) bool {
 	return egressmatch.Decide(h, e.Allow, e.BlockDomains)
 }
 
+// Reachable reports whether egress e lets a binding reach exact host h (the check Validate makes).
+func Reachable(h string, e Egress) bool { return validHost(h) && l7Reachable(h, e) }
+
 // checkBindingReach refuses a binding whose destination the egress allowlist does not allow: the
 // gateway intercepts every binding destination, and could not reach it.
 func checkBindingReach(bs []Binding, e Egress, what string, bad func(string, ...any)) {

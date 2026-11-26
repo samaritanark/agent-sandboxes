@@ -133,9 +133,8 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	if err != nil {
 		c.die("%v", err)
 	}
-	if len(s.Secrets) > 0 {
-		// no binding source yet (open question 3): withheld, as design 5.9.3 has an unbound secret
-		c.out("==> Withheld (no binding): %s", strings.Join(s.Secrets, " "))
+	for _, l := range c.bindSecrets(spec, s, rec) {
+		c.out("%s", l)
 	}
 	if s.DryRun {
 		b, _ := json.MarshalIndent(spec, "", "  ")

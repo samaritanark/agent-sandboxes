@@ -123,7 +123,7 @@ func main() {
 		return
 	}
 	env := cliEnv()
-	env.SecretPresent = pushedSecret
+	env.SecretPresent, env.SecretBinding = pushedSecret, pushedBinding
 	env.Launch = cli.LaunchEnv{Sessions: sandboxd{}, AgentImage: agentImage(AgentImages), WorkspaceCopy: workspaceCopyOf("/"),
 		VMMemoryMiB: vmMemory}
 	os.Exit(cli.Run(os.Args[1:], env, os.Stdout, os.Stderr))
@@ -200,13 +200,14 @@ func printRunBindings(args []string, env cli.Env) int {
 	return 0
 }
 
-// pushedSecret is whether the host sealed name into the broker store for this launch. The list is
-// read from sandboxd once; when sandboxd cannot answer, no secret is present, and run stops with
-// v2's message after this warning.
-var pushedSecret = func() func(string) bool {
+// pushedSecret is whether the host sealed name into the broker store for this launch, and
+// pushedBinding the binding it sealed with it. The store's list is read from sandboxd once; when
+// sandboxd cannot answer, no secret is present, and run stops with v2's message after a warning.
+var pushedSecret, pushedBinding = func() (func(string) bool, func(string) (brokerseal.Binding, bool)) {
 	var once sync.Once
 	var have map[string]bool
-	return func(name string) bool {
+	var bindings map[string]brokerseal.Binding
+	load := func() {
 		once.Do(func() {
 			have = map[string]bool{}
 			resp, err := daemon.Call(context.Background(), daemon.Socket, daemon.Request{Op: "broker-list"})
@@ -222,9 +223,15 @@ var pushedSecret = func() func(string) bool {
 					have[n] = true
 				}
 			}
+			bindings = resp.Bindings
 		})
-		return have[name]
 	}
+	return func(name string) bool { load(); return have[name] },
+		func(name string) (brokerseal.Binding, bool) {
+			load()
+			b, ok := bindings[brokerseal.SecretRef(name)]
+			return b, ok && have[name]
+		}
 }()
 
 func or(v, d string) string {

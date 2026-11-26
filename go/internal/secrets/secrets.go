@@ -5,6 +5,8 @@
 package secrets
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 )
 
 // Error is a refusal: the lines the bash prints to stderr before `exit 1`.
@@ -148,11 +152,71 @@ func (s Store) SetFromEnv(name, envVar string, getenv func(string) string) error
 	return write(s.Path(name), []byte(v))
 }
 
-// Delete is secret_delete: rm -f, a missing secret being no error.
+// BindingPath is where a secret's binding is kept (v3, owner decision 2026-11-26): beside the
+// values, in a directory secret_list does not show.
+func (s Store) BindingPath(name string) string { return s.Dir + "/.bindings/" + name }
+
+// Binding is the secret's binding; a secret with none has the zero Binding (withheld).
+func (s Store) Binding(name string) (brokerseal.Binding, error) {
+	if err := ValidateName(name); err != nil {
+		return brokerseal.Binding{}, err
+	}
+	raw, err := os.ReadFile(s.BindingPath(name))
+	if errors.Is(err, os.ErrNotExist) {
+		return brokerseal.Binding{}, nil
+	}
+	if err != nil {
+		return brokerseal.Binding{}, err
+	}
+	var b brokerseal.Binding
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&b); err != nil {
+		return brokerseal.Binding{}, fmt.Errorf("%s: %w", s.BindingPath(name), err)
+	}
+	b = b.Canonical()
+	if err := b.Validate(); err != nil {
+		return brokerseal.Binding{}, fmt.Errorf("%s: %w", s.BindingPath(name), err)
+	}
+	return b, nil
+}
+
+// SetBinding keeps b as the secret's binding (the zero Binding removes it).
+func (s Store) SetBinding(name string, b brokerseal.Binding) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	b = b.Canonical()
+	if err := b.Validate(); err != nil {
+		return err
+	}
+	p := s.BindingPath(name)
+	if len(b.Hosts) == 0 && !b.Readable {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if err := s.prepare(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	raw, _ := json.Marshal(b)
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
+}
+
+// Delete is secret_delete: rm -f, a missing secret being no error. Its binding goes with it.
 func (s Store) Delete(name string) error {
 	if err := ValidateName(name); err != nil {
 		return err
 	}
+	os.Remove(s.BindingPath(name))
 	p := s.Path(name)
 	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 		if st, e := os.Lstat(p); e == nil && st.IsDir() {

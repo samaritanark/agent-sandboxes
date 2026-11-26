@@ -1547,7 +1547,7 @@ rules. Tiers, bindings and L7 rules bound what that use can do.
 
 | Kind | v2 (today) | v3 |
 |---|---|---|
-| User secrets (`sandbox secret`, profile `secrets:`) | Plain env vars in the pod (`lib/secrets.sh:188-214`) | Placeholder env var; each binding names hosts and injection (header, bearer, basic, query: query is flagged "degraded") |
+| User secrets (`sandbox secret`, profile `secrets:`) | Plain env vars in the pod (`lib/secrets.sh:188-214`) | Placeholder env var; each binding names hosts and injection (header, bearer, basic, query: query is flagged "degraded"). The binding is the secret's own (`sandbox secret set/bind NAME --bind HOST --inject KIND`, or `--allow-readable`), kept beside it on the host and sealed with its value, so the VM can use the value only as bound |
 | `--infra-token` (incl. `NAME=PATH`) | `$INFRA_TOKEN*` in the pod | Placeholder bound to the `--infra-endpoint` host(s) |
 | Agent OAuth (claude, codex, copilot, grok) | Token files in the shared agent home, readable by the agent | Broker holds access and refresh tokens; a per-agent adapter rewrites token-endpoint responses so the client only sees placeholders; the broker performs refresh (S2), so detached keep-alive sessions keep working. The account identity recorded at onboarding is re-checked after every refresh where the provider exposes it. Rotated tokens stay in the VM store; nothing flows back to the host (§5.1.5) |
 | Agent API key (opencode) | Env var via a Secret (`lib/manifest.sh:311-325`) | Placeholder injected toward the configured provider host |

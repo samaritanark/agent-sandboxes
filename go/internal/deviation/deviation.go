@@ -207,6 +207,11 @@ const (
 	// before being checked, inner whitespace was deleted, and an echo option (-n) vanished. Names
 	// are now taken as written, surrounding whitespace trimmed.
 	LiteralProfileLists ID = "literal-profile-lists"
+	// SecretBindings: v2 had no secret bindings (every profile secret was a plain env var in the
+	// pod). `sandbox secret` now keeps one beside each secret (owner decision, 2026-11-26): `set`
+	// takes --bind, --inject, --allow-readable, and --withhold, `bind` changes a binding, `list`
+	// shows it, and the help says so.
+	SecretBindings ID = "secret-bindings"
 )
 
 var (

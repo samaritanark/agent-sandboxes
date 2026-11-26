@@ -67,20 +67,20 @@ var allowed = map[string][]string{
 	"workspace":         {"bashcompat", "config", "deviation"},
 	// the host-side secret store: files only, no policy; and its command, which the host binary
 	// runs (the store stays on the host, design 5.1.4) and the in-VM CLI shares
-	"secrets":   {},
-	"secretcmd": {"deviation", "secrets"},
+	"secrets":   {"brokerseal"},
+	"secretcmd": {"brokerseal", "deviation", "secrets"},
 	// the session allowlist: built-in and extra domains through the block lists
 	"allowlist": {"checks"},
 	// the workspace mount rules (masks, read-only exec vectors) and their tables
 	"mounts": {"bashcompat", "config", "gate"},
 	// the in-VM CLI is the policy layer's front end, so it may use every policy package
-	"cli": {"agents", "allowlist", "audit", "bashcompat", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
+	"cli": {"agents", "allowlist", "audit", "bashcompat", "brokerseal", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
 		"link", "mounts", "onboard", "sandboxd/limits", "secretcmd", "secrets", "sessionspec", "tier", "vetting", "workspace"},
 
 	// The host binary's packages (design 5.1). They import only each other.
 	"host/driver":     {},
 	"host/release":    {},
-	"host/app":        {"brokerseal", "host/auditpull", "host/brokerkey", "host/driver", "host/release", "host/sizing", "host/syncengine", "host/syncgate", "opstate"},
+	"host/app":        {"brokerseal", "secrets", "host/auditpull", "host/brokerkey", "host/driver", "host/release", "host/sizing", "host/syncengine", "host/syncgate", "opstate"},
 	"host/sizing":     {},
 	"host/syncgate":   {"tables", "yamllist"},
 	"host/gitobj":     {},

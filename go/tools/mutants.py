@@ -1257,3 +1257,51 @@ m(VT2, '\tcat := VettingGit(repo, "cat-file", "tag", "refs/tags/"+tag)', '\tcat 
 m(VT2, '\tdefer os.RemoveAll(scratch)\n', '', R_VT2,
   equivalent="a leftover temporary directory changes no result")
 m(VT2, '\t\t\tif _, ok := git(nil, "update-ref", "refs/tags/"+tag, oid); ok {', '\t\t\tif _, ok := git(nil, "update-ref", "refs/tags/x", oid); ok {', R_VT2)
+
+# ---- secret bindings (owner decision, ninth round): brokerseal's second form, the helpers'
+# checks, the host store and command, the push, and run's spec
+BS = "internal/brokerseal/brokerseal.go"
+R_BS = "TestSealBound|TestBindingRules|TestSealOpen"
+m(BS, '\treturn append([]byte("sandbox-broker-v2:"+ref+"\\x00"), binding...)', '\treturn []byte("sandbox-broker-v2:" + ref)', R_BS)
+m(BS, '\tif enc, err := json.Marshal(b); err != nil || !bytes.Equal(enc, raw) {', '\tif _, err := json.Marshal(b); err != nil {', R_BS)
+m(BS, '\tif err := b.Validate(); err != nil {\n\t\treturn Binding{}, nil, nil, err\n\t}', '', R_BS)
+m(BS, '\tif n > maxBinding || len(rest) < n {', '\tif len(rest) < n {', R_BS)
+m(BS, '\tcase b.Readable && (len(b.Hosts) > 0 || b.Inject != ""):', '\tcase false:', R_BS)
+m(BS, '\tcase (len(b.Hosts) == 0) != (b.Inject == ""):', '\tcase len(b.Hosts) > 0 && b.Inject == "":', R_BS)
+m(BS, '\t\tif i > 0 && h <= b.Hosts[i-1] {', '\t\tif i > 0 && h < b.Hosts[i-1] {', R_BS)
+m(BS, '\t\tif !b.Readable {\n\t\t\treturn errors.New("the secret is not marked readable', '\t\tif false {\n\t\t\treturn errors.New("the secret is not marked readable', R_BS)
+m(BS, '\tif len(hosts) == 0 || inject != b.Inject {', '\tif len(hosts) == 0 {', R_BS)
+m(BS, '\t\tif !slices.Contains(b.Hosts, strings.ToLower(h)) {', '\t\tif !slices.Contains(b.Hosts, h) {', R_BS)
+m(BS, '\tif len(h) > 253 || !strings.Contains(h, ".") {', '\tif len(h) > 253 {', R_BS)
+m(BS, '\tslices.Sort(hs)\n', '', R_BS)
+m(BS, '\t\treturn err == nil && len(body) >= 12+16', '\t\treturn err == nil', R_BS)
+SB2 = "cmd/sandboxd/broker.go"
+R_SB2 = "TestOpenLinks|TestWriteReadable"
+m(SB2, '\t\t\tif _, secret := brokerseal.SecretName(u.Ref); secret && !bound {', '\t\t\tif false {', R_SB2, pkg="../cmd/sandboxd")
+m(SB2, '\t\t\tif bound {\n\t\t\t\tif err := b.Allows(u.Hosts, u.Inject, false); err != nil {', '\t\t\tif false {\n\t\t\t\tif err := b.Allows(u.Hosts, u.Inject, false); err != nil {', R_SB2, pkg="../cmd/sandboxd")
+m(SB2, '\t\tif err = b.Allows(nil, "", true); !bound {', '\t\tif err = nil; !bound {', R_SB2, pkg="../cmd/sandboxd")
+m(SB2, '\t\t\terr = errors.New("it was sealed without a binding")', '\t\t\terr = nil', R_SB2, pkg="../cmd/sandboxd")
+m(SB2, '\t\t\topened = append(opened, v)\n\t\t\tif _, secret', '\t\t\tif _, secret', R_SB2, pkg="../cmd/sandboxd")
+m("internal/sandboxd/daemon/daemon.go", 'refs[i] = append(refs[i], Use{Ref: b.Ref, Hosts: b.Hosts, Inject: b.Inject})', 'refs[i] = append(refs[i], Use{Ref: b.Ref, Inject: b.Inject})', "TestBroker", pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/server.go", '\t\t\tif refs, err = d.Broker.List(); err == nil {\n\t\t\t\tbindings, err = d.Broker.Bindings()\n\t\t\t}', '\t\t\trefs, err = d.Broker.List()', "TestBrokerList", pkg="sandboxd/daemon")
+m("internal/sandboxd/brokerstore/brokerstore.go", '\t\tif b, bound, err := brokerseal.Peek(blob); err == nil && bound {', '\t\tif b, _, err := brokerseal.Peek(blob); err == nil {', "TestBindings", pkg="sandboxd/brokerstore")
+SS = "internal/secrets/secrets.go"
+R_SS = "TestBindings"
+m(SS, '\tos.Remove(s.BindingPath(name))\n', '', R_SS, pkg="secretcmd")
+m(SS, '\tif len(b.Hosts) == 0 && !b.Readable {\n\t\tif err := os.Remove(p);', '\tif false {\n\t\tif err := os.Remove(p);', R_SS, pkg="secretcmd")
+m(SS, '\tif err := os.WriteFile(tmp, append(raw, \'\\n\'), 0o600); err != nil {', '\tif err := os.WriteFile(tmp, append(raw, \'\\n\'), 0o644); err != nil {', R_SS, pkg="secretcmd")
+SC2 = "internal/secretcmd/secretcmd.go"
+m(SC2, '\tif len(b.Hosts) > 0 && b.Inject == "" {\n\t\tb.Inject = "bearer"\n\t}', '', R_SS)
+m(SC2, '\tcase bf.readable && (len(bf.hosts) > 0 || bf.inject != ""):', '\tcase false:', R_SS,
+  equivalent="Validate refuses the same combination, with its own message")
+m(SC2, '\tcase bf.withhold && (len(bf.hosts) > 0 || bf.inject != "" || bf.readable):', '\tcase false:', R_SS)
+m(SC2, '\t\tif haveBinding {\n\t\t\tc.setBinding(st, name, b)\n\t\t}', '', R_SS)
+m(SC2, '\t\tif !st.Exists(name) {\n\t\t\tc.die("Secret \'%s\' is not in the store.', '\t\tif false {\n\t\t\tc.die("Secret \'%s\' is not in the store.', R_SS)
+m(SC2, '\tif !deviation.Fixed(deviation.SecretBindings) {\n\t\treturn 0\n\t}', '', R_SS)
+m("internal/host/app/runsecrets.go", '\t\tsealed, err := brokerseal.SealBound(k, ref, v, b)', '\t\tsealed, err := brokerseal.SealBound(k, ref, v, brokerseal.Binding{})', "TestRunPushesBoundSecrets", pkg="host/app")
+RB = "internal/cli/runbind.go"
+m(RB, '\t\tcase b.Readable && !readableOK:', '\t\tcase false:', "TestBindSecrets")
+m(RB, '\t\t\t\tif sessionspec.Reachable(h, egress) {', '\t\t\t\tif true {', "TestBindSecrets")
+m(RB, '\t\t\tspec.Env = append(spec.Env, sessionspec.EnvVar{Name: name, Value: b.Placeholder})', '', "TestBindSecrets")
+m(RB, '\t\t\tif b, _ := bind(name, dep.Egress, false); b != nil {', '\t\t\tif b, _ := bind(name, spec.Egress, false); b != nil {', "TestBindSecrets")
+m(RB, '\t\tcase !ok || (!b.Readable && len(b.Hosts) == 0):', '\t\tcase !ok:', "TestBindSecrets")

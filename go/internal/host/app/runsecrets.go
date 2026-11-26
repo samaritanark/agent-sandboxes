@@ -23,6 +23,7 @@ import (
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
+	"github.com/samaritanark/agent-sandboxes/go/internal/secrets"
 )
 
 // RunBindings is the in-VM pre-pass: `sandbox __run-bindings ARGS` prints the launch's secret
@@ -285,7 +286,7 @@ func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (
 	return synced
 }
 
-// pushSecrets seals and pushes the named secrets from the host store.
+// pushSecrets seals and pushes the named secrets from the host store, each with its binding.
 func (a *app) pushSecrets(ep driver.SSHEndpoint, names []string) {
 	if len(names) == 0 {
 		return
@@ -311,7 +312,13 @@ func (a *app) pushSecrets(ep driver.SSHEndpoint, names []string) {
 			}
 			continue
 		}
-		sealed, err := brokerseal.Seal(k, ref, v)
+		// the binding goes with the value, sealed with it, so the VM can use the value only as bound
+		b, err := secrets.Store{Dir: a.secretsDir()}.Binding(n)
+		if err != nil {
+			brokerseal.Wipe(v)
+			a.die("the binding of secret '%s': %v", n, err)
+		}
+		sealed, err := brokerseal.SealBound(k, ref, v, b)
 		brokerseal.Wipe(v)
 		if err != nil {
 			a.die("%v", err)

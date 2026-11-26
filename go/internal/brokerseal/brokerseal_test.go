@@ -2,6 +2,7 @@ package brokerseal
 
 import (
 	"bytes"
+	"encoding/binary"
 	"strings"
 	"testing"
 )
@@ -107,6 +108,17 @@ func TestSealBound(t *testing.T) {
 	if _, _, err := Peek(shuffled); err == nil || LooksSealed(shuffled) {
 		t.Error("a non-canonical binding read")
 	}
+	// one binding has one encoding: the same binding spaced differently is refused
+	raw := []byte(want)
+	spaced := []byte(`{"hosts": ["api.github.com","uploads.github.com"],"inject":"bearer"}`)
+	respaced := append(append(binary.BigEndian.AppendUint16([]byte(magic2), uint16(len(spaced))), spaced...), blob[len(magic2)+2+len(raw):]...)
+	if _, _, err := Peek(respaced); err == nil {
+		t.Error("a non-canonical encoding read")
+	}
+	big := append(binary.BigEndian.AppendUint16([]byte(magic2), maxBinding+1), bytes.Repeat([]byte(" "), maxBinding+64)...)
+	if _, _, err := Peek(big); err == nil || !strings.Contains(err.Error(), "length") {
+		t.Errorf("an oversized binding: %v", err)
+	}
 	for name, bad := range map[string][]byte{
 		"short":     []byte(magic2),
 		"long len":  append([]byte(magic2), 0xff, 0xff),
@@ -161,6 +173,9 @@ func TestBindingRules(t *testing.T) {
 	}
 	if err := (Binding{Hosts: []string{"b.x", "a.x"}, Inject: "bearer"}).Validate(); err == nil {
 		t.Error("unsorted hosts valid")
+	}
+	if err := (Binding{Hosts: []string{"a.x", "a.x"}, Inject: "bearer"}).Validate(); err == nil {
+		t.Error("repeated hosts valid")
 	}
 	b := Binding{Hosts: []string{"a.x.com", "b.x.com"}, Inject: "bearer"}
 	for _, c := range []struct {

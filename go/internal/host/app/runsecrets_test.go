@@ -55,8 +55,25 @@ func TestRunPushesBoundSecrets(t *testing.T) {
 		t.Fatalf("ctl %q", tr.ctl)
 	}
 	key, _ := k.Load()
-	if v, err := brokerseal.Open(key, "secret.GH_TOKEN", tr.ctlIn[0]); err != nil || string(v) != "ghp_value\n" {
-		t.Errorf("%q %v", v, err)
+	// no binding kept: sealed as withheld
+	if v, b, bound, err := brokerseal.OpenBound(key, "secret.GH_TOKEN", tr.ctlIn[0]); err != nil || string(v) != "ghp_value\n" || !bound || len(b.Hosts) != 0 || b.Readable {
+		t.Errorf("%q %+v %v %v", v, b, bound, err)
+	}
+	// with a binding kept beside it: sealed with the value
+	os.MkdirAll(filepath.Join(state, "secrets", ".bindings"), 0o700)
+	os.WriteFile(filepath.Join(state, "secrets", ".bindings", "GH_TOKEN"), []byte(`{"hosts":["api.github.com"],"inject":"bearer"}`), 0o600)
+	tr2 := &fakeTransport{release: goodRelease, bindings: `{"secrets":["GH_TOKEN"],"repos":[]}`}
+	if r := runState(t, tr2, k, state, "run", "--profile", "p"); r.rc != 0 {
+		t.Fatalf("%+v", r)
+	}
+	if _, b, bound, err := brokerseal.OpenBound(key, "secret.GH_TOKEN", tr2.ctlIn[0]); err != nil || !bound || strings.Join(b.Hosts, ",") != "api.github.com" || b.Inject != "bearer" {
+		t.Errorf("bound: %+v %v %v", b, bound, err)
+	}
+	// an unreadable binding stops the run before anything is pushed
+	os.WriteFile(filepath.Join(state, "secrets", ".bindings", "GH_TOKEN"), []byte(`{"hosts":["*.github.com"],"inject":"bearer"}`), 0o600)
+	tr3 := &fakeTransport{release: goodRelease, bindings: `{"secrets":["GH_TOKEN"],"repos":[]}`}
+	if r := runState(t, tr3, k, state, "run", "--profile", "p"); r.rc != 1 || !strings.Contains(r.err, "the binding of secret 'GH_TOKEN'") || len(tr3.ctl) != 0 || len(tr3.runs) != 0 {
+		t.Errorf("bad binding: %+v %q", r, tr3.ctl)
 	}
 	if len(tr.runs) != 1 || tr.runs[0][1] != "run" {
 		t.Errorf("runs %q", tr.runs)
