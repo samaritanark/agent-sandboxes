@@ -4,4 +4,7 @@ package tty
 
 import "syscall"
 
-const ioctlGetTermios = syscall.TCGETS
+const (
+	ioctlGetTermios = syscall.TCGETS
+	ioctlSetTermios = syscall.TCSETS
+)

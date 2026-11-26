@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/netip"
@@ -65,6 +66,10 @@ func (f *fakeRuntime) Destroy(_ context.Context, id string, _ time.Duration) err
 	delete(f.vms, id)
 	delete(f.started, id)
 	return nil
+}
+
+func (f *fakeRuntime) Exec(context.Context, string, string, []string, bool, io.Reader, io.Writer, io.Writer) (runtime.Process, error) {
+	return nil, errors.New("this rig does not exec")
 }
 
 func (f *fakeRuntime) List(context.Context) ([]string, error) {

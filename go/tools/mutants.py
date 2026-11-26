@@ -1067,3 +1067,18 @@ m("internal/sandboxd/daemon/daemon.go", '\td.renewLeaves(ctx, now)\n', '', R_TL,
 m("internal/sandboxd/daemon/daemon.go", '\tdelete(d.leaves, id)\n', '', R_TL, pkg="sandboxd/daemon")
 m(IC, '\t\t\t"watched_directory": obj{"path": path.Dir(ic.SDS)}},', '},', "TestSDSSecret", pkg="gateway/envoyconf")
 m(IC, '\tif ic.SDS == "" {\n\t\tctx["tls_certificates"]', '\tif true {\n\t\tctx["tls_certificates"]', "TestSDSSecret", pkg="gateway/envoyconf")
+
+# ---- attaching a terminal (internal/sandboxd/daemon/attach.go, server.go) and the lease
+AT = "internal/sandboxd/daemon/attach.go"
+SV = "internal/sandboxd/daemon/server.go"
+R_AT = "Attach"
+m(AT, '\t\tcase <-gone:\n\t\t\tgone = nil\n\t\t\tp.Kill(ctx, syscall.SIGHUP)', '\t\tcase <-gone:\n\t\t\tgone = nil', R_AT, pkg="sandboxd/daemon")
+m(AT, '\t\t\tp.Resize(ctx, uint32(sz[0]), uint32(sz[1]))', '', R_AT, pkg="sandboxd/daemon")
+m(AT, '\tif size[0] > 0 && size[1] > 0 {\n\t\tp.Resize(ctx, uint32(size[0]), uint32(size[1]))\n\t}', '', R_AT, pkg="sandboxd/daemon")
+m(AT, '\t\t\tt.Attached, t.LastDetached, t.LastHeartbeat = false, now, now', '\t\t\tt.Attached, t.LastDetached = false, now', R_AT, pkg="sandboxd/daemon")
+m(AT, '\t\tif d.attached[id] == 0 {', '\t\tif true {', R_AT, pkg="sandboxd/daemon")
+m(AT, '\tt.Attached = true\n', '', R_AT, pkg="sandboxd/daemon")
+m(SV, '\tif len(files) != 3 {', '\tif len(files) < 2 {', R_AT, pkg="sandboxd/daemon")
+m(SV, '\t\tlimit.N = 1 << 62', '\t\tlimit.N = limit.N', R_AT, pkg="sandboxd/daemon",
+  equivalent="the test's control messages fit in what is left of the request limit")
+m("internal/sandboxd/limits/limits.go", '\tif t.Attached {\n\t\treturn false, ""\n\t}\n\tif grace', '\tif grace', "TestExpiry", pkg="sandboxd/limits")

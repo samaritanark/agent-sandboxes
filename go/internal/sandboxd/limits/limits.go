@@ -106,8 +106,12 @@ func (e Expiry) Expired(t Times, now time.Time) (bool, string) {
 		}
 		return false, ""
 	}
-	// A session that never got a heartbeat counts from its start, so a signal during launch,
-	// before attach, still ends it.
+	// An attached terminal holds the lease; the grace counts from its end (Attach sets
+	// LastHeartbeat then). A session that never got a heartbeat counts from its start, so a
+	// signal during launch, before attach, still ends it.
+	if t.Attached {
+		return false, ""
+	}
 	if grace := or(e.LeaseGrace, DefaultLeaseGrace); now.Sub(latest(t.LastHeartbeat, t.Started)) >= grace {
 		return true, fmt.Sprintf("attach lease expired (no heartbeat for %v)", grace)
 	}

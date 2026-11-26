@@ -58,6 +58,8 @@ func TestExpiry(t *testing.T) {
 		{"never attached past grace", Times{Started: t0}, 120 * time.Second, true},
 		{"heartbeat keeps it", Times{Started: t0, LastHeartbeat: t0.Add(10 * time.Minute)}, 11 * time.Minute, false},
 		{"heartbeat stopped", Times{Started: t0, LastHeartbeat: t0.Add(10 * time.Minute)}, 12 * time.Minute, true},
+		{"attached holds the lease", Times{Started: t0, Attached: true}, 30 * 24 * time.Hour, false},
+		{"detached, within grace", Times{Started: t0, LastHeartbeat: t0.Add(time.Hour)}, time.Hour + 119*time.Second, false},
 		{"keep-alive detached, short", Times{Started: t0, KeepAlive: true, LastDetached: t0.Add(time.Hour)}, 20 * time.Hour, false},
 		{"keep-alive idle", Times{Started: t0, KeepAlive: true, LastDetached: t0.Add(time.Hour)}, 25 * time.Hour, true},
 		{"keep-alive attached, not idle", Times{Started: t0, KeepAlive: true, Attached: true}, 6 * 24 * time.Hour, false},

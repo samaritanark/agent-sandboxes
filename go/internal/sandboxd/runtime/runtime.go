@@ -4,7 +4,10 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"sync"
 	"syscall"
 	"time"
 
@@ -196,4 +199,104 @@ func (r *Runtime) List(ctx context.Context) ([]string, error) {
 		out = append(out, c.ID())
 	}
 	return out, nil
+}
+
+// Exec runs args in id's running microVM as its own process runs (the same user, environment,
+// capabilities, and no_new_privs; only the arguments and the terminal differ), with stdio on the
+// given streams. With tty, the process gets a terminal and stderr is not used.
+func (r *Runtime) Exec(ctx context.Context, id, execID string, args []string, tty bool, stdin io.Reader, stdout, stderr io.Writer) (Process, error) {
+	if len(args) == 0 {
+		return nil, errors.New("runtime: exec needs a command")
+	}
+	ctx = ctxNS(ctx)
+	c, err := r.c.LoadContainer(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	spec, err := c.Spec(ctx)
+	if err != nil {
+		return nil, err
+	}
+	t, err := c.Task(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	ps := *spec.Process
+	ps.Args, ps.Terminal = args, tty
+	// the shim holds the stdin pipe open, so the process sees end-of-file only when it is closed
+	// through containerd: once the client's stdin ends
+	eof := make(chan struct{})
+	if stdin != nil {
+		stdin = &eofReader{r: stdin, eof: eof}
+	}
+	opts := []cio.Opt{cio.WithStreams(stdin, stdout, stderr)}
+	if tty {
+		opts = append(opts, cio.WithTerminal)
+	}
+	p, err := t.Exec(ctx, execID, &ps, cio.NewCreator(opts...))
+	if err != nil {
+		return nil, err
+	}
+	status, err := p.Wait(ctx)
+	if err != nil {
+		p.Delete(ctx)
+		return nil, err
+	}
+	if err := p.Start(ctx); err != nil {
+		p.Delete(ctx)
+		return nil, err
+	}
+	finished := make(chan struct{})
+	go func() {
+		select {
+		case <-eof:
+			p.CloseIO(context.WithoutCancel(ctx), client.WithStdinCloser)
+		case <-finished:
+		}
+	}()
+	return &execProc{p: p, status: status, finished: finished}, nil
+}
+
+// eofReader closes eof when its reader reaches the end.
+type eofReader struct {
+	r    io.Reader
+	eof  chan struct{}
+	once sync.Once
+}
+
+func (e *eofReader) Read(b []byte) (int, error) {
+	n, err := e.r.Read(b)
+	if err == io.EOF {
+		e.once.Do(func() { close(e.eof) })
+	}
+	return n, err
+}
+
+type execProc struct {
+	p        client.Process
+	status   <-chan client.ExitStatus
+	finished chan struct{} // closed when Wait has the status
+}
+
+func (e *execProc) Resize(ctx context.Context, cols, rows uint32) error {
+	return e.p.Resize(ctxNS(ctx), cols, rows)
+}
+
+func (e *execProc) Kill(ctx context.Context, sig syscall.Signal) error {
+	return e.p.Kill(ctxNS(ctx), sig)
+}
+
+func (e *execProc) Wait(ctx context.Context) (int, error) {
+	select {
+	case st := <-e.status:
+		close(e.finished)
+		code, _, err := st.Result()
+		if e.p.IO() != nil {
+			e.p.IO().Wait() // the last output reaches the client before the exit status
+		}
+		e.p.Delete(ctxNS(context.WithoutCancel(ctx)))
+		return int(code), err
+	case <-ctx.Done():
+		return -1, ctx.Err()
+	}
 }

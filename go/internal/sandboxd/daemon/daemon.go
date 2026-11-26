@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/netip"
 	"os"
@@ -43,6 +44,8 @@ type Runtime interface {
 	Start(ctx context.Context, id string) error
 	Destroy(ctx context.Context, id string, grace time.Duration) error
 	List(ctx context.Context) ([]string, error)
+	// Exec runs args in id's running microVM as its own process runs (attach.go).
+	Exec(ctx context.Context, id, execID string, args []string, tty bool, stdin io.Reader, stdout, stderr io.Writer) (runtime.Process, error)
 }
 
 // Namespaces makes network namespaces (netns.Manager in production).
@@ -130,11 +133,14 @@ type Daemon struct {
 	Now         func() time.Time
 	Log         *log.Logger
 
-	mu      sync.Mutex // serializes lifecycle changes
-	live    map[string]*limits.Times
-	leaves  map[string]*sessionLeaves // the live sessions that intercept
-	ready   bool
-	offsets map[string]int64 // how far each session's gateway connection log has been collected
+	mu     sync.Mutex // serializes lifecycle changes
+	live   map[string]*limits.Times
+	leaves map[string]*sessionLeaves // the live sessions that intercept
+	// attached counts each live session's attached terminals (attach.go)
+	attached  map[string]int
+	attachSeq int
+	ready     bool
+	offsets   map[string]int64 // how far each session's gateway connection log has been collected
 }
 
 // audit appends one record to a session's audit file; a failure is logged, never fatal (the

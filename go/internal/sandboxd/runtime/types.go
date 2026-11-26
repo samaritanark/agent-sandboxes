@@ -1,10 +1,12 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path"
 	"strings"
+	"syscall"
 )
 
 // Mount is a bind mount of a VM path into the guest.
@@ -47,4 +49,12 @@ func (m MicroVM) Check() error {
 		}
 	}
 	return nil
+}
+
+// Process is a command run in a running microVM (Runtime.Exec).
+type Process interface {
+	Resize(ctx context.Context, cols, rows uint32) error
+	Kill(ctx context.Context, sig syscall.Signal) error
+	// Wait returns the exit status once the process ends, and removes it.
+	Wait(ctx context.Context) (int, error)
 }

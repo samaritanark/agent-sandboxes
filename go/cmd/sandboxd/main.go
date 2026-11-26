@@ -7,6 +7,7 @@
 //	sandboxd ctl stop ID [REASON]   stop a session
 //	sandboxd ctl heartbeat ID       renew a session's attach lease
 //	sandboxd ctl list               list sessions
+//	sandboxd ctl attach ID -- CMD...  run CMD in the session's agent microVM with this terminal
 //	sandboxd ctl broker-key         take the broker store key on stdin (the host pushes it)
 //	sandboxd ctl broker-put REF     store REF's entry, sealed by the host, from stdin
 //	sandboxd ctl broker-delete REF  remove REF's entry
@@ -29,7 +30,7 @@ import (
 const Socket = "/run/sandboxd.sock"
 
 func usage() int {
-	fmt.Fprintln(os.Stderr, "usage: sandboxd serve | sandboxd ctl start SPEC.json | stop ID [REASON] | heartbeat ID | list |\n"+
+	fmt.Fprintln(os.Stderr, "usage: sandboxd serve | sandboxd ctl start SPEC.json | stop ID [REASON] | heartbeat ID | list | attach ID -- CMD... |\n"+
 		"       broker-key < KEY | broker-put REF < SEALED | broker-delete REF | broker-list")
 	return 2
 }
@@ -58,6 +59,12 @@ func run(args []string) int {
 func ctl(args []string) int {
 	if len(args) == 0 {
 		return usage()
+	}
+	if args[0] == "attach" {
+		if len(args) < 4 || args[2] != "--" {
+			return usage()
+		}
+		return ctlAttach(args[1], args[3:])
 	}
 	var req daemon.Request
 	switch {
