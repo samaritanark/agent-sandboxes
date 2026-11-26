@@ -39,6 +39,10 @@ type Intercept struct {
 
 const interceptCluster = "intercepted_upstream"
 
+// upgradeCluster carries protocol upgrades (WebSocket): over HTTP/1.1 only, since an upgrade on an
+// HTTP/2 upstream connection needs extended CONNECT (RFC 8441), which many servers lack.
+const upgradeCluster = "intercepted_upstream_upgrade"
+
 func (c Config) checkIntercepts() error {
 	any := false
 	for i, l := range c.Links {
@@ -101,7 +105,18 @@ var refusedBody = obj{"inline_string": "refused by the sandbox egress policy\n"}
 // decided, for the log.
 func routes(rules []l7.Rule) ([]obj, error) {
 	var out []obj
-	forward := obj{"cluster": interceptCluster, "timeout": "0s", "upgrade_configs": []obj{{"upgrade_type": "websocket"}}}
+	forward := obj{"cluster": interceptCluster, "timeout": "0s"}
+	upgrade := obj{"cluster": upgradeCluster, "timeout": "0s", "upgrade_configs": []obj{{"upgrade_type": "websocket"}}}
+	// forwarding is two routes with the same match: upgrades first, over HTTP/1.1, then the rest
+	forwarding := func(name string, match obj) []obj {
+		um := obj{}
+		for k, v := range match {
+			um[k] = v
+		}
+		hs, _ := match["headers"].([]obj)
+		um["headers"] = append(append([]obj(nil), hs...), obj{"name": "upgrade", "present_match": true})
+		return []obj{{"name": name, "match": um, "route": upgrade}, {"name": name, "match": match, "route": forward}}
+	}
 	add := func(i int, r l7.Rule) error {
 		methods := r.Methods
 		if len(methods) == 0 {
@@ -133,13 +148,12 @@ func routes(rules []l7.Rule) ([]obj, error) {
 					hs, _ := match["headers"].([]obj)
 					match["headers"] = append(hs, obj{"name": ":method", "string_match": obj{"exact": m}})
 				}
-				rt := obj{"name": fmt.Sprintf("%s:%d", r.Action, i), "match": match}
+				name := fmt.Sprintf("%s:%d", r.Action, i)
 				if r.Action == l7.Deny {
-					rt["direct_response"] = obj{"status": 403, "body": refusedBody}
+					out = append(out, obj{"name": name, "match": match, "direct_response": obj{"status": 403, "body": refusedBody}})
 				} else {
-					rt["route"] = forward
+					out = append(out, forwarding(name, match)...)
 				}
-				out = append(out, rt)
 			}
 		}
 		return nil
@@ -159,7 +173,7 @@ func routes(rules []l7.Rule) ([]obj, error) {
 	if hasAllow {
 		out = append(out, obj{"name": "default:refused", "match": obj{"prefix": "/"}, "direct_response": obj{"status": 403, "body": refusedBody}})
 	} else {
-		out = append(out, obj{"name": "default:forward", "match": obj{"prefix": "/"}, "route": forward})
+		out = append(out, forwarding("default:forward", obj{"prefix": "/"})...)
 	}
 	return out, nil
 }
@@ -257,9 +271,16 @@ func (c Config) interceptChain(link Link, ic Intercept, port int) (obj, error) {
 // interceptedUpstream is the cluster intercepted requests leave by: the forward proxy over TLS,
 // verified against the trust bundle, with the request's host as SNI and checked against the
 // certificate's names.
-func (c Config) interceptedUpstream(timeout int) obj {
+func (c Config) interceptedUpstream(timeout int, upgrades bool) obj {
+	name, alpn := interceptCluster, []string{"h2", "http/1.1"}
+	protocols := obj{"auto_config": obj{"http_protocol_options": obj{}, "http2_protocol_options": obj{}}}
+	if upgrades {
+		name, alpn = upgradeCluster, []string{"http/1.1"}
+		protocols = obj{"explicit_http_config": obj{"http_protocol_options": obj{}}}
+	}
+	protocols["upstream_http_protocol_options"] = obj{"auto_sni": true, "auto_san_validation": true}
 	return obj{
-		"name":            interceptCluster,
+		"name":            name,
 		"connect_timeout": fmt.Sprintf("%ds", timeout),
 		"lb_policy":       "CLUSTER_PROVIDED",
 		"cluster_type": obj{"name": "envoy.clusters.dynamic_forward_proxy", "typed_config": typed("envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig", obj{
@@ -268,13 +289,10 @@ func (c Config) interceptedUpstream(timeout int) obj {
 		"transport_socket": obj{"name": "envoy.transport_sockets.tls", "typed_config": typed("envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext", obj{
 			"common_tls_context": obj{
 				"validation_context": obj{"trusted_ca": obj{"filename": c.UpstreamCAs}},
-				"alpn_protocols":     []string{"h2", "http/1.1"},
+				"alpn_protocols":     alpn,
 			},
 		})},
-		"typed_extension_protocol_options": obj{"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": typed("envoy.extensions.upstreams.http.v3.HttpProtocolOptions", obj{
-			"upstream_http_protocol_options": obj{"auto_sni": true, "auto_san_validation": true},
-			"auto_config":                    obj{"http_protocol_options": obj{}, "http2_protocol_options": obj{}},
-		})},
+		"typed_extension_protocol_options": obj{"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": typed("envoy.extensions.upstreams.http.v3.HttpProtocolOptions", protocols)},
 	}
 }
 

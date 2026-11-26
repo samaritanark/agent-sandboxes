@@ -163,3 +163,29 @@ func TestChainMatcher(t *testing.T) {
 		t.Error("a matcher with nothing allowed")
 	}
 }
+
+// TestUpgradeCluster: upgrades leave by a cluster that offers HTTP/1.1 alone (an upgrade on an
+// HTTP/2 connection needs extended CONNECT, which many servers lack), and every forwarding route
+// has its upgrade twin first.
+func TestUpgradeCluster(t *testing.T) {
+	c := Config{UpstreamCAs: "/ca.pem"}
+	for _, up := range []bool{false, true} {
+		b, _ := json.Marshal(c.interceptedUpstream(5, up))
+		s := string(b)
+		h1only := strings.Contains(s, `"alpn_protocols":["http/1.1"]`) && strings.Contains(s, "explicit_http_config") && !strings.Contains(s, "http2")
+		if h1only != up {
+			t.Errorf("upgrades=%v: %s", up, s)
+		}
+	}
+	rs, err := routes([]l7.Rule{{Host: "x.example", PathPatterns: []string{"/a/**"}, Action: l7.Allow}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(rs)
+	if n := strings.Count(string(b), `"cluster":"`+upgradeCluster+`"`); n != 1 || !strings.Contains(string(b), `"name":"upgrade","present_match":true`) {
+		t.Errorf("%d upgrade routes: %s", n, b)
+	}
+	if i, j := strings.Index(string(b), upgradeCluster), strings.Index(string(b), `"cluster":"`+interceptCluster+`"`); i < 0 || j < 0 || i > j {
+		t.Error("the upgrade route is not first")
+	}
+}
