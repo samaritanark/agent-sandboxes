@@ -272,3 +272,25 @@ func TestVerifyTagIgnoresWorkspaceConfig(t *testing.T) {
 		t.Error("a missing tag verified")
 	}
 }
+
+// TestVettingGitKeepsCallerConfig: VettingGit's filter pins are numbered after the command-scope
+// entries the caller already has (the in-VM CLI's protected config, safe.directory among them),
+// so both apply.
+func TestVettingGitKeepsCallerConfig(t *testing.T) {
+	repo := t.TempDir()
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Fatal(string(out))
+	}
+	exec.Command("git", "-C", repo, "config", "filter.evil.clean", "touch /tmp/never").Run()
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "user.name")
+	t.Setenv("GIT_CONFIG_VALUE_0", "kept")
+	for key, want := range map[string]string{"user.name": "kept", "filter.evil.clean": "cat"} {
+		out, err := VettingGit(repo, "config", key).Output()
+		if err != nil || strings.TrimSpace(string(out)) != want {
+			t.Errorf("%s: %q %v", key, out, err)
+		}
+	}
+}

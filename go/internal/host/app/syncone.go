@@ -21,11 +21,15 @@ const WorkspacesDir = "/var/lib/sandbox/workspaces"
 // SyncUser is the VM user the sync agent runs as (design 5.6.2 rule 5).
 const SyncUser = "sandbox-sync"
 
+// CopyMode is a VM copy's directory mode: the sync user's, readable by its group, whose only other
+// member is sandbox-git, the user the in-VM gates' git runs as (image/mkosi.postinst.chroot).
+const CopyMode = "0750"
+
 // copyEpoch makes the VM copy ws if it is missing and returns its epoch: a random token root writes
 // beside a copy (ws.epoch) when the copy has none, so a copy made again (a reinstalled VM) has a
 // new one and the host sets aside the state it kept for the old copy (syncengine.Engine.Copy).
 func (a *app) copyEpoch(ep driver.SSHEndpoint, ws string) (string, error) {
-	script := `set -e; [ -d "$0" ] || { rm -f "$0.epoch"; install -d -o ` + SyncUser + ` -g ` + SyncUser + ` -m 0700 "$0"; }; ` +
+	script := `set -e; [ -d "$0" ] || { rm -f "$0.epoch"; install -d -o ` + SyncUser + ` -g ` + SyncUser + ` -m ` + CopyMode + ` "$0"; }; ` +
 		`[ -s "$0.epoch" ] || od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "$0.epoch"; cat "$0.epoch"`
 	out, err := a.env.Transport.Output(a.ctx, ep, []string{"sh", "-c", script, ws}, 128)
 	if err != nil {
@@ -65,8 +69,9 @@ func (a *app) syncLoop(ep driver.SSHEndpoint, repo string, live context.Context,
 	if err != nil {
 		return "", syncengine.Report{}, err
 	}
-	// root creates the copy's directory; the agent itself runs unprivileged
-	script := `set -e; install -d -o ` + SyncUser + ` -g ` + SyncUser + ` -m 0700 "$0"; exec runuser -u ` + SyncUser + ` -- sandbox __sync-agent "$0"`
+	// root creates the copy's directory; the agent itself runs unprivileged. The sync group may
+	// read the copy (CopyMode), as the in-VM gates' git does as sandbox-git
+	script := `set -e; install -d -o ` + SyncUser + ` -g ` + SyncUser + ` -m ` + CopyMode + ` "$0"; exec runuser -u ` + SyncUser + ` -- sandbox __sync-agent "$0"`
 	toAgentR, toAgentW := io.Pipe()
 	fromAgentR, fromAgentW := io.Pipe()
 	var agentErr strings.Builder

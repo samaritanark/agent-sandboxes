@@ -1305,3 +1305,9 @@ m(RB, '\t\t\t\tif sessionspec.Reachable(h, egress) {', '\t\t\t\tif true {', "Tes
 m(RB, '\t\t\tspec.Env = append(spec.Env, sessionspec.EnvVar{Name: name, Value: b.Placeholder})', '', "TestBindSecrets")
 m(RB, '\t\t\tif b, _ := bind(name, dep.Egress, false); b != nil {', '\t\t\tif b, _ := bind(name, spec.Egress, false); b != nil {', "TestBindSecrets")
 m(RB, '\t\tcase !ok || (!b.Readable && len(b.Hosts) == 0):', '\t\tcase !ok:', "TestBindSecrets")
+
+# ---- found by the appliance run of the ninth round (copy mode, vetting's command-scope config)
+m("internal/host/app/syncone.go", 'const CopyMode = "0750"', 'const CopyMode = "0700"', "TestLiveSync", pkg="host/app")
+m("internal/host/app/syncone.go", '` -m ` + CopyMode + ` "$0"; exec runuser', '` -m 0700 "$0"; exec runuser', "TestLiveSync", pkg="host/app")
+m("internal/host/app/syncone.go", '` -m ` + CopyMode + ` "$0"; }; ` +', '` -m 0700 "$0"; }; ` +', "TestLiveSync", pkg="host/app")
+m("internal/vetting/verify.go", '\tn, _ := strconv.Atoi(os.Getenv("GIT_CONFIG_COUNT"))', '\tn := 0', "TestVettingGitKeepsCallerConfig")

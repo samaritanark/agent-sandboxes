@@ -18,15 +18,17 @@ import (
 
 // agentTransport runs the sync agent in-process on vmdir for each sync connection.
 type agentTransport struct {
-	vmdir string
-	mu    sync.Mutex
-	conns int
+	vmdir   string
+	mu      sync.Mutex
+	conns   int
+	scripts []string // each sync connection's and epoch read's shell script
 }
 
 func (f *agentTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []string, stdin io.Reader, stdout, _ io.Writer, _ bool) (int, error) {
 	if len(argv) > 2 && strings.Contains(argv[2], "__sync-agent") {
 		f.mu.Lock()
 		f.conns++
+		f.scripts = append(f.scripts, argv[2])
 		f.mu.Unlock()
 		if err := syncagent.Serve(f.vmdir, stdin, stdout); err != nil {
 			return 1, nil
@@ -37,6 +39,11 @@ func (f *agentTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []str
 }
 
 func (f *agentTransport) Output(_ context.Context, _ driver.SSHEndpoint, argv []string, _ int) ([]byte, error) {
+	if len(argv) > 2 {
+		f.mu.Lock()
+		f.scripts = append(f.scripts, argv[2])
+		f.mu.Unlock()
+	}
 	return []byte("0123456789abcdef0123456789abcdef\n"), nil // the copy's epoch
 }
 
@@ -77,5 +84,14 @@ func TestLiveSync(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "==> The session's changes synced to the host: 2 file(s).") || tr.conns != 2 {
 		t.Errorf("summary %q, connections %d", out.String(), tr.conns)
+	}
+	// the copy is made, and kept, readable by the sync group (the gates' git user)
+	for _, sc := range tr.scripts {
+		if strings.Contains(sc, "install -d") && !strings.Contains(sc, " -m 0750 ") {
+			t.Errorf("copy mode in %q", sc)
+		}
+	}
+	if n := len(tr.scripts); n < 3 {
+		t.Errorf("scripts %q", tr.scripts)
 	}
 }

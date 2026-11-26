@@ -46,7 +46,12 @@ func VettingGit(repo string, args ...string) *exec.Cmd {
 	}
 	sort.Strings(names) // order only numbers the pins; it is not observable
 	var env []string
-	n := 0
+	// after any command-scope entries the caller already has (the in-VM CLI's protected git
+	// configuration, safe.directory among them), so the pins add to them instead of replacing them
+	n, _ := strconv.Atoi(os.Getenv("GIT_CONFIG_COUNT"))
+	if n < 0 {
+		n = 0
+	}
 	for _, name := range names {
 		for _, sub := range []string{"clean", "smudge", "process", "required"} {
 			env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=filter.%s.%s", n, name, sub))
