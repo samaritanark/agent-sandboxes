@@ -1303,7 +1303,10 @@ answers absolute names directly, so v2's `ndots:1` workaround is unnecessary.
    enabled, the HTTP filter chain, including `ext_proc`, still processes the
    upgraded stream, so injection and scrubbing apply. Only a raw handshake was
    tested; `permessage-deflate` would hide a token from a plain-text scan and
-   MUST NOT be negotiated.
+   MUST NOT be negotiated. S8 measured the rest: the upgraded stream reaches
+   `ext_proc` as raw frames in chunks that do not follow frame boundaries, so
+   the broker scrubs WebSocket frame by frame and refuses every other upgrade
+   toward a brokered destination (SPDY included); upgrades leave over HTTP/1.1.
 6. Supports chaining through a corporate upstream proxy or
    TLS-intercepting proxy when configured.
 7. TCP 443 by default; other ports only when declared (parity with v2's
