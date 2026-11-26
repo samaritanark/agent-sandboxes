@@ -227,3 +227,48 @@ func TestFixVerifyExistingAttestation(t *testing.T) {
 		t.Errorf("fixed: rc=%d err=%q", rc, errb.String())
 	}
 }
+
+// TestVerifyTagIgnoresWorkspaceConfig: the git that runs the verifier works in a scratch
+// repository holding only the tag (TrustedGit), so a workspace's config does not reach it: a
+// revocation file the workspace names (unpinned) is not read, though the same verification run in
+// the workspace honours it.
+func TestVerifyTagIgnoresWorkspaceConfig(t *testing.T) {
+	a, repo, out, errb := attestFixture(t, "at-clean")
+	if rc := a.AttestRepo(repo, "", "false"); rc != 0 {
+		t.Fatalf("attest: rc=%d out=%q err=%q", rc, out.String(), errb.String())
+	}
+	head, _ := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	tag := "agent-vetted/" + strings.TrimSpace(string(head))
+	root := a.TrustRoot()
+	if signer, ok := VerifyTag(repo, tag, root, "ssh"); !ok || signer != "alice@example.com" {
+		t.Fatalf("verify: %q %v", signer, ok)
+	}
+	pub, _ := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(repo)), "keys", "a.pub"))
+	revoked := filepath.Join(t.TempDir(), "revoked")
+	writeFile(t, revoked, string(pub))
+	if err := exec.Command("git", "-C", repo, "config", "gpg.ssh.revocationFile", revoked).Run(); err != nil {
+		t.Fatal(err)
+	}
+	// a logging TrustedGit: every call it gets must be in a scratch repository
+	realGit, _ := exec.LookPath("git")
+	log := filepath.Join(t.TempDir(), "calls")
+	wrap := filepath.Join(t.TempDir(), "git")
+	writeFile(t, wrap, "#!/bin/sh\necho \"$2\" >> "+log+"\nexec "+realGit+" \"$@\"\n")
+	os.Chmod(wrap, 0o755)
+	t.Setenv("SANDBOX_TRUSTED_GIT", wrap)
+	if signer, ok := VerifyTag(repo, tag, root, "ssh"); !ok || signer != "alice@example.com" {
+		t.Errorf("the workspace's revocation file reached the verifier: %q %v", signer, ok)
+	}
+	calls, _ := os.ReadFile(log)
+	if n := strings.Count(string(calls), "sandbox-vet-tag-"); n != 4 || strings.Contains(string(calls), repo) {
+		t.Errorf("trusted git calls (want 4, all in the scratch repository):\n%s", calls)
+	}
+	// control: the same pinned verification run in the workspace honours its revocation file
+	ctl := exec.Command("git", "-C", repo, "-c", "gpg.format=ssh", "-c", "gpg.ssh.allowedSignersFile="+root, "tag", "-v", tag)
+	if err := ctl.Run(); err == nil {
+		t.Error("control: the revocation file is not honoured in the workspace; the test proves nothing")
+	}
+	if _, ok := VerifyTag(repo, "agent-vetted/missing", root, "ssh"); ok {
+		t.Error("a missing tag verified")
+	}
+}

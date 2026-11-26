@@ -24,3 +24,26 @@ func protectGit(getenv func(string) string, setenv func(string, string) error) {
 	}
 	setenv("GIT_CONFIG_COUNT", strconv.Itoa(n))
 }
+
+// GateGitDir holds the git the gates use in the VM (owner decision, 2026-11-26): a wrapper that
+// runs /usr/bin/git as the unprivileged sandbox-git user (image/mkosi.extra/usr/lib/sandbox/gitbin).
+const (
+	GateGitDir = "/usr/lib/sandbox/gitbin"
+	TrustedGit = "/usr/bin/git"
+	trustedEnv = "SANDBOX_TRUSTED_GIT"
+)
+
+// dropGit puts the gates' unprivileged git first on PATH when the CLI runs as root and the image
+// has it, and names the git that keeps root (vetting.TrustedGit; the CLI's own clones) in
+// SANDBOX_TRUSTED_GIT. Elsewhere (tests, a user's shell) git stays as it is.
+func dropGit(euid int, exists func(string) bool, getenv func(string) string, setenv func(string, string) error) {
+	if euid != 0 || !exists(GateGitDir+"/git") {
+		return
+	}
+	path := GateGitDir
+	if p := getenv("PATH"); p != "" {
+		path += ":" + p
+	}
+	setenv("PATH", path)
+	setenv(trustedEnv, TrustedGit)
+}

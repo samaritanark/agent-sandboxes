@@ -59,6 +59,7 @@ const (
 
 func main() {
 	protectGit(os.Getenv, os.Setenv)
+	dropGit(os.Geteuid(), func(p string) bool { _, err := os.Stat(p); return err == nil }, os.Getenv, os.Setenv)
 	if len(os.Args) == 2 && os.Args[1] == auditSessions {
 		ss, err := auditlog.Sessions(auditlog.Root)
 		if err != nil {

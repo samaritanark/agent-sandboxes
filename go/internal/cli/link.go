@@ -11,6 +11,7 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"github.com/samaritanark/agent-sandboxes/go/internal/gate"
 	"github.com/samaritanark/agent-sandboxes/go/internal/link"
+	"github.com/samaritanark/agent-sandboxes/go/internal/vetting"
 )
 
 func (c *cmdCtx) link() link.SyncCtx {
@@ -18,7 +19,9 @@ func (c *cmdCtx) link() link.SyncCtx {
 	if dir == "" {
 		dir = c.env.Home + "/.sandbox/overlays"
 	}
-	git, _ := exec.LookPath("git")
+	// the CLI's own clones of overlay repositories: git that keeps the CLI's user (in the VM, the
+	// one on PATH drops privileges and could not write them)
+	git, _ := exec.LookPath(vetting.TrustedGit())
 	return link.SyncCtx{Ctx: link.Ctx{Env: c.env.Env, OverlaysDir: dir}, FetchTimeout: 10 * time.Second,
 		SandboxVersion: c.env.Version.Version, Git: git}
 }

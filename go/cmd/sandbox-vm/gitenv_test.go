@@ -57,3 +57,27 @@ func TestProtectGit(t *testing.T) {
 		t.Error("the control commit did not run the hook; the test proves nothing")
 	}
 }
+
+// TestDropGit: as root with the image's wrapper, the gates' git comes first on PATH and the
+// trusted git is named; otherwise nothing changes.
+func TestDropGit(t *testing.T) {
+	for _, c := range []struct {
+		euid    int
+		has     bool
+		path    string
+		want    string
+		trusted string
+	}{
+		{0, true, "/usr/bin:/bin", GateGitDir + ":/usr/bin:/bin", TrustedGit},
+		{0, true, "", GateGitDir, TrustedGit},
+		{0, false, "/usr/bin", "/usr/bin", ""},
+		{1000, true, "/usr/bin", "/usr/bin", ""},
+	} {
+		env := map[string]string{"PATH": c.path}
+		dropGit(c.euid, func(p string) bool { return c.has && p == GateGitDir+"/git" },
+			func(k string) string { return env[k] }, func(k, v string) error { env[k] = v; return nil })
+		if env["PATH"] != c.want || env[trustedEnv] != c.trusted {
+			t.Errorf("euid %d has %v path %q: %v", c.euid, c.has, c.path, env)
+		}
+	}
+}

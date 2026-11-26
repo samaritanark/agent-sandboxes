@@ -1240,3 +1240,20 @@ m("internal/cli/runspec.go", '\t\tmem = append(mem, d.Resources.MemoryMiB)', '',
 m("internal/cli/runspec.go", '\tspec.Resources.MemoryMiB = agentMemory(in.VMMemoryMiB, spec.Dependencies)', '\tspec.Resources.MemoryMiB = agentMemory(0, spec.Dependencies)', "TestAgentMemory|TestBuildSpec|TestLaunch")
 m("internal/cli/runlaunch.go", '\t\tif in.VMMemoryMiB, err = l.VMMemoryMiB(); err != nil {', '\t\tif _, err = l.VMMemoryMiB(); err != nil {', "TestLaunch")
 m("internal/cli/runlaunch.go", '\t\t\tc.die("The VM\'s memory: %v", err)', '\t\t\t_ = err', "TestLaunch")
+
+# ---- the gates' git unprivileged in the VM (cmd/sandbox-vm/gitenv.go, vetting.VerifyTag)
+GE = "cmd/sandbox-vm/gitenv.go"
+m(GE, '\tif euid != 0 || !exists(GateGitDir+"/git") {', '\tif !exists(GateGitDir+"/git") {', "TestDropGit", pkg="../cmd/sandbox-vm")
+m(GE, '\tif euid != 0 || !exists(GateGitDir+"/git") {', '\tif euid != 0 {', "TestDropGit", pkg="../cmd/sandbox-vm")
+m(GE, '\t\tpath += ":" + p', '\t\tpath = p', "TestDropGit", pkg="../cmd/sandbox-vm")
+m(GE, '\tsetenv(trustedEnv, TrustedGit)\n', '', "TestDropGit", pkg="../cmd/sandbox-vm")
+VT2 = "internal/vetting/verify.go"
+R_VT2 = "TestVerifyTagIgnoresWorkspaceConfig|TestFixVerify"
+m(VT2, '\targs := []string{"-C", scratch,', '\targs := []string{"-C", repo,', R_VT2)
+m(VT2, '\tcmd := exec.Command(TrustedGit(), args...)', '\tcmd := exec.Command("git", args...)', R_VT2)
+m(VT2, '\t\treturn p\n\t}\n\treturn "git"', '\t\treturn "git"\n\t}\n\treturn "git"', R_VT2)
+m(VT2, '\tcat := VettingGit(repo, "cat-file", "tag", "refs/tags/"+tag)', '\tcat := VettingGit(repo, "cat-file", "-p", "refs/tags/"+tag)', R_VT2,
+  equivalent="cat-file -p prints a tag object byte for byte, as cat-file tag does")
+m(VT2, '\tdefer os.RemoveAll(scratch)\n', '', R_VT2,
+  equivalent="a leftover temporary directory changes no result")
+m(VT2, '\t\t\tif _, ok := git(nil, "update-ref", "refs/tags/"+tag, oid); ok {', '\t\t\tif _, ok := git(nil, "update-ref", "refs/tags/x", oid); ok {', R_VT2)

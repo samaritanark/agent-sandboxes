@@ -87,10 +87,23 @@ func commandV(names ...string) string {
 	return ""
 }
 
+// TrustedGit is the git for repositories the CLI made itself. In the VM the CLI runs as root and
+// the git on its PATH drops to an unprivileged user (image: /usr/lib/sandbox/gitbin), because a
+// workspace's own config reaches every git that runs in it; SANDBOX_TRUSTED_GIT names the git that
+// keeps root, for a scratch repository holding nothing of the workspace's but a tag object.
+func TrustedGit() string {
+	if p := os.Getenv("SANDBOX_TRUSTED_GIT"); p != "" {
+		return p
+	}
+	return "git"
+}
+
 // VerifyTag is _vetting_verify_tag: verify one tag against ONE trust root, with every verifier
 // program pinned (ssh, openpgp, x509) and the other format's trust source neutralized, so the
 // workspace's own git config can neither choose a program nor supply a signer. On success it
-// returns the signer principal.
+// returns the signer principal. The tag object is read from the workspace (by the git on PATH)
+// and verified in a scratch repository with TrustedGit, so the git that runs the verifier with the
+// trust root never reads the workspace's config.
 func VerifyTag(repo, tag, trustRoot, format string) (signer string, ok bool) {
 	falseBin := commandV("false")
 	if falseBin == "" {
@@ -104,6 +117,11 @@ func VerifyTag(repo, tag, trustRoot, format string) (signer string, ok bool) {
 	if gpgBin == "" {
 		gpgBin = falseBin
 	}
+	scratch, ok := tagScratch(repo, tag)
+	if !ok {
+		return "", false
+	}
+	defer os.RemoveAll(scratch)
 	emptyGnupg, err := os.MkdirTemp(os.TempDir(), "sandbox-vet-gnupg-")
 	if err != nil {
 		return "", false
@@ -111,7 +129,7 @@ func VerifyTag(repo, tag, trustRoot, format string) (signer string, ok bool) {
 	defer os.RemoveAll(emptyGnupg)
 	os.Chmod(emptyGnupg, 0o700)
 
-	args := []string{"-C", repo,
+	args := []string{"-C", scratch,
 		"-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null",
 		"-c", "gpg.ssh.program=" + sshKeygen, "-c", "gpg.program=" + gpgBin,
 		"-c", "gpg.x509.program=" + falseBin}
@@ -124,13 +142,49 @@ func VerifyTag(repo, tag, trustRoot, format string) (signer string, ok bool) {
 		args = append(args, "-c", "gpg.format=ssh", "-c", "gpg.ssh.allowedSignersFile="+trustRoot)
 	}
 	args = append(args, "tag", "-v", tag)
-	cmd := gitCmd(env, args...)
+	cmd := exec.Command(TrustedGit(), args...)
+	cmd.Env = append(os.Environ(), env...)
 	var buf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf // 2>&1
 	if err := cmd.Run(); err != nil {
 		return "", false
 	}
 	return trimNL(ExtractSigner(buf.String(), format)), true
+}
+
+// tagScratch is a new bare repository, in the workspace's object format, holding only the
+// workspace's tag object under its name. A name that is not an annotated tag yields none.
+func tagScratch(repo, tag string) (string, bool) {
+	cat := VettingGit(repo, "cat-file", "tag", "refs/tags/"+tag)
+	raw, err := cat.Output()
+	if err != nil {
+		return "", false
+	}
+	objFormat := "sha1"
+	if f, ok := vgit(repo, "rev-parse", "--show-object-format"); ok && trimNL(f) != "" {
+		objFormat = trimNL(f)
+	}
+	dir, err := os.MkdirTemp(os.TempDir(), "sandbox-vet-tag-")
+	if err != nil {
+		return "", false
+	}
+	git := func(stdin []byte, args ...string) (string, bool) {
+		cmd := exec.Command(TrustedGit(), append([]string{"-C", dir}, args...)...)
+		if stdin != nil {
+			cmd.Stdin = bytes.NewReader(stdin)
+		}
+		out, err := cmd.Output()
+		return trimNL(string(out)), err == nil
+	}
+	if _, ok := git(nil, "init", "-q", "--bare", "--object-format="+objFormat); ok {
+		if oid, ok := git(raw, "hash-object", "-t", "tag", "-w", "--stdin"); ok {
+			if _, ok := git(nil, "update-ref", "refs/tags/"+tag, oid); ok {
+				return dir, true
+			}
+		}
+	}
+	os.RemoveAll(dir)
+	return "", false
 }
 
 var allDigits = regexp.MustCompile(`^[0-9]+$`)

@@ -1,0 +1,8 @@
+#!/bin/sh
+# git for the in-VM CLI's gates (owner decision, 2026-11-26): the CLI runs as root on workspace
+# copies the agent shapes, and a copy's own config reaches every git that runs in it, so the gates'
+# git runs as sandbox-git instead: no privileges, no capabilities, and only the sandbox-sync group,
+# which lets it read the copies but not change them. The CLI puts this directory first on PATH
+# when it runs as root; its own clones (link) use /usr/bin/git directly.
+exec /usr/bin/setpriv --reuid=sandbox-git --regid=sandbox-git --init-groups --no-new-privs \
+  --inh-caps=-all --bounding-set=-all -- /usr/bin/git "$@"

@@ -22,6 +22,9 @@ ln -sfn /var/lib/sandbox/operator /root/.sandbox
 if id -u ubuntu >/dev/null 2>&1; then userdel --remove ubuntu; fi
 useradd --system --uid 1000 --user-group --home-dir /var/lib/sandbox/workspaces --no-create-home --shell /usr/sbin/nologin sandbox-sync
 install -d -o root -g sandbox-sync -m 0750 /var/lib/sandbox/workspaces
+# The in-VM gates' git runs as sandbox-git (/usr/lib/sandbox/gitbin/git), a member of the sync
+# group only, so it can read the workspace copies but a copy's config cannot act as root.
+useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --user-group --groups sandbox-sync sandbox-git
 # Ubuntu's arm64 kernel is a gzip-compressed Image, which systemd-stub (systemd 255) cannot load
 # from a unified kernel image ("Bad kernel image"); store it uncompressed before the UKI is built.
 for k in /boot/vmlinuz-* /usr/lib/modules/*/vmlinuz; do
