@@ -130,11 +130,21 @@ type Binding struct {
 	Quota         int `json:"quota,omitempty"`
 }
 
+// ReadableDir is where the agent's microVM finds its readable secrets' files.
+const ReadableDir = "/run/sandbox/secrets"
+
+// MaxReadable bounds a session's readable secrets.
+const MaxReadable = 16
+
 // MaxLimit bounds a binding's limits (broker.MaxLimit).
 const MaxLimit = 1_000_000
 
-// Readable is a secret the operator explicitly allowed the agent to read (--allow-readable):
-// sandboxd resolves Ref from the broker store into EnvVar at start. The value is never in the spec.
+// Readable is a secret the operator explicitly allowed the agent to read (--allow-readable). The
+// value is never in the spec, and never passes through sandboxd or containerd (owner decision,
+// eighth round): sandboxd's short-lived helper writes it from the broker store to a file on a
+// tmpfs, mounted read-only into the agent's microVM at ReadableDir/EnvVar; the agent's
+// environment has EnvVar_FILE naming the file, and an attached command is wrapped in a shell that
+// exports EnvVar from it (an image without a shell gets the file only).
 type Readable struct {
 	Ref    string `json:"ref"`
 	EnvVar string `json:"env_var"`
@@ -260,10 +270,16 @@ func (s *Spec) Validate(o Options) error {
 		if !refRE.MatchString(r.Ref) || !envNameRE.MatchString(r.EnvVar) {
 			bad("readable secret %q: invalid reference or variable", r.Ref)
 		}
-		if readable[r.EnvVar] || bound[r.EnvVar] != "" || hasEnv(s.Env, r.EnvVar) {
-			bad("readable secret %q: variable %s is set twice", r.Ref, r.EnvVar)
+		file := r.EnvVar + "_FILE"
+		for _, v := range []string{r.EnvVar, file} {
+			if readable[v] || bound[v] != "" || hasEnv(s.Env, v) {
+				bad("readable secret %q: variable %s is set twice", r.Ref, v)
+			}
+			readable[v] = true
 		}
-		readable[r.EnvVar] = true
+	}
+	if len(s.Readable) > MaxReadable {
+		bad("readable: %d secrets, more than %d", len(s.Readable), MaxReadable)
 	}
 	checkEgress(s.Egress, "egress", bad)
 	max := o.MaxDependencies

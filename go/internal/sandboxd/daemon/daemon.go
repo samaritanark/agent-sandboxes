@@ -88,6 +88,9 @@ type Broker interface {
 	// HandOver decrypts refs[i] (link i's bound references) and writes them to the gateway's
 	// handover socket.
 	HandOver(ctx context.Context, session, socket string, refs [][]string) error
+	// WriteReadable decrypts each file's reference (files: file name to reference) into its own
+	// file in dir, readable only by uid, then leaves dir readable only by uid.
+	WriteReadable(ctx context.Context, dir string, uid int, files map[string]string) error
 }
 
 // policyBindings are a microVM's bindings as its gateway gets them: no values.
@@ -107,10 +110,14 @@ type Paths func(name string) string
 const (
 	KindContainer = "container"
 	KindNetNS     = "netns"
-	KindMasks     = "masks"   // the session's directory of empty mask files and directories
-	KindUplink    = "uplink"  // an uplink index (its interfaces go with the gateway namespace)
-	KindGateway   = "gateway" // the gateway process (its id in the resource's note)
+	KindMasks     = "masks"    // the session's directory of empty mask files and directories
+	KindUplink    = "uplink"   // an uplink index (its interfaces go with the gateway namespace)
+	KindGateway   = "gateway"  // the gateway process (its id in the resource's note)
+	KindReadable  = "readable" // the session's directory of readable secrets, on a tmpfs
 )
+
+// AgentUID is the agent's user in its microVM.
+const AgentUID = 1000
 
 // StopGrace is how long a microVM gets between SIGTERM and SIGKILL.
 const StopGrace = 10 * time.Second
@@ -130,8 +137,11 @@ type Daemon struct {
 	Budget      limits.Budget
 	Expiry      limits.Expiry
 	SessionRoot string // sessionspec.SessionStore in production
-	Now         func() time.Time
-	Log         *log.Logger
+	// ReadableRoot holds each session's readable secrets (--allow-readable); it must be on a tmpfs
+	// (/run in production). "" refuses any session with readable secrets.
+	ReadableRoot string
+	Now          func() time.Time
+	Log          *log.Logger
 
 	mu     sync.Mutex // serializes lifecycle changes
 	live   map[string]*limits.Times
@@ -139,8 +149,10 @@ type Daemon struct {
 	// attached counts each live session's attached terminals (attach.go)
 	attached  map[string]int
 	attachSeq int
-	ready     bool
-	offsets   map[string]int64 // how far each session's gateway connection log has been collected
+	// readable names each live session's readable secrets' variables, for the attach wrapper
+	readable map[string][]string
+	ready    bool
+	offsets  map[string]int64 // how far each session's gateway connection log has been collected
 }
 
 // audit appends one record to a session's audit file; a failure is logged, never fatal (the
@@ -267,9 +279,6 @@ func (d *Daemon) Start(ctx context.Context, raw []byte) (string, error) {
 	if err := spec.Validate(sessionspec.Options{}); err != nil {
 		return "", fmt.Errorf("session spec refused: %w", err)
 	}
-	if len(spec.Readable) > 0 {
-		return "", errors.New("session spec refused: readable secrets need the broker, which sandboxd does not run yet")
-	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.ready {
@@ -306,9 +315,16 @@ func (d *Daemon) Start(ctx context.Context, raw []byte) (string, error) {
 	if d.live == nil {
 		d.live = map[string]*limits.Times{}
 		d.leaves = map[string]*sessionLeaves{}
-		d.leaves = map[string]*sessionLeaves{}
 	}
 	d.live[id] = &limits.Times{Started: d.now(), KeepAlive: spec.KeepAlive}
+	if len(spec.Readable) > 0 {
+		if d.readable == nil {
+			d.readable = map[string][]string{}
+		}
+		for _, r := range spec.Readable {
+			d.readable[id] = append(d.readable[id], r.EnvVar)
+		}
+	}
 	d.audit(id, auditlog.Events, "session_running", nil)
 	d.logf("session %s running", id)
 	return id, nil
@@ -512,8 +528,16 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 		return err
 	}
 	mounts = append(append(mounts, rc), trustMounts...)
-	agent := runtime.MicroVM{ID: id, Image: spec.Image, Args: spec.Command, Env: append(env(spec.Env), trustEnv...),
-		UID: 1000, GID: 1000, Mounts: mounts, NetNS: d.NetNSPath(ns),
+	agentEnv := append(env(spec.Env), trustEnv...)
+	if len(spec.Readable) > 0 {
+		m, e, err := d.readableSecrets(ctx, spec)
+		if err != nil {
+			return err
+		}
+		mounts, agentEnv = append(mounts, m), append(agentEnv, e...)
+	}
+	agent := runtime.MicroVM{ID: id, Image: spec.Image, Args: spec.Command, Env: agentEnv,
+		UID: AgentUID, GID: AgentUID, Mounts: mounts, NetNS: d.NetNSPath(ns),
 		CPUs: spec.Resources.CPUs, MemoryMiB: spec.Resources.MemoryMiB, Hostname: "sandbox"}
 	return d.step(id, KindContainer, id, func() error {
 		if err := d.Runtime.Create(ctx, agent); err != nil {
@@ -567,6 +591,7 @@ func (d *Daemon) Stop(ctx context.Context, id, reason string) error {
 func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error {
 	delete(d.live, id)
 	delete(d.leaves, id)
+	delete(d.readable, id)
 	s, err := d.Journal.Load(id)
 	if err != nil {
 		return err
@@ -584,7 +609,7 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 	if s, err = d.Journal.Load(id); err != nil {
 		return err
 	}
-	order := map[string]int{KindContainer: 0, KindGateway: 1, KindNetNS: 2, KindUplink: 3, KindMasks: 4}
+	order := map[string]int{KindContainer: 0, KindGateway: 1, KindNetNS: 2, KindUplink: 3, KindReadable: 4, KindMasks: 5}
 	live := s.Live()
 	sort.SliceStable(live, func(i, j int) bool { return order[live[i].Kind] < order[live[j].Kind] })
 	for _, r := range live {
@@ -602,6 +627,8 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 			err = d.Gateways.Stop(ctx, id, pid)
 		case KindUplink:
 			// its interfaces went with the gateway namespace; the index is free again
+		case KindReadable:
+			err = os.RemoveAll(d.readableDir(id))
 		case KindMasks:
 			d.collect(id) // the last connections, before the gateway's directory goes
 			err = os.RemoveAll(d.maskDir(id))

@@ -61,7 +61,19 @@ func (d *Daemon) Attach(ctx context.Context, id string, args []string, tty bool,
 		d.audit(id, "events.jsonl", "detached", map[string]any{"exit": code})
 	}()
 
-	p, err := d.Runtime.Exec(ctx, id, execID, args, tty, stdio.Stdin, stdio.Stdout, stdio.Stderr)
+	d.mu.Lock()
+	readable := d.readable[id]
+	d.mu.Unlock()
+	run := args
+	if len(readable) > 0 {
+		run = readableWrap(readable, args)
+	}
+	p, err := d.Runtime.Exec(ctx, id, execID, run, tty, stdio.Stdin, stdio.Stdout, stdio.Stderr)
+	if err != nil && len(readable) > 0 && noShell(err) {
+		// an image without a shell: the readable secrets are files only (<VAR>_FILE)
+		d.audit(id, "events.jsonl", "secret_readable_file_only", map[string]any{"env_vars": readable})
+		p, err = d.Runtime.Exec(ctx, id, execID+"-noshell", args, tty, stdio.Stdin, stdio.Stdout, stdio.Stderr)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("attach: %w", err)
 	}

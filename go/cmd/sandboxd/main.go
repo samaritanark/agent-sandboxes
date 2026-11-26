@@ -29,6 +29,9 @@ import (
 // Socket is sandboxd's API socket.
 const Socket = daemon.Socket
 
+// ReadableRoot holds the sessions' readable secrets: on /run, a tmpfs, so never on the state disk.
+const ReadableRoot = "/run/sandboxd/readable"
+
 func usage() int {
 	fmt.Fprintln(os.Stderr, "usage: sandboxd serve | sandboxd ctl start SPEC.json | stop ID [REASON] | heartbeat ID | list | attach ID -- CMD... |\n"+
 		"       broker-key < KEY | broker-put REF < SEALED | broker-delete REF | broker-list")
@@ -52,6 +55,8 @@ func run(args []string) int {
 		return ctl(args[1:])
 	case "__broker-handover":
 		return brokerHandover()
+	case "__readable-handover":
+		return readableHandover()
 	}
 	return usage()
 }

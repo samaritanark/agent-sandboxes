@@ -1109,3 +1109,25 @@ m(HR, '\tif len(names) == 0 {\n\t\treturn\n\t}', '', R_HR, pkg="host/app")
 m(HR, '\t\tif absent {', '\t\tif false {', R_HR, pkg="host/app")
 m(HR, '\tif err == nil && len(v) > MaxSecretSize {', '\tif false {', R_HR, pkg="host/app")
 m(AA, '\tif len(args) > 0 && args[0] == "run" {', '\tif len(args) > 0 {', R_HR, pkg="host/app")
+
+# ---- readable secrets (internal/sandboxd/daemon/readable.go, cmd/sandboxd/broker.go, sessionspec)
+RD = "internal/sandboxd/daemon/readable.go"
+R_RD = "Readable|TestRefusals"
+m(RD, '\tif d.Broker == nil || d.ReadableRoot == "" {', '\tif d.Broker == nil {', R_RD, pkg="sandboxd/daemon")
+m(RD, '\t\treturn os.Mkdir(dir, 0o700)', '\t\treturn os.MkdirAll(dir, 0o700)', R_RD, pkg="sandboxd/daemon",
+  equivalent="a session's id is new (the journal refuses a reused one), so its directory never exists before")
+m(RD, '\treturn runtime.Mount{Source: dir, Target: sessionspec.ReadableDir, ReadOnly: true}, env, nil', '\treturn runtime.Mount{Source: dir, Target: sessionspec.ReadableDir}, env, nil', R_RD, pkg="sandboxd/daemon")
+m(RD, '\t\td.audit(id, auditlog.Events, "secret_readable",', '\t\t_ = (', R_RD, pkg="sandboxd/daemon")
+m(RD, '%s=${%s%%x}; export %s; ', '%s=${%s}; export %s; ', R_RD, pkg="sandboxd/daemon")
+m(RD, '|| { echo', '; { echo', R_RD, pkg="sandboxd/daemon")
+m(RD, '\treturn strings.Contains(s, Shell) && (', '\treturn (', R_RD, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/attach.go", '\tif len(readable) > 0 {\n\t\trun = readableWrap(readable, args)\n\t}', '', R_RD, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/attach.go", '\tif err != nil && len(readable) > 0 && noShell(err) {', '\tif false {', R_RD, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\t\tcase KindReadable:\n\t\t\terr = os.RemoveAll(d.readableDir(id))\n', '', R_RD, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\t\t\td.readable[id] = append(d.readable[id], r.EnvVar)', '', R_RD, pkg="sandboxd/daemon")
+SB = "cmd/sandboxd/broker.go"
+m(SB, '\treturn n != "" && n != "." && n != ".." && !strings.ContainsAny(n, "/\\x00")', '\treturn n != ""', "TestWriteReadable", pkg="../cmd/sandboxd")
+m(SB, 'os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o400', 'os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o400', "TestWriteReadable", pkg="../cmd/sandboxd")
+m(SB, '\treturn os.Chmod(job.Dir, 0o500)', '\treturn nil', "TestWriteReadable", pkg="../cmd/sandboxd")
+m("internal/sessionspec/sessionspec.go", '\tif len(s.Readable) > MaxReadable {', '\tif false {', "TestValidateRefuses")
+m("internal/sessionspec/sessionspec.go", '\t\tfor _, v := range []string{r.EnvVar, file} {', '\t\tfor _, v := range []string{r.EnvVar} {', "TestValidateRefuses")

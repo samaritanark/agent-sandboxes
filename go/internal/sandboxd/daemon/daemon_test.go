@@ -417,8 +417,8 @@ func TestRefusals(t *testing.T) {
 	if _, err := r.d.Start(ctx, []byte(`{"version":1,"privileged":true}`)); err == nil {
 		t.Error("unknown field accepted")
 	}
-	b := strings.Replace(string(spec("s-one", 2048)), `"keep_alive":false`, `"keep_alive":false,"readable":[{"ref":"npm","env_var":"NPM_TOKEN"}]`, 1)
-	if _, err := r.d.Start(ctx, []byte(b)); err == nil || !strings.Contains(err.Error(), "broker") {
+	b := strings.Replace(string(spec("s-read", 2048)), `"keep_alive":false`, `"keep_alive":false,"readable":[{"ref":"npm","env_var":"NPM_TOKEN"}]`, 1)
+	if _, err := r.d.Start(ctx, []byte(b)); err == nil || !strings.Contains(err.Error(), "broker store or tmpfs") {
 		t.Errorf("readable secret: %v", err)
 	}
 	if _, err := r.d.Start(ctx, spec("s-one", 2048)); err != nil {
@@ -519,12 +519,29 @@ type fakeBroker struct {
 	handed   map[string][][]string
 	sockets  []string
 	failWith error
+	// the uid the readable files were written for
+	readableUID int
 }
 
 func (f *fakeBroker) SetKey(k []byte) error    { f.key = append([]byte(nil), k...); return nil }
 func (f *fakeBroker) Put(string, []byte) error { return nil }
 func (f *fakeBroker) Delete(string) error      { return nil }
 func (f *fakeBroker) List() ([]string, error)  { return nil, nil }
+
+// WriteReadable writes "value of <ref>\n" for each file, as the helper would write the value.
+func (f *fakeBroker) WriteReadable(_ context.Context, dir string, uid int, files map[string]string) error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	for name, ref := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("value of "+ref+"\n"), 0o400); err != nil {
+			return err
+		}
+	}
+	f.readableUID = uid
+	return nil
+}
+
 func (f *fakeBroker) HandOver(_ context.Context, id, socket string, refs [][]string) error {
 	if f.failWith != nil {
 		return f.failWith

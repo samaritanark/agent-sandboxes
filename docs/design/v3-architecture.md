@@ -1532,7 +1532,12 @@ in v2; `sandbox stop` keeps v2's reminder.
 - **Unbound secrets are withheld by default.** Readable injection into the
   guest requires a per-secret `--allow-readable` (or profile equivalent), is
   audited per session, and is listed truthfully as `brokered` / `injected` /
-  `withheld`.
+  `withheld`. The value never passes through `sandboxd` or containerd: a
+  short-lived helper writes it from the broker store to a file on a tmpfs,
+  mounted read-only into the agent's microVM at `/run/sandbox/secrets/<VAR>`;
+  the environment carries `<VAR>_FILE`, and an attached command is wrapped in a
+  shell that exports `<VAR>` from the file (an image without a shell gets the
+  file only).
 
 Brokering prevents credential **theft**, not credential **use**: the agent can
 still act with a bound credential toward its bound destination, within the L7

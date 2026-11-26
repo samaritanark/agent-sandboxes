@@ -119,10 +119,19 @@ func refusalCases() map[string]func(*Spec) {
 			s.Bindings = append(s.Bindings, b)
 		},
 		"readable clashes with env": func(s *Spec) { s.Readable[0].EnvVar = "TERM" },
-		"root dependency":           func(s *Spec) { s.Dependencies[0].RunAsUser = 0 },
-		"dependency port":           func(s *Spec) { s.Dependencies[0].Port = 0 },
-		"dependency port 443":       func(s *Spec) { s.Dependencies[0].Port = 443 },
-		"dependency on extra port":  func(s *Spec) { s.Dependencies[0].Port = 8443 },
+		"readable file clashes":     func(s *Spec) { s.Env = append(s.Env, EnvVar{"NPM_TOKEN_FILE", "/x"}) },
+		"readable twice, by its file": func(s *Spec) {
+			s.Readable = append(s.Readable, Readable{Ref: "x", EnvVar: "NPM_TOKEN_FILE"})
+		},
+		"too many readable": func(s *Spec) {
+			for i := 0; i < MaxReadable; i++ {
+				s.Readable = append(s.Readable, Readable{Ref: "r", EnvVar: "R" + strings.Repeat("X", i)})
+			}
+		},
+		"root dependency":          func(s *Spec) { s.Dependencies[0].RunAsUser = 0 },
+		"dependency port":          func(s *Spec) { s.Dependencies[0].Port = 0 },
+		"dependency port 443":      func(s *Spec) { s.Dependencies[0].Port = 443 },
+		"dependency on extra port": func(s *Spec) { s.Dependencies[0].Port = 8443 },
 		"two dependencies on one port": func(s *Spec) {
 			d := s.Dependencies[0]
 			d.Name, d.Env, d.Bindings = "replica", nil, nil
