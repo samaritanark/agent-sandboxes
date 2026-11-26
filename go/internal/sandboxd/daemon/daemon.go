@@ -60,12 +60,16 @@ type Network interface {
 
 // GatewayRunner runs a session's gateway process in its gateway namespace.
 type GatewayRunner interface {
-	// Start makes dir afresh with files in it (relative paths: "policy.json", the leaves, the
-	// upstream roots), readable only by the gateway, starts the gateway, and waits until it serves;
-	// it returns the process id.
+	// Start makes dir afresh with files in it (relative paths: "policy.json", the upstream
+	// roots), readable only by the gateway, installs leaves as version 1 (see Renew), starts the
+	// gateway, and waits until it serves; it returns the process id.
 	// slot is the session's uplink index, unique among live sessions: each gateway runs as its
 	// own user, derived from it.
-	Start(ctx context.Context, id, gatewayNS, dir string, slot int, files map[string][]byte) (int, error)
+	Start(ctx context.Context, id, gatewayNS, dir string, slot int, files, leaves map[string][]byte) (int, error)
+	// Renew installs leaves (by file name: "0.crt", "0.key", ...) as dir/tls/v<version>, readable
+	// only by the gateway, then points the symlink dir/tls/live at it with one rename (the
+	// gateway's Envoy reloads on it) and removes the older versions.
+	Renew(ctx context.Context, id, dir string, slot, version int, leaves map[string][]byte) error
 	// Stop ends it (pid as Start returned it).
 	Stop(ctx context.Context, id string, pid int) error
 }
@@ -128,6 +132,7 @@ type Daemon struct {
 
 	mu      sync.Mutex // serializes lifecycle changes
 	live    map[string]*limits.Times
+	leaves  map[string]*sessionLeaves // the live sessions that intercept
 	ready   bool
 	offsets map[string]int64 // how far each session's gateway connection log has been collected
 }
@@ -294,6 +299,8 @@ func (d *Daemon) Start(ctx context.Context, raw []byte) (string, error) {
 	}
 	if d.live == nil {
 		d.live = map[string]*limits.Times{}
+		d.leaves = map[string]*sessionLeaves{}
+		d.leaves = map[string]*sessionLeaves{}
 	}
 	d.live[id] = &limits.Times{Started: d.now(), KeepAlive: spec.KeepAlive}
 	d.audit(id, auditlog.Events, "session_running", nil)
@@ -407,8 +414,9 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 		names = append(names, interceptNames(dep.Egress, dep.Bindings))
 		rules = append(rules, dep.Egress.L7)
 	}
-	files := map[string][]byte{}
-	if err := d.gatewayTLS(id, gwDir, names, rules, &pol, files); err != nil {
+	files, leaves := map[string][]byte{}, map[string][]byte{}
+	sl, err := d.gatewayTLS(id, gwDir, names, rules, &pol, files, leaves)
+	if err != nil {
 		return err
 	}
 	trustMounts, trustEnv, err := d.guestTrust(id)
@@ -435,9 +443,16 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 	if err := d.Journal.Intend(id, KindGateway, "gateway"); err != nil {
 		return err
 	}
-	pid, err := d.Gateways.Start(ctx, id, gns, gwDir, uplink, files)
+	pid, err := d.Gateways.Start(ctx, id, gns, gwDir, uplink, files, leaves)
+	for _, v := range leaves {
+		clear(v) // the leaves' keys
+	}
 	if err != nil {
 		return fmt.Errorf("gateway: %w", err)
+	}
+	if sl != nil {
+		sl.slot = uplink
+		d.leaves[id] = sl
 	}
 	if err := d.Journal.Mark(id, KindGateway, "gateway", journal.Created, strconv.Itoa(pid)); err != nil {
 		return err
@@ -545,6 +560,7 @@ func (d *Daemon) Stop(ctx context.Context, id, reason string) error {
 // session FAILED first.
 func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error {
 	delete(d.live, id)
+	delete(d.leaves, id)
 	s, err := d.Journal.Load(id)
 	if err != nil {
 		return err
@@ -656,6 +672,7 @@ func (d *Daemon) Reap(ctx context.Context) {
 			}
 		}
 	}
+	d.renewLeaves(ctx, now)
 }
 
 // Reconcile runs once at start, before any session is accepted: every journaled session that
@@ -708,6 +725,7 @@ func (d *Daemon) Reconcile(ctx context.Context) error {
 		}
 	}
 	d.live = map[string]*limits.Times{}
+	d.leaves = map[string]*sessionLeaves{}
 	d.ready = true
 	return nil
 }

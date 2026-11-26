@@ -127,7 +127,18 @@ func run() error {
 	for _, l := range p.Links {
 		el := envoyconf.Link{Addr: l.Listen, Ports: l.Ports, Allow: l.Allow, BlockDomains: l.BlockDomains, BrokerSocket: brokerSockets[len(conf.Links)]}
 		for _, ic := range l.Intercept {
-			el.Intercept = append(el.Intercept, envoyconf.Intercept{Name: ic.Name, CertChain: ic.CertChain, PrivateKey: ic.PrivateKey, Rules: l.L7})
+			ei := envoyconf.Intercept{Name: ic.Name, CertChain: ic.CertChain, PrivateKey: ic.PrivateKey, SDS: ic.SDS, Rules: l.L7}
+			if ic.SDS != "" {
+				// the leaf is read through this file, so sandboxd can renew it in place
+				b, err := envoyconf.SDSSecret(ei)
+				if err != nil {
+					return err
+				}
+				if err := os.WriteFile(ic.SDS, b, 0o600); err != nil {
+					return err
+				}
+			}
+			el.Intercept = append(el.Intercept, ei)
 		}
 		conf.Links = append(conf.Links, el)
 	}

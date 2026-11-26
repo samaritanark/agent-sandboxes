@@ -53,6 +53,7 @@ type Intercept struct {
 	Name       string `json:"name"`
 	CertChain  string `json:"cert_chain"`
 	PrivateKey string `json:"private_key"`
+	SDS        string `json:"sds,omitempty"` // the gateway writes the leaf's SDS file here (envoyconf.Intercept)
 }
 
 // Dep is a dependency the agent reaches at <name>.deps.sandbox.internal:<port>.

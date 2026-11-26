@@ -1054,3 +1054,16 @@ m("internal/sessionspec/sessionspec.go", '\t\tif prev, ok := limits[b.Ref]; ok &
 m("internal/sessionspec/sessionspec.go", '\t\t\tif v < 0 || v > MaxLimit {', '\t\t\tif v > MaxLimit {', "TestValidateRefuses|TestBindingLimits")
 m("internal/sandboxd/daemon/daemon.go", '\t\t\tRatePerMinute: b.RatePerMinute, Burst: b.Burst, Quota: b.Quota})', '\t\t})', "TestBrokerHandover", pkg="sandboxd/daemon")
 m("internal/sandboxd/auditlog/sources.go", '"credential_rate_limited": true, ', '', ".", pkg="sandboxd/auditlog")
+
+# ---- leaf renewal (internal/sandboxd/daemon/tls.go) and the watched SDS secret (envoyconf)
+TL = "internal/sandboxd/daemon/tls.go"
+R_TL = "LeafRenewal|RenewBefore|Interception"
+m(TL, '\t\tif now.Before(sl.notAfter.Add(-d.renewBefore())) {', '\t\tif now.Before(sl.notAfter) {', R_TL, pkg="sandboxd/daemon")
+m(TL, '\t\tsl.notAfter = now.Add(d.leafValidity())\n', '', R_TL, pkg="sandboxd/daemon")
+m(TL, '\t\tsl.version++\n', '', R_TL, pkg="sandboxd/daemon")
+m(TL, '\tif v := d.leafValidity() / 2; v < 48*time.Hour {', '\tif v := d.leafValidity() / 2; false {', R_TL, pkg="sandboxd/daemon")
+m(TL, '\t\tif err != nil {\n\t\t\td.logf("session %s: renewing its leaves: %v", id, err)\n\t\t\tcontinue\n\t\t}\n\t\tsl.version++', '\t\tsl.version++', R_TL, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\td.renewLeaves(ctx, now)\n', '', R_TL, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\tdelete(d.leaves, id)\n', '', R_TL, pkg="sandboxd/daemon")
+m(IC, '\t\t\t"watched_directory": obj{"path": path.Dir(ic.SDS)}},', '},', "TestSDSSecret", pkg="gateway/envoyconf")
+m(IC, '\tif ic.SDS == "" {\n\t\tctx["tls_certificates"]', '\tif true {\n\t\tctx["tls_certificates"]', "TestSDSSecret", pkg="gateway/envoyconf")

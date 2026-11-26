@@ -17,6 +17,7 @@ package envoyconf
 //     deciding route; never a header, body, or query string.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -30,11 +31,32 @@ import (
 // Intercept is one intercepted name on a link: an exact name or a single-label wildcard "*.x",
 // the leaf certificate chain and key files for it, and the L7 rules (the session's and the org
 // baseline's; those that apply to the name are picked here).
+//
+// With SDS set, Envoy reads the leaf through that file (SDSSecret's output, naming CertChain and
+// PrivateKey) and watches its directory: when a file is moved there, it reloads the secret and
+// the files it names, so a renewed leaf takes effect for new connections while open ones go on.
+// The renewal swaps a symlink in that directory onto a fresh directory of leaves.
 type Intercept struct {
 	Name       string
 	CertChain  string
 	PrivateKey string
+	SDS        string
 	Rules      []l7.Rule
+}
+
+func secretName(ic Intercept) string { return "leaf:" + ic.Name }
+
+// SDSSecret is the SDS file for an intercepted name's leaf.
+func SDSSecret(ic Intercept) ([]byte, error) {
+	return json.MarshalIndent(obj{"resources": []obj{{
+		"@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret",
+		"name":  secretName(ic),
+		// the leaf files are reloaded on a move in the SDS file's directory (by default Envoy would
+		// watch their own directory, behind the symlink, which a swap never touches); the pair is
+		// read together and checked for a change in between
+		"tls_certificate": obj{"certificate_chain": obj{"filename": ic.CertChain}, "private_key": obj{"filename": ic.PrivateKey},
+			"watched_directory": obj{"path": path.Dir(ic.SDS)}},
+	}}}, "", "  ")
 }
 
 const interceptCluster = "intercepted_upstream"
@@ -51,7 +73,7 @@ func (c Config) checkIntercepts() error {
 			any = true
 			n := egressmatch.Normalize(ic.Name)
 			bare := strings.TrimPrefix(n, "*.")
-			if n == "" || n != ic.Name || strings.Contains(bare, "*") || seen[n] || !path.IsAbs(ic.CertChain) || !path.IsAbs(ic.PrivateKey) {
+			if n == "" || n != ic.Name || strings.Contains(bare, "*") || seen[n] || !path.IsAbs(ic.CertChain) || !path.IsAbs(ic.PrivateKey) || (ic.SDS != "" && !path.IsAbs(ic.SDS)) {
 				return fmt.Errorf("envoyconf: link %d: bad intercept %q", i, ic.Name)
 			}
 			seen[n] = true
@@ -258,14 +280,25 @@ func (c Config) interceptChain(link Link, ic Intercept, port int) (obj, error) {
 	return obj{
 		"name": "intercept:" + ic.Name,
 		"transport_socket": obj{"name": "envoy.transport_sockets.tls", "typed_config": typed("envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext", obj{
-			"common_tls_context": obj{
-				"tls_certificates": []obj{{"certificate_chain": obj{"filename": ic.CertChain}, "private_key": obj{"filename": ic.PrivateKey}}},
-				"alpn_protocols":   []string{"h2", "http/1.1"},
-			},
+			"common_tls_context": leafContext(ic),
 		})},
 		"filters": []obj{c.authzFilter(), {"name": "envoy.filters.network.http_connection_manager",
 			"typed_config": typed("envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager", hcm)}},
 	}, nil
+}
+
+// leafContext serves the name's leaf: from its files, or through its watched SDS file.
+func leafContext(ic Intercept) obj {
+	ctx := obj{"alpn_protocols": []string{"h2", "http/1.1"}}
+	if ic.SDS == "" {
+		ctx["tls_certificates"] = []obj{{"certificate_chain": obj{"filename": ic.CertChain}, "private_key": obj{"filename": ic.PrivateKey}}}
+		return ctx
+	}
+	ctx["tls_certificate_sds_secret_configs"] = []obj{{"name": secretName(ic), "sds_config": obj{
+		"path_config_source":   obj{"path": ic.SDS, "watched_directory": obj{"path": path.Dir(ic.SDS)}},
+		"resource_api_version": "V3",
+	}}}
+	return ctx
 }
 
 // interceptedUpstream is the cluster intercepted requests leave by: the forward proxy over TLS,

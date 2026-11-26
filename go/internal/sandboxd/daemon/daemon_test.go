@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"os"
@@ -113,11 +117,39 @@ type fakeGW struct {
 	running  map[string]int
 	policies map[string]gwpolicy.Policy
 	files    map[string]map[string][]byte
+	leaves   map[string]map[string][]byte
+	versions map[string]int
+	renewErr error
+	renews   int
 	stopped  []string
 	calls    *[]string
 }
 
-func (f *fakeGW) Start(_ context.Context, id, ns, dir string, slot int, files map[string][]byte) (int, error) {
+func (f *fakeGW) Renew(_ context.Context, id, dir string, slot, version int, leaves map[string][]byte) error {
+	f.renews++
+	if f.renewErr != nil {
+		return f.renewErr
+	}
+	if f.running[id] == 0 || version != f.versions[id]+1 {
+		return fmt.Errorf("renew %s to version %d", id, version)
+	}
+	f.versions[id] = version
+	f.leaves[id] = maps.Clone(leaves)
+	for k, v := range leaves {
+		f.leaves[id][k] = slices.Clone(v)
+	}
+	return nil
+}
+
+func (f *fakeGW) Start(_ context.Context, id, ns, dir string, slot int, files, leaves map[string][]byte) (int, error) {
+	if f.leaves == nil {
+		f.leaves, f.versions = map[string]map[string][]byte{}, map[string]int{}
+	}
+	f.leaves[id] = map[string][]byte{}
+	for k, v := range leaves {
+		f.leaves[id][k] = slices.Clone(v)
+	}
+	f.versions[id] = 1
 	p, err := gwpolicy.Decode(files["policy.json"])
 	if err != nil {
 		return 0, err
@@ -565,7 +597,7 @@ func TestInterception(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, files := r.gw.policies[id], r.gw.files[id]
+	p, files, leaves := r.gw.policies[id], r.gw.files[id], r.gw.leaves[id]
 	dir := filepath.Join(r.d.SessionRoot, id, "gateway")
 	if p.UpstreamCAs != filepath.Join(dir, "upstream-cas.pem") || string(files["upstream-cas.pem"]) != "SYSTEM ROOTS\n" {
 		t.Errorf("upstream roots %q", p.UpstreamCAs)
@@ -575,8 +607,12 @@ func TestInterception(t *testing.T) {
 		if len(l.Intercept) != 1 || l.Intercept[0].Name != want || len(l.L7) != 2 || l.L7[0].Methods[0] != "TRACE" {
 			t.Fatalf("link %d: %+v", i, l)
 		}
-		rel, _ := filepath.Rel(dir, l.Intercept[0].CertChain)
-		if _, err := tls.X509KeyPair(files[rel], files[strings.TrimSuffix(rel, ".crt")+".key"]); err != nil {
+		ic := l.Intercept[0]
+		if filepath.Dir(ic.CertChain) != filepath.Join(dir, "tls", "live") || filepath.Dir(ic.SDS) != filepath.Join(dir, "tls") {
+			t.Errorf("link %d leaf paths %+v", i, ic)
+		}
+		base := filepath.Base(ic.CertChain)
+		if _, err := tls.X509KeyPair(leaves[base], leaves[strings.TrimSuffix(base, ".crt")+".key"]); err != nil {
 			t.Errorf("link %d leaf: %v", i, err)
 		}
 	}
@@ -646,5 +682,92 @@ func TestBrokerHandover(t *testing.T) {
 	}
 	if _, ok := r.gw.running["s-fail"]; ok {
 		t.Error("the gateway of a failed start still runs")
+	}
+}
+
+// TestLeafRenewal: an attached session outlives its leaves (only keep-alive sessions have a
+// lifetime); before they expire, sandboxd issues new ones for the same names and the gateway
+// swaps them in.
+func TestLeafRenewal(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	ca, _, err := pki.LoadOrCreate(t.TempDir(), *r.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.d.TLS = &TLS{CA: ca, Baseline: []l7.Rule{{Host: l7.AnyHost, Methods: []string{"TRACE"}, Action: l7.Deny}}, SystemRoots: []byte("R\n")}
+	sp, _ := sessionspec.Decode(bytes.NewReader(spec("s-ren", 2048)))
+	sp.Egress.L7 = []l7.Rule{{Host: "api.anthropic.com", Methods: []string{"POST"}, Action: l7.Deny}}
+	b, _ := sp.Encode()
+	id, err := r.d.Start(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := slices.Clone(r.gw.leaves[id]["0.crt"])
+	notAfter := func() time.Time {
+		blk, _ := pem.Decode(r.gw.leaves[id]["0.crt"])
+		c, err := x509.ParseCertificate(blk.Bytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(c.DNSNames) != 1 || c.DNSNames[0] != "api.anthropic.com" {
+			t.Errorf("names %v", c.DNSNames)
+		}
+		return c.NotAfter
+	}
+	end := notAfter()
+	tick := func(d time.Duration) {
+		*r.now = r.now.Add(d)
+		r.d.Heartbeat(id)
+		r.d.Reap(ctx)
+	}
+	tick(end.Sub(*r.now) - 49*time.Hour)
+	if r.gw.versions[id] != 1 {
+		t.Fatalf("renewed %v early", end.Sub(*r.now))
+	}
+	tick(2 * time.Hour)
+	if r.gw.versions[id] != 2 || bytes.Equal(first, r.gw.leaves[id]["0.crt"]) || !notAfter().After(end) {
+		t.Fatalf("not renewed 47 h before expiry: version %d", r.gw.versions[id])
+	}
+	if _, err := tls.X509KeyPair(r.gw.leaves[id]["0.crt"], r.gw.leaves[id]["0.key"]); err != nil {
+		t.Error(err)
+	}
+	tick(time.Minute)
+	if r.gw.versions[id] != 2 {
+		t.Error("renewed again at once")
+	}
+	if ev := strings.Join(auditTypes(t, r.d.AuditRoot, id, "events.jsonl"), ","); !strings.Contains(ev, "tls_leaves_renewed") {
+		t.Errorf("events %s", ev)
+	}
+	// a failed renewal leaves the session running and is retried
+	end = notAfter()
+	r.gw.renewErr = errors.New("disk full")
+	tick(end.Sub(*r.now) - time.Hour)
+	if r.gw.versions[id] != 2 || r.d.live[id] == nil {
+		t.Fatalf("after a failed renewal: version %d", r.gw.versions[id])
+	}
+	r.gw.renewErr = nil
+	tick(time.Minute)
+	if r.gw.versions[id] != 3 {
+		t.Error("not retried")
+	}
+	// an ended session is not renewed
+	r.d.Stop(ctx, id, "done")
+	n := r.gw.renews
+	tick(30 * 24 * time.Hour)
+	if r.gw.renews != n {
+		t.Error("an ended session's leaves were renewed")
+	}
+}
+
+// TestRenewBefore: two days ahead, or half the leaves' life when that is shorter.
+func TestRenewBefore(t *testing.T) {
+	d := &Daemon{}
+	if d.renewBefore() != 48*time.Hour {
+		t.Errorf("default %v", d.renewBefore())
+	}
+	d.Expiry.KeepAliveMax = time.Hour
+	if d.renewBefore() != 25*time.Hour/2 {
+		t.Errorf("short leaves %v", d.renewBefore())
 	}
 }

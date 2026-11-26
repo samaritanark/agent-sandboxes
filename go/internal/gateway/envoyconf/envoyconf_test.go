@@ -189,3 +189,28 @@ func TestUpgradeCluster(t *testing.T) {
 		t.Error("the upgrade route is not first")
 	}
 }
+
+// TestSDSSecret: the leaf is reloaded on a move in the SDS file's directory, not in its own
+// (behind the symlink a renewal swaps).
+func TestSDSSecret(t *testing.T) {
+	ic := Intercept{Name: "a.example", CertChain: "/g/tls/live/0.crt", PrivateKey: "/g/tls/live/0.key", SDS: "/g/tls/0.sds.json"}
+	b, err := SDSSecret(ic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		Resources []struct {
+			Name           string `json:"name"`
+			TLSCertificate struct {
+				Watched struct{ Path string } `json:"watched_directory"`
+			} `json:"tls_certificate"`
+		}
+	}
+	if err := json.Unmarshal(b, &v); err != nil || len(v.Resources) != 1 || v.Resources[0].TLSCertificate.Watched.Path != "/g/tls" || v.Resources[0].Name != "leaf:a.example" {
+		t.Errorf("%s", b)
+	}
+	ctx, _ := json.Marshal(leafContext(ic))
+	if !strings.Contains(string(ctx), `"watched_directory":{"path":"/g/tls"}`) || !strings.Contains(string(ctx), `"name":"leaf:a.example"`) || strings.Contains(string(ctx), "tls_certificates") {
+		t.Errorf("%s", ctx)
+	}
+}

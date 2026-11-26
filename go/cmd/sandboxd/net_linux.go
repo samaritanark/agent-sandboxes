@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/netsetup"
 )
 
@@ -109,7 +110,66 @@ func gatewayProperties(ns, dir string) []string {
 	}
 }
 
-func (g *gateways) Start(ctx context.Context, id, ns, dir string, slot int, files map[string][]byte) (int, error) {
+// installLeaves writes leaves as dir/tls/v<version>, owned by the gateway's id and readable by it
+// alone, points dir/tls/live at it with one rename (the gateway's Envoy watches dir/tls and
+// reloads on the move), and removes every other version.
+func installLeaves(dir string, gid, version int, leaves map[string][]byte) error {
+	tdir := filepath.Join(dir, daemon.LeafDir)
+	if err := os.MkdirAll(tdir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chown(tdir, gid, gid); err != nil {
+		return err
+	}
+	vname := "v" + strconv.Itoa(version)
+	vdir := filepath.Join(tdir, vname)
+	os.RemoveAll(vdir) // the remains of a failed attempt
+	if err := os.Mkdir(vdir, 0o700); err != nil {
+		return err
+	}
+	for name, b := range leaves {
+		if !filepath.IsLocal(name) || strings.ContainsRune(name, '/') {
+			return fmt.Errorf("leaf file %q", name)
+		}
+		p := filepath.Join(vdir, name)
+		if err := os.WriteFile(p, b, 0o400); err != nil {
+			return err
+		}
+		if err := os.Chown(p, gid, gid); err != nil {
+			return err
+		}
+	}
+	if err := os.Chown(vdir, gid, gid); err != nil {
+		return err
+	}
+	tmp := filepath.Join(tdir, daemon.LiveLeaves+".new")
+	os.Remove(tmp)
+	if err := os.Symlink(vname, tmp); err != nil {
+		return err
+	}
+	if err := os.Lchown(tmp, gid, gid); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, filepath.Join(tdir, daemon.LiveLeaves)); err != nil {
+		return err
+	}
+	ents, _ := os.ReadDir(tdir)
+	for _, e := range ents {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "v") && e.Name() != vname {
+			os.RemoveAll(filepath.Join(tdir, e.Name()))
+		}
+	}
+	return nil
+}
+
+func (g *gateways) Renew(_ context.Context, id, dir string, slot, version int, leaves map[string][]byte) error {
+	if slot < 0 || slot > 0xffff || version < 2 {
+		return fmt.Errorf("gateway slot %d, leaves version %d", slot, version)
+	}
+	return installLeaves(dir, GatewayIDBase+slot, version, leaves)
+}
+
+func (g *gateways) Start(ctx context.Context, id, ns, dir string, slot int, files, leaves map[string][]byte) (int, error) {
 	if slot < 0 || slot > 0xffff {
 		return 0, fmt.Errorf("gateway slot %d", slot)
 	}
@@ -148,6 +208,11 @@ func (g *gateways) Start(ctx context.Context, id, ns, dir string, slot int, file
 			return 0, err
 		}
 		owned = append(owned, p)
+	}
+	if len(leaves) > 0 {
+		if err := installLeaves(dir, gid, 1, leaves); err != nil {
+			return 0, err
+		}
 	}
 	pol := filepath.Join(dir, "policy.json")
 	logPath := filepath.Join(dir, "gateway.log")
