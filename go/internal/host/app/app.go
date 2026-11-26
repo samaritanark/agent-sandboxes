@@ -210,7 +210,9 @@ func (a *app) proxy(args []string) int {
 			a.die("%v", err)
 		}
 		args = append([]string{"run"}, absRepos(args[1:], wd)...)
-		a.prepareRun(ep, args[1:], archive)
+		repos := a.prepareRun(ep, args[1:], archive)
+		live := a.startLiveSync(ep, repos)
+		defer live.finish()
 	}
 	rc, err := a.env.Transport.Run(a.ctx, ep, a.vmArgv(args...), a.env.Stdin, a.env.Stdout, a.env.Stderr, a.env.StdinTTY)
 	if err != nil {

@@ -1219,3 +1219,9 @@ m("internal/cli/sessions.go", 'tabwriter.NewWriter(c.stdout, 0, 8, 3,', 'tabwrit
 m("internal/cli/resume.go", '\t\tif r.KeepAlive {\n\t\t\tc.out("==> Disconnected from', '\t\tif false {\n\t\t\tc.out("==> Disconnected from', "TestResumeOnSandboxd")
 m("internal/cli/resume.go", '\t\tif b == "" && onSandboxd {', '\t\tif false {', "TestResumeOnSandboxd")
 m("internal/cli/resume.go", '\t\tif !live {\n\t\t\treturn false, ""\n\t\t}', '', "TestResumeOnSandboxd")
+
+# ---- the live sync during a run (internal/host/app/livesync.go, syncone.go)
+m("internal/host/app/syncone.go", '\tif live != nil {\n\t\te.Run(live, LiveSyncInterval, each)\n\t}', '', "TestLiveSync", pkg="host/app")
+m("internal/host/app/livesync.go", '\tl.toHost += len(rep.ToHost)', '\tl.toHost += 0', "TestLiveSync", pkg="host/app")
+m("internal/host/app/app.go", '\t\tdefer live.finish()\n', '', "TestLiveSync|TestRun", pkg="host/app",
+  equivalent="no host test drives a proxied run with repositories through a live sync")

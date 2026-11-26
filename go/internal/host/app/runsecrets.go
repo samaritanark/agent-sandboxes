@@ -239,10 +239,10 @@ func (a *app) readSecret(name string) (v []byte, absent bool, err error) {
 // from the host store is removed from the VM's, so the run stops with v2's message instead of
 // binding a stale copy. When the pre-pass fails, nothing is pushed or synced: the run that follows
 // stops the same way and says why.
-func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) {
+func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (synced []string) {
 	out, err := a.env.Transport.Output(a.ctx, ep, a.vmArgv(append([]string{RunBindings}, args...)...), maxBindingsOutput)
 	if err != nil {
-		return
+		return nil
 	}
 	names, repos, err := parseRunBindings(out)
 	if err != nil {
@@ -280,7 +280,9 @@ func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) {
 				a.die("could not make %s the sandbox VM's path to its copy: %v", r, err)
 			}
 		}
+		synced = append(synced, r)
 	}
+	return synced
 }
 
 // pushSecrets seals and pushes the named secrets from the host store.

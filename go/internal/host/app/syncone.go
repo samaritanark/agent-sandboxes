@@ -1,12 +1,14 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/syncengine"
@@ -38,8 +40,19 @@ func (a *app) copyEpoch(ep driver.SSHEndpoint, ws string) (string, error) {
 
 var epochRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
+// LiveSyncInterval is how often a repository is synced while a session runs (polling, as decided:
+// the host has no file watcher yet).
+var LiveSyncInterval = 3 * time.Second
+
 // syncRepo is one engine pass between host repository repo (absolute) and its VM copy, ws.
 func (a *app) syncRepo(ep driver.SSHEndpoint, repo string) (string, syncengine.Report, error) {
+	return a.syncLoop(ep, repo, nil, nil)
+}
+
+// syncLoop is syncRepo, but with live set it passes every LiveSyncInterval until live ends,
+// reporting each pass to each, and then makes one final pass, whose report it returns: the last
+// changes before a session ended still reach the host.
+func (a *app) syncLoop(ep driver.SSHEndpoint, repo string, live context.Context, each func(syncengine.Report, error)) (string, syncengine.Report, error) {
 	if st, err := os.Lstat(filepath.Join(repo, ".git")); err != nil || !st.IsDir() {
 		return "", syncengine.Report{}, fmt.Errorf("%s is not the top of a git work tree", repo)
 	}
@@ -78,6 +91,9 @@ func (a *app) syncRepo(ep driver.SSHEndpoint, repo string) (string, syncengine.R
 		Store:     &syncgate.Store{Dir: filepath.Join(a.env.StateDir, "quarantine")},
 		VM:        &syncengine.StreamVM{W: toAgentW, R: fromAgentR},
 		Copy:      epoch,
+	}
+	if live != nil {
+		e.Run(live, LiveSyncInterval, each)
 	}
 	rep, err := e.Sync()
 	toAgentW.Close()
