@@ -39,7 +39,9 @@ func TestFlows(t *testing.T) {
 	if r := run("ses-missing"); r.rc != 1 || !strings.Contains(r.err, "Session not found") {
 		t.Errorf("%+v", r)
 	}
-	if r := run("../x"); r.rc != 1 {
+	os.MkdirAll(filepath.Join(state, "x"), 0o700)
+	os.WriteFile(filepath.Join(state, "x", "flows.jsonl"), []byte(`{"decision":"allowed"}`+"\n"), 0o600)
+	if r := run("../x"); r.rc != 1 || strings.Contains(r.out, "allowed") {
 		t.Errorf("%+v", r)
 	}
 }

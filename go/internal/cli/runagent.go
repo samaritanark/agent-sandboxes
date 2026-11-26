@@ -10,8 +10,8 @@ package cli
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path"
 	"path/filepath"
