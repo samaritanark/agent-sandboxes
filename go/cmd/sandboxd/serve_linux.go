@@ -157,6 +157,7 @@ func serve() error {
 		Resolvers: resolvers, AuditRoot: auditlog.Root,
 		NetNSPath: netns.Path, Budget: limits.Budget{VMMemoryMiB: mem},
 		SessionRoot: sessionspec.SessionStore, ReadableRoot: ReadableRoot, Log: l,
+		Mounter: &viewMounter{stage: "/run/sandboxd/stage"},
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

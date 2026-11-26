@@ -114,6 +114,7 @@ const (
 	KindUplink    = "uplink"   // an uplink index (its interfaces go with the gateway namespace)
 	KindGateway   = "gateway"  // the gateway process (its id in the resource's note)
 	KindReadable  = "readable" // the session's directory of readable secrets, on a tmpfs
+	KindView      = "view"     // a workspace view (views.go): its directory, by name
 )
 
 // AgentUID is the agent's user in its microVM.
@@ -130,6 +131,7 @@ type Daemon struct {
 	Network     Network
 	Gateways    GatewayRunner
 	TLS         *TLS         // interception (tls.go); nil refuses any session that intercepts
+	Mounter     Mounter      // workspace views (views.go); nil mounts each overlay in the microVM
 	Broker      Broker       // the broker store and handover; nil refuses any session that binds credentials
 	Resolvers   []netip.Addr // the VM's upstream resolvers, for each gateway
 	AuditRoot   string       // each session's audit log (auditlog.Root); "" for none
@@ -344,34 +346,68 @@ func (d *Daemon) step(id, kind, name string, create func() error) error {
 func (d *Daemon) maskDir(id string) string { return filepath.Join(d.SessionRoot, id, "masks") }
 
 // mounts turns the spec's mounts into bind mounts, making the empty mask files and directories.
-// Workspace mounts come first, so overlays and masks inside them land on top.
+// With a Mounter, each workspace becomes a view (views.go) with its masks and read-only paths
+// already in place, so the microVM gets one mount per workspace; without one (the tests that
+// predate views), every mount goes to the microVM, workspaces first so the overlays land on top.
 func (d *Daemon) mounts(spec *sessionspec.Spec) ([]runtime.Mount, error) {
 	ms := append([]sessionspec.Mount(nil), spec.Mounts...)
 	sort.SliceStable(ms, func(i, j int) bool {
 		return ms[i].Kind == sessionspec.Workspace && ms[j].Kind != sessionspec.Workspace
 	})
+	views := map[string]string{} // workspace target: its view
 	var out []runtime.Mount
 	for i, m := range ms {
 		switch m.Kind {
-		case sessionspec.MaskFile, sessionspec.MaskDir:
-			p := filepath.Join(d.maskDir(spec.ID), strconv.Itoa(i))
-			var err error
-			if m.Kind == sessionspec.MaskFile {
-				err = os.WriteFile(p, nil, 0o444)
-			} else {
-				err = os.Mkdir(p, 0o555)
+		case sessionspec.Workspace:
+			if d.Mounter == nil {
+				out = append(out, runtime.Mount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
+				continue
 			}
+			v, err := d.view(spec.ID, len(views), m.Source)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, runtime.Mount{Source: p, Target: m.Target, ReadOnly: true})
-		case sessionspec.ReadOnly:
-			out = append(out, runtime.Mount{Source: m.Source, Target: m.Target, ReadOnly: true})
+			views[m.Target] = v
+			out = append(out, runtime.Mount{Source: v, Target: m.Target, ReadOnly: m.ReadOnly})
+		case sessionspec.MaskFile, sessionspec.MaskDir, sessionspec.ReadOnly:
+			src, cover := m.Source, ""
+			if m.Kind != sessionspec.ReadOnly {
+				src = filepath.Join(d.maskDir(spec.ID), strconv.Itoa(i))
+				cover = src
+				var err error
+				if m.Kind == sessionspec.MaskFile {
+					err = os.WriteFile(src, nil, 0o444)
+				} else {
+					err = os.Mkdir(src, 0o555)
+				}
+				if err != nil {
+					return nil, err
+				}
+			}
+			// directories go to the microVM, where Kata enforces them; files are covered in the view,
+			// which keeps Kata from truncating the copy's file (views.go)
+			if v, rel, ok := inView(views, m.Target); ok && !isDirOverlay(m) {
+				if err := d.Mounter.Over(v, rel, cover); err != nil && !errors.Is(err, ErrNoTarget) {
+					return nil, fmt.Errorf("%s over %s: %w", m.Kind, m.Target, err)
+				}
+				continue // a path the copy does not have needs no cover
+			}
+			out = append(out, runtime.Mount{Source: src, Target: m.Target, ReadOnly: true})
 		default:
 			out = append(out, runtime.Mount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
 		}
 	}
 	return out, nil
+}
+
+// isDirOverlay is whether an overlay covers a directory: a directory mask, or a read-only path
+// that is a directory in the copy (not a link to one).
+func isDirOverlay(m sessionspec.Mount) bool {
+	if m.Kind == sessionspec.MaskDir {
+		return true
+	}
+	st, err := os.Lstat(m.Source)
+	return m.Kind == sessionspec.ReadOnly && err == nil && st.IsDir()
 }
 
 func env(vs []sessionspec.EnvVar) []string {
@@ -609,7 +645,7 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 	if s, err = d.Journal.Load(id); err != nil {
 		return err
 	}
-	order := map[string]int{KindContainer: 0, KindGateway: 1, KindNetNS: 2, KindUplink: 3, KindReadable: 4, KindMasks: 5}
+	order := map[string]int{KindContainer: 0, KindGateway: 1, KindNetNS: 2, KindUplink: 3, KindView: 4, KindReadable: 5, KindMasks: 6}
 	live := s.Live()
 	sort.SliceStable(live, func(i, j int) bool { return order[live[i].Kind] < order[live[j].Kind] })
 	for _, r := range live {
@@ -627,6 +663,8 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 			err = d.Gateways.Stop(ctx, id, pid)
 		case KindUplink:
 			// its interfaces went with the gateway namespace; the index is free again
+		case KindView:
+			err = d.dropView(id, r.Name)
 		case KindReadable:
 			err = os.RemoveAll(d.readableDir(id))
 		case KindMasks:

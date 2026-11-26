@@ -1193,3 +1193,14 @@ m("cmd/sandbox-vm/gitenv.go", '\t\tn++\n', '', "TestProtectGit", pkg="../cmd/san
 m("internal/sandboxd/daemon/attach.go", 'return 0, errors.New("attach: " + firstLine(err))', 'return 0, fmt.Errorf("attach: %w", err)', "TestAttachErrorFirstLine", pkg="sandboxd/daemon")
 m(AB, '\tfor i := 1; err != nil && transient(err) && i < keyPushTries; i++ {', '\tfor i := 1; err != nil && transient(err) && i < 1; i++ {', "TestBrokerKeyPushedAtStart", pkg="host/app")
 m(AB, '\tfor i := 1; err != nil && transient(err) && i < keyPushTries; i++ {', '\tfor i := 1; err != nil && i < keyPushTries; i++ {', "TestBrokerKeyPushedAtStart", pkg="host/app")
+
+# ---- workspace views (internal/sandboxd/daemon/views.go and mounts in daemon.go)
+VW = "internal/sandboxd/daemon/views.go"
+R_VW = "TestViews|TestStartAndStop"
+m("internal/sandboxd/daemon/daemon.go", 'ok && !isDirOverlay(m) {', 'ok {', R_VW, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\tif m.Kind == sessionspec.MaskDir {\n\t\treturn true\n\t}', '', R_VW, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\t\t\t\tif err := d.Mounter.Over(v, rel, cover); err != nil && !errors.Is(err, ErrNoTarget) {', '\t\t\t\tif err := d.Mounter.Over(v, rel, cover); err != nil {', R_VW, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\t\tcase KindView:\n\t\t\terr = d.dropView(id, r.Name)\n', '', R_VW, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\t\t\t\tcover = src\n', '', R_VW, pkg="sandboxd/daemon")
+m(VW, '\tif err := d.Mounter.Unmount(v); err != nil {\n\t\treturn err\n\t}\n', '', R_VW, pkg="sandboxd/daemon")
+m(VW, '\tos.Remove(filepath.Dir(v)) // the views directory, once empty\n', '', R_VW, pkg="sandboxd/daemon")
