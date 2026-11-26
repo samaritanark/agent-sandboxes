@@ -112,3 +112,30 @@ func (c *cmdCtx) bindSecrets(spec *sessionspec.Spec, s LaunchSpec, rec SessionRe
 	}
 	return lines
 }
+
+// bindOpencode gives opencode v2's environment (design 5.9.4): OPENAI_API_KEY holding a placeholder
+// the broker replaces toward the endpoint, OPENAI_BASE_URL, and OPENCODE_CONFIG_CONTENT, the model
+// list the host fetched with the key.
+func (c *cmdCtx) bindOpencode(spec *sessionspec.Spec, s LaunchSpec) {
+	var b brokerseal.Binding
+	var ok bool
+	if c.env.CredentialBinding != nil {
+		b, ok = c.env.CredentialBinding(OpencodeRef)
+	}
+	host := strings.ToLower(urlHost(s.BaseURL))
+	if !ok || b.Allows([]string{host}, "bearer", false) != nil || !sessionspec.Reachable(host, spec.Egress) {
+		c.die("opencode's API key is not bound to %s for this launch; run it through the host's sandbox command, with OPENCODE_API_KEY set there.", host)
+	}
+	cfg := ""
+	if c.env.Getenv != nil {
+		cfg = c.env.Getenv(OpencodeConfigEnv)
+	}
+	if cfg == "" {
+		c.die("opencode's configuration did not come from the host; run it through the host's sandbox command.")
+	}
+	ph := placeholder()
+	spec.Bindings = append(spec.Bindings, sessionspec.Binding{Ref: OpencodeRef, Hosts: []string{host}, Inject: "bearer", Placeholder: ph, EnvVar: "OPENAI_API_KEY"})
+	spec.Env = append(spec.Env, sessionspec.EnvVar{Name: "OPENAI_API_KEY", Value: ph},
+		sessionspec.EnvVar{Name: "OPENCODE_CONFIG_CONTENT", Value: cfg}, sessionspec.EnvVar{Name: "OPENAI_BASE_URL", Value: s.BaseURL})
+	c.out("==> opencode: API key brokered to %s (bearer)", host)
+}

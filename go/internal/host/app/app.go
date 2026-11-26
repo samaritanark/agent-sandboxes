@@ -55,6 +55,11 @@ type Env struct {
 	// Home is the operator's home directory, which the VM mirrors (proxied commands run with it as
 	// HOME, so "~" and host paths mean what they mean on the host); "" keeps the VM's own.
 	Home string
+	// Getenv is the host's environment, for what proxied commands take from it (opencode's key and
+	// endpoint); nil reads nothing.
+	Getenv func(string) string
+	// FetchModels asks an OpenAI-compatible endpoint for its models (opencode); nil uses HTTP.
+	FetchModels func(ctx context.Context, base, key string) ([]byte, error)
 }
 
 // ReleasePath is the image's release file (5.1.7).
@@ -204,17 +209,21 @@ func (a *app) proxy(args []string) int {
 	ep := a.running()
 	a.handshake(ep)
 	archive := a.pushState(ep)
+	var extra []string
 	if len(args) > 0 && args[0] == "run" {
 		wd, err := os.Getwd()
 		if err != nil {
 			a.die("%v", err)
 		}
 		args = append([]string{"run"}, absRepos(args[1:], wd)...)
-		repos := a.prepareRun(ep, args[1:], archive)
+		repos, cfg := a.prepareRun(ep, args[1:], archive)
+		if cfg != "" {
+			extra = append(extra, OpencodeConfigEnv+"="+cfg)
+		}
 		live := a.startLiveSync(ep, repos)
 		defer live.finish()
 	}
-	rc, err := a.env.Transport.Run(a.ctx, ep, a.vmArgv(args...), a.env.Stdin, a.env.Stdout, a.env.Stderr, a.env.StdinTTY)
+	rc, err := a.env.Transport.Run(a.ctx, ep, a.vmArgvEnv(extra, args...), a.env.Stdin, a.env.Stdout, a.env.Stderr, a.env.StdinTTY)
 	if err != nil {
 		a.die("cannot run the command in the sandbox VM: %v", err)
 	}

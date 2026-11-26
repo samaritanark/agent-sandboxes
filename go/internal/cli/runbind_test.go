@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"io"
 	"strings"
 	"testing"
 
@@ -79,5 +81,58 @@ func TestBindInfraTokens(t *testing.T) {
 	if len(spec.Bindings) != 1 || spec.Bindings[0].Ref != "infra.INFRA_TOKEN_vault" || spec.Bindings[0].EnvVar != "INFRA_TOKEN_vault" ||
 		len(spec.Env) != 1 || spec.Env[0].Value != spec.Bindings[0].Placeholder {
 		t.Errorf("%+v %+v", spec.Bindings, spec.Env)
+	}
+}
+
+// TestBindOpencode: opencode gets v2's three variables, the key as a placeholder bound to the
+// endpoint; without the host's binding or configuration the launch stops.
+func TestBindOpencode(t *testing.T) {
+	bound := map[string]brokerseal.Binding{OpencodeRef: {Hosts: []string{"vllm.corp.example"}, Inject: "bearer"}}
+	env := Env{CredentialBinding: func(ref string) (brokerseal.Binding, bool) { b, ok := bound[ref]; return b, ok },
+		Getenv: func(k string) string { return map[string]string{OpencodeConfigEnv: `{"provider":{}}`}[k] }}
+	var out bytes.Buffer
+	c := &cmdCtx{env: env, stdout: &out, stderr: io.Discard}
+	spec := &sessionspec.Spec{Egress: sessionspec.Egress{Allow: []string{"vllm.corp.example"}}}
+	c.bindOpencode(spec, LaunchSpec{Agent: "opencode", BaseURL: "https://VLLM.corp.example/v1"})
+	if len(spec.Bindings) != 1 || spec.Bindings[0].Ref != OpencodeRef || spec.Bindings[0].EnvVar != "OPENAI_API_KEY" ||
+		strings.Join(spec.Bindings[0].Hosts, ",") != "vllm.corp.example" {
+		t.Fatalf("%+v", spec.Bindings)
+	}
+	var vars []string
+	for _, e := range spec.Env {
+		vars = append(vars, e.Name+"="+strings.Replace(e.Value, spec.Bindings[0].Placeholder, "PH", 1))
+	}
+	if strings.Join(vars, " ") != `OPENAI_API_KEY=PH OPENCODE_CONFIG_CONTENT={"provider":{}} OPENAI_BASE_URL=https://VLLM.corp.example/v1` {
+		t.Errorf("%q", vars)
+	}
+	if !strings.Contains(out.String(), "==> opencode: API key brokered to vllm.corp.example (bearer)") {
+		t.Errorf("%q", out.String())
+	}
+	for name, e := range map[string]Env{
+		"no binding": {Getenv: env.Getenv},
+		"another host": {CredentialBinding: func(string) (brokerseal.Binding, bool) {
+			return brokerseal.Binding{Hosts: []string{"x.example"}, Inject: "bearer"}, true
+		}, Getenv: env.Getenv},
+		"no config": {CredentialBinding: env.CredentialBinding},
+	} {
+		c := &cmdCtx{env: e, stdout: io.Discard, stderr: io.Discard}
+		if rc := runDie(func() {
+			c.bindOpencode(&sessionspec.Spec{Egress: spec.Egress}, LaunchSpec{Agent: "opencode", BaseURL: "https://vllm.corp.example/v1"})
+		}); rc != 1 {
+			t.Errorf("%s: launched", name)
+		}
+	}
+	// the pre-pass names the endpoint
+	be := bindingsHome(t)
+	be.OpencodeBaseURL, be.OpencodeAPIKey = "https://vllm.corp.example/v1", ""
+	if p, ok, _ := RunPrepass([]string{"--agent", "opencode"}, be); !ok || p.OpencodeBaseURL != "https://vllm.corp.example/v1" {
+		t.Errorf("prepass %+v %v", p, ok)
+	}
+	// in the VM, run needs the key the host pushed, not the VM's environment
+	be.CredentialPresent = func(string) bool { return false }
+	be.OpencodeAPIKey = "set-in-the-vm"
+	var errb bytes.Buffer
+	if rc := Run([]string{"run", "--agent", "opencode"}, be, io.Discard, &errb); rc != 1 || !strings.Contains(errb.String(), "OPENCODE_API_KEY must be set") {
+		t.Errorf("%d %q", rc, errb.String())
 	}
 }

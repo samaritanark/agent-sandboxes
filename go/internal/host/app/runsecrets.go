@@ -48,8 +48,17 @@ const maxRepos = 16
 // and repos fields; valid secret names, no more than maxBoundSecrets, no duplicates; clean
 // absolute repository paths, no more than maxRepos, no duplicates.
 func parseRunBindings(b []byte) (names, repos []string, err error) {
-	names, repos, _, _, err = parsePrepass(b)
-	return names, repos, err
+	p, err := parsePrepass(b)
+	return p.Secrets, p.Repos, err
+}
+
+// prepass is the VM's answer to the pre-pass (cli.Prepass).
+type prepass struct {
+	Secrets, Repos []string
+	InfraTokens    []infraToken
+	InfraHosts     []string
+	// OpencodeBaseURL is set for an opencode launch: the endpoint its key goes to.
+	OpencodeBaseURL string
 }
 
 // infraToken is one --infra-token the VM says the launch fills: its variable and its file on the
@@ -70,7 +79,7 @@ const maxInfra = 16
 
 // parsePrepass is parseRunBindings with the infra tokens and their hosts (optional fields): clean
 // absolute token paths, v2's variable names, no repeats, at most maxInfra of each.
-func parsePrepass(b []byte) (names, repos []string, tokens []infraToken, hosts []string, err error) {
+func parsePrepass(b []byte) (prepass, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	var out struct {
@@ -78,8 +87,9 @@ func parsePrepass(b []byte) (names, repos []string, tokens []infraToken, hosts [
 		Repos       *[]string    `json:"repos"`
 		InfraTokens []infraToken `json:"infra_tokens"`
 		InfraHosts  []string     `json:"infra_hosts"`
+		Opencode    string       `json:"opencode_base_url"`
 	}
-	fail := func(e error) ([]string, []string, []infraToken, []string, error) { return nil, nil, nil, nil, e }
+	fail := func(e error) (prepass, error) { return prepass{}, e }
 	if err := dec.Decode(&out); err != nil {
 		return fail(err)
 	}
@@ -89,7 +99,7 @@ func parsePrepass(b []byte) (names, repos []string, tokens []infraToken, hosts [
 	if out.Secrets == nil || out.Repos == nil {
 		return fail(errors.New("a field is missing"))
 	}
-	names, repos = *out.Secrets, *out.Repos
+	names, repos := *out.Secrets, *out.Repos
 	if len(names) > maxBoundSecrets {
 		return fail(fmt.Errorf("%d secrets, more than %d", len(names), maxBoundSecrets))
 	}
@@ -133,7 +143,10 @@ func parsePrepass(b []byte) (names, repos []string, tokens []infraToken, hosts [
 		}
 		seen["\x02"+h] = true
 	}
-	return names, repos, out.InfraTokens, out.InfraHosts, nil
+	if len(out.Opencode) > 2048 || strings.ContainsAny(out.Opencode, "\x00\n\r") {
+		return fail(errors.New("not a URL for opencode"))
+	}
+	return prepass{Secrets: names, Repos: repos, InfraTokens: out.InfraTokens, InfraHosts: out.InfraHosts, OpencodeBaseURL: out.Opencode}, nil
 }
 
 // words are the identifier-like words in b: a secret name is mentioned only as a whole word.
@@ -296,12 +309,13 @@ func (a *app) readSecret(name string) (v []byte, absent bool, err error) {
 // from the host store is removed from the VM's, so the run stops with v2's message instead of
 // binding a stale copy. When the pre-pass fails, nothing is pushed or synced: the run that follows
 // stops the same way and says why.
-func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (synced []string) {
+func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (synced []string, opencodeConfig string) {
 	out, err := a.env.Transport.Output(a.ctx, ep, a.vmArgv(append([]string{RunBindings}, args...)...), maxBindingsOutput)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
-	names, repos, tokens, infraHosts, err := parsePrepass(out)
+	pp, err := parsePrepass(out)
+	names, repos, tokens, infraHosts := pp.Secrets, pp.Repos, pp.InfraTokens, pp.InfraHosts
 	if err != nil {
 		a.die("the sandbox VM's list of secrets and repositories for this launch is invalid (%v); nothing was pushed.", err)
 	}
@@ -336,6 +350,9 @@ func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (
 	}
 	a.pushSecrets(ep, names)
 	a.pushInfraTokens(ep, tokens, infraHosts)
+	if pp.OpencodeBaseURL != "" {
+		opencodeConfig = a.prepareOpencode(ep, pp.OpencodeBaseURL, args)
+	}
 	for _, r := range repos {
 		fmt.Fprintf(a.env.Stdout, "==> Syncing %s into the sandbox VM...\n", r)
 		ws, rep, err := a.syncRepo(ep, r)
@@ -352,7 +369,7 @@ func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (
 		}
 		synced = append(synced, r)
 	}
-	return synced
+	return synced, opencodeConfig
 }
 
 // pushSecrets seals and pushes the named secrets from the host store, each with its binding.
@@ -413,10 +430,29 @@ func (a *app) mirrorHome() string {
 
 // vmArgv is an in-VM CLI command line, run with HOME set to the mirrored home.
 func (a *app) vmArgv(args ...string) []string {
+	return a.vmArgvEnv(nil, args...)
+}
+
+// forwarded are the host environment variables proxied commands get (not secrets: opencode's
+// endpoint, which run reads as v2 did).
+var forwarded = []string{"OPENCODE_BASE_URL"}
+
+// vmArgvEnv is vmArgv with extra NAME=VALUE settings.
+func (a *app) vmArgvEnv(extra []string, args ...string) []string {
+	env := []string{}
 	if h := a.mirrorHome(); h != "" {
-		return append([]string{"env", "HOME=" + h, VMCommand}, args...)
+		env = append(env, "HOME="+h)
 	}
-	return append([]string{VMCommand}, args...)
+	for _, k := range forwarded {
+		if v := a.getenv(k); v != "" && len(v) <= 2048 && !strings.ContainsAny(v, "\x00\n\r") {
+			env = append(env, k+"="+v)
+		}
+	}
+	env = append(env, extra...)
+	if len(env) == 0 {
+		return append([]string{VMCommand}, args...)
+	}
+	return append(append(append([]string{"env"}, env...), VMCommand), args...)
 }
 
 // vmRun runs an in-VM CLI helper with no input and fails with its stderr.

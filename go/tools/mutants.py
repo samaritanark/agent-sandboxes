@@ -676,7 +676,7 @@ m(RN, 'if dr := config.ExtractYAMLScalar(p, "default_repo"); dr != "" && len(s.R
 m(RN, '\t\t\t\ts.Repos = append(s.Repos, c.tildeExpand(dr))', '\t\t\t\ts.Repos = append(s.Repos, dr)', R_CL)
 m(RN, 's.MCPs = strings.Join(config.ExtractYAMLList(p, "mcps"), ",")', 's.MCPs = strings.Join(config.ExtractYAMLList(p, "mcps"), " ")', R_CL)
 m(RN, '\tif s.BaseURL != "" {\n\t\tbaseURL = s.BaseURL\n\t}', '', R_CL)
-m(RN, '\t\tif c.env.OpencodeAPIKey == "" {', '\t\tif c.env.OpencodeAPIKey == "x" {', R_CL)
+m("internal/cli/bindings.go", '\treturn c.env.OpencodeAPIKey != ""', '\treturn c.env.OpencodeAPIKey != "x"', R_CL)
 m(RN, '\t\tif !httpURL.MatchString(baseURL) {', '\t\tif false {', R_CL)
 m(RN, '\tif s.Tier != "1" && len(s.Repos) == 0 {', '\tif s.Tier == "2" && len(s.Repos) == 0 {', R_CL)
 m(RN, 'c.env.ImagePresent(image) == 1 {', 'c.env.ImagePresent(image) != 0 {', R_CL)
@@ -1345,3 +1345,20 @@ m("internal/cli/bindings.go", '\tif s.Tier == "3" {\n\t\tfor _, t := range s.Inf
 m("internal/cli/bindings.go", '\t\tif h := strings.ToLower(urlHost(ep)); h != "" && !slices.Contains(out, h) {', '\t\tif h := strings.ToLower(urlHost(ep)); h != "" {', "TestRunPrepassInfra")
 m("internal/cli/runbind.go", '\t\t\tspec.Env = append(spec.Env, sessionspec.EnvVar{Name: env, Value: bb.Placeholder})', '', "TestBindInfraTokens")
 m("internal/cli/runbind.go", '\t\t\tb, ok = c.env.CredentialBinding(InfraRef(env))', '\t\t\tb, ok = c.env.CredentialBinding(env)', "TestBindInfraTokens")
+
+# ---- opencode through the broker (2026-11-26)
+OC = "internal/host/app/opencode.go"
+R_OC = "TestRunOpencode"
+m(OC, '\tif !opencodeNamed(base, args, a.getenv("OPENCODE_BASE_URL")) {', '\tif false {', R_OC, pkg="host/app")
+m(OC, '\t\treturn v[len(v)-1] == base', '\t\treturn true', R_OC, pkg="host/app")
+m(OC, '\tif key == "" {\n\t\ta.die("OPENCODE_API_KEY must be set', '\tif false {\n\t\ta.die("OPENCODE_API_KEY must be set', R_OC, pkg="host/app")
+m(OC, '\tif n == 0 {', '\tif n < 0 {', R_OC, pkg="host/app")
+m(OC, '\t\t\tif m.ID != "" {', '\t\t\tif true {', R_OC, pkg="host/app")
+m(OC, 'brokerseal.Binding{Hosts: []string{strings.ToLower(u.Hostname())}, Inject: "bearer"}', 'brokerseal.Binding{}', R_OC, pkg="host/app")
+m("internal/host/app/runsecrets.go", '\t\tif v := a.getenv(k); v != "" && len(v) <= 2048 && !strings.ContainsAny(v, "\\x00\\n\\r") {', '\t\tif v := a.getenv(k); false && v != "" {', R_OC, pkg="host/app")
+m("internal/host/app/app.go", '\t\t\textra = append(extra, OpencodeConfigEnv+"="+cfg)', '', R_OC, pkg="host/app")
+OB = "internal/cli/runbind.go"
+m(OB, '\tif !ok || b.Allows([]string{host}, "bearer", false) != nil || !sessionspec.Reachable(host, spec.Egress) {', '\tif !ok {', "TestBindOpencode")
+m(OB, '\tif cfg == "" {\n\t\tc.die("opencode\'s configuration', '\tif false {\n\t\tc.die("opencode\'s configuration', "TestBindOpencode")
+m("internal/cli/bindings.go", '\tif s.Agent == "opencode" {\n\t\tp.OpencodeBaseURL = s.BaseURL\n\t}', '', "TestBindOpencode")
+m("internal/cli/bindings.go", '\t\treturn c.env.CredentialPresent(OpencodeRef)', '\t\treturn true', "TestBindOpencode|TestLaunch")

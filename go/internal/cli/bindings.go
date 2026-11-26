@@ -36,6 +36,8 @@ type Prepass struct {
 	Repos       []string     `json:"repos"`
 	InfraTokens []InfraToken `json:"infra_tokens,omitempty"`
 	InfraHosts  []string     `json:"infra_hosts,omitempty"`
+	// OpencodeBaseURL is an opencode launch's endpoint, which the host binds its API key to.
+	OpencodeBaseURL string `json:"opencode_base_url,omitempty"`
 }
 
 // RunPrepass is RunBindings with the infra tokens and their hosts.
@@ -72,6 +74,9 @@ func RunPrepass(args []string, env Env) (p Prepass, ok bool, status int) {
 		}
 	}
 	p.Repos = s.Repos
+	if s.Agent == "opencode" {
+		p.OpencodeBaseURL = s.BaseURL
+	}
 	if s.Tier == "3" {
 		for _, t := range s.InfraTokens {
 			i := strings.Index(t, "=")
@@ -119,4 +124,24 @@ func (c *cmdCtx) secretPresent(name string) bool {
 		return c.env.SecretPresent(name)
 	}
 	return config.IsFile(c.env.SecretsDir + "/" + name)
+}
+
+// OpencodeRef is opencode's API key in the broker store (the host seals it from
+// OPENCODE_API_KEY), and OpencodeConfigEnv the variable the host passes its configuration in.
+const (
+	OpencodeRef       = "opencode.OPENAI_API_KEY"
+	OpencodeConfigEnv = "SANDBOX_OPENCODE_CONFIG"
+)
+
+// opencodeKeyPresent is whether opencode has its API key: in the pre-pass it counts (the host
+// checks); with a broker store, the host must have pushed it; otherwise (the differential tests)
+// the environment's, as v2.
+func (c *cmdCtx) opencodeKeyPresent() bool {
+	switch {
+	case c.prepass:
+		return true
+	case c.env.CredentialPresent != nil:
+		return c.env.CredentialPresent(OpencodeRef)
+	}
+	return c.env.OpencodeAPIKey != ""
 }

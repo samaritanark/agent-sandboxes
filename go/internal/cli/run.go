@@ -279,7 +279,7 @@ func runDecide(c *cmdCtx, args []string) LaunchSpec {
 	}
 	s.BaseURL = baseURL
 	if s.Agent == "opencode" {
-		if c.env.OpencodeAPIKey == "" {
+		if !c.opencodeKeyPresent() {
 			c.die("OPENCODE_API_KEY must be set in host environment for opencode agent.")
 		}
 		if baseURL == "" {

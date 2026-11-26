@@ -110,8 +110,6 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	l := c.env.Launch
 	// what this build cannot launch yet says so before anything is built
 	switch {
-	case s.Agent == "opencode":
-		c.die("'run' with opencode is not yet available in the Go port: its API key needs a credential binding (design 5.9.4).")
 	case len(s.InfraKubeconfigs) > 0:
 		c.die("'run' with --infra-kubeconfig is not yet available in the Go port: its credentials go to the gateway (design 5.9.5).")
 	case strings.TrimSpace(s.MCPs) != "":
@@ -138,6 +136,9 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	}
 	for _, l := range c.bindSecrets(spec, s, rec) {
 		c.out("%s", l)
+	}
+	if s.Agent == "opencode" {
+		c.bindOpencode(spec, s)
 	}
 	for _, l := range c.registryWarnings(spec) {
 		c.errOut("%s", l)

@@ -290,7 +290,7 @@ func TestRunPushesInfraTokens(t *testing.T) {
 // TestParsePrepassInfra: the parser's own checks on infra tokens and hosts.
 func TestParsePrepassInfra(t *testing.T) {
 	base := `{"secrets":[],"repos":[],`
-	if _, _, tk, hs, err := parsePrepass([]byte(base + `"infra_tokens":[{"env":"INFRA_TOKEN_a","path":"/t"}],"infra_hosts":["a.example.com"]}`)); err != nil || len(tk) != 1 || len(hs) != 1 {
+	if p, err := parsePrepass([]byte(base + `"infra_tokens":[{"env":"INFRA_TOKEN_a","path":"/t"}],"infra_hosts":["a.example.com"]}`)); err != nil || len(p.InfraTokens) != 1 || len(p.InfraHosts) != 1 {
 		t.Fatalf("%v", err)
 	}
 	for _, bad := range []string{
@@ -300,8 +300,64 @@ func TestParsePrepassInfra(t *testing.T) {
 		`"infra_hosts":["a.example.com","a.example.com"]}`,
 		`"infra_hosts":["localhost"]}`,
 	} {
-		if _, _, _, _, err := parsePrepass([]byte(base + bad)); err == nil {
+		if _, err := parsePrepass([]byte(base + bad)); err == nil {
 			t.Errorf("accepted %s", bad)
 		}
+	}
+}
+
+// TestRunOpencode: for an opencode launch the host fetches the model list with OPENCODE_API_KEY,
+// seals the key bound to the endpoint's host, forwards OPENCODE_BASE_URL, and gives the run the
+// configuration; an endpoint the operator did not name, a missing key, or an empty list stops it.
+func TestRunOpencode(t *testing.T) {
+	state, k := secretState(t)
+	envs := map[string]string{"OPENCODE_API_KEY": "sk-real", "OPENCODE_BASE_URL": "https://vllm.corp.example/v1"}
+	pp := `{"secrets":[],"repos":[],"opencode_base_url":"https://vllm.corp.example/v1"}`
+	run := func(tr *fakeTransport, envs map[string]string, models string, args ...string) (res, string) {
+		var out, errb bytes.Buffer
+		var asked string
+		rc := Run(context.Background(), args, Env{Driver: &driver.Mock{State: driver.Running}, Transport: tr,
+			Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errb, StateDir: state,
+			Now: func() time.Time { return time.Unix(1800000000, 0) }, BrokerKey: k,
+			Getenv: func(n string) string { return envs[n] },
+			FetchModels: func(_ context.Context, base, key string) ([]byte, error) {
+				asked = base + " " + key
+				return []byte(models), nil
+			}})
+		return res{rc, out.String(), errb.String()}, asked
+	}
+	tr := &fakeTransport{release: goodRelease, bindings: pp}
+	r, asked := run(tr, envs, `{"data":[{"id":"qwen"},{"id":"llama"}]}`, "run", "--agent", "opencode")
+	if r.rc != 0 || asked != "https://vllm.corp.example/v1 sk-real" || !strings.Contains(r.out, "  Found 2 model(s) on endpoint.") {
+		t.Fatalf("%+v %q", r, asked)
+	}
+	key, _ := k.Load()
+	if v, b, _, err := brokerseal.OpenBound(key, OpencodeRef, tr.ctlIn[0]); err != nil || string(v) != "sk-real" || strings.Join(b.Hosts, ",") != "vllm.corp.example" {
+		t.Errorf("%q %+v %v", v, b, err)
+	}
+	last := strings.Join(tr.runs[len(tr.runs)-1], " ")
+	if !strings.Contains(last, "OPENCODE_BASE_URL=https://vllm.corp.example/v1") || !strings.Contains(last, OpencodeConfigEnv+`={"enabled_providers":["openai-compat"]`) ||
+		!strings.Contains(last, `"qwen":{"limit":{"context":131072,"output":8192},"name":"qwen"}`) || strings.Contains(last, "sk-real") {
+		t.Errorf("run %q", last)
+	}
+	for name, c := range map[string]struct {
+		envs   map[string]string
+		models string
+		args   []string
+	}{
+		"unnamed endpoint": {map[string]string{"OPENCODE_API_KEY": "sk"}, `{"data":[{"id":"m"}]}`, nil},
+		"other --base-url": {envs, `{"data":[{"id":"m"}]}`, []string{"--base-url", "https://elsewhere.example/v1"}},
+		"no key":           {map[string]string{"OPENCODE_BASE_URL": "https://vllm.corp.example/v1"}, `{"data":[{"id":"m"}]}`, nil},
+		"no models":        {envs, `{"data":[]}`, nil},
+	} {
+		tr := &fakeTransport{release: goodRelease, bindings: pp}
+		if r, _ := run(tr, c.envs, c.models, append([]string{"run", "--agent", "opencode"}, c.args...)...); r.rc != 1 || len(tr.ctl) != 0 || len(tr.runs) != 0 {
+			t.Errorf("%s: %+v ctl %q", name, r, tr.ctl)
+		}
+	}
+	// the configuration v2 built
+	cfg, n := opencodeConfig("https://h/v1", []byte(`{"data":[{"id":"a"},{"id":""}]}`))
+	if n != 1 || cfg != `{"enabled_providers":["openai-compat"],"provider":{"openai-compat":{"models":{"a":{"limit":{"context":131072,"output":8192},"name":"a"}},"name":"OpenAI-compatible endpoint","npm":"@ai-sdk/openai-compatible","options":{"apiKey":"{env:OPENAI_API_KEY}","baseURL":"https://h/v1"}}}}` {
+		t.Errorf("%d %s", n, cfg)
 	}
 }
