@@ -17,6 +17,7 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/netd"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/netdvm"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/proxycert"
+	"github.com/samaritanark/agent-sandboxes/go/internal/secretcmd"
 	"github.com/samaritanark/agent-sandboxes/go/internal/tty"
 )
 
@@ -54,13 +55,25 @@ func main() {
 		}
 	}()
 	state := filepath.Join(home, ".sandbox")
-	tty := tty.Is(os.Stdin)
+	ttyIs := tty.Is
+	tty := ttyIs(os.Stdin)
 	os.Exit(app.Run(context.Background(), os.Args[1:], app.Env{
 		Driver: d, Transport: tr, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 		StdinTTY: tty, StateDir: state, User: name,
 		Install:   installDeps(home),
 		BrokerKey: brokerkey.Default(state), SecretsDir: os.Getenv("SANDBOX_SECRETS_DIR"),
 		HostCommands: map[string]func(context.Context, []string) int{
+			// the secret store stays on the host (design 5.1.4); run's pre-pass pushes from it
+			"secret": func(_ context.Context, args []string) int {
+				_, noColor := os.LookupEnv("NO_COLOR")
+				dir := os.Getenv("SANDBOX_SECRETS_DIR")
+				if dir == "" {
+					dir = filepath.Join(state, "secrets")
+				}
+				return secretcmd.Run(args, secretcmd.Env{Dir: dir, Home: home, Stdin: os.Stdin, StdinTTY: tty,
+					StderrTTY: ttyIs(os.Stderr), NoColor: noColor && os.Getenv("NO_COLOR") != "", Getenv: os.Getenv},
+					os.Stdout, os.Stderr)
+			},
 			"setup-proxy-cert": func(ctx context.Context, args []string) int {
 				env := proxycert.System(runtime.GOOS)
 				env.Stdin, env.Stdout, env.Stderr, env.StdinTTY = os.Stdin, os.Stdout, os.Stderr, tty

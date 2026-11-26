@@ -217,7 +217,7 @@ var commands = map[string]func(*cmdCtx, []string){
 // usageOf names each command's usage text in bin/sandbox.
 var usageOf = map[string]string{
 	"run": "usage_run", "rebuild": "usage_rebuild", "upgrade": "usage_upgrade", "onboard": "usage_onboard",
-	"allow": "usage_allow", "mask": "usage_mask", "exceptions": "usage_exceptions", "secret": "usage_secret",
+	"allow": "usage_allow", "mask": "usage_mask", "exceptions": "usage_exceptions",
 	"vet": "usage_vet", "link": "usage_link", "profile": "usage_profile",
 }
 

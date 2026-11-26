@@ -64,15 +64,17 @@ var allowed = map[string][]string{
 	"onboard":           {"bashcompat", "config", "deviation"},
 	"agents":            {"deviation", "jqjson"},
 	"workspace":         {"bashcompat", "config", "deviation"},
-	// the host-side secret store: files only, no policy
-	"secrets": {},
+	// the host-side secret store: files only, no policy; and its command, which the host binary
+	// runs (the store stays on the host, design 5.1.4) and the in-VM CLI shares
+	"secrets":   {},
+	"secretcmd": {"deviation", "secrets"},
 	// the session allowlist: built-in and extra domains through the block lists
 	"allowlist": {"checks"},
 	// the workspace mount rules (masks, read-only exec vectors) and their tables
 	"mounts": {"bashcompat", "config", "gate"},
 	// the in-VM CLI is the policy layer's front end, so it may use every policy package
 	"cli": {"agents", "audit", "bashcompat", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
-		"link", "mounts", "onboard", "secrets", "tier", "vetting", "workspace"},
+		"link", "mounts", "onboard", "secretcmd", "secrets", "tier", "vetting", "workspace"},
 
 	// The host binary's packages (design 5.1). They import only each other.
 	"host/driver":     {},
@@ -97,7 +99,13 @@ var allowed = map[string][]string{
 // hostSafe is every internal package the host binary may depend on, directly or not (5.1.1).
 // Adding a policy package here is a design change, not a code change.
 func hostSafe(name string) bool {
-	return strings.HasPrefix(name, "host/") || name == "tables" || name == "opstate" || name == "yamllist" || name == "syncproto" || name == "tty" || name == "brokerseal"
+	switch name {
+	case "tables", "opstate", "yamllist", "syncproto", "tty", "brokerseal",
+		// the secret command and its store (files only), and the named fixes it consults
+		"secretcmd", "secrets", "deviation":
+		return true
+	}
+	return strings.HasPrefix(name, "host/")
 }
 
 // TestHostBinaryClosure checks the host binary's whole dependency closure, so a host package

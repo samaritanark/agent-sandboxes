@@ -817,18 +817,18 @@ m(SE, '\t\t\tmtime = st.ModTime().In(loc).Format("2006-01-02 15:04:05")', '\t\t\
 m(SE, '\t\tif len(pad) < 32 {', '\t\tif len([]rune(pad)) < 32 {', R_CL)
 m(SE, '\tst, err := os.Stat(s.Path(name))\n\treturn err == nil && st.Mode().IsRegular()', '\t_, err := os.Lstat(s.Path(name))\n\treturn err == nil', R_CL)
 
-SCM = "internal/cli/secret.go"
-m(SCM, '\t\t\t\tif i+1 >= len(args) || args[i+1] == "" {', '\t\t\t\tif i+1 >= len(args) {', R_CL)
-m(SCM, '\t\t\tif strings.HasPrefix(src, "~") {', '\t\t\tif false {', R_CL)
-m(SCM, 'c.out("Stored secret \'%s\' from %s.", name, fromFile)', 'c.out("Stored secret \'%s\' from %s.", name, src)', R_CL)
-m(SCM, '\t\tif fromFile != "" && fromEnv != "" {', '\t\tif false {', R_CL)
-m(SCM, '\t\t\tif fromEnv == "_USE_DEFAULT" {', '\t\t\tif fromEnv == "" {', R_CL)
-m(SCM, '\t\t\tif !envName.MatchString(fromEnv) {', '\t\t\tif false {', R_CL)
-m(SCM, '\t\t\tif i == 0 {\n\t\t\t\tc.out("%-32s', '\t\t\tif i == 1 {\n\t\t\t\tc.out("%-32s', R_CL)
-m(SCM, 'c.out("No secrets in %s/.", c.tilde(c.env.SecretsDir))', 'c.out("No secrets in %s/.", c.env.SecretsDir)', R_CL)
-m(SCM, '\t\tif st.Exists(name) {', '\t\tif true {', R_CL)
-m(SCM, '\tcase "delete", "rm", "remove":', '\tcase "delete", "rm":', R_CL)
-m(SCM, '\t\tif err := secrets.ValidateName(name); err != nil {\n\t\t\tc.fail(err)\n\t\t}\n\t\tif fromFile', '\t\tif fromFile', R_CL)
+SCM = "internal/secretcmd/secretcmd.go"
+m(SCM, '\t\t\t\tif i+1 >= len(args) || args[i+1] == "" {', '\t\t\t\tif i+1 >= len(args) {', R_CL, pkg="cli")
+m(SCM, '\t\t\tif strings.HasPrefix(src, "~") {', '\t\t\tif false {', R_CL, pkg="cli")
+m(SCM, 'c.out("Stored secret \'%s\' from %s.", name, fromFile)', 'c.out("Stored secret \'%s\' from %s.", name, src)', R_CL, pkg="cli")
+m(SCM, '\t\tif fromFile != "" && fromEnv != "" {', '\t\tif false {', R_CL, pkg="cli")
+m(SCM, '\t\t\tif fromEnv == "_USE_DEFAULT" {', '\t\t\tif fromEnv == "" {', R_CL, pkg="cli")
+m(SCM, '\t\t\tif !envName.MatchString(fromEnv) {', '\t\t\tif false {', R_CL, pkg="cli")
+m(SCM, '\t\t\tif i == 0 {\n\t\t\t\tc.out("%-32s', '\t\t\tif i == 1 {\n\t\t\t\tc.out("%-32s', R_CL, pkg="cli")
+m(SCM, 'c.out("No secrets in %s/.", c.tilde(c.env.Dir))', 'c.out("No secrets in %s/.", c.env.Dir)', R_CL, pkg="cli")
+m(SCM, '\t\tif st.Exists(name) {', '\t\tif true {', R_CL, pkg="cli")
+m(SCM, '\tcase "delete", "rm", "remove":', '\tcase "delete", "rm":', R_CL, pkg="cli")
+m(SCM, '\t\tif err := secrets.ValidateName(name); err != nil {\n\t\t\tc.fail(err)\n\t\t}\n\t\tif fromFile', '\t\tif fromFile', R_CL, pkg="cli")
 
 OBC = "internal/cli/onboard.go"
 m(OBC, '\t\tcase a == "--skip-config":\n\t\t\tskipConfig = true', '\t\tcase a == "--skip-config":', R_CL)
