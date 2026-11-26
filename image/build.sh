@@ -43,6 +43,9 @@ install -d "${lib}/bin" "${lib}/setup" "${stage}/etc/sandbox"
 # What it reads from its install root (two levels above the binary).
 cp -a config "${lib}/config"
 cp -a setup/versions.sh "${lib}/setup/versions.sh"
+# v2's agent image Dockerfiles, which `sandbox rebuild` builds in the VM.
+rm -rf "${lib:?}/docker"
+cp -a docker "${lib}/docker"
 
 printf 'IMAGE_VERSION=%s\nCONTROL_API=1\n' "${version}" > "${stage}/etc/sandbox/release"
 
@@ -112,6 +115,11 @@ done
 envoy_bin="$(ls "${art}"/envoy-*-linux-* 2>/dev/null | head -1)"
 [[ -n "${envoy_bin}" ]] || { echo "no Envoy artifact for ${goarch}" >&2; exit 1; }
 install -m 0755 "${envoy_bin}" "${tree}/usr/local/bin/envoy"
+
+# betterleaks, the secret scanner the in-VM gates run before every tier 2 and 3 launch (v2's pin).
+install -d "${unpack}/betterleaks"
+tar -C "${unpack}/betterleaks" -xzf "${art}"/betterleaks_*_linux_*.tar.gz betterleaks
+install -m 0755 "${unpack}/betterleaks/betterleaks" "${tree}/usr/local/bin/betterleaks"
 
 # Fixed owner and times, so the tree is the same on every build.
 chown -R -h root:root "${tree}"

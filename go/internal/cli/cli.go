@@ -49,6 +49,8 @@ type Env struct {
 	// SecretBinding is the binding the host sealed with a pushed secret (brokerseal.Peek, through
 	// sandboxd); ok is false when there is none. nil: every secret is withheld.
 	SecretBinding func(name string) (b brokerseal.Binding, ok bool)
+	// Builder builds agent images in the VM for `rebuild`; nil refuses it.
+	Builder ImageBuilder
 	// ImagePresent is k3s_image_present: 0 present, 1 absent, 2 cannot tell. nil skips the check
 	// (v3 has no k3s image store; sandboxd reports a missing image).
 	ImagePresent func(tag string) int
@@ -217,7 +219,7 @@ var commands = map[string]func(*cmdCtx, []string){
 	"run": cmdRun, "resume": cmdResume, "allow": cmdAllow, "list": cmdList, "logs": cmdLogs, "flows": nil, "stop": cmdStop,
 	"cleanup": cmdCleanup, "check": cmdCheck, "status": nil, "install": nil, "setup": nil, "uninstall": nil,
 	"upgrade": nil, "onboard": cmdOnboard, "secret": cmdSecret, "mask": cmdMask, "exceptions": cmdExceptions, "vet": cmdVet,
-	"profile": cmdProfile, "link": cmdLink, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": nil,
+	"profile": cmdProfile, "link": cmdLink, "configure-network": nil, "setup-proxy-cert": nil, "rebuild": cmdRebuild,
 	"version": cmdVersion,
 }
 

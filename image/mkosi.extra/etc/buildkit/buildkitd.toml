@@ -1,0 +1,13 @@
+# buildkit for `sandbox rebuild` (design 5.3.1, OQ-11): only the containerd worker, in sandboxd's
+# namespace, so a rebuilt image is where sessions find it and `FROM sandbox:base` resolves to the
+# local base image. v2's cache caps (setup/linux.sh). buildkitd listens only on its root unix socket.
+[worker.oci]
+  enabled = false
+[worker.containerd]
+  enabled = true
+  address = "/run/containerd/containerd.sock"
+  namespace = "sandbox"
+  gc = true
+  reservedSpace = "2GB"
+  maxUsedSpace = "10GB"
+  minFreeSpace = "30%"

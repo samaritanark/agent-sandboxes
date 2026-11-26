@@ -133,8 +133,14 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	if err != nil {
 		c.die("%v", err)
 	}
+	for _, l := range c.l7Rules(spec) {
+		c.out("%s", l)
+	}
 	for _, l := range c.bindSecrets(spec, s, rec) {
 		c.out("%s", l)
+	}
+	for _, l := range c.registryWarnings(spec) {
+		c.errOut("%s", l)
 	}
 	if s.DryRun {
 		b, _ := json.MarshalIndent(spec, "", "  ")

@@ -34,14 +34,28 @@ func TestWorkspaceCopyOf(t *testing.T) {
 
 func TestAgentImage(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "images.json")
-	os.WriteFile(f, []byte(`{"sandbox:claude":"docker.io/library/sandbox@sha256:abc"}`), 0o644)
+	os.WriteFile(f, []byte(`{"sandbox:claude":"docker.io/library/sandbox@sha256:abc","sandbox:codex":"docker.io/library/sandbox@sha256:base"}`), 0o644)
 	if ref, err := agentImage(f)("sandbox:claude"); err != nil || ref != "docker.io/library/sandbox@sha256:abc" {
 		t.Errorf("%q %v", ref, err)
 	}
-	if _, err := agentImage(f)("sandbox:codex"); err == nil || !strings.Contains(err.Error(), "not preloaded") {
+	if _, err := agentImage(f)("sandbox:grok"); err == nil || !strings.Contains(err.Error(), "neither preloaded") {
 		t.Errorf("%v", err)
 	}
-	if _, err := agentImage(f + ".missing")("sandbox:claude"); err == nil {
-		t.Error("no list")
+	if _, err := agentImage(f + ".missing")("sandbox:claude"); err == nil || !strings.Contains(err.Error(), "sandbox rebuild") {
+		t.Errorf("no list: %v", err)
+	}
+	// the VM's own builds come first, then the image's baseline
+	built := filepath.Join(t.TempDir(), "built.json")
+	os.WriteFile(built, []byte(`{"sandbox:claude":"docker.io/library/sandbox@sha256:new"}`), 0o644)
+	look := agentImage(built, f)
+	if ref, _ := look("sandbox:claude"); ref != "docker.io/library/sandbox@sha256:new" {
+		t.Errorf("built not first: %q", ref)
+	}
+	if ref, _ := look("sandbox:codex"); ref != "docker.io/library/sandbox@sha256:base" {
+		t.Errorf("baseline: %q", ref)
+	}
+	os.WriteFile(built, []byte(`{`), 0o644)
+	if _, err := look("sandbox:claude"); err == nil {
+		t.Error("a broken map read")
 	}
 }

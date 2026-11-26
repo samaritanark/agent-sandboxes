@@ -124,7 +124,8 @@ func main() {
 	}
 	env := cliEnv()
 	env.SecretPresent, env.SecretBinding = pushedSecret, pushedBinding
-	env.Launch = cli.LaunchEnv{Sessions: sandboxd{}, AgentImage: agentImage(AgentImages), WorkspaceCopy: workspaceCopyOf("/"),
+	env.Builder = nerdctlBuilder{mapFile: BuiltImages}
+	env.Launch = cli.LaunchEnv{Sessions: sandboxd{}, AgentImage: agentImage(BuiltImages, AgentImages), WorkspaceCopy: workspaceCopyOf("/"),
 		VMMemoryMiB: vmMemory}
 	os.Exit(cli.Run(os.Args[1:], env, os.Stdout, os.Stderr))
 }

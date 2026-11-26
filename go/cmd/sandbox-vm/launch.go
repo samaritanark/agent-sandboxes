@@ -87,21 +87,30 @@ func (sandboxd) Stop(id, reason string) error {
 }
 
 // agentImage reads tag's pinned reference from AgentImages.
-func agentImage(file string) func(string) (string, error) {
+func agentImage(files ...string) func(string) (string, error) {
 	return func(tag string) (string, error) {
-		b, err := os.ReadFile(file)
-		if err != nil {
-			return "", fmt.Errorf("this image lists no preloaded agent images (%v)", err)
+		var errs []string
+		for _, file := range files {
+			b, err := os.ReadFile(file)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return "", err
+			}
+			var m map[string]string
+			if err := json.Unmarshal(b, &m); err != nil {
+				return "", fmt.Errorf("%s: %v", file, err)
+			}
+			if ref, ok := m[tag]; ok {
+				return ref, nil
+			}
+			errs = append(errs, file)
 		}
-		var m map[string]string
-		if err := json.Unmarshal(b, &m); err != nil {
-			return "", fmt.Errorf("%s: %v", file, err)
+		if len(errs) == 0 {
+			return "", errors.New("this VM has no agent images yet; build them with: sandbox rebuild")
 		}
-		ref, ok := m[tag]
-		if !ok {
-			return "", fmt.Errorf("%s is not preloaded in this image", tag)
-		}
-		return ref, nil
+		return "", fmt.Errorf("%s is neither preloaded in this image nor built in this VM (sandbox rebuild --agent ...)", tag)
 	}
 }
 

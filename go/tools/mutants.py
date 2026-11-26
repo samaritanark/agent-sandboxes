@@ -1158,7 +1158,7 @@ m(RL, '\tcase 0:\n\t\trow("Repo", "emptyDir (ephemeral)")', '\tcase 0:', R_RS)
 VL = "cmd/sandbox-vm/launch.go"
 m(VL, '`/[0-9a-f]{16}$`', '`/[0-9a-f]{16}`', "TestWorkspaceCopyOf", pkg="../cmd/sandbox-vm")
 m(VL, '\t\tif err != nil || !workspaceCopy.MatchString(p) {', '\t\tif err != nil {', "TestWorkspaceCopyOf", pkg="../cmd/sandbox-vm")
-m(VL, '\t\tif !ok {\n\t\t\treturn "", fmt.Errorf("%s is not preloaded', '\t\tif false {\n\t\t\treturn "", fmt.Errorf("%s is not preloaded', "TestAgentImage", pkg="../cmd/sandbox-vm")
+m(VL, '\t\t\tif ref, ok := m[tag]; ok {', '\t\t\tif ref, ok := m[tag]; ok || true {', "TestAgentImage", pkg="../cmd/sandbox-vm")
 
 # ---- the host half of run: mirrored paths, repository checks (host/app/runsecrets.go), and the
 # VM's mirror (cmd/sandbox-vm/mirror.go)
@@ -1311,3 +1311,24 @@ m("internal/host/app/syncone.go", 'const CopyMode = "0750"', 'const CopyMode = "
 m("internal/host/app/syncone.go", '` -m ` + CopyMode + ` "$0"; exec runuser', '` -m 0700 "$0"; exec runuser', "TestLiveSync", pkg="host/app")
 m("internal/host/app/syncone.go", '` -m ` + CopyMode + ` "$0"; }; ` +', '` -m 0700 "$0"; }; ` +', "TestLiveSync", pkg="host/app")
 m("internal/vetting/verify.go", '\tn, _ := strconv.Atoi(os.Getenv("GIT_CONFIG_COUNT"))', '\tn := 0', "TestVettingGitKeepsCallerConfig")
+
+# ---- rebuild in the VM, the session's L7 rules, the registry warning (2026-11-26)
+RBL = "internal/cli/rebuild.go"
+m(RBL, '\tif tier3 || agent == "all" {', '\tif tier3 {', "TestRebuild")
+m(RBL, '\t\tif err := b.Pin(tag, digest); err != nil {', '\t\tif err := error(nil); err != nil {', "TestRebuild")
+m(RBL, '\t\t\t\tif !rebuildVersion.MatchString(v) {', '\t\t\t\tif false {', "TestRebuild")
+m(RBL, '\t\tone("docker.io/library/sandbox:claude", "Dockerfile.claude", "--build-arg", "CLAUDE_CODE_INSTALL_REV="+c.now().Format("20060102150405"))', '\t\tone("docker.io/library/sandbox:claude", "Dockerfile.claude")', "TestRebuild")
+NB = "cmd/sandbox-vm/rebuild.go"
+m(NB, '\t\tif f := strings.Fields(l); len(f) >= 3 && f[0] == tag {', '\t\tif f := strings.Fields(l); len(f) >= 3 {', "TestNerdctlBuilder", pkg="../cmd/sandbox-vm")
+m(NB, '\tif !digestRE.MatchString(digest) {\n\t\treturn "", fmt.Errorf("no digest', '\tif digest == "x" {\n\t\treturn "", fmt.Errorf("no digest', "TestNerdctlBuilder", pkg="../cmd/sandbox-vm")
+m(NB, '\tm[short] = ref', '\tm[tag] = ref', "TestNerdctlBuilder", pkg="../cmd/sandbox-vm")
+m(NB, '\tif !ok || !digestRE.MatchString(digest) {', '\tif !ok {', "TestNerdctlBuilder", pkg="../cmd/sandbox-vm")
+m("cmd/sandbox-vm/launch.go", '\t\t\tif errors.Is(err, os.ErrNotExist) {\n\t\t\t\tcontinue\n\t\t\t}', '', "TestAgentImage", pkg="../cmd/sandbox-vm")
+RL = "internal/cli/runl7.go"
+m(RL, '\t\t\tif r.Host != l7.AnyHost && !reachableL7(r.Host, spec.Egress) {', '\t\t\tif false {', "TestL7Rules")
+m(RL, '\t\trules, err := l7.ParseRules(b, src.what+" rules", false)', '\t\trules, _ := l7.ParseRules(b, src.what+" rules", false)', "TestL7Rules")
+m(RL, '\t\tif !looksLikeRegistry(h) || writeDenied(rules, h) {', '\t\tif !looksLikeRegistry(h) {', "TestRegistryWarnings")
+m(RL, '\t\tif r.Action != l7.Deny || r.Host == l7.AnyHost || !l7.HostMatches(r.Host, host) {', '\t\tif r.Action != l7.Deny || !l7.HostMatches(r.Host, host) {', "TestRegistryWarnings")
+m(RL, '\t\t\tif m == "PUT" {', '\t\t\tif m == "DELETE" {', "TestRegistryWarnings")
+m(RL, '\tfor _, b := range spec.Bindings {\n\t\thosts = append(hosts, b.Hosts...)\n\t}', '', "TestRegistryWarnings")
+m("internal/l7/l7.go", '\t\t\tif denyOnly && r.Action != Deny {', '\t\t\tif false && r.Action != Deny {', "TestBaseline|TestParse", pkg="l7")

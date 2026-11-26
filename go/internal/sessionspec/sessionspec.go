@@ -451,6 +451,13 @@ func l7Reachable(host string, e Egress) bool {
 	return egressmatch.Decide(h, e.Allow, e.BlockDomains)
 }
 
+// L7Reachable reports whether an L7 rule for host (an exact name or "*.x") is one Validate accepts
+// against egress e.
+func L7Reachable(host string, e Egress) bool {
+	h := strings.TrimPrefix(host, "*.")
+	return !strings.Contains(h, "*") && validHost(h) && l7Reachable(host, e)
+}
+
 // Reachable reports whether egress e lets a binding reach exact host h (the check Validate makes).
 func Reachable(h string, e Egress) bool { return validHost(h) && l7Reachable(h, e) }
 
