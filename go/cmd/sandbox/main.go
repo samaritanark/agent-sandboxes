@@ -13,6 +13,7 @@ import (
 	"runtime"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/app"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/brokerkey"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/netd"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/netdvm"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/proxycert"
@@ -57,7 +58,8 @@ func main() {
 	os.Exit(app.Run(context.Background(), os.Args[1:], app.Env{
 		Driver: d, Transport: tr, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 		StdinTTY: tty, StateDir: state, User: name,
-		Install: installDeps(home),
+		Install:   installDeps(home),
+		BrokerKey: brokerkey.Default(state),
 		HostCommands: map[string]func(context.Context, []string) int{
 			"setup-proxy-cert": func(ctx context.Context, args []string) int {
 				env := proxycert.System(runtime.GOOS)

@@ -28,6 +28,8 @@ var allowed = map[string][]string{
 	"yamllist": {},
 	// whether a file is a terminal, for both binaries
 	"tty": {},
+	// the broker store's entry format: the host seals, the VM stores and opens (D-32)
+	"brokerseal": {},
 	// the session spec the policy CLI hands sandboxd (design 5.4.2): data and its structural checks
 	"sessionspec": {"egressmatch", "l7"},
 	// sandboxd (design 5.4.3): the in-VM supervisor's packages
@@ -36,7 +38,7 @@ var allowed = map[string][]string{
 	"sandboxd/runtime":     {},
 	"sandboxd/netns":       {},
 	"sandboxd/auditlog":    {},
-	"sandboxd/brokerstore": {},
+	"sandboxd/brokerstore": {"brokerseal"},
 	"sandboxd/pki":         {},
 	"sandboxd/netsetup":    {},
 	"sandboxd/daemon":      {"egressmatch", "gateway/gwpolicy", "l7", "sandboxd/auditlog", "sandboxd/journal", "sandboxd/limits", "sandboxd/netsetup", "sandboxd/pki", "sandboxd/runtime", "sessionspec"},
@@ -75,7 +77,7 @@ var allowed = map[string][]string{
 	// The host binary's packages (design 5.1). They import only each other.
 	"host/driver":     {},
 	"host/release":    {},
-	"host/app":        {"host/auditpull", "host/driver", "host/release", "host/sizing", "host/syncengine", "host/syncgate", "opstate"},
+	"host/app":        {"brokerseal", "host/auditpull", "host/brokerkey", "host/driver", "host/release", "host/sizing", "host/syncengine", "host/syncgate", "opstate"},
 	"host/sizing":     {},
 	"host/syncgate":   {"tables", "yamllist"},
 	"host/gitobj":     {},
@@ -89,12 +91,13 @@ var allowed = map[string][]string{
 	"host/sshx":       {"host/driver"},
 	"host/gitref":     {},
 	"host/proxycert":  {},
+	"host/brokerkey":  {"brokerseal"},
 }
 
 // hostSafe is every internal package the host binary may depend on, directly or not (5.1.1).
 // Adding a policy package here is a design change, not a code change.
 func hostSafe(name string) bool {
-	return strings.HasPrefix(name, "host/") || name == "tables" || name == "opstate" || name == "yamllist" || name == "syncproto" || name == "tty"
+	return strings.HasPrefix(name, "host/") || name == "tables" || name == "opstate" || name == "yamllist" || name == "syncproto" || name == "tty" || name == "brokerseal"
 }
 
 // TestHostBinaryClosure checks the host binary's whole dependency closure, so a host package
@@ -135,10 +138,23 @@ var thirdParty = map[string][]string{
 	// Envoy's API types and gRPC for the gateway and broker (owner decision, 2026-11-25)
 	"gateway/authz":  {"github.com/envoyproxy/go-control-plane/", "google.golang.org/grpc", "google.golang.org/genproto/"},
 	"gateway/broker": {"github.com/envoyproxy/go-control-plane/", "google.golang.org/grpc", "google.golang.org/genproto/"},
+	// Credential Manager for the broker key on Windows (owner decision, 2026-11-25, seventh round)
+	"host/brokerkey": {"golang.org/x/sys/windows"},
 }
 
+// TestThirdPartyImports also lists the Windows build, whose files the host's own build skips.
 func TestThirdPartyImports(t *testing.T) {
-	out, err := exec.Command("go", "list", "-json", "../...").Output()
+	for _, goos := range []string{"", "windows"} {
+		thirdPartyImports(t, goos)
+	}
+}
+
+func thirdPartyImports(t *testing.T, goos string) {
+	cmd := exec.Command("go", "list", "-json", "../...")
+	if goos != "" {
+		cmd.Env = append(os.Environ(), "GOOS="+goos)
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)
 	}

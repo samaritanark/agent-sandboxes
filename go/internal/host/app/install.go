@@ -203,6 +203,7 @@ func (a *app) install(args []string) int {
 	if err != nil {
 		a.die("the sandbox VM started but is not answering: %v\n  See: sandbox vm status", err)
 	}
+	a.warnBrokerKey(a.running())
 	fmt.Fprintf(a.env.Stdout, "The sandbox VM is installed and running (image %s, control API %d).\n", info.ImageVersion, info.ControlAPI)
 	return 0
 }

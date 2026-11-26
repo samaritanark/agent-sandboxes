@@ -7,13 +7,15 @@
 //	sandboxd ctl stop ID [REASON]   stop a session
 //	sandboxd ctl heartbeat ID       renew a session's attach lease
 //	sandboxd ctl list               list sessions
+//	sandboxd ctl broker-key         take the broker store key on stdin (the host pushes it)
+//	sandboxd ctl broker-put REF     store REF's entry, sealed by the host, from stdin
+//	sandboxd ctl broker-delete REF  remove REF's entry
+//	sandboxd ctl broker-list        list the stored references
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -28,7 +30,7 @@ const Socket = "/run/sandboxd.sock"
 
 func usage() int {
 	fmt.Fprintln(os.Stderr, "usage: sandboxd serve | sandboxd ctl start SPEC.json | stop ID [REASON] | heartbeat ID | list |\n"+
-		"       broker-key KEYFILE | broker-put REF SEALEDFILE | broker-delete REF | broker-list")
+		"       broker-key < KEY | broker-put REF < SEALED | broker-delete REF | broker-list")
 	return 2
 }
 
@@ -49,25 +51,6 @@ func run(args []string) int {
 		return ctl(args[1:])
 	case "__broker-handover":
 		return brokerHandover()
-	case "__seal":
-		// development only: seal stdin as REF's entry under the key in KEYFILE (the host binary
-		// seals entries itself, so the VM never sees a value to store it)
-		if len(args) != 3 {
-			return usage()
-		}
-		k, err1 := os.ReadFile(args[1])
-		v, err2 := io.ReadAll(os.Stdin)
-		if err := errors.Join(err1, err2); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		b, err := brokerstore.Seal(k, args[2], bytes.TrimRight(v, "\n"))
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		os.Stdout.Write(b)
-		return 0
 	}
 	return usage()
 }
@@ -94,16 +77,17 @@ func ctl(args []string) int {
 		req = daemon.Request{Op: "heartbeat", ID: args[1]}
 	case args[0] == "list" && len(args) == 1:
 		req = daemon.Request{Op: "list"}
-	case args[0] == "broker-key" && len(args) == 2:
-		// the store key's 32 raw bytes, from a file (the host binary pushes it from its keychain)
-		k, err := os.ReadFile(args[1])
+	case args[0] == "broker-key" && len(args) == 1:
+		// the store key's 32 raw bytes on stdin: never in an argument list or a file
+		k, err := io.ReadAll(io.LimitReader(os.Stdin, 64))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
+		defer brokerstore.Wipe(k)
 		req = daemon.Request{Op: "broker-key", Key: k}
-	case args[0] == "broker-put" && len(args) == 3:
-		b, err := os.ReadFile(args[2])
+	case args[0] == "broker-put" && len(args) == 2:
+		b, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1

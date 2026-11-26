@@ -991,3 +991,18 @@ m(EC, '{"not_matcher": exact("." + rest)}', '{"not_matcher": exact(rest)}', "Tes
   pkg="gateway/envoyconf")
 m(EC, '`(?i)^[^.]+\\.` + regexp.QuoteMeta(rest) + "$"', '`(?i)^.+\\.` + regexp.QuoteMeta(rest) + "$"', "TestChainMatcher", pkg="gateway/envoyconf")
 m(EM, '\t\treturn strings.HasSuffix(domain, "."+rest) && len(domain) > len(rest)+1', '\t\treturn strings.HasSuffix(domain, rest)', "TestAllowed", pkg="egressmatch")
+
+# ---- the host half of the broker key (internal/host/brokerkey, internal/host/app/broker.go)
+BK = "internal/host/brokerkey/brokerkey.go"
+AB = "internal/host/app/broker.go"
+m(BK, '\tif err != nil || subtle.ConstantTimeCompare(back, key) != 1 {', '\tif err != nil {', "TestGetChecksTheKeyStuck")
+m(BK, '\tcase err == nil && len(key) == brokerseal.KeySize:', '\tcase err == nil:', "TestFile")
+m(BK, '\tif permsOpen(st) {', '\tif false {', "TestFile")
+m(BK, '\tif !st.Mode().IsRegular() {', '\tif false {', "TestFile")
+m(BK, 'errors.As(err, &ee) && ee.ExitCode() == 44 {', 'errors.As(err, &ee) {', "TestKeychainToolFails")
+m(AB, '\tv = bytes.TrimRight(v, "\\r\\n")\n\tif len(v) == 0 {', '\tif len(v) == 0 {', "TestBrokerPut", pkg="host/app")
+AA = "internal/host/app/app.go"
+m(AA, '\t\t\t\ta.warnBrokerKey(a.running())\n\t\t\t\tfmt.Fprintln(a.env.Stdout, "The sandbox VM is already running.")', '\t\t\t\tfmt.Fprintln(a.env.Stdout, "The sandbox VM is already running.")', "TestBrokerKeyPushedAtStart")
+m(AB, '\tif err == nil && rc != 0 {', '\tif false {', "TestBrokerKeyPushedAtStart")
+m(AB, '\tbrokerseal.Wipe(k)\n\tif err != nil {\n\t\ta.die("%v", err)\n\t}', '\tif err != nil {\n\t\ta.die("%v", err)\n\t}', "TestBrokerPut",
+  equivalent="the wipe is not observable from the test; it limits how long the key stays in memory")

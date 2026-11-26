@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/auditpull"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/brokerkey"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/release"
 	"github.com/samaritanark/agent-sandboxes/go/internal/opstate"
@@ -47,6 +48,8 @@ type Env struct {
 	HostCommands map[string]func(ctx context.Context, args []string) int
 	// Install is what install and uninstall need beyond the rest of Env.
 	Install InstallDeps
+	// BrokerKey keeps the credential broker's store key (D-32); nil leaves the broker without one.
+	BrokerKey brokerkey.Keeper
 }
 
 // ReleasePath is the image's release file (5.1.7).
@@ -100,6 +103,8 @@ func Run(ctx context.Context, args []string, env Env) (rc int) {
 			return a.sync(args[1:])
 		case "doctor":
 			return a.doctor(args[1:])
+		case BrokerPut:
+			return a.brokerPut(args[1:])
 		}
 		if f, ok := env.HostCommands[args[0]]; ok {
 			return f(ctx, args[1:])
@@ -239,6 +244,7 @@ func (a *app) vm(args []string) int {
 		if st == driver.Running {
 			no, owns := a.env.Driver.(driver.NetworkOwner)
 			if !owns || no.Network(a.ctx).Running {
+				a.warnBrokerKey(a.running())
 				fmt.Fprintln(a.env.Stdout, "The sandbox VM is already running.")
 				return 0
 			}
@@ -260,6 +266,7 @@ func (a *app) vm(args []string) int {
 		if _, err := a.waitReady(); err != nil {
 			a.die("the sandbox VM started but is not answering: %v\n  See: sandbox vm status", err)
 		}
+		a.warnBrokerKey(a.running())
 		fmt.Fprintln(a.env.Stdout, "The sandbox VM is running.")
 		return 0
 	case "stop":

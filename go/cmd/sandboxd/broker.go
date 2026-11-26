@@ -59,7 +59,7 @@ func (b *brokerStore) HandOver(ctx context.Context, session, socket string, refs
 	b.mu.Lock()
 	if b.key == nil {
 		b.mu.Unlock()
-		return errors.New("the broker key has not been pushed from the host")
+		return errors.New("the broker key has not been pushed from the host (run 'sandbox vm start' there)")
 	}
 	job, err := json.Marshal(handoverJob{Key: b.key, Store: b.store.Dir, Socket: socket, Links: refs})
 	b.mu.Unlock()

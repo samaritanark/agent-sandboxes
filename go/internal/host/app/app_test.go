@@ -29,6 +29,10 @@ type fakeTransport struct {
 	pulls         int
 	auditSessions string
 	auditRecords  map[string]string
+	// sandboxd ctl calls and what each got on stdin
+	ctl   [][]string
+	ctlIn [][]byte
+	ctlRC int
 }
 
 func (f *fakeTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []string, stdin io.Reader, stdout, _ io.Writer, tty bool) (int, error) {
@@ -36,6 +40,12 @@ func (f *fakeTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []stri
 		b, _ := io.ReadAll(stdin)
 		f.pushes = append(f.pushes, b)
 		return 0, nil
+	}
+	if len(argv) > 1 && argv[0] == SandboxdCommand {
+		b, _ := io.ReadAll(stdin)
+		f.ctl = append(f.ctl, argv[1:])
+		f.ctlIn = append(f.ctlIn, b)
+		return f.ctlRC, nil
 	}
 	f.runs = append(f.runs, argv)
 	f.ttys = append(f.ttys, tty)

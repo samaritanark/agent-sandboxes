@@ -35,12 +35,14 @@ func (a *app) doctor(args []string) int {
 		}
 		fmt.Fprintf(a.env.Stdout, "%s  %s\n", mark, what)
 	}
+	warn := func(what, detail string) { fmt.Fprintf(a.env.Stdout, "warn  %s: %s\n", what, detail) }
 	caps, err := a.env.Driver.Probe(a.ctx)
 	report(err == nil, "driver "+a.env.Driver.Name(), errString(err)+strings.Join(caps.Problems, "; "))
 	if no, ok := a.env.Driver.(driver.NetworkOwner); ok {
 		rep := no.Network(a.ctx)
 		report(rep.Running, "sandbox netd (the VM's network and host-reach control)", rep.Detail)
 	}
+	a.doctorBrokerKey(report, warn)
 	ep, err := a.env.Driver.Endpoint(a.ctx)
 	if err != nil {
 		report(false, "the sandbox VM is reachable", err.Error())
