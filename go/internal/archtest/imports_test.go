@@ -33,15 +33,16 @@ var allowed = map[string][]string{
 	// the session spec the policy CLI hands sandboxd (design 5.4.2): data and its structural checks
 	"sessionspec": {"egressmatch", "l7"},
 	// sandboxd (design 5.4.3): the in-VM supervisor's packages
-	"sandboxd/journal":     {"sessionspec"},
-	"sandboxd/limits":      {"sessionspec"},
-	"sandboxd/runtime":     {},
-	"sandboxd/netns":       {},
-	"sandboxd/auditlog":    {},
-	"sandboxd/brokerstore": {"brokerseal"},
-	"sandboxd/pki":         {},
-	"sandboxd/netsetup":    {},
-	"sandboxd/daemon":      {"egressmatch", "gateway/gwpolicy", "l7", "sandboxd/auditlog", "sandboxd/journal", "sandboxd/limits", "sandboxd/netsetup", "sandboxd/pki", "sandboxd/runtime", "sessionspec"},
+	"sandboxd/journal":      {"sessionspec"},
+	"sandboxd/limits":       {"sessionspec"},
+	"sandboxd/runtime":      {},
+	"sandboxd/netns":        {},
+	"sandboxd/auditlog":     {},
+	"sandboxd/brokerstore":  {"brokerseal"},
+	"sandboxd/attachclient": {"sandboxd/daemon", "tty"},
+	"sandboxd/pki":          {},
+	"sandboxd/netsetup":     {},
+	"sandboxd/daemon":       {"egressmatch", "gateway/gwpolicy", "l7", "sandboxd/auditlog", "sandboxd/journal", "sandboxd/limits", "sandboxd/netsetup", "sandboxd/pki", "sandboxd/runtime", "sessionspec"},
 	// the sync protocol (host engine and in-VM agent) and the in-VM agent itself
 	"syncproto": {},
 	"syncagent": {"syncproto"},
@@ -73,8 +74,8 @@ var allowed = map[string][]string{
 	// the workspace mount rules (masks, read-only exec vectors) and their tables
 	"mounts": {"bashcompat", "config", "gate"},
 	// the in-VM CLI is the policy layer's front end, so it may use every policy package
-	"cli": {"agents", "audit", "bashcompat", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
-		"link", "mounts", "onboard", "secretcmd", "secrets", "tier", "vetting", "workspace"},
+	"cli": {"agents", "allowlist", "audit", "bashcompat", "catalogue", "checks", "config", "deviation", "gate", "jqjson",
+		"link", "mounts", "onboard", "secretcmd", "secrets", "sessionspec", "tier", "vetting", "workspace"},
 
 	// The host binary's packages (design 5.1). They import only each other.
 	"host/driver":     {},

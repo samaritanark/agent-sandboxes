@@ -1131,3 +1131,32 @@ m(SB, 'os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o400', 'os.O_WRONL
 m(SB, '\treturn os.Chmod(job.Dir, 0o500)', '\treturn nil', "TestWriteReadable", pkg="../cmd/sandboxd")
 m("internal/sessionspec/sessionspec.go", '\tif len(s.Readable) > MaxReadable {', '\tif false {', "TestValidateRefuses")
 m("internal/sessionspec/sessionspec.go", '\t\tfor _, v := range []string{r.EnvVar, file} {', '\t\tfor _, v := range []string{r.EnvVar} {', "TestValidateRefuses")
+
+# ---- run through sandboxd: the spec (internal/cli/runspec.go), the launch (runlaunch.go), the VM's
+# images and workspace copies (cmd/sandbox-vm/launch.go)
+RS = "internal/cli/runspec.go"
+R_RS = "TestBuildSpec|TestQuantities|TestLaunch"
+m(RS, '\t\tn <<= 10', '\t\tn <<= 0', R_RS)
+m(RS, '\t\treturn float64(n) / 1000, nil', '\t\treturn float64(n), nil', R_RS)
+m(RS, 'cpuQty = regexp.MustCompile(`^([0-9]+)(m?)$`)', 'cpuQty = regexp.MustCompile(`([0-9]+)(m?)`)', R_RS)
+m(RS, '\tif len(pod) > 63 {', '\tif len(pod) > 64 {', R_RS)
+m(RS, '\t\tpod = strings.TrimRight(pod[:63], "-")', '\t\tpod = pod[:63]', R_RS)
+m(RS, '\t\tfor _, m := range append(mounts.Masks(i, copyDir), mounts.Readonly(i, copyDir)...) {', '\t\tfor _, m := range mounts.Readonly(i, copyDir) {', R_RS)
+m(RS, '\t\tfor _, m := range append(mounts.Masks(i, copyDir), mounts.Readonly(i, copyDir)...) {', '\t\tfor _, m := range mounts.Masks(i, copyDir) {', R_RS)
+m(RS, '\t\t\t\tspec.Mounts = append(spec.Mounts, sessionspec.Mount{Kind: sessionspec.ReadOnly, Source: copyDir + "/" + m.Rel, Target: t, ReadOnly: true})', '\t\t\t\tspec.Mounts = append(spec.Mounts, sessionspec.Mount{Kind: sessionspec.ReadOnly, Source: copyDir + "/" + m.Rel, Target: t})', R_RS)
+m(RS, '\tif s.Agent == "claude" {\n\t\tspec.Env', '\tif false {\n\t\tspec.Env', R_RS)
+m(RS, 'BlockDomains: chk.BlockedDomains(), BlockCIDRs: chk.BlockedCIDRs()}\n\n', 'BlockCIDRs: chk.BlockedCIDRs()}\n\n', R_RS)
+m(RS, '\tif s.Profile != "" {\n\t\tspec.Audit["profile"]', '\tif false {\n\t\tspec.Audit["profile"]', R_RS)
+RL = "internal/cli/runlaunch.go"
+m(RL, '\tif s.KeepAlive {\n\t\tc.out("==> Disconnected from', '\tif false {\n\t\tc.out("==> Disconnected from', R_RS)
+m(RL, '\tif s.DryRun {', '\tif false {', R_RS)
+m(RL, '\tif err := l.Sessions.Start(spec); err != nil {', '\tif l.Sessions.Start(spec); false {', R_RS)
+m(RL, '\tif sessionID != "" {\n\t\tcmd = append(cmd, agents.SessionIDFlag(agent), sessionID)', '\tif false {\n\t\tcmd = append(cmd, agents.SessionIDFlag(agent), sessionID)', R_RS)
+m(RL, '\trow("Runtime", "kata")', '\trow("Runtime", "gvisor")', R_RS)
+m(RL, '\trow("Log", c.tilde(rec.LogDir))', '\trow("Log", rec.LogDir)', R_RS)
+m(RL, '\tcase 0:\n\t\trow("Repo", "emptyDir (ephemeral)")', '\tcase 0:', R_RS)
+m(RL, '\tif err := l.Sessions.Stop(rec.ID, "detached"); err != nil {', '\tif false {', R_RS)
+VL = "cmd/sandbox-vm/launch.go"
+m(VL, '`/[0-9a-f]{16}$`', '`/[0-9a-f]{16}`', "TestWorkspaceCopyOf", pkg="../cmd/sandbox-vm")
+m(VL, '\t\tif err != nil || !workspaceCopy.MatchString(p) {', '\t\tif err != nil {', "TestWorkspaceCopyOf", pkg="../cmd/sandbox-vm")
+m(VL, '\t\tif !ok {\n\t\t\treturn "", fmt.Errorf("%s is not preloaded', '\t\tif false {\n\t\t\treturn "", fmt.Errorf("%s is not preloaded', "TestAgentImage", pkg="../cmd/sandbox-vm")

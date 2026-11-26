@@ -55,7 +55,10 @@ type Env struct {
 	// RunHandoff receives what `sandbox run` decided: the launch decisions and, unless
 	// StopAtDecisions, the session record. nil (the binary today) reports that the session
 	// runtime is not available yet; the differential test prints them instead.
-	RunHandoff      func(LaunchSpec, *SessionRecord)
+	RunHandoff func(LaunchSpec, *SessionRecord)
+	// Launch is sandboxd and the VM's images and workspace copies, for run when RunHandoff is nil;
+	// with no Sessions, run stops after recording the session.
+	Launch          LaunchEnv
 	StopAtDecisions bool // hand off after the launch decisions (the test's STOP_AT=b1)
 	// SessionLive answers whether a session's workload is running (v2: kubectl get pod), and
 	// ApplyPolicy replaces a live session's egress policy (v2: build_cilium_policy | kubectl

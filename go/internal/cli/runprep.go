@@ -44,6 +44,8 @@ type SessionRecord struct {
 	Image               string        // the agent image (v2's container_image)
 	Policy              PolicyRequest // what v2 handed build_cilium_policy
 	Dependencies        []Dependency
+	DomainCount         int    // the recorded allowlist's length, for the banner
+	AgentSessionID      string // the agent's pinned conversation id, when it takes one
 }
 
 // randBytes is head -c n /dev/urandom.
@@ -287,8 +289,10 @@ func runPrepare(c *cmdCtx, s *LaunchSpec) SessionRecord {
 	if line != "" {
 		c.out("%s", line)
 	}
+	rec.DomainCount = len(domains)
 	if agents.SessionIDFlag(s.Agent) != "" {
-		audit.RecordAgentSessionID(rec.LogDir, c.uuid())
+		rec.AgentSessionID = c.uuid()
+		audit.RecordAgentSessionID(rec.LogDir, rec.AgentSessionID)
 	}
 	if vettingSummary != "" {
 		audit.LogEvent(rec.LogDir, "vetting", vettingSummary, c.stamp())

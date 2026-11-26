@@ -1,10 +1,12 @@
 //go:build linux || darwin
 
-package main
+// Package attachclient is the client half of attaching a terminal to a session (design 5.4.3):
+// `sandboxd ctl attach` and the policy CLI's run and resume use it to hand sandboxd this process's
+// stdio and follow its window size.
+package attachclient
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,10 +15,13 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/tty"
 )
 
-// ctlAttach is `sandboxd ctl attach ID -- COMMAND...`: run COMMAND in the session's agent
-// microVM with this terminal (raw, its size followed) and exit with its status. The policy CLI's
-// run and resume attach the same way (daemon.AttachCall).
-func ctlAttach(id string, args []string) int {
+// HungUp is the status Attach returns when the client's own connection went away (its stdout has
+// no reader): sandboxd hangs up on the command.
+const HungUp = 129
+
+// Attach runs args in session id's agent microVM with this process's terminal (raw, its size
+// followed) through sandboxd's socket, and returns the command's exit status.
+func Attach(socket, id string, args []string) (int, error) {
 	term := tty.Is(os.Stdin) && tty.Is(os.Stdout)
 	req := daemon.Request{Op: "attach", ID: id, Args: args, TTY: term}
 	resize := make(chan [2]uint16, 1)
@@ -26,8 +31,7 @@ func ctlAttach(id string, args []string) int {
 		}
 		restore, err := tty.MakeRaw(os.Stdin)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "sandboxd: %v\n", err)
-			return 1
+			return 1, err
 		}
 		defer restore()
 		winch := make(chan os.Signal, 1)
@@ -48,15 +52,14 @@ func ctlAttach(id string, args []string) int {
 	defer cancel()
 	hung := make(chan struct{})
 	go func() { waitHangup(os.Stdout); close(hung); cancel() }()
-	code, err := daemon.AttachCall(ctx, Socket, req, [3]*os.File{os.Stdin, os.Stdout, os.Stderr}, resize)
+	code, err := daemon.AttachCall(ctx, socket, req, [3]*os.File{os.Stdin, os.Stdout, os.Stderr}, resize)
 	select {
 	case <-hung:
-		return 129 // the host went away; sandboxd hangs up on the command
+		return HungUp, nil
 	default:
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\r\nsandboxd: %v\r\n", err)
-		return 1
+		return 1, err
 	}
-	return code
+	return code, nil
 }

@@ -22,6 +22,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/attachclient"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/brokerstore"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
 )
@@ -69,7 +70,11 @@ func ctl(args []string) int {
 		if len(args) < 4 || args[2] != "--" {
 			return usage()
 		}
-		return ctlAttach(args[1], args[3:])
+		code, err := attachclient.Attach(Socket, args[1], args[3:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\r\nsandboxd: %v\r\n", err)
+		}
+		return code
 	}
 	var req daemon.Request
 	switch {

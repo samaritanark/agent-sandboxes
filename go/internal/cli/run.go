@@ -511,5 +511,9 @@ func cmdRun(c *cmdCtx, args []string) {
 		c.env.RunHandoff(s, &rec)
 		return
 	}
+	if c.env.Launch.Sessions != nil {
+		c.launch(s, rec)
+		return
+	}
 	c.die("'run' is not yet available in the Go port of the sandbox CLI: the launch decisions are made and the session recorded, but the session runtime (sandboxd) does not exist yet.")
 }
