@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/agents"
 	"github.com/samaritanark/agent-sandboxes/go/internal/cli"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/attachclient"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
@@ -145,3 +146,31 @@ func vmMemory() (int, error) {
 	defer f.Close()
 	return limits.MemTotalMiB(f)
 }
+
+// writeMCPConfig writes a session's MCP configuration under sandboxd's directory for it
+// (sessionspec.SessionStore/<id>/mcp/config.json), where the spec mounts it read-only.
+func writeMCPConfig(store string) func(string, []byte) (string, error) {
+	return func(id string, content []byte) (string, error) {
+		if !sessionID.MatchString(id) {
+			return "", fmt.Errorf("not a session id: %q", id)
+		}
+		sess := filepath.Join(store, id)
+		if err := os.MkdirAll(sess, 0o700); err != nil {
+			return "", err
+		}
+		dir := filepath.Join(sess, daemon.MCPDir)
+		if err := os.Mkdir(dir, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+		if st, err := os.Lstat(dir); err != nil || !st.IsDir() {
+			return "", fmt.Errorf("%s is not a directory", dir)
+		}
+		tmp := filepath.Join(dir, ".config.json.tmp")
+		if err := os.WriteFile(tmp, content, 0o644); err != nil {
+			return "", err
+		}
+		return dir, os.Rename(tmp, filepath.Join(dir, agents.MCPConfigFile))
+	}
+}
+
+var sessionID = regexp.MustCompile(`^ses-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$`)

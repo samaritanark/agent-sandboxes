@@ -128,7 +128,7 @@ func (r *Runtime) Create(ctx context.Context, m MicroVM) error {
 		client.WithImage(img),
 		client.WithNewSnapshot(m.ID+"-rootfs", img),
 		client.WithRuntime(KataRuntime, &runtimeoptions.Options{ConfigPath: KataConfig}),
-		client.WithNewSpec(SpecOpts(m, oci.WithImageConfig(img))...),
+		client.WithNewSpec(SpecOpts(m, imageConfig(img, m))...),
 	)
 	return err
 }
@@ -299,4 +299,13 @@ func (e *execProc) Wait(ctx context.Context) (int, error) {
 	case <-ctx.Done():
 		return -1, ctx.Err()
 	}
+}
+
+// imageConfig is the image's own configuration for m, its default command replaced by m's
+// ImageArgs when m gives no Args.
+func imageConfig(img oci.Image, m MicroVM) oci.SpecOpts {
+	if len(m.Args) == 0 && len(m.ImageArgs) > 0 {
+		return oci.WithImageConfigArgs(img, m.ImageArgs)
+	}
+	return oci.WithImageConfig(img)
 }

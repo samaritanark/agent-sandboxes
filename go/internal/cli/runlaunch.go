@@ -12,6 +12,7 @@ import (
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/agents"
 	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
+	"github.com/samaritanark/agent-sandboxes/go/internal/catalogue"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
 
@@ -43,6 +44,9 @@ type LaunchEnv struct {
 	AgentImage func(tag string) (string, error)
 	// WorkspaceCopy is the VM copy of a repository the run names (design 5.6).
 	WorkspaceCopy func(repo string) (string, error)
+	// WriteMCPConfig writes the agent's MCP configuration for session id where sandboxd mounts it
+	// from (its session directory) and returns that directory; nil refuses MCP dependencies.
+	WriteMCPConfig func(id string, content []byte) (string, error)
 	// VMMemoryMiB is the VM's memory, which the agent's default limit scales with; nil means
 	// v2's fixed 6 GiB.
 	VMMemoryMiB func() (int, error)
@@ -112,8 +116,6 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	switch {
 	case len(s.InfraKubeconfigs) > 0:
 		c.die("'run' with --infra-kubeconfig is not yet available in the Go port: its credentials go to the gateway (design 5.9.5).")
-	case strings.TrimSpace(s.MCPs) != "":
-		c.die("'run' with MCP dependencies is not yet available in the Go port of the sandbox CLI.")
 	}
 	c.out("==> Building pod manifest...")
 	tag := strings.TrimPrefix(rec.Image, "docker.io/library/")
@@ -140,6 +142,11 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	if s.Agent == "opencode" {
 		c.bindOpencode(spec, s)
 	}
+	mcp := c.mcpConfig(s, rec)
+	if mcp != "" {
+		spec.Mounts = append(spec.Mounts, sessionspec.Mount{Kind: sessionspec.MCPConfig,
+			Source: sessionspec.SessionStore + "/" + rec.ID + "/" + MCPDir, Target: agents.MCPConfigDir, ReadOnly: true})
+	}
 	for _, l := range c.registryWarnings(spec) {
 		c.errOut("%s", l)
 	}
@@ -152,6 +159,14 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 		c.out("Dry run complete. No resources applied.")
 		return
 	}
+	if mcp != "" {
+		if l.WriteMCPConfig == nil {
+			c.die("'run' with MCP dependencies needs the sandbox VM's session store.")
+		}
+		if _, err := l.WriteMCPConfig(rec.ID, []byte(mcp)); err != nil {
+			c.die("could not write the session's MCP configuration: %v", err)
+		}
+	}
 	c.out("==> Starting session...")
 	if err := l.Sessions.Start(spec); err != nil {
 		c.die("Session %s failed to start: %v", rec.ID, err)
@@ -160,7 +175,11 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	c.banner(s, rec)
 	c.out("")
 	c.out("==> Attaching to session (Ctrl-D or 'exit' to end)...")
-	if _, err := l.Sessions.Attach(rec.ID, agentCommand(s.Agent, rec.AgentSessionID)); err != nil {
+	cmd := agentCommand(s.Agent, rec.AgentSessionID)
+	if mcp != "" {
+		cmd = append(cmd, agents.MCPLaunchArgs(s.Agent)...)
+	}
+	if _, err := l.Sessions.Attach(rec.ID, cmd); err != nil {
 		c.warn("%v", err)
 	}
 	c.out("")
@@ -176,4 +195,31 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	c.out("")
 	c.out("    Conversation history preserved in ~/.sandbox/agent-home/%s/", s.Agent)
 	c.out("    To continue: start a new session and use the agent's /resume command.")
+}
+
+// MCPDir is where in the session's directory its MCP configuration goes (sandboxd's
+// daemon.MCPDir, which removes it with the session).
+const MCPDir = "mcp"
+
+// mcpConfig is the agent's MCP configuration for the launch's MCP dependencies (v2's
+// render_agent_mcp_config), each at its v3 address: the gateway forwards
+// <name>.deps.sandbox.internal:<port> to the dependency's microVM (design 5.8.6). "" when there are
+// none.
+func (c *cmdCtx) mcpConfig(s LaunchSpec, rec SessionRecord) string {
+	var records []string
+	for _, d := range rec.Dependencies {
+		if d.Kind != "mcp" {
+			continue
+		}
+		url := "http://" + d.Name + ".deps.sandbox.internal:" + d.Port + catalogue.Field(d.Path, "mcp_path", "/mcp")
+		records = append(records, d.Name+"|"+catalogue.Field(d.Path, "mcp_transport", "http")+"|"+url)
+	}
+	if len(records) == 0 {
+		return ""
+	}
+	cfg, err := agents.RenderMCPConfig(s.Agent, records)
+	if err != nil {
+		c.die("%v", err)
+	}
+	return cfg
 }

@@ -17,9 +17,12 @@ type Mount struct {
 
 // MicroVM describes one microVM: a session's agent or one of its dependencies.
 type MicroVM struct {
-	ID        string
-	Image     string // pinned by digest
-	Args      []string
+	ID    string
+	Image string // pinned by digest
+	Args  []string
+	// ImageArgs, when Args is empty, follow the image's entrypoint in place of its default command
+	// (Kubernetes' args: a catalogue dependency's args:).
+	ImageArgs []string
 	Env       []string // NAME=value
 	UID, GID  uint32   // never 0
 	Mounts    []Mount

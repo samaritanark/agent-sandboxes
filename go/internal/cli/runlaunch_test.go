@@ -154,3 +154,48 @@ func TestLaunchRefusals(t *testing.T) {
 		t.Errorf("no image: %d %q", rc, errb.String())
 	}
 }
+
+// TestLaunchMCP: an MCP dependency's server reaches the agent's MCP configuration at its v3
+// address, the configuration is written for sandboxd and mounted read-only, and the agent is
+// started with v2's MCP flags.
+func TestLaunchMCP(t *testing.T) {
+	e, fs, home := launchEnv(t)
+	os.MkdirAll(filepath.Join(home, ".sandbox", "profiles"), 0o755)
+	os.WriteFile(filepath.Join(home, ".sandbox", "profiles", "m.yaml"), []byte("tier: 1\nmcps:\n  - everything-mcp\n"), 0o644)
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "config", "catalogue"), 0o755)
+	cat, _ := os.ReadFile(filepath.Join("..", "..", "..", "config", "catalogue", "everything-mcp.yaml"))
+	os.WriteFile(filepath.Join(root, "config", "catalogue", "everything-mcp.yaml"), cat, 0o644)
+	e.SandboxRoot = root
+	os.WriteFile(filepath.Join(root, "config", "catalogue", "pg.yaml"), []byte("name: pg\nkind: service\nimage: docker.io/library/postgres@sha256:"+strings.Repeat("b", 64)+"\nport: 5432\n"), 0o644)
+	os.WriteFile(filepath.Join(home, ".sandbox", "profiles", "m.yaml"), []byte("tier: 1\nmcps:\n  - everything-mcp\nservices:\n  - pg\n"), 0o644)
+	var wrote string
+	e.Launch.WriteMCPConfig = func(id string, b []byte) (string, error) { wrote = id + " " + string(b); return "", nil }
+	var out, errb bytes.Buffer
+	if rc := Run([]string{"run", "--profile", "m"}, e, &out, &errb); rc != 0 {
+		t.Fatalf("%d\n%s\n%s", rc, out.String(), errb.String())
+	}
+	id := fs.started[0].ID
+	if !strings.HasPrefix(wrote, id+" ") || !strings.Contains(wrote, `"everything-mcp"`) || !strings.Contains(wrote, `"http://everything-mcp.deps.sandbox.internal:3001/sse"`) || !strings.Contains(wrote, `"sse"`) {
+		t.Errorf("config %q", wrote)
+	}
+	var mount *sessionspec.Mount
+	for i, m := range fs.started[0].Mounts {
+		if m.Kind == sessionspec.MCPConfig {
+			mount = &fs.started[0].Mounts[i]
+		}
+	}
+	if mount == nil || mount.Source != sessionspec.SessionStore+"/"+id+"/mcp" || mount.Target != "/home/agent/.sandbox-mcp" || !mount.ReadOnly {
+		t.Errorf("mount %+v", mount)
+	}
+	if got := strings.Join(fs.attached[0], " "); !strings.HasSuffix(got, "--mcp-config /home/agent/.sandbox-mcp/config.json --strict-mcp-config") {
+		t.Errorf("attach %q", got)
+	}
+	if strings.Contains(wrote, `"pg"`) {
+		t.Errorf("a service registered as an MCP server: %q", wrote)
+	}
+	if len(fs.started[0].Dependencies) != 2 || fs.started[0].Dependencies[0].Name != "everything-mcp" ||
+		strings.Join(fs.started[0].Dependencies[0].Args, " ") != "node dist/sse.js" || len(fs.started[0].Dependencies[0].Command) != 0 {
+		t.Errorf("deps %+v", fs.started[0].Dependencies)
+	}
+}

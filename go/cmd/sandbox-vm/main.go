@@ -21,6 +21,7 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/opstate"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/auditlog"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 	"github.com/samaritanark/agent-sandboxes/go/internal/syncagent"
 	"github.com/samaritanark/agent-sandboxes/go/internal/tty"
 )
@@ -128,7 +129,7 @@ func main() {
 	env.CredentialPresent, env.CredentialBinding = broker.present, broker.binding
 	env.Builder = nerdctlBuilder{mapFile: BuiltImages}
 	env.Launch = cli.LaunchEnv{Sessions: sandboxd{}, AgentImage: agentImage(BuiltImages, AgentImages), WorkspaceCopy: workspaceCopyOf("/"),
-		VMMemoryMiB: vmMemory}
+		VMMemoryMiB: vmMemory, WriteMCPConfig: writeMCPConfig(sessionspec.SessionStore)}
 	os.Exit(cli.Run(os.Args[1:], env, os.Stdout, os.Stderr))
 }
 

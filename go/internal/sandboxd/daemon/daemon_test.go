@@ -811,3 +811,29 @@ func TestBrokerList(t *testing.T) {
 		t.Errorf("%+v", resp)
 	}
 }
+
+// TestDependencyArgs: a dependency's args follow its image's entrypoint (Kubernetes' args); with a
+// command, the command and then the args are the whole process.
+func TestDependencyArgs(t *testing.T) {
+	r := newRig(t)
+	s, err := sessionspec.Decode(bytes.NewReader(spec("s-args", 4096, "a", "b")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Dependencies[0].Args = []string{"node", "dist/sse.js"}
+	s.Dependencies[1].Command, s.Dependencies[1].Args, s.Dependencies[1].Port = []string{"/bin/srv"}, []string{"--port", "1"}, 5433
+	b, _ := s.Encode()
+	if _, err := r.d.Start(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, m := range r.rt.vms {
+		if strings.HasPrefix(m.Image, "docker.io/library/postgres") {
+			got = append(got, strings.Join(m.Args, " ")+"|"+strings.Join(m.ImageArgs, " "))
+		}
+	}
+	sort.Strings(got)
+	if strings.Join(got, ",") != "/bin/srv --port 1|,|node dist/sse.js" {
+		t.Errorf("%q", got)
+	}
+}

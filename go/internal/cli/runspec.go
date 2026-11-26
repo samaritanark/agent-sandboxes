@@ -193,7 +193,14 @@ func (c *cmdCtx) specDependency(d Dependency) (sessionspec.Dependency, error) {
 		}
 	}
 	chk := c.checks()
-	return sessionspec.Dependency{Name: d.Name, Image: f("image", ""), Port: port, RunAsUser: uid,
+	var command, args []string
+	for _, a := range catalogue.List(d.Path, "command") {
+		command = append(command, a)
+	}
+	for _, a := range catalogue.List(d.Path, "args") {
+		args = append(args, a)
+	}
+	return sessionspec.Dependency{Name: d.Name, Image: f("image", ""), Command: command, Args: args, Port: port, RunAsUser: uid,
 		Resources: sessionspec.Resources{CPUs: cpu, MemoryMiB: mem, EphemeralGiB: (eph + 1023) >> 10},
 		Egress:    sessionspec.Egress{Allow: allow, BlockDomains: chk.BlockedDomains(), BlockCIDRs: chk.BlockedCIDRs()}}, nil
 }

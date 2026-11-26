@@ -59,3 +59,26 @@ func TestAgentImage(t *testing.T) {
 		t.Error("a broken map read")
 	}
 }
+
+func TestWriteMCPConfig(t *testing.T) {
+	store := t.TempDir()
+	w := writeMCPConfig(store)
+	dir, err := w("ses-20261126-213445-5114", []byte(`{"mcpServers":{}}`))
+	if err != nil || dir != filepath.Join(store, "ses-20261126-213445-5114", "mcp") {
+		t.Fatalf("%q %v", dir, err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "config.json"))
+	st, _ := os.Stat(filepath.Join(dir, "config.json"))
+	if string(b) != `{"mcpServers":{}}` || st.Mode().Perm() != 0o644 {
+		t.Errorf("%q %v", b, st.Mode())
+	}
+	if _, err := w("../etc", nil); err == nil {
+		t.Error("a path as a session id")
+	}
+	// a link planted where the directory goes is refused
+	os.MkdirAll(filepath.Join(store, "ses-20261126-213445-0000"), 0o700)
+	os.Symlink(t.TempDir(), filepath.Join(store, "ses-20261126-213445-0000", "mcp"))
+	if _, err := w("ses-20261126-213445-0000", nil); err == nil {
+		t.Error("wrote through a link")
+	}
+}

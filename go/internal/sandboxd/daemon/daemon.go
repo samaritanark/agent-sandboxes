@@ -356,6 +356,10 @@ func (d *Daemon) step(id, kind, name string, create func() error) error {
 	return d.Journal.Mark(id, kind, name, journal.Created, "")
 }
 
+// MCPDir is where in a session's directory the CLI writes the agent's MCP configuration, which
+// the spec mounts (sessionspec.MCPConfig); it goes with the session.
+const MCPDir = "mcp"
+
 func (d *Daemon) maskDir(id string) string { return filepath.Join(d.SessionRoot, id, "masks") }
 
 // mounts turns the spec's mounts into bind mounts, making the empty mask files and directories.
@@ -559,7 +563,11 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 		if err != nil {
 			return err
 		}
-		m := runtime.MicroVM{ID: cid, Image: dep.Image, Args: dep.Command, Env: append(env(dep.Env), trustEnv...),
+		args, imageArgs := dep.Command, dep.Args
+		if len(args) > 0 {
+			args, imageArgs = append(append([]string(nil), args...), dep.Args...), nil // command, then args
+		}
+		m := runtime.MicroVM{ID: cid, Image: dep.Image, Args: args, ImageArgs: imageArgs, Env: append(env(dep.Env), trustEnv...),
 			UID: uint32(dep.RunAsUser), GID: uint32(dep.RunAsUser), NetNS: d.NetNSPath(depNetNS(id, dep.Name)),
 			Mounts: append([]runtime.Mount{rc}, trustMounts...), CPUs: dep.Resources.CPUs, MemoryMiB: dep.Resources.MemoryMiB, Hostname: dep.Name}
 		if err := d.step(id, KindContainer, cid, func() error {
@@ -684,6 +692,7 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 			d.collect(id) // the last connections, before the gateway's directory goes
 			err = os.RemoveAll(d.maskDir(id))
 			os.RemoveAll(filepath.Join(d.SessionRoot, id, "gateway"))
+			os.RemoveAll(filepath.Join(d.SessionRoot, id, MCPDir)) // the run's generated MCP configuration
 		default:
 			err = fmt.Errorf("unknown resource kind %q", r.Kind)
 		}

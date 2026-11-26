@@ -155,7 +155,8 @@ type Readable struct {
 type Dependency struct {
 	Name      string    `json:"name"`
 	Image     string    `json:"image"`
-	Command   []string  `json:"command,omitempty"`
+	Command   []string  `json:"command,omitempty"` // replaces the image's entrypoint and command
+	Args      []string  `json:"args,omitempty"`    // replace the image's command (Kubernetes' args)
 	Port      int       `json:"port"`
 	RunAsUser int       `json:"run_as_user"`
 	Env       []EnvVar  `json:"env,omitempty"`
@@ -317,6 +318,7 @@ func (s *Spec) Validate(o Options) error {
 			bad("%s: must run as a non-root user", w)
 		}
 		checkCommand(d.Command, w+" command", bad)
+		checkCommand(d.Args, w+" args", bad)
 		checkResources(d.Resources, w+" resources", bad)
 		dbound := checkBindings(d.Bindings, w+" bindings", bad)
 		checkBindingReach(d.Bindings, d.Egress, w+" bindings", bad)
