@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/agents"
@@ -156,12 +157,20 @@ func cmdResume(c *cmdCtx, args []string) {
 	agent := jqAlt(sj, "agent", "claude")
 	agentSessionID := jqAlt(sj, "agent_session_id", "")
 
+	onSandboxd := c.env.Launch.Sessions != nil && c.env.SessionPhase == nil
+	if onSandboxd {
+		c.resumeHooks()
+	}
 	if c.env.SessionPhase == nil || c.env.RecreateSession == nil || c.env.Attach == nil {
 		c.die("'resume' is not yet available in the Go port of the sandbox CLI: the session runtime (sandboxd) does not exist yet.")
 	}
 	exists, phase := c.env.SessionPhase(sessionID, pod)
 	if !exists {
-		if b := c.resumeBlocker(sj); b != "" {
+		b := c.resumeBlocker(sj)
+		if b == "" && onSandboxd {
+			b = "recreating a stopped session from its record is not yet available in v3"
+		}
+		if b != "" {
 			rec, _ := sessionRecord(sj)
 			c.errOut("Session %s's pod was torn down and can't be auto-recreated:", sessionID)
 			c.errOut("  %s.", b)
@@ -186,6 +195,43 @@ func cmdResume(c *cmdCtx, args []string) {
 		cmd = append(cmd, rf, agentSessionID)
 	}
 	c.env.Attach(AttachRequest{SessionID: sessionID, Pod: pod, Command: cmd, KeepAlive: keepAlive})
+}
+
+// resumeHooks are resume's session hooks on sandboxd: a session is live or gone (sandboxd has no
+// pending phase a client must wait out), and the attach is run's, with v2's closing lines.
+func (c *cmdCtx) resumeHooks() {
+	s := c.env.Launch.Sessions
+	c.env.SessionPhase = func(id, _ string) (bool, string) {
+		live, err := s.Live(id)
+		if err != nil {
+			c.die("Cannot ask sandboxd about session %s: %v", id, err)
+		}
+		if !live {
+			return false, ""
+		}
+		return true, "Running"
+	}
+	c.env.RecreateSession = func(PolicyRequest, ManifestRequest) error {
+		return errors.New("recreating a stopped session is not yet available in v3")
+	}
+	c.env.Attach = func(r AttachRequest) {
+		if _, err := s.Attach(r.SessionID, r.Command); err != nil {
+			c.warn("%v", err)
+		}
+		c.out("")
+		if r.KeepAlive {
+			c.out("==> Disconnected from session %s (pod kept alive).", r.SessionID)
+			c.out("    Resume:  sandbox resume %s", r.SessionID)
+			c.out("    Stop:    sandbox stop %s", r.SessionID)
+			return
+		}
+		c.out("==> Disconnected — tearing down session to free cluster resources...")
+		c.stopSession(r.SessionID)
+		c.out("")
+		agent := jqAlt(c.env.LogsDir+"/"+r.SessionID+"/session.json", "agent", "claude")
+		c.out("    Conversation history preserved in ~/.sandbox/agent-home/%s/", agent)
+		c.out("    To continue: start a new session and use the agent's /resume command.")
+	}
 }
 
 // recreateSession is recreate_session_pod: re-gate the live workspace (tier 2/3), then hand the

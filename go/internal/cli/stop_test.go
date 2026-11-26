@@ -85,3 +85,28 @@ func TestListActive(t *testing.T) {
 		t.Errorf("down: %q", out.String())
 	}
 }
+
+// TestResumeOnSandboxd: a live session is attached with the agent's resume command and kept or
+// stopped after as v2 did; a stopped one prints the relaunch command.
+func TestResumeOnSandboxd(t *testing.T) {
+	e, fs, _ := launchEnv(t)
+	e.SessionPhase, e.RecreateSession, e.Attach = nil, nil, nil
+	fs.started = []*sessionspec.Spec{{ID: "ses-r"}}
+	sessionJSON(t, e, "ses-r", `{"agent":"claude","tier":"1","agent_session_id":"u-1"}`)
+	var out, errb bytes.Buffer
+	if rc := Run([]string{"resume", "ses-r", "--keep-alive"}, e, &out, &errb); rc != 0 {
+		t.Fatalf("%d %s", rc, errb.String())
+	}
+	if len(fs.attached) != 1 || strings.Join(fs.attached[0], " ") != "ses-r claude --resume u-1" || !strings.Contains(out.String(), "(pod kept alive).") || len(fs.stopped) != 0 {
+		t.Errorf("keep-alive: %q %q %q", fs.attached, out.String(), fs.stopped)
+	}
+	out.Reset()
+	Run([]string{"resume", "ses-r"}, e, &out, &errb)
+	if strings.Join(fs.stopped, ",") != "ses-r operator stop" || !strings.Contains(out.String(), "Session ses-r stopped.") {
+		t.Errorf("teardown: %q %q", fs.stopped, out.String())
+	}
+	errb.Reset()
+	if rc := Run([]string{"resume", "ses-r"}, e, &bytes.Buffer{}, &errb); rc != 1 || !strings.Contains(errb.String(), "not yet available in v3") || !strings.Contains(errb.String(), "sandbox run --agent claude --tier 1") {
+		t.Errorf("stopped: %d %q", rc, errb.String())
+	}
+}
