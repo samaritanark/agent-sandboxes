@@ -59,7 +59,7 @@ func main() {
 		Driver: d, Transport: tr, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 		StdinTTY: tty, StateDir: state, User: name,
 		Install:   installDeps(home),
-		BrokerKey: brokerkey.Default(state),
+		BrokerKey: brokerkey.Default(state), SecretsDir: os.Getenv("SANDBOX_SECRETS_DIR"),
 		HostCommands: map[string]func(context.Context, []string) int{
 			"setup-proxy-cert": func(ctx context.Context, args []string) int {
 				env := proxycert.System(runtime.GOOS)

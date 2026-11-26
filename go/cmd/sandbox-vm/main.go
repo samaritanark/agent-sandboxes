@@ -3,18 +3,24 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/cli"
 	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 	"github.com/samaritanark/agent-sandboxes/go/internal/opstate"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/auditlog"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
 	"github.com/samaritanark/agent-sandboxes/go/internal/syncagent"
 	"github.com/samaritanark/agent-sandboxes/go/internal/tty"
 )
@@ -88,6 +94,9 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) >= 2 && os.Args[1] == runBindings {
+		os.Exit(printRunBindings(os.Args[2:], cliEnv()))
+	}
 	if len(os.Args) == 2 && os.Args[1] == receiveOperatorState {
 		dest := os.Getenv("SANDBOX_OPERATOR_DIR")
 		if dest == "" {
@@ -99,6 +108,13 @@ func main() {
 		}
 		return
 	}
+	env := cliEnv()
+	env.SecretPresent = pushedSecret
+	os.Exit(cli.Run(os.Args[1:], env, os.Stdout, os.Stderr))
+}
+
+// cliEnv is the in-VM CLI's environment.
+func cliEnv() cli.Env {
 	logs := os.Getenv("SANDBOX_LOGS_DIR")
 	if logs == "" {
 		logs = os.Getenv("HOME") + "/.sandbox/logs"
@@ -110,7 +126,7 @@ func main() {
 	if org == "" { // the v2 default, relative to the install root
 		org = filepath.Join(filepath.Dir(filepath.Dir(root)), "config", "blocked-destinations.yaml")
 	}
-	env := cli.Env{
+	return cli.Env{
 		Env:                     cfg,
 		OrgBlockList:            org,
 		Stdin:                   os.Stdin,
@@ -136,8 +152,59 @@ func main() {
 		IsMacOS:                 runtime.GOOS == "darwin",
 		LinkOverlaysDir:         os.Getenv("LINK_OVERLAYS_DIR"),
 	}
-	os.Exit(cli.Run(os.Args[1:], env, os.Stdout, os.Stderr))
 }
+
+// runBindings is the in-VM half of the host's pre-pass before `sandbox run` (owner decision,
+// eighth round): it prints, as JSON, the names of the secrets the launch would bind. The host
+// checks each against its own command line and profile files before sealing and pushing it.
+const runBindings = "__run-bindings"
+
+// RunBindingsOutput is what runBindings prints.
+type RunBindingsOutput struct {
+	Secrets []string `json:"secrets"`
+}
+
+// printRunBindings prints the launch's secret names, or nothing (with run's status) when run would
+// stop first: the run that follows then says why.
+func printRunBindings(args []string, env cli.Env) int {
+	names, ok, rc := cli.RunBindings(args, env)
+	if !ok {
+		return rc
+	}
+	if names == nil {
+		names = []string{}
+	}
+	b, _ := json.Marshal(RunBindingsOutput{Secrets: names})
+	os.Stdout.Write(append(b, '\n'))
+	return 0
+}
+
+// pushedSecret is whether the host sealed name into the broker store for this launch. The list is
+// read from sandboxd once; when sandboxd cannot answer, no secret is present, and run stops with
+// v2's message after this warning.
+var pushedSecret = func() func(string) bool {
+	var once sync.Once
+	var have map[string]bool
+	return func(name string) bool {
+		once.Do(func() {
+			have = map[string]bool{}
+			resp, err := daemon.Call(context.Background(), daemon.Socket, daemon.Request{Op: "broker-list"})
+			if err == nil && !resp.OK {
+				err = errors.New(resp.Error)
+			}
+			if err != nil {
+				os.Stderr.WriteString("WARN: cannot read the credential broker's store from sandboxd: " + err.Error() + "\n")
+				return
+			}
+			for _, r := range resp.Refs {
+				if n, ok := brokerseal.SecretName(r); ok {
+					have[n] = true
+				}
+			}
+		})
+		return have[name]
+	}
+}()
 
 func or(v, d string) string {
 	if v == "" {

@@ -33,6 +33,10 @@ type fakeTransport struct {
 	ctl   [][]string
 	ctlIn [][]byte
 	ctlRC int
+	// the run pre-pass: its output, or an error
+	bindings    string
+	bindingsErr error
+	bindingArgs [][]string
 }
 
 func (f *fakeTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []string, stdin io.Reader, stdout, _ io.Writer, tty bool) (int, error) {
@@ -57,6 +61,13 @@ func (f *fakeTransport) Output(_ context.Context, _ driver.SSHEndpoint, argv []s
 	if len(argv) > 1 && argv[1] == auditpull.VMSessions {
 		f.pulls++
 		return []byte(f.auditSessions), nil
+	}
+	if len(argv) > 1 && argv[1] == RunBindings {
+		f.bindingArgs = append(f.bindingArgs, argv[2:])
+		if f.bindings == "" && f.bindingsErr == nil {
+			return []byte(`{"secrets":[]}`), nil
+		}
+		return []byte(f.bindings), f.bindingsErr
 	}
 	if len(argv) > 1 && argv[1] == auditpull.VMRead {
 		return []byte(f.auditRecords[argv[2]+"/"+argv[3]]), nil

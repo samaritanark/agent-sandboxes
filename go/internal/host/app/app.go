@@ -50,6 +50,8 @@ type Env struct {
 	Install InstallDeps
 	// BrokerKey keeps the credential broker's store key (D-32); nil leaves the broker without one.
 	BrokerKey brokerkey.Keeper
+	// SecretsDir is the host-side secret store (SANDBOX_SECRETS_DIR; "" is StateDir/secrets).
+	SecretsDir string
 }
 
 // ReleasePath is the image's release file (5.1.7).
@@ -171,8 +173,8 @@ func (a *app) handshake(ep driver.SSHEndpoint) release.Info {
 	return info
 }
 
-// pushState sends the operator state (design 5.1.4) before a proxied command.
-func (a *app) pushState(ep driver.SSHEndpoint) {
+// pushState sends the operator state (design 5.1.4) before a proxied command, and returns it.
+func (a *app) pushState(ep driver.SSHEndpoint) []byte {
 	archive, warnings, err := opstate.Build(a.env.StateDir)
 	if err != nil {
 		a.die("cannot collect the operator state in ~/.sandbox: %v", err)
@@ -185,6 +187,7 @@ func (a *app) pushState(ep driver.SSHEndpoint) {
 	if err != nil || rc != 0 {
 		a.die("could not push the operator state to the sandbox VM: %v %s", err, strings.TrimSpace(errb.String()))
 	}
+	return archive
 }
 
 // ReceiveOperatorState is the in-VM entry point that takes the pushed state.
@@ -193,7 +196,10 @@ const ReceiveOperatorState = "__receive-operator-state"
 func (a *app) proxy(args []string) int {
 	ep := a.running()
 	a.handshake(ep)
-	a.pushState(ep)
+	archive := a.pushState(ep)
+	if len(args) > 0 && args[0] == "run" {
+		a.pushRunSecrets(ep, args[1:], archive)
+	}
 	rc, err := a.env.Transport.Run(a.ctx, ep, append([]string{VMCommand}, args...), a.env.Stdin, a.env.Stdout, a.env.Stderr, a.env.StdinTTY)
 	if err != nil {
 		a.die("cannot run the command in the sandbox VM: %v", err)

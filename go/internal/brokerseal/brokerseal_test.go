@@ -50,3 +50,18 @@ func TestNewKey(t *testing.T) {
 		t.Errorf("an empty value's entry is %d bytes", len(blob))
 	}
 }
+
+func TestSecretRef(t *testing.T) {
+	r := SecretRef("GH_TOKEN")
+	if r != "secret.GH_TOKEN" || !ValidRef(r) {
+		t.Fatal(r)
+	}
+	if n, ok := SecretName(r); !ok || n != "GH_TOKEN" {
+		t.Error(n, ok)
+	}
+	for _, r := range []string{"secret.", "claude-oauth", "secretGH"} {
+		if _, ok := SecretName(r); ok {
+			t.Errorf("%s taken for a secret", r)
+		}
+	}
+}

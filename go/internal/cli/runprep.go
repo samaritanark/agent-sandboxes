@@ -180,7 +180,7 @@ func (c *cmdCtx) resolveDependencies(sessionID, agent, mcps, services string) ([
 			if s == "" {
 				continue
 			}
-			if !config.IsFile(c.env.SecretsDir + "/" + s) {
+			if !c.secretPresent(s) {
 				e(fmt.Sprintf("ERROR: dependency '%s' requires secret '%s' but it is", w.name, s),
 					fmt.Sprintf("       not in the host-side store. Run 'sandbox secret set %s'.", s))
 				return nil, false

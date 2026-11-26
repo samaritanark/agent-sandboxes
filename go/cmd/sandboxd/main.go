@@ -27,7 +27,7 @@ import (
 )
 
 // Socket is sandboxd's API socket.
-const Socket = "/run/sandboxd.sock"
+const Socket = daemon.Socket
 
 func usage() int {
 	fmt.Fprintln(os.Stderr, "usage: sandboxd serve | sandboxd ctl start SPEC.json | stop ID [REASON] | heartbeat ID | list | attach ID -- CMD... |\n"+

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // KeySize is the store key's length (AES-256).
@@ -27,6 +28,19 @@ var refRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 // ValidRef reports whether ref may name a credential.
 func ValidRef(ref string) bool { return refRE.MatchString(ref) }
+
+// SecretPrefix begins the reference of an operator secret (`sandbox secret set NAME`), so the
+// operator's names cannot collide with the broker's own credentials (agent tokens and the like).
+const SecretPrefix = "secret."
+
+// SecretRef is the store reference of operator secret name.
+func SecretRef(name string) string { return SecretPrefix + name }
+
+// SecretName is the operator secret a reference names, if it names one.
+func SecretName(ref string) (string, bool) {
+	n, ok := strings.CutPrefix(ref, SecretPrefix)
+	return n, ok && n != ""
+}
 
 // NewKey makes a store key.
 func NewKey() ([]byte, error) {

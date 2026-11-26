@@ -692,7 +692,7 @@ m(RN, '\t\tif honor == "true" {\n\t\t\te("==> NOTICE', '\t\tif honor != "true" {
 m(RN, '\t\tif h := urlHost(ep); h != "" {\n\t\t\tegress(h)', '\t\tif h := urlHost(ep); h == "x" {\n\t\t\tegress(h)', R_CL)
 m(RN, '\tif err := chk.CheckBlockedCIDRsValid(); err != nil {', '\tif err := chk.CheckBlockedCIDRsValid(); false && err != nil {', R_CL)
 m(RN, '\t\t\tcase len(name) > 64:', '\t\t\tcase len(name) > 65:', R_CL)
-m(RN, '\t\t\tif !config.IsFile(c.env.SecretsDir + "/" + name) {', '\t\t\tif false {', R_CL)
+m(RN, '\t\t\tif !c.secretPresent(name) {', '\t\t\tif false {', R_CL)
 m(RN, '\t\tif len(s.Secrets) > 0 {\n\t\t\ts.HasSecrets = true', '\t\tif len(s.Secrets) > 1 {\n\t\t\ts.HasSecrets = true', R_CL)
 m(RN, '\t\t\tif echoOpt.MatchString(s) {', '\t\t\tif false {', R_CL)
 m(RN, '\t\tfor _, s := range config.BashGlob(w) {', '\t\tfor _, s := range []string{w} {', R_CL)
@@ -710,7 +710,7 @@ m(RP, '\t\tok := ch >= \'a\' && ch <= \'z\' || ch >= \'0\' && ch <= \'9\'', '\t\
 m(RP, '\treturn strings.Trim(b.String(), "-")', '\treturn strings.TrimRight(b.String(), "-")', R_CL)
 m(RP, '\tif m, _ := strconv.Atoi(max); len(pending) > m {', '\tif m, _ := strconv.Atoi(max); len(pending) > m+1 {', R_CL)
 m(RP, '\t\tif w.kind != kind {', '\t\tif false {', R_CL)
-m(RP, '\t\t\tif !config.IsFile(c.env.SecretsDir + "/" + s) {', '\t\t\tif false {', R_CL)
+m(RP, '\t\t\tif !c.secretPresent(s) {', '\t\t\tif false {', R_CL)
 m(RP, '\t\t\tif !agents.SupportsMCP(agent) {', '\t\t\tif false {', R_CL)
 m(RP, 'catalogue.Field(path, "mcp_path", "/mcp")', 'catalogue.Field(path, "mcp_path", "/sse")', R_CL,
   equivalent="the only MCP entry in the corpus sets mcp_path")
@@ -1082,3 +1082,30 @@ m(SV, '\tif len(files) != 3 {', '\tif len(files) < 2 {', R_AT, pkg="sandboxd/dae
 m(SV, '\t\tlimit.N = 1 << 62', '\t\tlimit.N = limit.N', R_AT, pkg="sandboxd/daemon",
   equivalent="the test's control messages fit in what is left of the request limit")
 m("internal/sandboxd/limits/limits.go", '\tif t.Attached {\n\t\treturn false, ""\n\t}\n\tif grace', '\tif grace', "TestExpiry", pkg="sandboxd/limits")
+
+# ---- the host's pre-pass before run (internal/cli/bindings.go, internal/host/app/runsecrets.go)
+CB = "internal/cli/bindings.go"
+R_CB = "TestRunBindings|TestRunSecretPresent"
+m(CB, '\t\tif !seen[n] {', '\t\tif true {', R_CB)
+m(CB, '\tcase c.prepass:\n\t\treturn true\n', '', R_CB)
+m(CB, '\tcase c.env.SecretPresent != nil:', '\tcase false:', R_CB)
+m(CB, '\t\tfor _, n := range d.Secrets {\n\t\t\tadd(n)\n\t\t}', '', R_CB)
+m(CB, '\tif !depsOK {\n\t\treturn nil, false, 1\n\t}', '', R_CB)
+m(RN, '\tif !c.prepass {\n\t\trunSyncs(c)\n\t}', '\trunSyncs(c)', R_CB + "|TestCLIGolden",
+  equivalent="the test cases have no linked overlays or leakscan config to fetch, so the pre-pass's syncs change nothing observable")
+HR = "internal/host/app/runsecrets.go"
+R_HR = "TestRun"
+m(HR, '\tif len(names) > maxBoundSecrets {', '\tif false {', R_HR, pkg="host/app")
+m(HR, '\t\tif seen[n] {', '\t\tif false {', R_HR, pkg="host/app")
+m(HR, '\t\tif !secretName.MatchString(n) {', '\t\tif false {', R_HR, pkg="host/app")
+m(HR, '\tif _, err := dec.Token(); err != io.EOF {', '\tif false {', R_HR, pkg="host/app")
+m(HR, '\tdec.DisallowUnknownFields()\n', '', R_HR, pkg="host/app")
+m(HR, '\tif out.Secrets == nil {', '\tif false {', R_HR, pkg="host/app")
+m(HR, '\t\tif h.Name != "config.yaml" && !strings.HasPrefix(h.Name, "profiles/") {', '\t\tif h == nil {', R_HR, pkg="host/app")
+m(HR, '\t\tif !m[n] {', '\t\tif false {', R_HR, pkg="host/app")
+m(HR, '\t\treturn !(r == \'_\' ||', '\t\treturn !(', R_HR, pkg="host/app")
+m(HR, '\t\twords([]byte(a), m)', '', R_HR, pkg="host/app")
+m(HR, '\tif len(names) == 0 {\n\t\treturn\n\t}', '', R_HR, pkg="host/app")
+m(HR, '\t\tif absent {', '\t\tif false {', R_HR, pkg="host/app")
+m(HR, '\tif err == nil && len(v) > MaxSecretSize {', '\tif false {', R_HR, pkg="host/app")
+m(AA, '\tif len(args) > 0 && args[0] == "run" {', '\tif len(args) > 0 {', R_HR, pkg="host/app")

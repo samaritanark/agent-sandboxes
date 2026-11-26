@@ -126,6 +126,23 @@ func (c *cmdCtx) tildeExpand(p string) string {
 	return p
 }
 
+// runSyncs is the run path's overlay sync and leakscan config refresh.
+func runSyncs(c *cmdCtx) {
+	l := c.link()
+	l.NoLinkCheck = c.env.NoLinkCheck
+	r := l.SyncOnRun()
+	for _, o := range r.Stdout {
+		c.out("%s", o)
+	}
+	for _, e := range r.Stderr {
+		fmt.Fprintln(c.stderr, e)
+	}
+	if r.Die != "" {
+		c.die("%s", r.Die)
+	}
+	gate.FetchLeakscanConfig(c.env.Env, gate.FetchEnv{}, func(m string) { c.warn("%s", m) }, c.stdout)
+}
+
 // runDecide is cmd_run from argument parsing to ensure_cluster_ready.
 func runDecide(c *cmdCtx, args []string) LaunchSpec {
 	s := LaunchSpec{Agent: "claude", Tier: "1"}
@@ -187,20 +204,11 @@ func runDecide(c *cmdCtx, args []string) LaunchSpec {
 		}
 	}
 
-	// The run-path overlay sync, the leakscan config refresh, and the overlay's minimum CLI.
-	l := c.link()
-	l.NoLinkCheck = c.env.NoLinkCheck
-	r := l.SyncOnRun()
-	for _, o := range r.Stdout {
-		c.out("%s", o)
+	// The run-path overlay sync, the leakscan config refresh, and the overlay's minimum CLI. The
+	// host's pre-pass skips the first two: the run that follows does them.
+	if !c.prepass {
+		runSyncs(c)
 	}
-	for _, e := range r.Stderr {
-		fmt.Fprintln(c.stderr, e)
-	}
-	if r.Die != "" {
-		c.die("%s", r.Die)
-	}
-	gate.FetchLeakscanConfig(c.env.Env, gate.FetchEnv{}, func(m string) { c.warn("%s", m) }, c.stdout)
 	if ov := config.ResolveOverlayPath(c.env.Env); ov != "" && isDir(ov) {
 		unmet, warns := config.OverlayMinVersionUnmet(ov, c.env.Version.Version)
 		for _, w := range warns {
@@ -473,7 +481,7 @@ func runDecide(c *cmdCtx, args []string) LaunchSpec {
 				c.errOut("       name is also the env-var the agent sees inside the pod.")
 				panic(exit(1))
 			}
-			if !config.IsFile(c.env.SecretsDir + "/" + name) {
+			if !c.secretPresent(name) {
 				c.die("Profile '%s' requires secret '%s' but it's not in the host-side store. Run 'sandbox secret set %s' first.", s.Profile, name, name)
 			}
 			s.Secrets = append(s.Secrets, name)

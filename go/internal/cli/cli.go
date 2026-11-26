@@ -41,6 +41,10 @@ type Env struct {
 	OpencodeBaseURL         string       // OPENCODE_BASE_URL
 	NoLinkCheck             bool         // SANDBOX_NO_LINK_CHECK is set
 	IsMacOS                 bool         // the host is macOS
+	// SecretPresent answers whether the host pushed a secret for this launch (design 5.1.4: in v3
+	// the store stays on the host, which seals a launch's secrets into the broker store before the
+	// run). nil looks in SecretsDir, as v2 did.
+	SecretPresent func(name string) bool
 	// ImagePresent is k3s_image_present: 0 present, 1 absent, 2 cannot tell. nil skips the check
 	// (v3 has no k3s image store; sandboxd reports a missing image).
 	ImagePresent func(tag string) int
@@ -91,6 +95,7 @@ type cmdCtx struct {
 	env            Env
 	stdout, stderr io.Writer
 	stdin          *bufio.Reader
+	prepass        bool // the host's pre-pass (RunBindings): decide, print nothing, change nothing
 }
 
 func (c *cmdCtx) checks() checks.Ctx { return checks.Ctx{Env: c.env.Env, OrgFile: c.env.OrgBlockList} }

@@ -16,6 +16,9 @@ import (
 // MaxRequest bounds one request (a session spec is a few KiB).
 const MaxRequest = 1 << 20
 
+// Socket is sandboxd's API socket, for root and the members of its client group.
+const Socket = "/run/sandboxd.sock"
+
 // Request is one call on sandboxd's socket. One request per connection.
 type Request struct {
 	Op     string          `json:"op"` // start, stop, heartbeat, list, attach, broker-key, broker-put, broker-delete, broker-list
