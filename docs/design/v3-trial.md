@@ -1,0 +1,75 @@
+# Trying v3 on a Mac
+
+A working guide for the owner's trial of the v3 rewrite before the v3 pull request. It is not
+user documentation. State as of 2026-11-26; S8.md "Start here" says what changed since.
+
+## What works
+
+- `sandbox install` (vfkit VM, netd networking), `vm start|stop|status`, `doctor`, `uninstall`.
+- `sandbox rebuild` builds the agent images in the VM (v2's Dockerfiles).
+- `sandbox onboard --agent claude`: Claude Code's login through the credential broker.
+- `sandbox run` with Claude Code: tiers 1 to 3, the workspace gates (vetting, the secret scan with
+  betterleaks), your repositories synced into the VM and back (changes the gate withholds wait in
+  `sandbox sync review`), profile secrets brokered or readable (`sandbox secret set ... --bind` or
+  `--allow-readable`), `--infra-token`, MCP dependencies, your L7 rules in
+  `~/.sandbox/egress-rules.yaml`, `--keep-alive`, `list`, `stop`, `resume`.
+- opencode with `OPENCODE_API_KEY` and `OPENCODE_BASE_URL` set (not yet run against a real
+  endpoint).
+
+## What does not work yet
+
+- codex, copilot, and grok (their broker adapters are not built); `--infra-kubeconfig`.
+- Resuming a session that was stopped (a live keep-alive session resumes).
+- `sandbox upgrade`, prebuilt agent images in the appliance (you build them once with
+  `sandbox rebuild`), Windows and Linux hosts (Linux uses qemu; not part of this trial).
+
+## Beside v2
+
+v3 reads and writes the same `~/.sandbox` as v2: your profiles, secrets, `config.yaml`, overlays,
+and logs are shared and keep their formats. v3 adds `~/.sandbox/vm`, `sync`, `quarantine`,
+`agent-config`, and `egress-rules.yaml`. v2's Lima VM is untouched. Name the v3 binary
+`sandbox3` so v2's `sandbox` keeps working, and give the two VMs memory to share (or stop v2's).
+
+**Never run `sandbox3 uninstall --purge`**: it removes the shared state, v2's secrets, agent
+homes, logs, and profiles included. Plain `sandbox3 uninstall` asks about each kind of state;
+answer `n` to keep it.
+
+## Setting up
+
+1. vfkit: `brew install vfkit`.
+2. The host binary (Go 1.27):
+   `cd go && go build -o ~/bin/sandbox3 ./cmd/sandbox`
+3. The appliance image, built in the `v3-spike` Lima VM (about 15 minutes):
+   `image/build-in-lima.sh v3-spike 3.0.0-dev.trial ~/sandbox-appliance.raw`
+4. Install (8 GiB is the minimum; more memory gives sessions more):
+   `sandbox3 install --dev-image ~/sandbox-appliance.raw --vm-memory 12 --vm-cpus 4`
+   The credential broker's key is kept in your login keychain (`agent-sandboxes broker key`).
+5. The agent images, once (about 10 minutes, from the network, in the VM):
+   `sandbox3 rebuild --agent base && sandbox3 rebuild --agent claude`
+   (add `--tier3` for tier 3's `claude-infra`).
+6. Claude Code's login: in a terminal on the Mac, `claude setup-token` (it signs in through the
+   browser and prints a token, `sk-ant-oat01-...`), then `sandbox3 onboard --agent claude` and
+   paste it. The token goes only into the VM's broker; sessions see a placeholder. Onboard again
+   after reinstalling the VM.
+
+## Using it
+
+- `sandbox3 run --repo ~/code/some-repo` (tier 1: history kept for the session only), or
+  `--tier 2` to keep Claude's conversation history for that repository (`/resume` in Claude).
+- The agent works in the VM's copy of the repository; its changes come back to the repository on
+  the Mac while it runs and at the end. Changes to executable config (`.git/config`, hooks, and the
+  like) are withheld: `sandbox3 sync review`.
+- `sandbox3 list`, `sandbox3 stop ID`, `sandbox3 run --keep-alive ...` then `sandbox3 resume ID`.
+- Session logs and audit records: `~/.sandbox/logs/<session>/`.
+
+## What to note during the trial
+
+Anything that differs from v2 unexpectedly, every error message that did not tell you what to do,
+and in particular:
+
+- Whether Claude Code works for a whole day on the placeholder (the first run with a real token;
+  S2 has only seen it with a fake one), and any request the gateway refused
+  (`~/.sandbox/logs/<session>/` events `credential_missing` or `credential_misuse`, flows with a
+  `denied` decision).
+- Whether the files you expect come back to the Mac, and anything `sync review` holds.
+- Memory and CPU on the Mac while a session runs.

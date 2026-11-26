@@ -275,9 +275,9 @@ type stateCategory struct {
 
 var stateCategories = []stateCategory{
 	{"secrets and agent tokens", []string{"secrets", "agent-home"}},
-	{"withheld workspace changes", []string{"quarantine"}},
+	{"withheld workspace changes and sync state", []string{"quarantine", "sync"}},
 	{"logs", []string{"logs"}},
-	{"settings and profiles", []string{"config.yaml", "profiles", "vetting", "extra-ca-certs", "overlays"}},
+	{"settings and profiles", []string{"config.yaml", "profiles", "vetting", "extra-ca-certs", "overlays", "egress-rules.yaml", "agent-config"}},
 }
 
 func (a *app) uninstall(args []string) int {
