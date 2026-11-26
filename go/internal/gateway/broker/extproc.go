@@ -71,14 +71,28 @@ var skipResponse = &procmodev3.ProcessingMode{ResponseHeaderMode: procmodev3.Pro
 // Process handles one HTTP request's exchange.
 func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
 	var scrub *Scrubber
+	var frames *FrameScrubber // after a WebSocket upgrade
+	var reps []Replacement
 	var ev Event
 	reflected := func() {
-		if scrub != nil && scrub.Hits > 0 {
+		hits := 0
+		if scrub != nil {
+			hits, scrub.Hits = scrub.Hits, 0
+		}
+		if frames != nil {
+			hits, frames.Hits = hits+frames.Hits, 0
+		}
+		if hits > 0 {
 			e := ev
 			e.Type, e.Reason = "credential_reflection", "the response carried an injected value; replaced with its placeholder"
 			s.record(e)
-			scrub.Hits = 0
 		}
+	}
+	unscrubbable := func(why string) *extprocv3.ProcessingResponse {
+		e := ev
+		e.Type, e.Reason = "refused", why
+		s.record(e)
+		return immediate(typev3.StatusCode_BadGateway, "broker_unscrubbable")
 	}
 	for {
 		req, err := stream.Recv()
@@ -134,7 +148,8 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			if o.Injected {
 				// the response must arrive as sent so it can be scrubbed
 				mut.SetHeaders = append(mut.SetHeaders, overwrite("accept-encoding", "identity"))
-				scrub = NewScrubber(bs.Reflections())
+				reps = bs.Reflections()
+				scrub = NewScrubber(reps)
 				ev.Ref = o.Ref
 				e := ev
 				e.Type = "credential_injected"
@@ -145,13 +160,23 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 		case *extprocv3.ProcessingRequest_ResponseHeaders:
 			mut := &extprocv3.HeaderMutation{}
 			if scrub != nil {
-				for _, h := range r.ResponseHeaders.GetHeaders().GetHeaders() {
+				hs := r.ResponseHeaders.GetHeaders().GetHeaders()
+				for _, h := range hs {
+					if h.Key == ":status" && headerValue(h) == "101" {
+						// the connection becomes WebSocket frames (Decide lets no other upgrade by)
+						frames = NewFrameScrubber(reps)
+					}
+				}
+				for _, h := range hs {
 					v := headerValue(h)
 					if h.Key == "content-encoding" && !strings.EqualFold(v, "identity") {
-						e := ev
-						e.Type, e.Reason = "refused", "a compressed response to an injected request cannot be scrubbed"
-						s.record(e)
-						resp = immediate(typev3.StatusCode_BadGateway, "broker_unscrubbable")
+						resp = unscrubbable("a compressed response to an injected request cannot be scrubbed")
+						break
+					}
+					if frames != nil && h.Key == "sec-websocket-extensions" {
+						// the offer was stripped; a server that accepts an extension anyway
+						// (compression) sends frames the broker cannot read
+						resp = unscrubbable("a WebSocket extension on an injected connection cannot be scrubbed")
 						break
 					}
 					if !strings.HasPrefix(h.Key, ":") {
@@ -169,7 +194,18 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			}
 		case *extprocv3.ProcessingRequest_ResponseBody:
 			body := r.ResponseBody.GetBody()
-			if scrub != nil {
+			if frames != nil {
+				out, err := frames.Write(body)
+				if err == nil && r.ResponseBody.GetEndOfStream() {
+					err = frames.Close()
+				}
+				if err != nil {
+					// cut the connection: what was sent so far was whole frames, scrubbed
+					resp = unscrubbable(err.Error())
+					break
+				}
+				body = out
+			} else if scrub != nil {
 				body = scrub.Write(body)
 				if r.ResponseBody.GetEndOfStream() {
 					body = append(body, scrub.Close()...)

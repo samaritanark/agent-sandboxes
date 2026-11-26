@@ -176,11 +176,11 @@ func (s *Set) Decide(r Request) Outcome {
 		return Outcome{} // nothing brokered here; the request goes on as it is
 	}
 
-	// a protocol upgrade hands the connection to raw frames, which the scrubber is not known to
-	// see: until that is verified, an upgrade never carries an injected value (fail closed)
+	// after an upgrade the broker sees raw frames: it can scrub WebSocket's (FrameScrubber), and
+	// no other protocol's, so any other upgrade never carries an injected value (fail closed)
 	for _, h := range r.Headers {
-		if h.Name == "upgrade" {
-			return refuse("refused", bound[0].Ref, "a protocol upgrade on a brokered destination cannot be scrubbed")
+		if h.Name == "upgrade" && !strings.EqualFold(strings.TrimSpace(h.Value), "websocket") {
+			return refuse("refused", bound[0].Ref, "a protocol upgrade other than WebSocket on a brokered destination cannot be scrubbed")
 		}
 	}
 	out := Outcome{RemoveHeaders: removals(r.Headers)}
@@ -227,9 +227,15 @@ func removals(hs []Header) []string {
 		}
 		out = append(out, n)
 	}
+	upgrade := false
+	for _, h := range hs {
+		upgrade = upgrade || h.Name == "upgrade"
+	}
 	for _, h := range hs {
 		for _, hb := range hopByHop {
-			if h.Name == hb && hb != "transfer-encoding" && hb != "te" && hb != "upgrade" {
+			// Envoy frames the request with transfer-encoding and te, and recognizes an upgrade
+			// by upgrade and connection together
+			if h.Name == hb && hb != "transfer-encoding" && hb != "te" && hb != "upgrade" && (hb != "connection" || !upgrade) {
 				add(hb)
 			}
 		}

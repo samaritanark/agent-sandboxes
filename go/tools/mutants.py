@@ -1006,3 +1006,32 @@ m(AA, '\t\t\t\ta.warnBrokerKey(a.running())\n\t\t\t\tfmt.Fprintln(a.env.Stdout, 
 m(AB, '\tif err == nil && rc != 0 {', '\tif false {', "TestBrokerKeyPushedAtStart")
 m(AB, '\tbrokerseal.Wipe(k)\n\tif err != nil {\n\t\ta.die("%v", err)\n\t}', '\tif err != nil {\n\t\ta.die("%v", err)\n\t}', "TestBrokerPut",
   equivalent="the wipe is not observable from the test; it limits how long the key stays in memory")
+
+# ---- WebSocket frames through the broker (internal/gateway/broker/wsframe.go, extproc.go) and the
+# upgrade route (internal/gateway/envoyconf/intercept.go)
+WF = "internal/gateway/broker/wsframe.go"
+EP = "internal/gateway/broker/extproc.go"
+R_WF = "FrameScrubber|Process"
+m(WF, '\tif b[1]&0x80 != 0 || b0&0x70 != 0 {', '\tif b[1]&0x80 != 0 {', R_WF, pkg="gateway/broker")
+m(WF, '\tif b[1]&0x80 != 0 || b0&0x70 != 0 {', '\tif b0&0x70 != 0 {', R_WF, pkg="gateway/broker")
+m(WF, '\t\t\t\tif !fin || n > 125 {', '\t\t\t\tif n > 125 {', R_WF, pkg="gateway/broker")
+m(WF, '\t\t\t\tif !fin || n > 125 {', '\t\t\t\tif !fin || n > 126 {', R_WF, pkg="gateway/broker")
+m(WF, '\t\t\t\tif f.msg != nil {\n\t\t\t\t\treturn nil, ErrUnframeable // a new message inside a fragmented one\n\t\t\t\t}', '', R_WF, pkg="gateway/broker")
+m(WF, '\t\t\t\tif f.msg == nil {\n\t\t\t\t\treturn nil, ErrUnframeable\n\t\t\t\t}', '\t\t\t\tif f.msg == nil {\n\t\t\t\t\tf.msg, f.msgOp, f.started = NewScrubber(f.reps), opBin, true\n\t\t\t\t}', R_WF, pkg="gateway/broker")
+m(WF, '\tif !f.started {', '\tif true {', R_WF, pkg="gateway/broker")
+m(WF, '\t\tpiece = append(piece, f.msg.Close()...)\n', '', R_WF, pkg="gateway/broker")
+m(WF, '\tif s.Hits > 0 && op == opClose && len(payload) >= 2 {', '\tif false {', R_WF, pkg="gateway/broker")
+m(WF, '\tif len(p) > 125 {', '\tif len(p) > 126 {', R_WF, pkg="gateway/broker")
+m(WF, '\tif f.inFrame || len(f.buf) > 0 {', '\tif f.inFrame {', R_WF, pkg="gateway/broker")
+m(WF, '\t\tif n>>63 != 0 {', '\t\tif false {', R_WF, pkg="gateway/broker")
+m(WF, '\tcase n < 126:\n\t\th = append(h, byte(n))', '\tcase n <= 126:\n\t\th = append(h, byte(n))', R_WF, pkg="gateway/broker")
+m(WF, '\t\tif take > f.left {', '\t\tif take > f.left+1 {', R_WF, pkg="gateway/broker")
+m(WF, '\t\tf.Hits += f.msg.Hits\n', '', R_WF, pkg="gateway/broker")
+m(EP, '\t\t\t\t\tif h.Key == ":status" && headerValue(h) == "101" {', '\t\t\t\t\tif h.Key == ":status" {', R_WF, pkg="gateway/broker")
+m(EP, '\t\t\t\t\tif frames != nil && h.Key == "sec-websocket-extensions" {', '\t\t\t\t\tif false {', R_WF, pkg="gateway/broker")
+m(EP, '\t\t\t\tif err == nil && r.ResponseBody.GetEndOfStream() {', '\t\t\t\tif false {', R_WF, pkg="gateway/broker")
+m(BR, '\t\tif h.Name == "upgrade" && !strings.EqualFold(strings.TrimSpace(h.Value), "websocket") {', '\t\tif false {', R_BR, pkg="gateway/broker")
+m(BR, '&& (hb != "connection" || !upgrade) {', '{', R_BR, pkg="gateway/broker")
+IC = "internal/gateway/envoyconf/intercept.go"
+m(IC, '\t\treturn []obj{{"name": name, "match": um, "route": upgrade}, {"name": name, "match": match, "route": forward}}', '\t\treturn []obj{{"name": name, "match": match, "route": forward}}', "TestUpgradeCluster|TestEnvoyAccepts", pkg="gateway/envoyconf")
+m(IC, '\t\tname, alpn = upgradeCluster, []string{"http/1.1"}', '\t\tname = upgradeCluster', "TestUpgradeCluster|TestEnvoyAccepts", pkg="gateway/envoyconf")
