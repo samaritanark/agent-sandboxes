@@ -360,6 +360,13 @@ func (d *Daemon) step(id, kind, name string, create func() error) error {
 // the spec mounts (sessionspec.MCPConfig); it goes with the session.
 const MCPDir = "mcp"
 
+// AgentConfigDir and SessionHistoryDir are where in a session's directory the CLI puts the agent's
+// re-staged configuration and a tier 1 session's history; both go with the session.
+const (
+	AgentConfigDir    = "agent-config"
+	SessionHistoryDir = "history"
+)
+
 func (d *Daemon) maskDir(id string) string { return filepath.Join(d.SessionRoot, id, "masks") }
 
 // mounts turns the spec's mounts into bind mounts, making the empty mask files and directories.
@@ -693,6 +700,10 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 			err = os.RemoveAll(d.maskDir(id))
 			os.RemoveAll(filepath.Join(d.SessionRoot, id, "gateway"))
 			os.RemoveAll(filepath.Join(d.SessionRoot, id, MCPDir)) // the run's generated MCP configuration
+			// the re-staged agent configuration (a writable copy) and tier 1 history go with the
+			// session (design 5.7 items 3 and 4); history above tier 1 lives elsewhere and stays
+			os.RemoveAll(filepath.Join(d.SessionRoot, id, AgentConfigDir))
+			os.RemoveAll(filepath.Join(d.SessionRoot, id, SessionHistoryDir))
 		default:
 			err = fmt.Errorf("unknown resource kind %q", r.Kind)
 		}
@@ -705,7 +716,7 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 			return err
 		}
 	}
-	os.Remove(filepath.Join(d.SessionRoot, id)) // only if empty: history and transcripts stay
+	os.Remove(filepath.Join(d.SessionRoot, id)) // only if empty
 	delete(d.offsets, id)
 	end := map[string]any{"end_reason": reason}
 	if s, err := d.Journal.Load(id); err == nil {

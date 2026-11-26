@@ -115,6 +115,8 @@ func Run(ctx context.Context, args []string, env Env) (rc int) {
 			return a.doctor(args[1:])
 		case BrokerPut:
 			return a.brokerPut(args[1:])
+		case "onboard":
+			return a.onboard(args[1:])
 		}
 		if f, ok := env.HostCommands[args[0]]; ok {
 			return f(ctx, args[1:])

@@ -47,6 +47,9 @@ type LaunchEnv struct {
 	// WriteMCPConfig writes the agent's MCP configuration for session id where sandboxd mounts it
 	// from (its session directory) and returns that directory; nil refuses MCP dependencies.
 	WriteMCPConfig func(id string, content []byte) (string, error)
+	// WriteAgentFiles writes a session's agent configuration and makes its history directory
+	// (setUpAgent); nil refuses agents that need them.
+	WriteAgentFiles func(id string, f AgentFiles) error
 	// VMMemoryMiB is the VM's memory, which the agent's default limit scales with; nil means
 	// v2's fixed 6 GiB.
 	VMMemoryMiB func() (int, error)
@@ -142,6 +145,7 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	if s.Agent == "opencode" {
 		c.bindOpencode(spec, s)
 	}
+	agentFiles := c.setUpAgent(spec, s, rec)
 	mcp := c.mcpConfig(s, rec)
 	if mcp != "" {
 		spec.Mounts = append(spec.Mounts, sessionspec.Mount{Kind: sessionspec.MCPConfig,
@@ -158,6 +162,14 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 		c.out("")
 		c.out("Dry run complete. No resources applied.")
 		return
+	}
+	if agentFiles != nil {
+		if l.WriteAgentFiles == nil {
+			c.die("'run' needs the sandbox VM's session store for the agent's configuration.")
+		}
+		if err := l.WriteAgentFiles(rec.ID, *agentFiles); err != nil {
+			c.die("could not stage the agent's configuration and history: %v", err)
+		}
 	}
 	if mcp != "" {
 		if l.WriteMCPConfig == nil {

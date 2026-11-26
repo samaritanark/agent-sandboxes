@@ -30,7 +30,7 @@ type Item struct {
 }
 
 // Managed is the pushed set.
-var Managed = []Item{{"config.yaml", false}, {"profiles", true}, {"vetting", true}, {"extra-ca-certs", true}, {"egress-rules.yaml", false}}
+var Managed = []Item{{"config.yaml", false}, {"profiles", true}, {"vetting", true}, {"extra-ca-certs", true}, {"egress-rules.yaml", false}, {"agent-config", true}}
 
 // Limits.
 const (

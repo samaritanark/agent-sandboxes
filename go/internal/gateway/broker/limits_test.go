@@ -51,10 +51,14 @@ func TestRateLimit(t *testing.T) {
 	if n != 3 {
 		t.Errorf("after an hour, %d in a row", n)
 	}
-	// a refusal costs nothing: requests without the placeholder do not drain the bucket
+	// a refusal costs nothing: requests with a credential of their own do not drain the bucket,
+	// and neither do unauthenticated ones, which get nothing injected
 	*now = now.Add(time.Hour)
 	for i := 0; i < 10; i++ {
-		if o := s.Decide(Request{Host: "api.github.com", Path: "/"}); o.Event != "credential_missing" {
+		if o := s.Decide(Request{Host: "api.github.com", Path: "/"}); o.Injected || o.Refuse {
+			t.Fatal(o)
+		}
+		if o := s.Decide(Request{Host: "api.github.com", Path: "/", Headers: []Header{{"authorization", "Bearer mine"}}}); o.Event != "credential_missing" {
 			t.Fatal(o)
 		}
 	}

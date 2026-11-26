@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/cli"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
 
@@ -80,5 +81,44 @@ func TestWriteMCPConfig(t *testing.T) {
 	os.Symlink(t.TempDir(), filepath.Join(store, "ses-20261126-213445-0000", "mcp"))
 	if _, err := w("ses-20261126-213445-0000", nil); err == nil {
 		t.Error("wrote through a link")
+	}
+}
+
+func TestWriteAgentFiles(t *testing.T) {
+	store, hist := t.TempDir(), t.TempDir()
+	w := writeAgentFiles(store, hist, os.Getuid())
+	id := "ses-20261126-213445-5114"
+	dir := filepath.Join(store, id, "agent-config")
+	os.MkdirAll(dir, 0o700)
+	os.WriteFile(filepath.Join(dir, "stale"), []byte("x"), 0o600)
+	if err := w(id, cli.AgentFiles{Agent: "claude", Tier: 1, Config: map[string][]byte{".claude.json": []byte("{}")}}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, ".claude.json")); string(b) != "{}" {
+		t.Errorf("%q", b)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stale")); err == nil {
+		t.Error("a leftover survived the re-staging")
+	}
+	if st, err := os.Stat(filepath.Join(store, id, "history")); err != nil || !st.IsDir() {
+		t.Error("no tier 1 history")
+	}
+	key := "0123456789abcdef"
+	if err := w(id, cli.AgentFiles{Agent: "claude", Tier: 2, HistoryKey: key}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(filepath.Join(hist, "claude", "tier2", key)); err != nil || !st.IsDir() {
+		t.Error("no tier 2 history")
+	}
+	for _, f := range []cli.AgentFiles{{Agent: "../x"}, {Agent: "claude", Config: map[string][]byte{"../x": nil}},
+		{Agent: "claude", Tier: 2, HistoryKey: "../x"}, {Agent: "claude", Tier: 1, HistoryKey: key}} {
+		if err := w(id, f); err == nil {
+			t.Errorf("%+v written", f)
+		}
+	}
+	// a link planted as the history directory is refused
+	os.Symlink(t.TempDir(), filepath.Join(hist, "claude", "tier3"))
+	if err := w(id, cli.AgentFiles{Agent: "claude", Tier: 3, HistoryKey: key}); err == nil {
+		t.Error("history through a link")
 	}
 }

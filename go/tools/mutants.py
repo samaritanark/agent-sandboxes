@@ -1381,3 +1381,28 @@ m("internal/host/app/runsecrets.go", '\t\treturn nil, err\n\t}\n\tif _, err := d
 m("internal/host/app/app.go", '\t\t\tlive := a.startLiveSync(ep, a.prepareResume(ep, id))', '\t\t\tlive := a.startLiveSync(ep, nil)', "TestPrepareResume|TestResume", pkg="host/app",
   equivalent="no host test drives a proxied resume; the appliance run covers it")
 m("internal/cli/resume.go", '\tif !resumeSessionIDRE.MatchString(id) {\n\t\treturn nil, false\n\t}', '', "TestSessionRepos")
+
+# ---- Claude Code through the broker: onboard, the adapter, re-staged config, history (2026-11-26)
+m("internal/gateway/broker/broker.go", '\t\t\tif carriesCredential(b, r) {', '\t\t\tif true {', "TestDecide|TestRateLimit", pkg="gateway/broker")
+m("internal/gateway/broker/broker.go", 'var credentialHeaders = []string{"authorization", "proxy-authorization", "x-api-key", "api-key", "cookie"}', 'var credentialHeaders = []string{"authorization", "proxy-authorization"}', "TestDecide", pkg="gateway/broker")
+RA = "internal/cli/runagent.go"
+m(RA, '\tif c.env.CredentialPresent == nil || !c.env.CredentialPresent(ref) {', '\tif c.env.CredentialPresent == nil {', "TestSetUpAgent")
+m(RA, '\t\tbound = have && sealed.Allows(ad.hosts, ad.inject, false) == nil', '\t\tbound = have', "TestSetUpAgent")
+m(RA, '\t\tif s.Agent == "opencode" {\n\t\t\treturn nil\n\t\t}', '', "TestSetUpAgent")
+m(RA, '\t\tif _, have := f.Config[name]; !have {', '\t\tif true {', "TestSetUpAgent|TestLaunch",
+  equivalent="no staged file is also generated (.claude.json is not staged), so the operator's copy never meets it")
+m(RA, '\tsort.Strings(ids)\n', '', "TestSetUpAgent")
+m(RA, '\tif spec.Tier >= 2 {', '\tif spec.Tier >= 1 {', "TestLaunch|TestSetUpAgent")
+m(RA, '\tspec.Env = append(spec.Env, ad.env...)\n', '', "TestLaunch|TestSetUpAgent",
+  equivalent="the updater switches are not observable without the harness; the appliance run sets them")
+WA = "cmd/sandbox-vm/launch.go"
+m(WA, '\t\tif err := freshDir(dir, uid); err != nil {', '\t\tif err := os.MkdirAll(dir, 0o700); err != nil {', "TestWriteAgentFiles", pkg="../cmd/sandbox-vm")
+m(WA, '\t\t\tif name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\x00") {', '\t\t\tif name == "" {', "TestWriteAgentFiles", pkg="../cmd/sandbox-vm")
+m(WA, '\t\t\tif !historyKeyRE.MatchString(f.HistoryKey) || f.Tier < 2 || f.Tier > 3 {', '\t\t\tif f.Tier > 3 {', "TestWriteAgentFiles", pkg="../cmd/sandbox-vm")
+m(WA, '\t\t\t\tif st, err := os.Lstat(p); err != nil || !st.IsDir() {', '\t\t\t\tif _, err := os.Stat(p); err != nil {', "TestWriteAgentFiles", pkg="../cmd/sandbox-vm")
+OB2 = "internal/host/app/onboard.go"
+m(OB2, '\tif !claudeToken.Match(tok) {', '\tif len(tok) == 0 {', "TestOnboardClaude", pkg="host/app")
+m(OB2, '\ta.pushAgentToken(ep, "agent.claude", tok, brokerseal.Binding{Hosts: []string{"api.anthropic.com"}, Inject: "bearer"})', '\ta.pushAgentToken(ep, "agent.claude", tok, brokerseal.Binding{})', "TestOnboardClaude", pkg="host/app")
+m(OB2, 'var claudeStaged = []string{"settings.json", "CLAUDE.md"}', 'var claudeStaged = []string{"settings.json", "CLAUDE.md", ".credentials.json"}', "TestOnboardClaude", pkg="host/app")
+m("internal/sessionspec/sessionspec.go", '\t\t\tif !own && (s.Tier < 2 || m.Source != HistoryPath(s.Agent, s.Tier, path.Base(m.Source)) || !historyKeyRE.MatchString(path.Base(m.Source))) {', '\t\t\tif !own && !historyKeyRE.MatchString(path.Base(m.Source)) {', "TestHistoryMounts", pkg="sessionspec")
+m("internal/sandboxd/daemon/daemon.go", '\t\t\tos.RemoveAll(filepath.Join(d.SessionRoot, id, AgentConfigDir))\n', '', "TestSessionFilesRemoved", pkg="sandboxd/daemon")

@@ -837,3 +837,25 @@ func TestDependencyArgs(t *testing.T) {
 		t.Errorf("%q", got)
 	}
 }
+
+// TestSessionFilesRemoved: the agent configuration copy, the MCP configuration, and tier 1 history
+// in a session's directory go with the session.
+func TestSessionFilesRemoved(t *testing.T) {
+	r := newRig(t)
+	id, err := r.d.Start(context.Background(), spec("s-files", 4096))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{AgentConfigDir, SessionHistoryDir, MCPDir} {
+		os.MkdirAll(filepath.Join(r.d.SessionRoot, id, d), 0o700)
+		os.WriteFile(filepath.Join(r.d.SessionRoot, id, d, "f"), []byte("x"), 0o600)
+	}
+	if err := r.d.Stop(context.Background(), id, "test"); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{AgentConfigDir, SessionHistoryDir, MCPDir} {
+		if _, err := os.Stat(filepath.Join(r.d.SessionRoot, id, d)); err == nil {
+			t.Errorf("%s left", d)
+		}
+	}
+}

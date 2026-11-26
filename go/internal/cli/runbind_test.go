@@ -3,10 +3,13 @@ package cli
 import (
 	"bytes"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
 
@@ -134,5 +137,69 @@ func TestBindOpencode(t *testing.T) {
 	var errb bytes.Buffer
 	if rc := Run([]string{"run", "--agent", "opencode"}, be, io.Discard, &errb); rc != 1 || !strings.Contains(errb.String(), "OPENCODE_API_KEY must be set") {
 		t.Errorf("%d %q", rc, errb.String())
+	}
+}
+
+// TestSetUpAgent: claude's binding, re-staged configuration (the operator's copy first), and
+// history per tier and repository set; an agent with no adapter or not onboarded stops the launch.
+func TestSetUpAgent(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".sandbox", "agent-config", "claude"), 0o700)
+	os.WriteFile(filepath.Join(home, ".sandbox", "agent-config", "claude", "CLAUDE.md"), []byte("be brief"), 0o600)
+	os.WriteFile(filepath.Join(home, ".sandbox", "agent-config", "claude", ".credentials.json"), []byte("{}"), 0o600)
+	onboarded := Env{Env: config.Env{Home: home},
+		CredentialPresent: func(ref string) bool { return ref == "agent.claude" },
+		CredentialBinding: func(ref string) (brokerseal.Binding, bool) {
+			return brokerseal.Binding{Hosts: []string{"api.anthropic.com"}, Inject: "bearer"}, ref == "agent.claude"
+		}}
+	mk := func(tier int, copies ...string) *sessionspec.Spec {
+		sp := &sessionspec.Spec{Agent: "claude", Tier: tier, Egress: sessionspec.Egress{Allow: []string{"api.anthropic.com"}}}
+		for _, cp := range copies {
+			sp.Mounts = append(sp.Mounts, sessionspec.Mount{Kind: sessionspec.Workspace, Source: sessionspec.WorkspaceStore + "/" + cp, Target: "/workspace/" + cp})
+		}
+		return sp
+	}
+	c := &cmdCtx{env: onboarded, stdout: io.Discard, stderr: io.Discard}
+	sp := mk(2, "0123456789abcdef")
+	f := c.setUpAgent(sp, LaunchSpec{Agent: "claude"}, SessionRecord{ID: "ses-20261126-213445-5114"})
+	if f == nil || f.HistoryKey != "0123456789abcdef" || string(f.Config["CLAUDE.md"]) != "be brief" || f.Config[".credentials.json"] != nil || f.Config[".claude.json"] == nil {
+		t.Fatalf("%+v", f)
+	}
+	last := sp.Mounts[len(sp.Mounts)-1]
+	if last.Kind != sessionspec.History || last.Source != sessionspec.AgentHistoryStore+"/claude/tier2/0123456789abcdef" {
+		t.Errorf("%+v", last)
+	}
+	// two repositories: one key for the set, whatever their order
+	a := c.setUpAgent(mk(3, "0123456789abcdef", "fedcba9876543210"), LaunchSpec{Agent: "claude"}, SessionRecord{ID: "ses-20261126-213445-5114"})
+	b := c.setUpAgent(mk(3, "fedcba9876543210", "0123456789abcdef"), LaunchSpec{Agent: "claude"}, SessionRecord{ID: "ses-20261126-213445-5114"})
+	if a.HistoryKey != b.HistoryKey || len(a.HistoryKey) != 32 || a.HistoryKey == "0123456789abcdef" {
+		t.Errorf("%q %q", a.HistoryKey, b.HistoryKey)
+	}
+	if f := c.setUpAgent(mk(1, "0123456789abcdef"), LaunchSpec{Agent: "claude"}, SessionRecord{ID: "ses-20261126-213445-5114"}); f.HistoryKey != "" {
+		t.Errorf("tier 1 kept history: %q", f.HistoryKey)
+	}
+	var errb bytes.Buffer
+	nc := &cmdCtx{env: Env{CredentialPresent: func(string) bool { return false }, CredentialBinding: onboarded.CredentialBinding}, stdout: io.Discard, stderr: &errb}
+	if rc := runDie(func() { nc.setUpAgent(mk(2, "0123456789abcdef"), LaunchSpec{Agent: "claude"}, SessionRecord{}) }); rc != 1 || !strings.Contains(errb.String(), "claude is not onboarded") {
+		t.Errorf("not onboarded: %d %q", rc, errb.String())
+	}
+	if f := c.setUpAgent(mk(2), LaunchSpec{Agent: "opencode"}, SessionRecord{}); f != nil {
+		t.Error("opencode staged")
+	}
+	for name, cc := range map[string]struct {
+		env   Env
+		agent string
+	}{
+		"codex":         {onboarded, "codex"},
+		"not onboarded": {Env{CredentialPresent: func(string) bool { return false }}, "claude"},
+		"no broker":     {Env{}, "claude"},
+		"bound elsewhere": {Env{CredentialPresent: onboarded.CredentialPresent, CredentialBinding: func(string) (brokerseal.Binding, bool) {
+			return brokerseal.Binding{Hosts: []string{"evil.example.com"}, Inject: "bearer"}, true
+		}}, "claude"},
+	} {
+		c := &cmdCtx{env: cc.env, stdout: io.Discard, stderr: io.Discard}
+		if rc := runDie(func() { c.setUpAgent(mk(2, "0123456789abcdef"), LaunchSpec{Agent: cc.agent}, SessionRecord{}) }); rc != 1 {
+			t.Errorf("%s: launched", name)
+		}
 	}
 }

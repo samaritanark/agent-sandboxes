@@ -204,8 +204,13 @@ func (s *Set) Decide(r Request) Outcome {
 	out := Outcome{RemoveHeaders: removals(r.Headers)}
 	for _, b := range bound {
 		if !found[b.Placeholder] {
-			// a bound destination without its placeholder: refused, never relayed bare
-			return refuse("credential_missing", b.Ref, "a request to a bound destination without its placeholder")
+			// a bound destination without its placeholder: relayed as it is when it carries no
+			// credential at all (a client's unauthenticated calls: health checks, telemetry), and
+			// refused when it carries one of its own, which would otherwise reach the bound host bare
+			if carriesCredential(b, r) {
+				return refuse("credential_missing", b.Ref, "a request to a bound destination with a credential that is not its placeholder")
+			}
+			continue
 		}
 		set, path, err := inject(b, r)
 		if err != nil {
@@ -245,6 +250,31 @@ func (s *Set) Decide(r Request) Outcome {
 	}
 	out.RemoveHeaders = keep
 	return out
+}
+
+// credentialHeaders are the request headers that carry a client's credential.
+var credentialHeaders = []string{"authorization", "proxy-authorization", "x-api-key", "api-key", "cookie"}
+
+// carriesCredential is whether r holds a credential where b would inject one or in any header that
+// carries one: then a request without b's placeholder is the client using a credential of its own.
+func carriesCredential(b Binding, r Request) bool {
+	names := credentialHeaders
+	if h, ok := strings.CutPrefix(b.Inject, "header:"); ok {
+		names = append(append([]string(nil), names...), strings.ToLower(h))
+	}
+	for _, h := range r.Headers {
+		if slices.Contains(names, h.Name) {
+			return true
+		}
+	}
+	if q, ok := strings.CutPrefix(b.Inject, "query:"); ok {
+		if _, rawq, cut := strings.Cut(r.Path, "?"); cut {
+			if v, err := url.ParseQuery(rawq); err == nil && v.Has(q) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // removals are the hop-by-hop headers a request carries and those its Connection header names.

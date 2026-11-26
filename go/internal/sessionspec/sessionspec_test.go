@@ -218,3 +218,30 @@ func TestBindingLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestHistoryMounts: a session mounts its own history directory, or above tier 1 only its agent's
+// at its own tier (D-14: tiers never share history).
+func TestHistoryMounts(t *testing.T) {
+	key := "0123456789abcdef"
+	for src, ok := range map[string]bool{
+		SessionStore + "/s-20261125-ab12/history":     true,
+		AgentHistoryStore + "/claude/tier2/" + key:    true,
+		AgentHistoryStore + "/claude/tier3/" + key:    false, // another tier
+		AgentHistoryStore + "/codex/tier2/" + key:     false, // another agent
+		AgentHistoryStore + "/claude/tier2/x":         false, // not a key
+		AgentHistoryStore + "/claude/tier2/../" + key: false,
+		SessionStore + "/s-other/history":             false,
+	} {
+		s := good()
+		s.Mounts[4].Source = src
+		if err := s.Validate(Options{}); (err == nil) != ok {
+			t.Errorf("%s: %v", src, err)
+		}
+	}
+	s := good()
+	s.Tier = 1
+	s.Mounts[4].Source = AgentHistoryStore + "/claude/tier1/" + key
+	if err := s.Validate(Options{}); err == nil {
+		t.Error("a tier 1 session kept history")
+	}
+}

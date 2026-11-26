@@ -8,16 +8,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
 
 type fakeSessions struct {
-	started  []*sessionspec.Spec
-	attached [][]string
-	stopped  []string
-	startErr error
-	stopErr  error
-	listErr  error
+	started    []*sessionspec.Spec
+	agentFiles []AgentFiles
+	attached   [][]string
+	stopped    []string
+	startErr   error
+	stopErr    error
+	listErr    error
 }
 
 func (f *fakeSessions) Start(s *sessionspec.Spec) error {
@@ -73,8 +75,13 @@ func launchEnv(t *testing.T) (Env, *fakeSessions, string) {
 			}
 			return "docker.io/library/sandbox" + testDigest, nil
 		},
-		WorkspaceCopy: func(string) (string, error) { return "", errors.New("no repos in this test") },
-		VMMemoryMiB:   func() (int, error) { return 7936, nil }}
+		WorkspaceCopy:   func(string) (string, error) { return "", errors.New("no repos in this test") },
+		VMMemoryMiB:     func() (int, error) { return 7936, nil },
+		WriteAgentFiles: func(id string, f AgentFiles) error { fs.agentFiles = append(fs.agentFiles, f); return nil }}
+	e.CredentialPresent = func(ref string) bool { return ref == "agent.claude" }
+	e.CredentialBinding = func(ref string) (brokerseal.Binding, bool) {
+		return brokerseal.Binding{Hosts: []string{"api.anthropic.com"}, Inject: "bearer"}, ref == "agent.claude"
+	}
 	return e, fs, home
 }
 
@@ -96,8 +103,23 @@ func TestLaunch(t *testing.T) {
 	if rc := Run([]string{"run", "--name", "demo"}, e, &out, &errb); rc != 0 {
 		t.Fatalf("%d\n%s\n%s", rc, out.String(), errb.String())
 	}
-	if len(fs.started) != 1 || fs.started[0].Image != "docker.io/library/sandbox"+testDigest || len(fs.started[0].Mounts) != 0 {
+	if len(fs.started) != 1 || fs.started[0].Image != "docker.io/library/sandbox"+testDigest || len(fs.started[0].Mounts) != 2 {
 		t.Fatalf("started %+v", fs.started)
+	}
+	// claude's credential, re-staged configuration, and (tier 1) session history
+	sp, sess := fs.started[0], sessionspec.SessionStore+"/"+fs.started[0].ID
+	if m := sp.Mounts; m[0] != (sessionspec.Mount{Kind: sessionspec.AgentConfig, Source: sess + "/agent-config", Target: "/home/agent/.claude"}) ||
+		m[1] != (sessionspec.Mount{Kind: sessionspec.History, Source: sess + "/history", Target: "/home/agent/.claude/projects"}) {
+		t.Errorf("mounts %+v", m)
+	}
+	if len(sp.Bindings) != 1 || sp.Bindings[0].Ref != "agent.claude" || sp.Bindings[0].EnvVar != "CLAUDE_CODE_OAUTH_TOKEN" {
+		t.Errorf("bindings %+v", sp.Bindings)
+	}
+	if err := sp.Validate(sessionspec.Options{}); err != nil {
+		t.Errorf("sandboxd refuses it: %v", err)
+	}
+	if len(fs.agentFiles) != 1 || string(fs.agentFiles[0].Config[".claude.json"]) != `{"hasCompletedOnboarding": true}`+"\n" || fs.agentFiles[0].HistoryKey != "" {
+		t.Errorf("files %+v", fs.agentFiles)
 	}
 	if m := fs.started[0].Resources.MemoryMiB; m != 5632 { // scaled to the VM's 7936 MiB
 		t.Errorf("agent memory %d", m)

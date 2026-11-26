@@ -18,6 +18,7 @@ import (
 	"net/netip"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/egressmatch"
@@ -31,6 +32,9 @@ const Version = 1
 const (
 	WorkspaceStore = "/var/lib/sandbox/workspaces" // the sync's workspace copies, one per repository
 	SessionStore   = "/var/lib/sandbox/sessions"   // each session's own files, by session ID
+	// AgentHistoryStore holds each agent's history per tier and repository set (design 5.7,
+	// D-14): <agent>/tier<N>/<key>, mounted only into sessions of that agent at that tier.
+	AgentHistoryStore = "/var/lib/sandbox/agent-history"
 )
 
 // DefaultMaxDependencies is v2's SANDBOX_MAX_DEPS_PER_SESSION default (design 5.5.3).
@@ -423,7 +427,13 @@ func checkMounts(s *Spec, bad func(string, ...any)) {
 			if !inWorkspace(m.Target) {
 				bad("%s: target must be inside a workspace mount", w)
 			}
-		case History, AgentConfig, CABundle, MCPConfig, Kubeconfig:
+		case History:
+			// tier 1: the session's own (destroyed with it); above: this agent's at this tier
+			own := cleanAbs(m.Source) && under(m.Source, sessionDir) && m.Source != sessionDir
+			if !own && (s.Tier < 2 || m.Source != HistoryPath(s.Agent, s.Tier, path.Base(m.Source)) || !historyKeyRE.MatchString(path.Base(m.Source))) {
+				bad("%s: source must be this session's history: in %s, or at tier 2 and 3 %s", w, sessionDir, HistoryPath(s.Agent, s.Tier, "<key>"))
+			}
+		case AgentConfig, CABundle, MCPConfig, Kubeconfig:
 			if !cleanAbs(m.Source) || !under(m.Source, sessionDir) || m.Source == sessionDir {
 				bad("%s: source must be in this session's directory %s", w, sessionDir)
 			}
@@ -623,4 +633,12 @@ func checkEgress(e Egress, what string, bad func(string, ...any)) {
 			bad("%s: invalid extra port %d", what, p)
 		}
 	}
+}
+
+// historyKeyRE is a history directory's repository-set key (a repository ID, or a hash of several).
+var historyKeyRE = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
+
+// HistoryPath is where agent's history at tier for repository-set key lives.
+func HistoryPath(agent string, tier int, key string) string {
+	return path.Join(AgentHistoryStore, agent, "tier"+strconv.Itoa(tier), key)
 }

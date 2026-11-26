@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/agents"
@@ -174,3 +175,74 @@ func writeMCPConfig(store string) func(string, []byte) (string, error) {
 }
 
 var sessionID = regexp.MustCompile(`^ses-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$`)
+
+// writeAgentFiles stages a session's agent configuration (a writable copy, owned by the agent's
+// user) in sandboxd's directory for the session, and makes its history directory: the session's own
+// at tier 1, else the agent's for this tier and repository set (sessionspec.HistoryPath).
+func writeAgentFiles(store, historyStore string, uid int) func(string, cli.AgentFiles) error {
+	return func(id string, f cli.AgentFiles) error {
+		if !sessionID.MatchString(id) || !agentName.MatchString(f.Agent) {
+			return fmt.Errorf("bad session %q or agent %q", id, f.Agent)
+		}
+		sess := filepath.Join(store, id)
+		if err := os.MkdirAll(sess, 0o700); err != nil {
+			return err
+		}
+		dir := filepath.Join(sess, cli.AgentConfigDir)
+		if err := freshDir(dir, uid); err != nil {
+			return err
+		}
+		for name, content := range f.Config {
+			if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
+				return fmt.Errorf("bad configuration file name %q", name)
+			}
+			p := filepath.Join(dir, name)
+			if err := os.WriteFile(p, content, 0o600); err != nil {
+				return err
+			}
+			if err := os.Lchown(p, uid, -1); err != nil {
+				return err
+			}
+		}
+		history := filepath.Join(sess, cli.SessionHistoryDir)
+		if f.HistoryKey != "" {
+			if !historyKeyRE.MatchString(f.HistoryKey) || f.Tier < 2 || f.Tier > 3 {
+				return fmt.Errorf("bad history key %q at tier %d", f.HistoryKey, f.Tier)
+			}
+			history = filepath.Join(historyStore, f.Agent, "tier"+strconv.Itoa(f.Tier), f.HistoryKey)
+			if err := os.MkdirAll(filepath.Dir(history), 0o700); err != nil {
+				return err
+			}
+			// no component below the store may be a link: the agent's history goes nowhere else
+			for p := filepath.Dir(history); p != historyStore; p = filepath.Dir(p) {
+				if st, err := os.Lstat(p); err != nil || !st.IsDir() {
+					return fmt.Errorf("%s is not a directory", p)
+				}
+			}
+		}
+		if err := os.Mkdir(history, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		st, err := os.Lstat(history)
+		if err != nil || !st.IsDir() {
+			return fmt.Errorf("%s is not a directory", history)
+		}
+		return os.Lchown(history, uid, -1)
+	}
+}
+
+// freshDir makes dir empty and owned by uid (a leftover is removed first, never followed).
+func freshDir(dir string, uid int) error {
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return err
+	}
+	return os.Lchown(dir, uid, -1)
+}
+
+var (
+	agentName    = regexp.MustCompile(`^[a-z]{1,16}$`)
+	historyKeyRE = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
+)
