@@ -1098,8 +1098,8 @@ R_HR = "TestRun|TestMirroredHome|TestRepoNamed"
 m(HR, '\tif len(names) > maxBoundSecrets {', '\tif false {', R_HR, pkg="host/app")
 m(HR, '\t\tif seen[n] {', '\t\tif false {', R_HR, pkg="host/app")
 m(HR, '\t\tif !secretName.MatchString(n) {', '\t\tif false {', R_HR, pkg="host/app")
-m(HR, '\tif _, err := dec.Token(); err != io.EOF {', '\tif false {', R_HR, pkg="host/app")
-m(HR, '\tdec.DisallowUnknownFields()\n', '', R_HR, pkg="host/app")
+m(HR, '\tif _, err := dec.Token(); err != io.EOF {\n\t\treturn fail(', '\tif false {\n\t\treturn fail(', R_HR, pkg="host/app")
+m(HR, '\tdec.DisallowUnknownFields()\n\tvar out struct {\n\t\tSecrets', '\tvar out struct {\n\t\tSecrets', R_HR, pkg="host/app")
 m(HR, '\tif out.Secrets == nil || out.Repos == nil {', '\tif out.Secrets == nil {', R_HR, pkg="host/app")
 m(HR, '\t\tif h.Name != "config.yaml" && !strings.HasPrefix(h.Name, "profiles/") {', '\t\tif h == nil {', R_HR, pkg="host/app")
 m(HR, '\t\tif !m[n] {', '\t\tif false {', R_HR, pkg="host/app")
@@ -1223,7 +1223,7 @@ m("internal/cli/resume.go", '\t\tif !live {\n\t\t\treturn false, ""\n\t\t}', '',
 # ---- the live sync during a run (internal/host/app/livesync.go, syncone.go)
 m("internal/host/app/syncone.go", '\tif live != nil {\n\t\te.Run(live, LiveSyncInterval, each)\n\t}', '', "TestLiveSync", pkg="host/app")
 m("internal/host/app/livesync.go", '\tl.toHost += len(rep.ToHost)', '\tl.toHost += 0', "TestLiveSync", pkg="host/app")
-m("internal/host/app/app.go", '\t\tdefer live.finish()\n', '', "TestLiveSync|TestRun", pkg="host/app",
+m("internal/host/app/app.go", '\t\tlive := a.startLiveSync(ep, repos)\n\t\tdefer live.finish()\n', '\t\tlive := a.startLiveSync(ep, repos)\n\t\t_ = live\n', "TestLiveSync|TestRun", pkg="host/app",
   equivalent="no host test drives a proxied run with repositories through a live sync")
 
 # ---- the agent's memory default scaled to the VM (internal/sandboxd/limits, cli/runspec.go)

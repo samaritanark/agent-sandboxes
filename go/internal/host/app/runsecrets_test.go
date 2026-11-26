@@ -123,7 +123,7 @@ func TestRunBindingsOutputChecked(t *testing.T) {
 		many += `,"N` + strconv.Itoa(i) + `"`
 	}
 	for _, bad := range []string{`{"secrets":["gh_token"],"repos":[]}`, `{"secrets":["A","A"],"repos":[]}`, `{"secrets":["A"],"x":1}`, `{"secrets":[],"repos":[],"x":1}`,
-		`{}`, `{"secrets":["A"]}{}`, `[]`, `{"secrets":["../x"],"repos":[]}`, many + "]}"} {
+		`{}`, `{"secrets":["A"]}{}`, `{"secrets":["A"],"repos":[]} {}`, `[]`, `{"secrets":["../x"],"repos":[]}`, many + "]}"} {
 		tr := &fakeTransport{release: goodRelease, bindings: bad}
 		if r := runState(t, tr, k, state, "run", "A", "gh_token"); r.rc != 1 || !strings.Contains(r.err, "invalid") || len(tr.runs) != 0 {
 			t.Errorf("%s: %+v", bad, r)
