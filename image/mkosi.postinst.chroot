@@ -15,8 +15,12 @@ install -d -m 0711 /var/lib/sandbox # traversable, so the sync user reaches its 
 install -d -m 0700 /var/lib/sandbox/operator
 ln -sfn /var/lib/sandbox/operator /root/.sandbox
 # The sync agent runs as its own unprivileged user (design 5.6.2 rule 5), one workspace copy per
-# repository under /var/lib/sandbox/workspaces, which only that user's group can enter.
-useradd --system --user-group --home-dir /var/lib/sandbox/workspaces --no-create-home --shell /usr/sbin/nologin sandbox-sync
+# repository under /var/lib/sandbox/workspaces, which only that user's group can enter. The user
+# has the agent's uid, 1000 (sandboxd's daemon.AgentUID): a session mounts the copy into its
+# microVM, where ownership passes through unchanged, so the copy is the agent's own there, and the
+# files the agent makes stay the sync's to carry back. Ubuntu's default user would hold that uid.
+if id -u ubuntu >/dev/null 2>&1; then userdel --remove ubuntu; fi
+useradd --system --uid 1000 --user-group --home-dir /var/lib/sandbox/workspaces --no-create-home --shell /usr/sbin/nologin sandbox-sync
 install -d -o root -g sandbox-sync -m 0750 /var/lib/sandbox/workspaces
 # Ubuntu's arm64 kernel is a gzip-compressed Image, which systemd-stub (systemd 255) cannot load
 # from a unified kernel image ("Bad kernel image"); store it uncompressed before the UKI is built.

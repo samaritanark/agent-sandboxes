@@ -241,3 +241,38 @@ func TestRunStops(t *testing.T) {
 		t.Error("Run did not sync")
 	}
 }
+
+// TestNewCopyKeepsHostFiles: after the VM copy is made again (a reinstalled VM: a new epoch, an
+// empty copy), the state kept for the old copy is set aside, so the files the new copy lacks go to
+// it and nothing is deleted on the host. With the same epoch, a file gone from the VM is a deletion
+// in the VM, as before.
+func TestNewCopyKeepsHostFiles(t *testing.T) {
+	host, state := t.TempDir(), t.TempDir()
+	write(t, host, "README", "hi")
+	write(t, host, "src/a.go", "package a")
+	sf := filepath.Join(state, "s.json")
+	first := t.TempDir()
+	if _, err := (&Engine{Repo: host, StateFile: sf, VM: pipeVM(t, first), Copy: "old"}).Sync(); err != nil {
+		t.Fatal(err)
+	}
+	// the VM is reinstalled: a new, empty copy with a new epoch
+	second := t.TempDir()
+	rep, err := (&Engine{Repo: host, StateFile: sf, VM: pipeVM(t, second), Copy: "new"}).Sync()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists(host, "README") || !exists(host, "src/a.go") || len(rep.ToHost) != 0 {
+		t.Fatalf("host files deleted: to host %v", rep.ToHost)
+	}
+	if read(second, "README") != "hi" || read(second, "src/a.go") != "package a" {
+		t.Errorf("the new copy did not get the files: %v", rep.ToVM)
+	}
+	// the same copy: a deletion in the VM still reaches the host
+	os.Remove(filepath.Join(second, "README"))
+	if _, err := (&Engine{Repo: host, StateFile: sf, VM: pipeVM(t, second), Copy: "new"}).Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if exists(host, "README") {
+		t.Error("a deletion in the same copy did not reach the host")
+	}
+}

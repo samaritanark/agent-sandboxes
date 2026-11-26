@@ -314,6 +314,9 @@ func runDecide(c *cmdCtx, args []string) LaunchSpec {
 		c.die("No runnable image for agent '%s' (tier %s).", s.Agent, s.Tier)
 	}
 	for _, repo := range s.Repos {
+		if c.prepass {
+			break // the host has not synced the repositories yet; the run checks them
+		}
 		if err := c.workspace().ValidateRepoPath(repo); err != nil {
 			c.fail(err)
 		}

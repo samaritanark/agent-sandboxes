@@ -39,6 +39,7 @@ type fakeTransport struct {
 	bindingArgs [][]string
 	bindingArgv [][]string
 	pushArgs    [][]string
+	epoch       string
 	mirrors     [][]string
 }
 
@@ -83,6 +84,9 @@ func (f *fakeTransport) Output(_ context.Context, _ driver.SSHEndpoint, argv []s
 	}
 	switch argv[0] {
 	case "sh":
+		if len(argv) > 2 && strings.Contains(argv[2], ".epoch") {
+			return []byte(f.epoch), nil
+		}
 		return []byte("present\n"), nil
 	case "timeout":
 		return []byte(f.reach + "\n"), nil

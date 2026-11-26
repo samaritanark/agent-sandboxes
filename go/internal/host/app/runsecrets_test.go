@@ -216,3 +216,15 @@ func manyRepos() string {
 	}
 	return b.String()
 }
+
+// TestCopyEpoch: the epoch is read as the VM gives it, and anything but 32 hex digits is refused.
+func TestCopyEpoch(t *testing.T) {
+	for epoch, ok := range map[string]bool{"72b912d4a93adb6c0644659a26ecaf24\n": true, "": false, "72b912d4": false, "../x": false,
+		"72b912d4a93adb6c0644659a26ecaf24x": false} {
+		a := &app{env: Env{Transport: &fakeTransport{epoch: epoch}}, ctx: context.Background()}
+		got, err := a.copyEpoch(driver.SSHEndpoint{}, "/var/lib/sandbox/workspaces/0123456789abcdef")
+		if (err == nil) != ok || (ok && got != strings.TrimSpace(epoch)) {
+			t.Errorf("%q: %q %v", epoch, got, err)
+		}
+	}
+}

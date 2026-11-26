@@ -185,3 +185,20 @@ func TestAttachReadable(t *testing.T) {
 		}
 	}
 }
+
+// backtraceExecer fails every exec as Kata does, with a stack backtrace after the reason.
+type backtraceExecer struct{ *execer }
+
+func (backtraceExecer) Exec(context.Context, string, string, []string, bool, io.Reader, io.Writer, io.Writer) (runtime.Process, error) {
+	return nil, errors.New("cannot enter container: the file claude was not found\n\nStack backtrace:\n   0: <unknown>")
+}
+
+// TestAttachErrorFirstLine: the client sees the reason, not the runtime's backtrace.
+func TestAttachErrorFirstLine(t *testing.T) {
+	r, ex, id := attachRig(t)
+	r.d.Runtime = backtraceExecer{ex}
+	_, err := r.d.Attach(context.Background(), id, []string{"claude"}, false, AttachIO{Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard}, [2]uint16{}, nil, nil)
+	if err == nil || err.Error() != "attach: cannot enter container: the file claude was not found" {
+		t.Errorf("%v", err)
+	}
+}

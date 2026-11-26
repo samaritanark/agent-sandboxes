@@ -1180,3 +1180,14 @@ m(MI, '\tif target != OperatorDir && !copyTarget.MatchString(target) {', '\tif f
 m(MI, '\t\tcase !st.IsDir():', '\t\tcase false:', "TestMirror", pkg="../cmd/sandbox-vm")
 m(MI, '&& cur == target {', '{', "TestMirror", pkg="../cmd/sandbox-vm")
 m(MI, 'filepath.Clean(hostPath) != hostPath ||', '', "TestMirror", pkg="../cmd/sandbox-vm")
+m(RN, '\t\tif c.prepass {\n\t\t\tbreak // the host', '\t\tif false {\n\t\t\tbreak // the host', R_CB)
+
+# ---- end-to-end fixes: the sync state bound to the VM copy's epoch, the epoch read, protected git
+m("internal/host/syncengine/engine.go", '\tif e.Copy != "" && s.Copy != e.Copy {', '\tif false {', "TestNewCopyKeepsHostFiles", pkg="host/syncengine")
+m("internal/host/syncengine/engine.go", '\t\treturn fresh(), nil\n\t}\n\tif s.Base', '\t\treturn s, nil\n\t}\n\tif s.Base', "TestNewCopyKeepsHostFiles", pkg="host/syncengine")
+m("internal/host/app/syncone.go", '\tif !epochRE.MatchString(e) {', '\tif false {', "TestCopyEpoch", pkg="host/app")
+m("internal/host/app/syncone.go", '\t\tCopy:      epoch,\n', '\t\tCopy:      epoch[:0],\n', "TestCopyEpoch", pkg="host/app",
+  equivalent="no host test drives a whole sync through the fake transport; the end-to-end run in the appliance checked it")
+m("cmd/sandbox-vm/gitenv.go", ', {"core.hooksPath", "/dev/null"}', '', "TestProtectGit", pkg="../cmd/sandbox-vm")
+m("cmd/sandbox-vm/gitenv.go", '\t\tn++\n', '', "TestProtectGit", pkg="../cmd/sandbox-vm")
+m("internal/sandboxd/daemon/attach.go", 'return 0, errors.New("attach: " + firstLine(err))', 'return 0, fmt.Errorf("attach: %w", err)', "TestAttachErrorFirstLine", pkg="sandboxd/daemon")

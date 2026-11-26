@@ -52,6 +52,8 @@ type State struct {
 	Base     map[string]string `json:"base"`     // path -> fingerprint both sides had at the last sync
 	Withheld map[string]string `json:"withheld"` // path -> the VM fingerprint already quarantined
 	Git      GitState          `json:"git"`
+	// Copy is the epoch of the VM copy this state was made against (Engine.Copy).
+	Copy string `json:"copy,omitempty"`
 }
 
 // Engine syncs one repository.
@@ -61,6 +63,12 @@ type Engine struct {
 	StateFile string
 	Store     *syncgate.Store // the quarantine
 	VM        VM
+	// Copy is the VM copy's epoch, made when the copy was (a reinstalled VM, or a copy removed and
+	// made again, has a new one). State made against another epoch describes a copy that is gone:
+	// trusted, it would read every file the new copy lacks as a deletion in the VM and delete it
+	// on the host. So it is set aside and the pass starts without a base, where a file only the
+	// host has goes to the VM. "" (tests) keeps whatever state there is.
+	Copy string
 
 	cache syncproto.FPCache // host fingerprints by stat data, across passes of one Run
 }
@@ -74,7 +82,8 @@ type Report struct {
 }
 
 func (e *Engine) load() (State, error) {
-	s := State{Base: map[string]string{}, Withheld: map[string]string{}}
+	fresh := func() State { return State{Base: map[string]string{}, Withheld: map[string]string{}, Copy: e.Copy} }
+	s := fresh()
 	b, err := os.ReadFile(e.StateFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		return s, nil
@@ -84,6 +93,9 @@ func (e *Engine) load() (State, error) {
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
 		return s, fmt.Errorf("sync state %s: %w", e.StateFile, err)
+	}
+	if e.Copy != "" && s.Copy != e.Copy {
+		return fresh(), nil
 	}
 	if s.Base == nil {
 		s.Base = map[string]string{}

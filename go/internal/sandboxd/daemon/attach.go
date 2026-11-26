@@ -75,7 +75,9 @@ func (d *Daemon) Attach(ctx context.Context, id string, args []string, tty bool,
 		p, err = d.Runtime.Exec(ctx, id, execID+"-noshell", args, tty, stdio.Stdin, stdio.Stdout, stdio.Stderr)
 	}
 	if err != nil {
-		return 0, fmt.Errorf("attach: %w", err)
+		d.logf("session %s: attach: %v", id, err)
+		return 0, errors.New("attach: " + firstLine(err)) // Kata appends a stack backtrace
+
 	}
 	if size[0] > 0 && size[1] > 0 {
 		p.Resize(ctx, uint32(size[0]), uint32(size[1]))

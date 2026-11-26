@@ -52,7 +52,10 @@ func TestRunBindings(t *testing.T) {
 	if _, _, ok, rc := RunBindings([]string{"--help"}, e); ok || rc != 0 {
 		t.Errorf("help: %v %d", ok, rc)
 	}
-	// the repositories, as run sees them
+	// the repositories, as run sees them, before they exist in the VM
+	if _, repos, ok, rc := RunBindings([]string{"--repo", "/not/synced/yet"}, e); !ok || strings.Join(repos, " ") != "/not/synced/yet" {
+		t.Errorf("unsynced repo: %q %v %d", repos, ok, rc)
+	}
 	other := t.TempDir()
 	for _, r := range []string{filepath.Join(e.Home, "code/app"), filepath.Join(e.Home, "b"), other} {
 		os.MkdirAll(r, 0o755)

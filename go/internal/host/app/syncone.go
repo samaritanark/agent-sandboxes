@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
@@ -18,6 +19,25 @@ const WorkspacesDir = "/var/lib/sandbox/workspaces"
 // SyncUser is the VM user the sync agent runs as (design 5.6.2 rule 5).
 const SyncUser = "sandbox-sync"
 
+// copyEpoch makes the VM copy ws if it is missing and returns its epoch: a random token root writes
+// beside a copy (ws.epoch) when the copy has none, so a copy made again (a reinstalled VM) has a
+// new one and the host sets aside the state it kept for the old copy (syncengine.Engine.Copy).
+func (a *app) copyEpoch(ep driver.SSHEndpoint, ws string) (string, error) {
+	script := `set -e; [ -d "$0" ] || { rm -f "$0.epoch"; install -d -o ` + SyncUser + ` -g ` + SyncUser + ` -m 0700 "$0"; }; ` +
+		`[ -s "$0.epoch" ] || od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "$0.epoch"; cat "$0.epoch"`
+	out, err := a.env.Transport.Output(a.ctx, ep, []string{"sh", "-c", script, ws}, 128)
+	if err != nil {
+		return "", fmt.Errorf("cannot read the VM copy's epoch: %v", err)
+	}
+	e := strings.TrimSpace(string(out))
+	if !epochRE.MatchString(e) {
+		return "", fmt.Errorf("the VM copy's epoch %q is not one", e)
+	}
+	return e, nil
+}
+
+var epochRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
 // syncRepo is one engine pass between host repository repo (absolute) and its VM copy, ws.
 func (a *app) syncRepo(ep driver.SSHEndpoint, repo string) (string, syncengine.Report, error) {
 	if st, err := os.Lstat(filepath.Join(repo, ".git")); err != nil || !st.IsDir() {
@@ -28,6 +48,10 @@ func (a *app) syncRepo(ep driver.SSHEndpoint, repo string) (string, syncengine.R
 		return "", syncengine.Report{}, err
 	}
 	ws := WorkspacesDir + "/" + id
+	epoch, err := a.copyEpoch(ep, ws)
+	if err != nil {
+		return "", syncengine.Report{}, err
+	}
 	// root creates the copy's directory; the agent itself runs unprivileged
 	script := `set -e; install -d -o ` + SyncUser + ` -g ` + SyncUser + ` -m 0700 "$0"; exec runuser -u ` + SyncUser + ` -- sandbox __sync-agent "$0"`
 	toAgentR, toAgentW := io.Pipe()
@@ -53,6 +77,7 @@ func (a *app) syncRepo(ep driver.SSHEndpoint, repo string) (string, syncengine.R
 		StateFile: filepath.Join(a.env.StateDir, "sync", id, "state.json"),
 		Store:     &syncgate.Store{Dir: filepath.Join(a.env.StateDir, "quarantine")},
 		VM:        &syncengine.StreamVM{W: toAgentW, R: fromAgentR},
+		Copy:      epoch,
 	}
 	rep, err := e.Sync()
 	toAgentW.Close()
