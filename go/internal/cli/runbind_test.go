@@ -168,7 +168,7 @@ func TestSetUpAgent(t *testing.T) {
 	if f == nil || f.HistoryKey != "0123456789abcdef" || string(f.Config["CLAUDE.md"]) != "be brief" || f.Config[".credentials.json"] != nil || f.Config[".claude.json"] == nil {
 		t.Fatalf("%+v", f)
 	}
-	if got := string(f.Config[".claude.json"]); got != `{"hasCompletedOnboarding":true,"projects":{"/workspace/0123456789abcdef":{"hasTrustDialogAccepted":true}}}`+"\n" {
+	if got := string(f.Config[".claude.json"]); got != `{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true},"/workspace/0123456789abcdef":{"hasTrustDialogAccepted":true}}}`+"\n" {
 		t.Errorf(".claude.json %s", got)
 	}
 	last := sp.Mounts[len(sp.Mounts)-1]
@@ -289,5 +289,30 @@ func TestSetUpAgentCodex(t *testing.T) {
 		c.setUpAgent(&sessionspec.Spec{Agent: "codex", Egress: sp.Egress}, LaunchSpec{Agent: "codex"}, SessionRecord{})
 	}); rc != 1 {
 		t.Error("launched without an identity")
+	}
+}
+
+// One repository is mounted at /workspace and trusted there; several are mounted under it, where the
+// agent starts, so /workspace is trusted with them (without it Claude Code asks, and a "no" ends it).
+func TestClaudeJSONTrust(t *testing.T) {
+	ws := func(targets ...string) *sessionspec.Spec {
+		sp := &sessionspec.Spec{}
+		for _, tg := range targets {
+			sp.Mounts = append(sp.Mounts, sessionspec.Mount{Kind: sessionspec.Workspace, Source: "/s", Target: tg})
+		}
+		sp.Mounts = append(sp.Mounts, sessionspec.Mount{Kind: sessionspec.History, Source: "/h", Target: "/home/agent/.claude/projects"})
+		return sp
+	}
+	for _, c := range []struct {
+		spec *sessionspec.Spec
+		want string
+	}{
+		{ws(), `{"hasCompletedOnboarding":true,"projects":{}}`},
+		{ws("/workspace"), `{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true}}}`},
+		{ws("/workspace/a", "/workspace/b"), `{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true},"/workspace/a":{"hasTrustDialogAccepted":true},"/workspace/b":{"hasTrustDialogAccepted":true}}}`},
+	} {
+		if got := claudeJSON(c.spec); got != c.want+"\n" {
+			t.Errorf("claudeJSON = %s, want %s", got, c.want)
+		}
 	}
 }

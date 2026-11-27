@@ -3,7 +3,8 @@
 #   sudo image/build.sh [IMAGE_VERSION]
 # Needs mkosi v27.1 (MKOSI, default /opt/mkosi/bin/mkosi: Ubuntu 24.04's packaged 20.2 cannot build
 # a noble initrd, and v24.3's initrd differed between builds), systemd-ukify, systemd-boot
-# (bootctl), dosfstools, mtools, qemu-utils, dpkg, Python 3, and Go:
+# (bootctl), dosfstools, mtools, qemu-utils, dpkg, Python 3, Go, and Rust 1.78+ with libcap-ng-dev and
+# libseccomp-dev (for virtiofsd; see below):
 #   python3 -m venv /opt/mkosi && /opt/mkosi/bin/pip install "git+https://github.com/systemd/mkosi@v27.1"
 # Writes image/mkosi.output/sandbox-appliance.raw (the vfkit and qemu drivers) and .qcow2 (Lima).
 set -euo pipefail
@@ -84,7 +85,6 @@ tar -I zstd -C "${unpack}/kata" -xf "${art}"/kata-go-static-*-"${goarch}".tar.zs
 k="${unpack}/kata/opt/kata"
 cp -a "${k}/VERSION" "${tree}/opt/kata/"
 cp -a "${k}/bin/cloud-hypervisor" "${k}/bin/containerd-shim-kata-v2" "${tree}/opt/kata/bin/"
-cp -a "${k}/libexec/virtiofsd" "${tree}/opt/kata/libexec/"
 cp -a "${k}/share/defaults/kata-containers/configuration-clh.toml" "${tree}/opt/kata/share/defaults/kata-containers/"
 for link in vmlinux.container kata-containers.img; do # the links the configuration names, and their targets
   target="$(readlink "${k}/share/kata-containers/${link}")"
@@ -95,6 +95,26 @@ done
 clh="${tree}/opt/kata/share/defaults/kata-containers/configuration-clh.toml"
 sed -i 's/^disable_guest_seccomp = true$/disable_guest_seccomp = false/' "${clh}"
 grep -qx 'disable_guest_seccomp = false' "${clh}" || { echo "cannot enable guest seccomp in ${clh}" >&2; exit 1; }
+# The patched virtiofsd's caching (below) applies to the auto policy, which this configuration names.
+grep -qx 'virtio_fs_cache = "auto"' "${clh}" || { echo "${clh} no longer sets virtio_fs_cache = \"auto\"" >&2; exit 1; }
+# virtiofsd, built from the pinned source with patches/virtiofsd-auto-keep-cache.patch instead of
+# Kata's binary. Under the cache policy Kata uses (auto), stock virtiofsd makes the guest drop a file's
+# cached data at every open, so each exec in a microVM re-reads the program and its libraries over
+# virtio-fs; nested on Apple silicon that made Claude Code start in 1.6 s instead of 23 ms and lag
+# seconds behind the keyboard. The patch keeps the data and has the guest drop it when the file's
+# mtime or size changes (checked after the 1 s attribute timeout), so the workspace stays as fresh
+# as before; it refuses to mount if the guest kernel cannot do that. Needs Rust 1.78 or later
+# (RUST_BIN, default Ubuntu 24.04's cargo-1.91 and rustc-1.91), libcap-ng-dev, and libseccomp-dev;
+# the binary links libcap-ng and libseccomp, which the image installs, so build on Ubuntu 24.04.
+vfs="${unpack}/virtiofsd"
+install -d "${vfs}"
+tar -C "${vfs}" --strip-components=1 -xzf "${art}"/virtiofsd-v*.tar.gz
+patch -d "${vfs}" -p1 --forward --no-backup-if-mismatch < "${here}/patches/virtiofsd-auto-keep-cache.patch"
+rustbin="${RUST_BIN:-/usr/lib/rust-1.91/bin}"
+(cd "${vfs}" && PATH="${rustbin}:${PATH}" CARGO_HOME="${here}/mkosi.cache/cargo" \
+  RUSTFLAGS="--remap-path-prefix=${vfs}=/virtiofsd --remap-path-prefix=${here}/mkosi.cache/cargo=/cargo" \
+  cargo build --release --locked)
+install -m 0755 "${vfs}/target/release/virtiofsd" "${tree}/opt/kata/libexec/virtiofsd"
 # containerd finds the runtime io.containerd.kata.v2 as containerd-shim-kata-v2 on its PATH.
 ln -s /opt/kata/bin/containerd-shim-kata-v2 "${tree}/usr/local/bin/containerd-shim-kata-v2"
 

@@ -1,0 +1,42 @@
+--- a/src/passthrough/mod.rs
++++ b/src/passthrough/mod.rs
+@@ -1044,7 +1044,14 @@
+                     opts |= OpenOptions::CACHE_DIR;
+                 }
+             }
+-            _ => {}
++            // agent-sandboxes: keep a regular file's cached data across opens; init() asks the
++            // kernel for AUTO_INVAL_DATA, so the data is dropped when the file's mtime or size
++            // changes, which the kernel re-checks once the attribute timeout passes
++            CachePolicy::Auto => {
++                if flags & (libc::O_DIRECTORY as u32) == 0 {
++                    opts |= OpenOptions::KEEP_CACHE;
++                }
++            }
+         };
+ 
+         Ok((Some(handle), opts))
+@@ -1595,6 +1602,14 @@
+         } else {
+             FsOptions::empty()
+         };
++        // agent-sandboxes: with KEEP_CACHE under the auto policy, the kernel must drop a file's
++        // cached data when it sees the file change
++        if matches!(self.cfg.cache_policy, CachePolicy::Auto) {
++            if !capable.contains(FsOptions::AUTO_INVAL_DATA) {
++                return Err(io::Error::from_raw_os_error(libc::EPROTO));
++            }
++            opts |= FsOptions::AUTO_INVAL_DATA;
++        }
+         if self.cfg.writeback && capable.contains(FsOptions::WRITEBACK_CACHE) {
+             opts |= FsOptions::WRITEBACK_CACHE;
+             self.writeback.store(true, Ordering::Relaxed);
+@@ -1872,7 +1887,7 @@
+             CachePolicy::Never => opts |= OpenOptions::DIRECT_IO,
+             CachePolicy::Metadata => opts |= OpenOptions::DIRECT_IO,
+             CachePolicy::Always => opts |= OpenOptions::KEEP_CACHE,
+-            _ => {}
++            CachePolicy::Auto => opts |= OpenOptions::KEEP_CACHE, // agent-sandboxes: see do_open
+         };
+ 
+         Ok((entry, Some(handle), opts))

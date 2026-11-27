@@ -59,7 +59,7 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources
           sudo apt-get update -qq
           sudo apt-get install -y -qq systemd-ukify systemd-boot systemd-boot-efi mtools dosfstools zstd cpio \
-            qemu-utils python3-venv bubblewrap dpkg-dev
+            qemu-utils python3-venv bubblewrap dpkg-dev cargo-1.91 rustc-1.91 libcap-ng-dev libseccomp-dev
           sudo python3 -m venv /opt/mkosi
           sudo /opt/mkosi/bin/pip install -q "git+https://github.com/systemd/mkosi@${MKOSI_COMMIT}"
           /opt/mkosi/bin/mkosi --version

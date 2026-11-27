@@ -31,7 +31,10 @@ const Version = 1
 // The VM's directories that mounts may come from (design 5.6, 5.7).
 const (
 	WorkspaceStore = "/var/lib/sandbox/workspaces" // the sync's workspace copies, one per repository
-	SessionStore   = "/var/lib/sandbox/sessions"   // each session's own files, by session ID
+	// SyncCacheStore holds the sync agent's fingerprint cache for each copy: never mounted into a
+	// microVM, so a session cannot forge it
+	SyncCacheStore = "/var/lib/sandbox/sync-cache"
+	SessionStore   = "/var/lib/sandbox/sessions" // each session's own files, by session ID
 	// AgentHistoryStore holds each agent's history per tier and repository set (design 5.7,
 	// D-14): <agent>/tier<N>/<key>, mounted only into sessions of that agent at that tier.
 	AgentHistoryStore = "/var/lib/sandbox/agent-history"

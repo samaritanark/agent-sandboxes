@@ -14,3 +14,6 @@ func fileIdent(st fs.FileInfo) uint64 {
 	}
 	return 0
 }
+
+// identKnown says fileIdent sees the inode and change time, so a saved cache can be trusted.
+const identKnown = true

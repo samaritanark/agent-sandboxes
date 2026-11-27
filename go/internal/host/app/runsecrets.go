@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
@@ -576,20 +577,45 @@ func readLimited(p string) ([]byte, error) {
 }
 
 // syncAndMirror syncs each repository into the VM and links its host path to the copy there.
+// The repositories are synced at once, a few connections at a time (syncSlots); a failure ends the
+// launch, naming the first repository, in order, that failed.
 func (a *app) syncAndMirror(ep driver.SSHEndpoint, repos []string) (synced []string) {
+	type result struct {
+		withheld int
+		err      error
+	}
+	res := make([]result, len(repos))
 	for _, r := range repos {
 		fmt.Fprintf(a.env.Stdout, "==> Syncing %s into the sandbox VM...\n", r)
-		ws, rep, err := a.syncRepo(ep, r)
-		if err != nil {
-			a.die("%v", err)
-		}
-		if n := len(rep.Quarantined) + len(rep.Conflicts); n > 0 {
-			fmt.Fprintf(a.env.Stdout, "    %d change(s) withheld or in conflict; see: sandbox sync review\n", n)
-		}
-		if a.mirrorHome() != "" {
-			if err := a.vmRun(ep, MirrorPath, r, ws); err != nil {
-				a.die("could not make %s the sandbox VM's path to its copy: %v", r, err)
+	}
+	var wg sync.WaitGroup
+	for i, r := range repos {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ws, rep, err := a.syncRepo(ep, r)
+			if err != nil {
+				res[i].err = err
+				return
 			}
+			res[i].withheld = len(rep.Quarantined) + len(rep.Conflicts)
+			if a.mirrorHome() != "" {
+				syncSlots <- struct{}{}
+				err := a.vmRun(ep, MirrorPath, r, ws)
+				<-syncSlots
+				if err != nil {
+					res[i].err = fmt.Errorf("could not make %s the sandbox VM's path to its copy: %v", r, err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	for i, r := range repos {
+		if res[i].err != nil {
+			a.die("%v", res[i].err)
+		}
+		if n := res[i].withheld; n > 0 {
+			fmt.Fprintf(a.env.Stdout, "    %s: %d change(s) withheld or in conflict; see: sandbox sync review\n", r, n)
 		}
 		synced = append(synced, r)
 	}

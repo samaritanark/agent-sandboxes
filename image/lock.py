@@ -236,7 +236,7 @@ def cmd_repo(args):
     print(f"lock.py: {len(entries)} locked packages for {arch} in {args.out}", file=sys.stderr)
 
 
-ART_RE = re.compile(r"^([a-z0-9][a-z0-9.-]+) (amd64|arm64) ([0-9a-f]{64}) ([0-9]+) (https://github\.com/\S+)$")
+ART_RE = re.compile(r"^([a-z0-9][a-z0-9.-]+) (amd64|arm64) ([0-9a-f]{64}) ([0-9]+) (https://(?:github\.com|gitlab\.com)/\S+)$")
 
 
 def cmd_artifacts(args):

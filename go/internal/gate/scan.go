@@ -422,6 +422,7 @@ func ScanRepoSecrets(e config.Env, repo, acceptFile string, warn io.Writer) []st
 	}
 
 	var out []string
+	enc := encryptedFiles{}
 	ok, rc := betterleaksRun(e, realRepo, reportPath, cfgPath, ignore, "")
 	if !ok {
 		return append(out, fmt.Sprintf("error\tbetterleaks scan failed (exit %d)", rc))
@@ -440,7 +441,7 @@ func ScanRepoSecrets(e config.Env, repo, acceptFile string, warn io.Writer) []st
 		}
 		class := "no"
 		switch {
-		case FindingIsEncrypted(file, line, startcol, endcol):
+		case enc.check(file, line, startcol, endcol):
 			class = "sealed"
 		case IsPathMasked(repo, relpath):
 			class = "yes"

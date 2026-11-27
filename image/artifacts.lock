@@ -2,7 +2,9 @@
 # 2026-11-25): name arch sha256 size url. SHA-256 values are the release's own (GitHub's asset
 # digests; nerdctl publishes SHA256SUMS and Envoy a signed checksums.txt.asc, both checked).
 # Versions are the ones spikes S1 (Kata, nerdctl) and S5 (Envoy) tested; betterleaks is v2's pin
-# (setup/versions.sh), checked against the release's checksums.txt.
+# (setup/versions.sh), checked against the release's checksums.txt. virtiofsd is the source of the
+# version Kata 4.4.0 ships (GitLab's tag archive, hashed when pinned; listed once per architecture),
+# built with image/patches/ (build.sh); its crates are pinned by the Cargo.lock inside it.
 kata-go-static amd64 240723fd052e538acf2c95a0126abda77d41078702a65783ebc2967f4829a0d6 1353034387 https://github.com/kata-containers/kata-containers/releases/download/4.4.0/kata-go-static-4.4.0-amd64.tar.zst
 kata-go-static arm64 904e09007f439c6619d9122cd25057d04db61a1b6805a728295c4f02813fb1a4 633881615 https://github.com/kata-containers/kata-containers/releases/download/4.4.0/kata-go-static-4.4.0-arm64.tar.zst
 nerdctl-full amd64 1f12c1a5840744fdf7029483c55a69813d44aa2ec1ef879d52d81ff6a3049ecd 297720400 https://github.com/containerd/nerdctl/releases/download/v2.4.2/nerdctl-full-2.4.2-linux-amd64.tar.gz
@@ -11,3 +13,5 @@ envoy amd64 1d64506e25c1844f146162ddb2ece7010fa4e784faddb40a079021491f1f03cc 106
 envoy arm64 b9d6d1e06dd5838a3506de9f4deebad3de9a2ce6cadb87cd76222ca286213baf 103837096 https://github.com/envoyproxy/envoy/releases/download/v1.40.2/envoy-1.40.2-linux-aarch_64
 betterleaks amd64 efa407244e1ea8e35f582b8a42becdeac08bdead04f68eb752adda722d583c2a 9906578 https://github.com/betterleaks/betterleaks/releases/download/v1.8.1/betterleaks_1.8.1_linux_x64.tar.gz
 betterleaks arm64 bbb578b12a2f65d7082ab436abf37724232bc71d8a078e3c41336574420f1b48 9098007 https://github.com/betterleaks/betterleaks/releases/download/v1.8.1/betterleaks_1.8.1_linux_arm64.tar.gz
+virtiofsd-src amd64 52b66e449ca583b4f050a2bff327ff812211a2c349b4130279fcfc6a64540f04 187291 https://gitlab.com/virtio-fs/virtiofsd/-/archive/v1.14.0/virtiofsd-v1.14.0.tar.gz
+virtiofsd-src arm64 52b66e449ca583b4f050a2bff327ff812211a2c349b4130279fcfc6a64540f04 187291 https://gitlab.com/virtio-fs/virtiofsd/-/archive/v1.14.0/virtiofsd-v1.14.0.tar.gz

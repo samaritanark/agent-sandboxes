@@ -69,13 +69,38 @@ func validKey(k string) bool {
 	return len(f) >= 2 && strings.HasPrefix(f[0], "ssh-") || len(f) >= 2 && strings.HasPrefix(f[0], "ecdsa-")
 }
 
-// pin writes the known_hosts file for ep: the alias and the pinned key, nothing else.
+// pin writes the known_hosts file for ep: the alias and the pinned key, nothing else. Many
+// connections start at once (a session's sync has one per repository), each with its own ssh
+// reading the file, so the file is never rewritten in place: a reader that caught it truncated
+// saw no key, failed host key verification, and exited 255 like a dropped connection. It is
+// left alone when it already holds the key, and otherwise replaced whole by a rename.
 func (c *Client) pin(ep driver.SSHEndpoint) error {
 	if !validKey(ep.HostKey) || strings.ContainsAny(ep.HostKey, "\r\n") {
 		return errors.New("the VM has no valid pinned host key")
 	}
 	f := strings.Fields(ep.HostKey)
-	return os.WriteFile(c.KnownHosts, []byte(HostKeyAlias+" "+f[0]+" "+f[1]+"\n"), 0o600)
+	want := HostKeyAlias + " " + f[0] + " " + f[1] + "\n"
+	if b, err := os.ReadFile(c.KnownHosts); err == nil && string(b) == want {
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(c.KnownHosts), ".known_hosts-*") // mode 0600
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.WriteString(want); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), c.KnownHosts); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return nil
 }
 
 // Args is the ssh command line for ep: tty forces a terminal (-tt) or refuses one (-T), and remote

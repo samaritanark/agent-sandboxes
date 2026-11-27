@@ -44,37 +44,53 @@ const sopsMarker = "ENC[AES256_GCM,"
 //
 // It mirrors the bash return code: true is exit 0 (exempt), false is exit 1 (not exempt).
 func FindingIsEncrypted(file, line, startcol, endcol string) bool {
-	if st, err := os.Stat(file); err != nil || !st.Mode().IsRegular() { // [[ -f file ]] follows symlinks
+	return encryptedFiles{}.check(file, line, startcol, endcol)
+}
+
+// encryptedFiles is FindingIsEncrypted for the findings of one scan: each file is read, split,
+// and pre-filtered once, rather than once per finding (a file with many findings cost findings
+// times lines, about 19 of a 24-repository launch's 20 seconds of secret scanning).
+type encryptedFiles map[string]*encFile
+
+type encFile struct {
+	ok     bool // a regular file (following symlinks, as [[ -f ]]) that could be read
+	lines  []string
+	sealed bool // a line names kind SealedSecret: the grep pre-filter for the YAML walk
+}
+
+func (m encryptedFiles) check(file, line, startcol, endcol string) bool {
+	f := m[file]
+	if f == nil {
+		f = &encFile{}
+		if st, err := os.Stat(file); err == nil && st.Mode().IsRegular() {
+			if data, err := os.ReadFile(file); err == nil {
+				f.ok, f.lines = true, bashcompat.SplitRecords(data)
+				for _, l := range f.lines {
+					if sealedKindLine.MatchString(l) {
+						f.sealed = true
+						break
+					}
+				}
+			}
+		}
+		m[file] = f
+	}
+	if !f.ok || !digitsOnly.MatchString(line) {
 		return false
 	}
-	if !digitsOnly.MatchString(line) {
-		return false
-	}
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return false
-	}
-	lines := bashcompat.SplitRecords(data)
 
 	// SOPS: the flagged span must lie strictly inside an ENC[AES256_GCM,...] envelope on the line.
 	if digitsOnly.MatchString(startcol) && digitsOnly.MatchString(endcol) {
-		if sopsContains(lines, awkNum(line), awkNum(startcol), awkNum(endcol)) {
+		if sopsContains(f.lines, awkNum(line), awkNum(startcol), awkNum(endcol)) {
 			return true
 		}
 	}
 
 	// SealedSecret: cheap pre-filter (grep), then the YAML walk.
-	pre := false
-	for _, l := range lines {
-		if sealedKindLine.MatchString(l) {
-			pre = true
-			break
-		}
-	}
-	if !pre {
+	if !f.sealed {
 		return false
 	}
-	return sealedSecretEncrypted(lines, awkNum(line))
+	return sealedSecretEncrypted(f.lines, awkNum(line))
 }
 
 // awkNum converts a digit string the way awk -v does for comparison (a double).
@@ -86,10 +102,11 @@ func awkNum(s string) float64 {
 // sopsContains is the first awk program: NR == n selects the line; the span must sit strictly
 // between the '[' and ']' of an ENC[AES256_GCM,...] envelope.
 func sopsContains(lines []string, n, sc, ec float64) bool {
-	for i, rec := range lines {
-		if float64(i+1) != n {
-			continue
-		}
+	// only line n can match (NR == n): look at it alone rather than at every line
+	if n < 1 || n > float64(len(lines)) || n != float64(int(n)) {
+		return false
+	}
+	for _, rec := range lines[int(n)-1 : int(n)] {
 		s := sc - 1 // legacy: the bash assumed the scanner reports the start one past the real start
 		if deviation.Fixed(deviation.ExactColumns) {
 			s = sc // betterleaks reports exact 1-based byte columns

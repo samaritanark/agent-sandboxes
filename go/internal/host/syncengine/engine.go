@@ -70,7 +70,40 @@ type Engine struct {
 	// host has goes to the VM. "" (tests) keeps whatever state there is.
 	Copy string
 
-	cache syncproto.FPCache // host fingerprints by stat data, across passes of one Run
+	// CacheFile keeps the host fingerprint cache across runs ("" keeps it for this Engine only), so
+	// a launch's sync reads only the files that changed since the last one.
+	CacheFile string
+
+	cache       syncproto.FPCache // host fingerprints by stat data
+	cacheLoaded bool
+	cacheSaved  time.Time
+}
+
+// cacheSaveEvery is how often a live sync writes its fingerprint cache (and at its end).
+const cacheSaveEvery = 30 * time.Second
+
+// Sync is one pass: it reconciles the host tree and the VM copy and reports what moved.
+func (e *Engine) Sync() (Report, error) {
+	if e.CacheFile != "" && !e.cacheLoaded {
+		e.cache.LoadFile(e.CacheFile)
+		e.cacheLoaded = true
+	}
+	rep, err := e.sync()
+	if err == nil && e.CacheFile != "" && time.Since(e.cacheSaved) >= cacheSaveEvery {
+		if e.cache.SaveFile(e.CacheFile) == nil {
+			e.cacheSaved = time.Now()
+		}
+	}
+	return rep, err
+}
+
+// SaveCache writes the fingerprint cache now, at the end of a run. Failing costs only time: the
+// next run fingerprints the files again.
+func (e *Engine) SaveCache() error {
+	if e.CacheFile == "" || !e.cacheLoaded {
+		return nil
+	}
+	return e.cache.SaveFile(e.CacheFile)
 }
 
 // Report is what one Sync did.
@@ -162,7 +195,9 @@ func (e *Engine) hostScan(root *os.Root) (map[string]string, error) {
 			}
 			return nil
 		}
-		st, err := root.Lstat(p)
+		// the entry's stat data, which ReadDir took with fstatat on the directory it opened in the
+		// root (no symlink followed): a second root.Lstat would resolve the whole path again
+		st, err := d.Info()
 		if err != nil {
 			return nil
 		}
@@ -228,8 +263,8 @@ func hostFP(root *os.Root, p string) (string, []byte, error) {
 	return "other", nil, nil
 }
 
-// Sync runs one reconciliation.
-func (e *Engine) Sync() (Report, error) {
+// sync runs one reconciliation.
+func (e *Engine) sync() (Report, error) {
 	var rep Report
 	state, err := e.load()
 	if err != nil {

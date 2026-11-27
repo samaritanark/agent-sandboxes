@@ -189,9 +189,15 @@ const (
 // otherwise ask at every launch).
 func claudeJSON(spec *sessionspec.Spec) string {
 	projects := map[string]any{}
+	trust := map[string]bool{"hasTrustDialogAccepted": true}
 	for _, m := range spec.Mounts {
 		if m.Kind == sessionspec.Workspace {
-			projects[m.Target] = map[string]bool{"hasTrustDialogAccepted": true}
+			projects[m.Target] = trust
+			// several repositories are mounted under /workspace, where the agent starts (the
+			// image's WORKDIR); it holds only those repositories, each trusted here already
+			if path.Dir(m.Target) == "/workspace" {
+				projects["/workspace"] = trust
+			}
 		}
 	}
 	b, _ := json.Marshal(map[string]any{"hasCompletedOnboarding": true, "projects": projects})

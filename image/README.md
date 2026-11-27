@@ -10,7 +10,10 @@ On Linux, as root, from the repository (the output is for the build machine's ar
     sudo image/build.sh [IMAGE_VERSION]
 
 It needs mkosi v27.1 at `/opt/mkosi` (or `MKOSI=`), systemd-ukify, systemd-boot (bootctl),
-dosfstools, mtools, qemu-utils, dpkg, Python 3, and Go. It writes `mkosi.output/sandbox-appliance.raw` (the vfkit and qemu drivers)
+dosfstools, mtools, qemu-utils, dpkg, Python 3, Go, and, for the patched virtiofsd it builds,
+Rust 1.78 or later (`RUST_BIN`, default Ubuntu 24.04's `cargo-1.91` and `rustc-1.91` in
+`/usr/lib/rust-1.91/bin`), `libcap-ng-dev`, and `libseccomp-dev`. Build on Ubuntu 24.04: virtiofsd
+links the image's libcap-ng and libseccomp. It writes `mkosi.output/sandbox-appliance.raw` (the vfkit and qemu drivers)
 and `.qcow2` (Lima).
 
 ## The package lock

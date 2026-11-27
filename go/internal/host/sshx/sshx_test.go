@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -215,5 +216,71 @@ func TestCappedIsNotAReaderFrom(t *testing.T) {
 	io.Copy(c, strings.NewReader("abcdef"))
 	if c.buf.String() != "abc" || !c.over {
 		t.Errorf("%q over=%v", c.buf.String(), c.over)
+	}
+}
+
+// TestPinConcurrent: many connections start at once, each pinning the host key while other ssh
+// processes read the file; no reader may ever see it empty or partial (it used to be truncated and
+// rewritten for each connection, and a reader in between failed host key verification). The
+// writers alternate two keys so that the file really is rewritten.
+func TestPinConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	c := &Client{KnownHosts: filepath.Join(dir, "known_hosts")}
+	keys := []string{"AAAAC3NzaC1lZDI1NTE5AAAAIOm7dummydummydummydummydummydummydummydummy0",
+		"AAAAC3NzaC1lZDI1NTE5AAAAIOm7otherotherotherotherotherotherotherother1"}
+	eps := []driver.SSHEndpoint{{HostKey: "ssh-ed25519 " + keys[0] + " x"}, {HostKey: "ssh-ed25519 " + keys[1] + " y"}}
+	ok := map[string]bool{HostKeyAlias + " ssh-ed25519 " + keys[0] + "\n": true, HostKeyAlias + " ssh-ed25519 " + keys[1] + "\n": true}
+	if err := c.pin(eps[0]); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	bad := make(chan string, 1)
+	var readers sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if b, err := os.ReadFile(c.KnownHosts); err != nil || !ok[string(b)] {
+					select {
+					case bad <- fmt.Sprintf("read %q, %v", b, err):
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	var writers sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			for j := 0; j < 50; j++ {
+				if err := c.pin(eps[(i+j)%2]); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	writers.Wait()
+	close(stop)
+	readers.Wait()
+	select {
+	case m := <-bad:
+		t.Fatal(m)
+	default:
+	}
+	if fi, err := os.Stat(c.KnownHosts); err != nil || fi.Mode().Perm() != 0o600 && runtime.GOOS != "windows" {
+		t.Errorf("known_hosts %v %v", fi, err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".known_hosts-*")); len(left) != 0 {
+		t.Errorf("temporary files left: %v", left)
 	}
 }

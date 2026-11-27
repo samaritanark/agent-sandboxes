@@ -38,7 +38,12 @@ m(ENC, "if closeRel == 0 {\n\t\t\t\tpos = estart + 1\n\t\t\t\tcontinue\n\t\t\t}"
 m(ENC, "pos = estart + 1\n\t\t}\n\t}\n\treturn false", "pos = estart + 2\n\t\t}\n\t}\n\treturn false", R_ENC,
   equivalent="restarting one byte later cannot overlap the marker with itself")
 m(ENC, "if digitsOnly.MatchString(startcol) && digitsOnly.MatchString(endcol) {", "if digitsOnly.MatchString(startcol) || digitsOnly.MatchString(endcol) {", R_ENC)
-m(ENC, "if !digitsOnly.MatchString(line) {", "if false {", R_ENC)
+m(ENC, "if !f.ok || !digitsOnly.MatchString(line) {", "if !f.ok {", R_ENC)
+m(ENC, "if !f.ok || !digitsOnly.MatchString(line) {", "if !digitsOnly.MatchString(line) {", R_ENC,
+  equivalent="a file that could not be read has no lines and no SealedSecret kind line, so nothing matches")
+m(ENC, "if n < 1 || n > float64(len(lines)) || n != float64(int(n)) {", "if n < 1 || n > float64(len(lines)) {", R_ENC,
+  equivalent="n comes from a digits-only line number, so it is always whole")
+m(ENC, "\t\t\t\t\t\tf.sealed = true\n", "", R_ENC)
 m(ENC, "if tt == \"\" || tt[0] == '#' {", "if tt == \"\" {", R_ENC)
 m(ENC, "for pos < L && s[pos] == '-' && (pos+2 > L || s[pos+1] == ' ') {", "for pos < L && s[pos] == '-' {", R_ENC)
 m(ENC, "if info[j].cind < tInd {", "if info[j].cind <= tInd {", R_ENC)
@@ -1221,7 +1226,9 @@ m("internal/cli/resume.go", '\t\tif b == "" && onSandboxd {', '\t\tif false {', 
 m("internal/cli/resume.go", '\t\tif !live {\n\t\t\treturn false, ""\n\t\t}', '', "TestResumeOnSandboxd")
 
 # ---- the live sync during a run (internal/host/app/livesync.go, syncone.go)
-m("internal/host/app/syncone.go", '\tif live != nil {\n\t\te.Run(live, LiveSyncInterval, each)\n\t}', '', "TestLiveSync", pkg="host/app")
+m("internal/host/app/syncone.go", '\tif live != nil && live.Err() == nil {\n\tpasses:', '\tif false {\n\tpasses:', "TestLiveSync", pkg="host/app")
+m("internal/host/app/syncone.go", 'if liveOn := live != nil && live.Err() == nil; !liveOn && tries >= syncTries {', 'if liveOn := live != nil && live.Err() == nil; !liveOn && tries >= 1 {', "TestLiveSync|TestSyncGivesUp", pkg="host/app")
+m("internal/host/app/syncone.go", 'if liveOn := live != nil && live.Err() == nil; !liveOn && tries >= syncTries {', 'if liveOn := live != nil && live.Err() == nil; tries >= syncTries {', "TestLiveSync|TestSyncGivesUp", pkg="host/app")
 m("internal/host/app/livesync.go", '\tl.toHost += len(rep.ToHost)', '\tl.toHost += 0', "TestLiveSync", pkg="host/app")
 m("internal/host/app/app.go", '\t\tlive := a.startLiveSync(ep, repos)\n\t\tdefer live.finish()\n', '\t\tlive := a.startLiveSync(ep, repos)\n\t\t_ = live\n', "TestLiveSync|TestRun", pkg="host/app",
   equivalent="no host test drives a proxied run with repositories through a live sync")
@@ -1308,7 +1315,11 @@ m(RB, '\t\tcase !ok || (!b.Readable && len(b.Hosts) == 0):', '\t\tcase !ok:', "T
 
 # ---- found by the appliance run of the ninth round (copy mode, vetting's command-scope config)
 m("internal/host/app/syncone.go", 'const CopyMode = "0750"', 'const CopyMode = "0700"', "TestLiveSync", pkg="host/app")
-m("internal/host/app/syncone.go", '` -m ` + CopyMode + ` "$0"; exec runuser', '` -m 0700 "$0"; exec runuser', "TestLiveSync", pkg="host/app")
+m("internal/host/app/syncone.go", '` -m ` + CopyMode + ` "$0"; ` +', '` -m 0700 "$0"; ` +', "TestLiveSync", pkg="host/app")
+# ---- the fingerprint cache kept across runs (internal/syncproto/fpcache.go)
+m("internal/syncproto/fpcache.go", '\tc.use(p)\n\treturn e.fp, true', '\treturn e.fp, true', "TestFPCache")
+m("internal/syncproto/fpcache.go", 'if !identKnown || len(c.used) == 0 || !c.dirty', 'if !identKnown || !c.dirty', "TestFPCache")
+m("internal/syncproto/fpcache.go", ' || cf.V != cacheFileVersion || ', ' || ', "TestFPCache")
 m("internal/host/app/syncone.go", '` -m ` + CopyMode + ` "$0"; }; ` +', '` -m 0700 "$0"; }; ` +', "TestLiveSync", pkg="host/app")
 m("internal/vetting/verify.go", '\tn, _ := strconv.Atoi(os.Getenv("GIT_CONFIG_COUNT"))', '\tn := 0', "TestVettingGitKeepsCallerConfig")
 
@@ -1489,3 +1500,7 @@ m("internal/cli/rebuild.go", '\tif agent != "base" && agent != "all" && !b.Exist
   equivalent="the test's all builds with the base present; all builds base first anyway")
 m("internal/cli/rebuild.go", '\tif agent != "base" && agent != "all" && !b.Exists("docker.io/library/sandbox:base") {', '\tif false {', "TestRebuild")
 m("cmd/sandbox-vm/rebuild.go", '\treturn err == nil && strings.TrimSpace(ls) != ""', '\treturn err == nil', "TestNerdctlBuilder", pkg="../cmd/sandbox-vm")
+
+# ---- the pinned known_hosts file, written while other ssh processes read it (internal/host/sshx)
+m("internal/host/sshx/sshx.go", 'tmp, err := os.CreateTemp(filepath.Dir(c.KnownHosts), ".known_hosts-*") // mode 0600',
+  'tmp, err := os.OpenFile(c.KnownHosts, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o600) // mode 0600', "TestPinConcurrent", pkg="host/sshx")

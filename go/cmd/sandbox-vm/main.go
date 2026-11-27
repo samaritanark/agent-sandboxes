@@ -98,7 +98,9 @@ func main() {
 			os.Stderr.WriteString("ERROR: not a workspace copy: " + os.Args[2] + "\n")
 			os.Exit(1)
 		}
-		if err := syncagent.Serve(ws, os.Stdin, os.Stdout); err != nil {
+		// the copy's fingerprint cache, kept where the session's agent cannot reach (the microVM
+		// mounts only the copy); the host's connection script makes the directory for this user
+		if err := syncagent.ServeCached(ws, sessionspec.SyncCacheStore+"/"+filepath.Base(ws), os.Stdin, os.Stdout); err != nil {
 			os.Stderr.WriteString("ERROR: " + err.Error() + "\n")
 			os.Exit(1)
 		}

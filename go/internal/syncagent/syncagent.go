@@ -14,18 +14,34 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/syncproto"
 )
 
 // Serve answers requests from r on w for the tree at dir.
 func Serve(dir string, r io.Reader, w io.Writer) error {
+	return ServeCached(dir, "", r, w)
+}
+
+// cacheSaveEvery is how often the fingerprint cache is written while a session runs (and at its end).
+const cacheSaveEvery = 30 * time.Second
+
+// ServeCached is Serve with the fingerprint cache kept in cacheFile across runs, so a launch's
+// scan reads only the files that changed since the last one. cacheFile must be out of the tree's
+// reach (the agent in the microVM sees only dir); "" keeps the cache for this run only.
+func ServeCached(dir, cacheFile string, r io.Reader, w io.Writer) error {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return err
 	}
 	defer root.Close()
-	cache := &syncproto.FPCache{} // lives as long as the session's agent
+	cache := &syncproto.FPCache{}
+	var saved time.Time
+	if cacheFile != "" {
+		cache.LoadFile(cacheFile)
+		defer func() { cache.SaveFile(cacheFile) }() // failing costs only time
+	}
 	for {
 		h, body, err := syncproto.Read(r)
 		if errors.Is(err, io.EOF) {
@@ -37,6 +53,11 @@ func Serve(dir string, r io.Reader, w io.Writer) error {
 		reply, rbody := handle(root, cache, h, body)
 		if err := syncproto.Write(w, reply, rbody); err != nil {
 			return err
+		}
+		if cacheFile != "" && h.Op == syncproto.OpScan && reply.Err == "" && time.Since(saved) >= cacheSaveEvery {
+			if cache.SaveFile(cacheFile) == nil {
+				saved = time.Now()
+			}
 		}
 	}
 }
@@ -188,7 +209,9 @@ func scan(root *os.Root, cache *syncproto.FPCache) ([]syncproto.Entry, error) {
 		}
 		fp := syncproto.ObjectFP
 		if !syncproto.IsObjectPath(p) { // objects are content-addressed: their name is their identity
-			st, err := root.Lstat(p)
+			// the entry's stat data, which ReadDir took with fstatat on the directory it opened in
+			// the root (no symlink followed): a second root.Lstat would resolve the whole path again
+			st, err := d.Info()
 			if err != nil {
 				return nil
 			}
