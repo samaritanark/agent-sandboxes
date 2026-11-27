@@ -51,8 +51,12 @@ macOS 15+ on Apple M3 or later, and Linux with KVM. Windows is not available in 
 The full walkthrough is [Your first session](docs/tutorials/first-session.md);
 installing is covered in [Installing](docs/how-to/installing.md).
 
+Coming from v2? `bin/sandbox` in this checkout is still v2's bash script, and v2's
+setup put it on your PATH: read [Upgrading from v2](docs/how-to/upgrading-from-v2.md)
+first.
+
 ```bash
-# 1. Build the host binary (Go 1.27) and put it on PATH.
+# 1. Build the host binary (Go 1.27) into a directory early on your PATH.
 (cd go && go build -o ~/bin/sandbox ./cmd/sandbox)
 
 # 2. Install the appliance VM from a locally built image.

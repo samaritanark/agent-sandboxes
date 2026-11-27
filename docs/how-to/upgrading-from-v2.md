@@ -8,6 +8,38 @@ in v2's formats. A few things have to be redone, because v3 handles credentials
 differently. This page covers what `sandbox install` does with a v2 install,
 what you redo, and how to remove v2 when you're done with it.
 
+## First: make `sandbox` the v3 command
+
+v2's setup put your checkout's `bin/` directory on your PATH (for example a line
+like `export PATH="$HOME/code/agent-sandboxes/bin:$PATH"` in `~/.zshenv` or
+`~/.bashrc`), so `sandbox` runs `bin/sandbox`. **That file is v2's bash script,
+even on the v3 branch**: it stays in the repository as the reference the Go port
+is tested against until v3 is released. v3's `sandbox` is the Go host binary,
+which you build:
+
+```bash
+cd go                                         # in your checkout
+go build -o ~/bin/sandbox ./cmd/sandbox       # a directory that comes before the checkout's bin/ on your PATH
+hash -r                                       # zsh and bash remember where commands were found
+file "$(command -v sandbox)"                  # v3: "Mach-O 64-bit executable" (macOS) or "ELF" (Linux)
+                                              # v2: "Bourne-Again shell script"
+```
+
+If no directory on your PATH comes before the checkout's `bin/`, either put
+`~/bin` first or take the checkout's `bin/` off your PATH (v2 still runs from
+there by its full path, `<checkout>/bin/sandbox`, if you need it). To keep v2
+as `sandbox` while you try v3, build v3 under another name instead
+(`go build -o ~/bin/sandbox3 ./cmd/sandbox`) and use that name in the commands
+below.
+
+The binary is built from your checkout: rebuild it after you pull, and install
+an image built from the same commit (a mismatched pair is refused when they
+connect). Then install v3 as [Installing](installing.md) describes; the
+install carries your v2 state over (below).
+
+When you have removed v2 (see [Removing v2](#removing-v2)), take the checkout's
+`bin/` off your PATH.
+
 ## What carries over unchanged
 
 v3 reads these from `~/.sandbox` as they are:
@@ -98,8 +130,9 @@ session record. Codex's v2 sessions are not imported.
 
 Both can be installed at once. They share `~/.sandbox`, use different VMs (v2's
 Lima VM is `sandbox-vm`; v3's is a vfkit or qemu VM, or the Lima VM
-`sandbox-v3` with `--driver lima`), and each needs its own memory. Give the v3
-binary another name, such as `sandbox3`, while both are on your PATH.
+`sandbox-v3` with `--driver lima`), and each needs its own memory. Run them
+one at a time on a machine without memory to spare. For the command names, see
+[First: make `sandbox` the v3 command](#first-make-sandbox-the-v3-command).
 
 > **Do not run `sandbox uninstall --purge` while you still use v2.** It removes
 > `~/.sandbox` state that v2 shares: secrets, agent homes, logs, profiles, and
@@ -124,7 +157,8 @@ terminal it refuses unless you pass `--yes`). Then it:
 
 On Linux, v2's k3s, Cilium, and gVisor are removed by `uninstall.sh` from your
 v2 checkout; `migrate` only points you there. After this, v2's `sandbox`
-command no longer works. v3 is not affected.
+command no longer works. v3 is not affected. Take your checkout's `bin/` off
+your PATH, so nothing runs v2's script by accident.
 
 ## What changes
 

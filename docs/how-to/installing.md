@@ -31,8 +31,13 @@ cd go
 go build -o ~/bin/sandbox ./cmd/sandbox    # any directory on your PATH
 ```
 
-If you also have v2's `sandbox` on your PATH, give this one another name (for
-example `sandbox3`) while you use both.
+`bin/sandbox` in the checkout is v2's bash script, not v3, even on the v3
+branch. If v2's setup put the checkout's `bin/` on your PATH, make sure the
+binary you just built is the one `sandbox` runs: build it into a directory that
+comes first on your PATH, run `hash -r`, and check with
+`file "$(command -v sandbox)"` (an executable, not a shell script). Coming from
+v2, see [Upgrading from v2](upgrading-from-v2.md#first-make-sandbox-the-v3-command)
+first; to keep both, name this one `sandbox3`.
 
 ## 3. Build the appliance image
 

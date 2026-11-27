@@ -13,7 +13,9 @@ Read [Upgrading from v2](../how-to/upgrading-from-v2.md) as well.
 ## 1. Install
 
 Build the host binary, build an appliance image, and install it. The details
-are in [Installing](../how-to/installing.md); in short:
+are in [Installing](../how-to/installing.md) (coming from v2, first see
+[Upgrading from v2](../how-to/upgrading-from-v2.md): the checkout's `bin/sandbox`
+is v2's script); in short:
 
 ```bash
 (cd go && go build -o ~/bin/sandbox ./cmd/sandbox)
