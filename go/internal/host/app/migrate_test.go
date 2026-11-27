@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -68,11 +69,12 @@ func v2Fixture(t *testing.T) (state, repo, other string) {
 		os.MkdirAll(filepath.Join(state, "logs", n), 0o700)
 		os.WriteFile(filepath.Join(state, "logs", n, "session.json"), []byte(body), 0o600)
 	}
-	rec("ses-1", `{"agent":"claude","tier":2,"repos":["`+repo+`"],"agent_session_id":"11111111-1111-4111-8111-111111111111"}`)
-	rec("ses-2", `{"agent":"claude","tier":"3","repos":["`+repo+`","`+other+`"],"agent_session_id":"22222222-2222-4222-8222-222222222222"}`)
-	rec("ses-3", `{"agent":"claude","tier":1,"repos":["`+repo+`"],"agent_session_id":"33333333-3333-4333-8333-333333333333"}`)
+	q := func(p string) string { b, _ := json.Marshal(p); return string(b) } // a path in JSON, on any host
+	rec("ses-1", `{"agent":"claude","tier":2,"repos":[`+q(repo)+`],"agent_session_id":"11111111-1111-4111-8111-111111111111"}`)
+	rec("ses-2", `{"agent":"claude","tier":"3","repos":[`+q(repo)+`,`+q(other)+`],"agent_session_id":"22222222-2222-4222-8222-222222222222"}`)
+	rec("ses-3", `{"agent":"claude","tier":1,"repos":[`+q(repo)+`],"agent_session_id":"33333333-3333-4333-8333-333333333333"}`)
 	rec("ses-4", `{"agent":"claude","tier":2,"repos":["/no/such/repo"],"agent_session_id":"44444444-4444-4444-8444-444444444444"}`)
-	rec("ses-5", `{"agent":"codex","tier":2,"repos":["`+repo+`"],"agent_session_id":"55555555-5555-4555-8555-555555555555"}`)
+	rec("ses-5", `{"agent":"codex","tier":2,"repos":[`+q(repo)+`],"agent_session_id":"55555555-5555-4555-8555-555555555555"}`)
 	os.MkdirAll(filepath.Join(state, "secrets", ".bindings"), 0o700)
 	os.WriteFile(filepath.Join(state, "secrets", "JIRA"), []byte("x"), 0o600)
 	os.WriteFile(filepath.Join(state, "secrets", "GH"), []byte("x"), 0o600)
