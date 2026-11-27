@@ -24,6 +24,8 @@ type ImageBuilder interface {
 	Build(tag, dir, dockerfile string, args []string, noCache bool, out io.Writer) (digest string, err error)
 	// Pin makes tag's agent image the one run uses (the VM's image map), by digest.
 	Pin(tag, digest string) error
+	// Exists is whether the image store has tag (the base the agent images build on).
+	Exists(tag string) bool
 }
 
 var rebuildVersion = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$`)
@@ -116,6 +118,10 @@ func cmdRebuild(c *cmdCtx, args []string) {
 		return nil
 	}
 	is := func(n string) bool { return agent == n || agent == "all" }
+	// the agent images build FROM sandbox:base; without it buildkit looks for it on Docker Hub
+	if agent != "base" && agent != "all" && !b.Exists("docker.io/library/sandbox:base") {
+		c.die("The base image is not built yet; the agent images build on it. Run first: sandbox rebuild --agent base")
+	}
 	if is("base") {
 		one("docker.io/library/sandbox:base", "Dockerfile.base")
 	}

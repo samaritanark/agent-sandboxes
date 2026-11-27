@@ -12,7 +12,10 @@ import (
 type fakeBuilder struct {
 	built  []string
 	pinned []string
+	noBase bool
 }
+
+func (f *fakeBuilder) Exists(tag string) bool { return !f.noBase }
 
 func (f *fakeBuilder) Build(tag, dir, dockerfile string, args []string, noCache bool, _ io.Writer) (string, error) {
 	f.built = append(f.built, strings.TrimSpace(tag+" "+dockerfile+" "+strings.Join(args, " ")+map[bool]string{true: " nocache"}[noCache]))
@@ -56,6 +59,16 @@ func TestRebuild(t *testing.T) {
 		if rc, fb, _, errs := run(c...); rc != 1 || len(fb.built) != 0 || !strings.Contains(errs, "ERROR") {
 			t.Errorf("%v: %d %q", c, rc, errs)
 		}
+	}
+	// no base yet: an agent alone is refused with what to run; base and all build it first
+	nb := &fakeBuilder{noBase: true}
+	var errb bytes.Buffer
+	if rc := Run([]string{"rebuild", "--agent", "claude"}, Env{SandboxRoot: root, LogsDir: t.TempDir(), Builder: nb, Now: func() int64 { return 0 }}, io.Discard, &errb); rc != 1 ||
+		len(nb.built) != 0 || !strings.Contains(errb.String(), "sandbox rebuild --agent base") {
+		t.Errorf("no base: %d %q %q", rc, nb.built, errb.String())
+	}
+	if rc := Run([]string{"rebuild", "--agent", "base"}, Env{SandboxRoot: root, LogsDir: t.TempDir(), Builder: nb, Now: func() int64 { return 0 }}, io.Discard, io.Discard); rc != 0 || len(nb.built) != 1 {
+		t.Errorf("base: %d %q", rc, nb.built)
 	}
 	if rc := Run([]string{"rebuild"}, Env{SandboxRoot: root}, io.Discard, io.Discard); rc != 1 {
 		t.Error("ran without a builder")

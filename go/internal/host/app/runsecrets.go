@@ -43,8 +43,9 @@ const (
 // secretName is v2's secret name rule (lib/secrets.sh): also the variable the agent sees.
 var secretName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
 
-// maxRepos bounds the repositories one launch syncs.
-const maxRepos = 16
+// maxRepos bounds the repositories one launch syncs (a sanity bound on what the VM may ask; each one
+// must also be named on the command line or in a profile). v2 had no limit.
+const maxRepos = 128
 
 // parseRunBindings reads the pre-pass's output strictly: one JSON object with exactly the secrets
 // and repos fields; valid secret names, no more than maxBoundSecrets, no duplicates; clean

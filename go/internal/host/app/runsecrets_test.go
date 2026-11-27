@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -223,7 +224,7 @@ func TestRunRefusesUnnamedRepo(t *testing.T) {
 		`{"secrets":[],"repos":["/a/../b"]}`:                  "invalid",
 		`{"secrets":[],"repos":["/a","/a"]}`:                  "invalid",
 		`{"secrets":[]}`:                                      "invalid",
-		`{"secrets":[],"repos":["/r0"` + strings.Repeat(`,"/r"`, 0) + manyRepos() + `]}`: "more than 16",
+		`{"secrets":[],"repos":["/r0"` + strings.Repeat(`,"/r"`, 0) + manyRepos() + `]}`: fmt.Sprintf("more than %d", maxRepos),
 	} {
 		tr := &fakeTransport{release: goodRelease, bindings: bindings}
 		r := runState(t, tr, k, state, "run", "--profile", "p")

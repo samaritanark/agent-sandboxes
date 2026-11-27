@@ -183,9 +183,8 @@ func (e *Engine) hostScan(root *os.Root) (map[string]string, error) {
 // Run syncs every interval until ctx ends, handing each pass's report (or error) to report. A
 // failed pass is retried at the next interval; the state file keeps the last good pass.
 func (e *Engine) Run(ctx context.Context, interval time.Duration, report func(Report, error)) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
 	for {
+		start := time.Now()
 		rep, err := e.Sync()
 		if report != nil {
 			report(rep, err)
@@ -193,9 +192,16 @@ func (e *Engine) Run(ctx context.Context, interval time.Duration, report func(Re
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-time.After(NextPass(interval, time.Since(start))):
 		}
 	}
+}
+
+// NextPass is how long the live sync waits after a pass that took took: the interval, or twice the
+// pass when that is longer, so a large repository (many of them in one session) is scanned at
+// most a third of the time rather than without pause.
+func NextPass(interval, took time.Duration) time.Duration {
+	return max(interval, 2*took)
 }
 
 func hostFP(root *os.Root, p string) (string, []byte, error) {

@@ -95,6 +95,12 @@ func (b nerdctlBuilder) Build(tag, dir, dockerfile string, args []string, noCach
 	return digest, nil
 }
 
+// Exists is whether the image store has tag.
+func (b nerdctlBuilder) Exists(tag string) bool {
+	ls, err := b.out("ctr", []string{"--namespace", imageNamespace, "images", "ls", "-q", "name==" + tag})
+	return err == nil && strings.TrimSpace(ls) != ""
+}
+
 // Pin names the image by its digest in the image store (sessions start images by digest) and
 // records it in the VM's agent image map under its short tag ("sandbox:claude").
 func (b nerdctlBuilder) Pin(tag, digest string) error {

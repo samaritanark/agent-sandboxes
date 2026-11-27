@@ -1481,3 +1481,11 @@ m("internal/host/app/install.go", 'removeAll(filepath.Join(a.env.StateDir, p))',
   equivalent="no uninstall test has a flagged file; removeAll's own test covers the flags")
 m("internal/sandboxd/daemon/server.go", '\t\t\tio.Copy(io.Discard, io.LimitReader(c, MaxRequest))\n', '', "TestServer", pkg="sandboxd/daemon",
   equivalent="the race it closes (a refused client's request write failing) does not show on these machines")
+
+# ---- the owner's first runs: many repositories, the live sync's pace, a missing base image (2026-11-26)
+m("internal/host/syncengine/engine.go", '\treturn max(interval, 2*took)', '\treturn interval', "TestNextPass", pkg="host/syncengine")
+m("internal/host/syncengine/engine.go", '\t\tcase <-time.After(NextPass(interval, time.Since(start))):', '\t\tcase <-time.After(interval):', "TestNextPass|TestLiveSync", pkg="host/syncengine")
+m("internal/cli/rebuild.go", '\tif agent != "base" && agent != "all" && !b.Exists("docker.io/library/sandbox:base") {', '\tif agent != "base" && !b.Exists("docker.io/library/sandbox:base") {', "TestRebuild",
+  equivalent="the test's all builds with the base present; all builds base first anyway")
+m("internal/cli/rebuild.go", '\tif agent != "base" && agent != "all" && !b.Exists("docker.io/library/sandbox:base") {', '\tif false {', "TestRebuild")
+m("cmd/sandbox-vm/rebuild.go", '\treturn err == nil && strings.TrimSpace(ls) != ""', '\treturn err == nil', "TestNerdctlBuilder", pkg="../cmd/sandbox-vm")

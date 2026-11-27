@@ -57,6 +57,15 @@ func TestNerdctlBuilder(t *testing.T) {
 	if err := b.Pin("docker.io/library/sandbox:claude", "sha256:short"); err == nil {
 		t.Error("bad digest pinned")
 	}
+	b.output = func(n string, a []string) (string, error) {
+		if strings.Join(a, " ") == "--namespace sandbox images ls -q name==docker.io/library/sandbox:base" {
+			return "docker.io/library/sandbox:base\n", nil
+		}
+		return "", nil
+	}
+	if !b.Exists("docker.io/library/sandbox:base") || b.Exists("docker.io/library/sandbox:claude") {
+		t.Error("Exists")
+	}
 	if _, short, ok := splitTag("docker.io/library/sandbox:claude-infra"); !ok || short != "sandbox:claude-infra" {
 		t.Errorf("short %q", short)
 	}

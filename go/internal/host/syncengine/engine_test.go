@@ -276,3 +276,15 @@ func TestNewCopyKeepsHostFiles(t *testing.T) {
 		t.Error("a deletion in the same copy did not reach the host")
 	}
 }
+
+func TestNextPass(t *testing.T) {
+	for _, c := range [][3]time.Duration{
+		{3 * time.Second, 100 * time.Millisecond, 3 * time.Second},
+		{3 * time.Second, 1500 * time.Millisecond, 3 * time.Second},
+		{3 * time.Second, 4 * time.Second, 8 * time.Second},
+	} {
+		if got := NextPass(c[0], c[1]); got != c[2] {
+			t.Errorf("NextPass(%v, %v) = %v, want %v", c[0], c[1], got, c[2])
+		}
+	}
+}
