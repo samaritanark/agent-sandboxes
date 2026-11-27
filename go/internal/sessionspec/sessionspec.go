@@ -40,6 +40,12 @@ const (
 	AgentHistoryStore = "/var/lib/sandbox/agent-history"
 )
 
+// The runtimes a session's agent and dependencies can run under (owner decision, 2026-11-27).
+const (
+	RuntimeKata   = "kata"
+	RuntimeGVisor = "gvisor"
+)
+
 // DefaultMaxDependencies is v2's SANDBOX_MAX_DEPS_PER_SESSION default (design 5.5.3).
 const DefaultMaxDependencies = 6
 
@@ -50,7 +56,8 @@ type Spec struct {
 	Name         string            `json:"name"`
 	Agent        string            `json:"agent"`
 	Tier         int               `json:"tier"`
-	Image        string            `json:"image"` // pinned by digest
+	Runtime      string            `json:"runtime,omitempty"` // RuntimeKata (the default when empty) or RuntimeGVisor
+	Image        string            `json:"image"`             // pinned by digest
 	Command      []string          `json:"command"`
 	Resources    Resources         `json:"resources"`
 	Mounts       []Mount           `json:"mounts"`
@@ -267,6 +274,9 @@ func (s *Spec) Validate(o Options) error {
 	}
 	if s.Tier < 1 || s.Tier > 3 {
 		bad("invalid tier %d", s.Tier)
+	}
+	if s.Runtime != "" && s.Runtime != RuntimeKata && s.Runtime != RuntimeGVisor {
+		bad("invalid runtime %q", s.Runtime)
 	}
 	if !imageRE.MatchString(s.Image) {
 		bad("image %q is not pinned by digest", s.Image)

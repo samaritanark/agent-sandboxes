@@ -47,10 +47,10 @@ If the answer to any of these is no, stop and ask for help.
 ## Core principles
 
 1. **Agents are untrusted by default.** Every session runs in its own
-   microVM, inside a VM that has nothing of your machine mounted, and its
-   only way out is a per-session gateway that denies by default. The tool does
-   not rely on agent-side configuration or cooperative behavior for any
-   security property.
+   microVM (or, if you choose, its own gVisor sandbox), inside a VM that has
+   nothing of your machine mounted, and its only way out is a per-session
+   gateway that denies by default. The tool does not rely on agent-side
+   configuration or cooperative behavior for any security property.
 
 2. **Least privilege.** A session receives only the access required for
    its tier. Access is not granted preemptively in case it might be

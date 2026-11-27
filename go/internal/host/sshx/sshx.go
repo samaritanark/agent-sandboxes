@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
@@ -73,13 +74,21 @@ func validKey(k string) bool {
 // connections start at once (a session's sync has one per repository), each with its own ssh
 // reading the file, so the file is never rewritten in place: a reader that caught it truncated
 // saw no key, failed host key verification, and exited 255 like a dropped connection. It is
-// left alone when it already holds the key, and otherwise replaced whole by a rename.
+// left alone when it already holds the key, and otherwise replaced whole by a rename. Writers are
+// serialized in this process. On Windows a rename over a file another process has open is refused,
+// so it is tried again for a while; an ssh opening the file during the rename itself can still
+// fail there, which happens only when the pinned key changes (a VM reinstall).
 func (c *Client) pin(ep driver.SSHEndpoint) error {
 	if !validKey(ep.HostKey) || strings.ContainsAny(ep.HostKey, "\r\n") {
 		return errors.New("the VM has no valid pinned host key")
 	}
 	f := strings.Fields(ep.HostKey)
 	want := HostKeyAlias + " " + f[0] + " " + f[1] + "\n"
+	if b, err := os.ReadFile(c.KnownHosts); err == nil && string(b) == want {
+		return nil
+	}
+	pinMu.Lock()
+	defer pinMu.Unlock()
 	if b, err := os.ReadFile(c.KnownHosts); err == nil && string(b) == want {
 		return nil
 	}
@@ -96,12 +105,20 @@ func (c *Client) pin(ep driver.SSHEndpoint) error {
 		os.Remove(tmp.Name())
 		return err
 	}
-	if err := os.Rename(tmp.Name(), c.KnownHosts); err != nil {
+	err = os.Rename(tmp.Name(), c.KnownHosts)
+	for wait := time.Millisecond; err != nil && runtime.GOOS == "windows" && wait < 2*time.Second; wait *= 2 {
+		time.Sleep(wait) // a reader has the file open
+		err = os.Rename(tmp.Name(), c.KnownHosts)
+	}
+	if err != nil {
 		os.Remove(tmp.Name())
 		return err
 	}
 	return nil
 }
+
+// pinMu serializes pin's writes.
+var pinMu sync.Mutex
 
 // Args is the ssh command line for ep: tty forces a terminal (-tt) or refuses one (-T), and remote
 // is the already-quoted command ("" for a login shell).

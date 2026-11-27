@@ -247,7 +247,7 @@ func TestStartAndStop(t *testing.T) {
 		len(p.Deps) != 1 || p.Deps[0].Addr.String() != "10.200.1.2" || p.Deps[0].Port != 5432 || p.Resolvers[0].String() != "192.168.127.1" {
 		t.Errorf("gateway policy %+v", p)
 	}
-	if db := r.rt.vms["s-one.db"]; len(db.Mounts) != 1 || db.Mounts[0].Target != "/etc/resolv.conf" || db.NetNS != "/var/run/netns/sbx-s-one-d-db" {
+	if db := r.rt.vms["db.s-one"]; len(db.Mounts) != 1 || db.Mounts[0].Target != "/etc/resolv.conf" || db.NetNS != "/var/run/netns/sbx-s-one-d-db" {
 		t.Errorf("dependency %+v", db)
 	} else if b, _ := os.ReadFile(db.Mounts[0].Source); string(b) != "nameserver 10.200.1.1\n" {
 		t.Errorf("dependency resolv.conf %q", b)
@@ -256,11 +256,11 @@ func TestStartAndStop(t *testing.T) {
 		t.Errorf("network: %+v", r.net)
 	}
 	agent := r.rt.vms["s-one"]
-	if agent.UID != 1000 || agent.NetNS != "/var/run/netns/sbx-s-one-a" || !r.rt.started["s-one"] || !r.rt.started["s-one.db"] {
+	if agent.UID != 1000 || agent.NetNS != "/var/run/netns/sbx-s-one-a" || !r.rt.started["s-one"] || !r.rt.started["db.s-one"] {
 		t.Errorf("agent %+v started %v", agent, r.rt.started)
 	}
-	if r.rt.vms["s-one.db"].UID != 999 {
-		t.Errorf("dependency %+v", r.rt.vms["s-one.db"])
+	if r.rt.vms["db.s-one"].UID != 999 {
+		t.Errorf("dependency %+v", r.rt.vms["db.s-one"])
 	}
 	if last := agent.Mounts[len(agent.Mounts)-1]; last.Target != "/etc/resolv.conf" || !last.ReadOnly {
 		t.Errorf("resolv.conf mount %+v", last)
@@ -290,7 +290,7 @@ func TestStartAndStop(t *testing.T) {
 	}
 	// microVMs go first, then the gateway, then the namespaces
 	last := strings.Join(r.rt.calls, ",")
-	if !strings.HasSuffix(last, "destroy s-one.db,destroy s-one,stop gateway s-one") && !strings.HasSuffix(last, "destroy s-one,destroy s-one.db,stop gateway s-one") {
+	if !strings.HasSuffix(last, "destroy db.s-one,destroy s-one,stop gateway s-one") && !strings.HasSuffix(last, "destroy s-one,destroy db.s-one,stop gateway s-one") {
 		t.Errorf("calls %s", last)
 	}
 	// the uplink is free again
@@ -649,7 +649,7 @@ func TestInterception(t *testing.T) {
 		}
 	}
 	agent := r.rt.vms[id]
-	if !slices.Contains(agent.Env, "SSL_CERT_FILE="+GuestBundle) || !slices.Contains(r.rt.vms[id+".db"].Env, "NODE_EXTRA_CA_CERTS="+GuestGatewayCA) {
+	if !slices.Contains(agent.Env, "SSL_CERT_FILE="+GuestBundle) || !slices.Contains(r.rt.vms["db."+id].Env, "NODE_EXTRA_CA_CERTS="+GuestGatewayCA) {
 		t.Errorf("trust environment %v", agent.Env)
 	}
 	var bundle string
@@ -841,6 +841,43 @@ func TestDependencyArgs(t *testing.T) {
 	sort.Strings(got)
 	if strings.Join(got, ",") != "/bin/srv --port 1|,|node dist/sse.js" {
 		t.Errorf("%q", got)
+	}
+}
+
+// TestRuntimeOfSession: the agent and each dependency run under the session's runtime, and the
+// audit trail records it (Kata when the spec names none).
+func TestRuntimeOfSession(t *testing.T) {
+	for _, rt := range []string{"", sessionspec.RuntimeGVisor} {
+		r := newRig(t)
+		s, err := sessionspec.Decode(bytes.NewReader(spec("s-rt", 4096, "a")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Runtime = rt
+		b, _ := s.Encode()
+		if _, err := r.d.Start(context.Background(), b); err != nil {
+			t.Fatal(err)
+		}
+		if len(r.rt.vms) != 2 {
+			t.Fatalf("%d microVMs", len(r.rt.vms))
+		}
+		for id, m := range r.rt.vms {
+			for other := range r.rt.vms {
+				if other != id && strings.HasPrefix(other, id) {
+					t.Errorf("container id %s is a prefix of %s (runsc would refuse it as ambiguous)", id, other)
+				}
+			}
+			if m.Runtime != rt {
+				t.Errorf("%q: %s ran under %q", rt, id, m.Runtime)
+			}
+		}
+		want := rt
+		if want == "" {
+			want = sessionspec.RuntimeKata
+		}
+		if got := specSummary(s)["runtime"]; got != want {
+			t.Errorf("%q: audit records %v", rt, got)
+		}
 	}
 }
 

@@ -1,0 +1,20 @@
+# gVisor's containerd shim configuration (sandboxd's runtime.GVisorConfig), for sessions run with
+# `--runtime gvisor` (owner decision, 2026-11-27). Each [runsc_config] key is a runsc flag; the
+# values are the hardening design 5.5.2 asks of every session, stated here so a changed upstream
+# default cannot loosen them.
+[runsc_config]
+  # systrap: the sentry intercepts the application's system calls with seccomp traps; no
+  # /dev/kvm (the KVM platform would nest a third level of virtualization in the appliance VM)
+  platform = "systrap"
+  # gVisor's own network stack in the session's network namespace: the agent never reaches the
+  # appliance VM's kernel network stack; its packets leave by the namespace's link to the
+  # session's gateway, which enforces egress (design 5.8) exactly as for a Kata microVM
+  network = "sandbox"
+  # no raw or packet sockets in the sandbox
+  net-raw = "false"
+  # apply the spec's seccomp profile (containerd's default) inside the sandbox; runsc ignores it
+  # without this flag
+  oci-seccomp = "true"
+  # no host Unix sockets or FIFOs reachable through mounts
+  host-uds = "none"
+  host-fifo = "none"

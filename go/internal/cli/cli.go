@@ -206,6 +206,18 @@ func (c *cmdCtx) out(f string, a ...interface{}) { fmt.Fprintf(c.stdout, f+"\n",
 // errOut writes a line to stderr without the ERROR prefix or color.
 func (c *cmdCtx) errOut(f string, a ...interface{}) { fmt.Fprintf(c.stderr, f+"\n", a...) }
 
+// usageRuntime is run's --runtime option (deviation.RuntimeChoice).
+const usageRuntime = `  --runtime <kata|gvisor>           Isolation runtime (default: runtime: in
+                                    ~/.sandbox/config.yaml, else kata). kata
+                                    runs the agent in a microVM with its own
+                                    kernel; gvisor runs it under gVisor's
+                                    user-space kernel, which starts and runs
+                                    much faster where the sandbox VM is itself
+                                    virtualized (macOS) but separates sessions
+                                    by software, not hardware. Dependencies run
+                                    under the same runtime.
+`
+
 // usage prints one of bin/sandbox's usage texts (captured by testdata/gen-usage.sh) and ends with
 // status 0, as every usage function there does.
 func (c *cmdCtx) usage(name string) {
@@ -214,6 +226,9 @@ func (c *cmdCtx) usage(name string) {
 		panic(fmt.Sprintf("missing usage text %s", name))
 	}
 	s := strings.NewReplacer("@VERSION@", c.env.version(), "@LOGS_DIR@", c.env.LogsDir).Replace(string(b))
+	if name == "usage_run" && deviation.Fixed(deviation.RuntimeChoice) {
+		s = strings.Replace(s, "  --i-accept-unmasked-secrets", usageRuntime+"  --i-accept-unmasked-secrets", 1)
+	}
 	io.WriteString(c.stdout, s)
 	panic(exit(0))
 }

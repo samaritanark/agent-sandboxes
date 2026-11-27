@@ -63,7 +63,8 @@ var agentDesc = map[string]string{"claude": "claude (Anthropic OAuth)", "codex":
 	"opencode": "opencode (vLLM proxy)", "copilot": "copilot (GitHub OAuth)", "grok": "grok (xAI OAuth)"}
 var tierDesc = map[string]string{"1": "1 — Ephemeral", "2": "2 — Project", "3": "3 — Infra"}
 
-// banner is print_session_banner. The runtime line names Kata, which v3 runs, not gVisor.
+// banner is print_session_banner. The runtime line names the session's runtime (Kata unless it
+// asked for gVisor), not v2's gVisor.
 func (c *cmdCtx) banner(s LaunchSpec, rec SessionRecord) {
 	or := func(m map[string]string, k string) string {
 		if v, ok := m[k]; ok {
@@ -100,7 +101,11 @@ func (c *cmdCtx) banner(s LaunchSpec, rec SessionRecord) {
 		}
 	}
 	row("Egress", fmt.Sprintf("%s + tier%s (%d domains)", s.Agent, s.Tier, rec.DomainCount))
-	row("Runtime", "kata")
+	rt := s.Runtime
+	if rt == "" {
+		rt = sessionspec.RuntimeKata
+	}
+	row("Runtime", rt)
 	row("Log", c.tilde(rec.LogDir))
 	c.out("%s", sep)
 }

@@ -18,7 +18,10 @@ From the agent outward:
 - **The agent's microVM.** Each session's agent runs in a Kata microVM (Cloud
   Hypervisor, its own guest kernel) as uid 1000 with no capabilities, no
   privilege escalation, and guest seccomp on. Each dependency runs in a
-  microVM of its own.
+  microVM of its own. A session started with `--runtime gvisor` (or with
+  `runtime: gvisor` in your `config.yaml`) runs each of them in a gVisor
+  sandbox instead, with the same user, capabilities, seccomp profile, mounts,
+  and network; see [Choosing a runtime](#choosing-a-runtime).
 - **The session's gateway.** The microVM's only network link goes to the
   session's gateway, in a network namespace of its own, running as an
   unprivileged user that differs per session. Every name the agent resolves and
@@ -34,6 +37,34 @@ From the agent outward:
 - **Your machine.** The host binary talks to the VM over SSH with a pinned host
   key, and treats everything that comes back as untrusted: audit records are
   validated and appended, never rewritten; workspace changes pass the sync gate.
+
+## Choosing a runtime
+
+Sessions run under Kata unless you choose gVisor, per session
+(`sandbox run --runtime gvisor`) or as your default (`runtime: gvisor` in
+`~/.sandbox/config.yaml`). A repository's own `.sandbox/config.yaml` cannot
+choose it. The banner and the audit trail (`session_requested`) record which
+one a session used.
+
+| | Kata (default) | gVisor |
+|---|---|---|
+| What stands between the agent and the appliance VM's kernel | a hardware-virtualized guest with its own Linux kernel | gVisor's user-space kernel (the sentry), itself confined by seccomp to a limited set of the VM kernel's system calls |
+| Between two sessions | separate VMs | separate gVisor sandboxes in the same kernel |
+| An escape needs | a guest kernel exploit, then a Cloud Hypervisor (or KVM) escape | a sentry exploit, then an exploit of the VM kernel through the calls the sentry may make |
+| Speed where the appliance VM is itself a VM (macOS) | nested virtualization: Claude Code takes several seconds to start, keys echo in tens of milliseconds | about v2's: under a second to start, keys echo in milliseconds |
+| Speed on Linux with KVM | near native | near native for computation, slower system calls |
+
+Everything else is the same under both: the agent runs as uid 1000 with no
+capabilities and no privilege escalation, the default seccomp profile applies to
+it (gVisor enforces it in the sentry), its only network link goes to the
+session's gateway (gVisor's own network stack sends its packets over the same
+link, and the gateway enforces egress the same way), and the appliance VM,
+`sandbox netd`, the credential broker, and the sync gate stand behind it either
+way. v2 ran every session under gVisor, without the appliance VM's boundary.
+
+Choose Kata where the extra boundary matters more than responsiveness, for
+example for tier 3 sessions that hold infrastructure credentials, or on Linux
+hosts where Kata is fast anyway.
 
 ## Credential brokering
 
@@ -100,7 +131,8 @@ reboot of the VM ends every session it cannot vouch for at the next start.
 
 ## Accepted risks
 
-- **Root in the appliance VM** (a microVM escape that also escapes Kata) can
+- **Root in the appliance VM** (a microVM escape that also escapes Kata, or a
+  gVisor escape for a session that runs under gVisor) can
   read the broker store and the brokers' memory: every onboarded agent login,
   the secrets pushed for running sessions, and the other sessions' workspace
   copies. It cannot reach your machine's files, processes, or network services

@@ -94,7 +94,7 @@ func (c *cmdCtx) buildSpec(s LaunchSpec, rec SessionRecord, in SpecInputs) (*ses
 	if err != nil {
 		return nil, fmt.Errorf("tier %q", s.Tier)
 	}
-	spec := &sessionspec.Spec{Version: sessionspec.Version, ID: rec.ID, Name: specName(rec.PodName), Agent: s.Agent, Tier: tierN,
+	spec := &sessionspec.Spec{Version: sessionspec.Version, ID: rec.ID, Name: specName(rec.PodName), Agent: s.Agent, Tier: tierN, Runtime: s.Runtime,
 		Image: in.Image, Command: []string{"sleep", "infinity"},
 		Resources: sessionspec.Resources{CPUs: agentCPUs, EphemeralGiB: agentEphemeralGiB},
 		Bindings:  []sessionspec.Binding{}, KeepAlive: s.KeepAlive,

@@ -61,6 +61,17 @@ func TestGoodSpecRoundTrips(t *testing.T) {
 	}
 }
 
+// TestRuntimes: a spec may name either runtime, or none (Kata).
+func TestRuntimes(t *testing.T) {
+	for _, rt := range []string{"", RuntimeKata, RuntimeGVisor} {
+		s := good()
+		s.Runtime = rt
+		if err := s.Validate(Options{}); err != nil {
+			t.Errorf("%q: %v", rt, err)
+		}
+	}
+}
+
 func TestDecodeIsStrict(t *testing.T) {
 	b, _ := good().Encode()
 	cases := map[string]string{
@@ -84,6 +95,7 @@ func refusalCases() map[string]func(*Spec) {
 		"dependency unpinned image": func(s *Spec) { s.Dependencies[0].Image = "postgres:16" },
 		"bad id":                    func(s *Spec) { s.ID = "../x" },
 		"tier 4":                    func(s *Spec) { s.Tier = 4 },
+		"unknown runtime":           func(s *Spec) { s.Runtime = "runc" },
 		"zero memory":               func(s *Spec) { s.Resources.MemoryMiB = 0 },
 		"workspace outside store":   func(s *Spec) { s.Mounts[0].Source = "/etc" },
 		"workspace traversal":       func(s *Spec) { s.Mounts[0].Source = ws + "/../../../etc" },

@@ -836,7 +836,9 @@ reachable from any microVM. It:
   containerd's runtime config path, not a custom `KATA_CONF_FILE`; and the
   shipped config enables no CPU or memory annotations, so per-session sizing
   is an open design item.
-- gVisor is removed (D-02). Codex's own bubblewrap sandbox failed under gVisor
+- gVisor is no longer the default (D-02; kept as an operator-chosen runtime since
+  2026-11-27, with the sandbox's flags in the image's `/usr/lib/sandbox/runsc.toml`).
+  Codex's own bubblewrap sandbox failed under gVisor
   (`lib/onboard.sh:211-264`); S1 records whether it works under Kata, and if
   so the `danger-full-access` override MAY be dropped. Agent-native sandboxes
   are optional defense in depth; Kata is the boundary, and parity never
@@ -1828,7 +1830,7 @@ implementations until the bash is deleted (S8, D-34).
 
 | ID | Protection | v2 mechanism | v3 mechanism | Acceptance test | v2 coverage today |
 |---|---|---|---|---|---|
-| P-01 | Kernel isolation of the agent | gVisor | Kata `clh` | `test-runtime-kata` (new): agent runs in a guest kernel; VM `/dev`, `/proc`, processes not visible | `test-gvisor` checks the RuntimeClass and dmesg on its own pod only |
+| P-01 | Kernel isolation of the agent | gVisor | Kata `clh` (default) or gVisor (`--runtime gvisor`, D-02) | `test-runtime-kata` (new): agent runs in a guest kernel; VM `/dev`, `/proc`, processes not visible; under gVisor, the same from inside the sentry | `test-gvisor` checks the RuntimeClass and dmesg on its own pod only |
 | P-02 | Workload hardening | securityContext, no SA token, no RBAC | §5.5.2 in the guest | `test-workload-hardening` (new): asserts uid, caps, no_new_privs, and seccomp (`Seccomp: 2` read from inside the guest; Kata's shipped default leaves it at 0) on a real session | No test asserts the agent pod's securityContext |
 | P-03 | Default-deny egress | Cilium default deny + per-session CNP | Link + nftables + gateway | `test-default-deny` (rewrite): direct IP, non-443 port, UDP, and other-session dials all fail and are logged | Only "unlabeled pod cannot curl example.com" |
 | P-04 | Per-agent/tier/profile FQDN allowlist | `toFQDNs` on 443 | Resolver + SNI check | `test-allowlist` (rewrite of tier1/2/3 tests) against the real session allowlist | Hand-written CNPs, not generated policy |
@@ -2312,8 +2314,8 @@ Each step leaves the tree releasable or gated behind a flag.
 | ID | Decision | Rationale | Alternatives rejected |
 |---|---|---|---|
 | D-01 (revised) | One hardened appliance VM per host; **no Kubernetes inside** | Two hardware boundaries on every OS; the Kubernetes surface used is small (Pods, Secrets, one ConfigMap, Services, policies), and the gaps it causes (eviction GC, no reaper, trap-based teardown) are closed by a supervisor | k3s inside the VM (rev. 1: keeps Cilium, CoreDNS, ResourceQuota, and their gaps); microVMs directly on the host (§D-18) |
-| D-02 | Kata (Cloud Hypervisor) replaces gVisor | Hardware isolation between sessions; team hardware meets the nested-virt floor | gVisor (no cross-session hardware boundary); Firecracker (no virtio-fs); QEMU (attack surface) |
-| D-03 | Same runtime everywhere | One security model | gVisor fallback (two models, silent-downgrade path) |
+| D-02 | Kata (Cloud Hypervisor) replaces gVisor as the default. **Amended 2026-11-27 (owner):** gVisor is kept as an operator-chosen runtime (`run --runtime gvisor`, `runtime:` in the user's config.yaml) | Hardware isolation between sessions; team hardware meets the nested-virt floor. Measured on Apple silicon, nesting makes Claude Code start in ~7 s and echo keys in 40-70 ms under Kata against ~0.5 s and v2's speed under gVisor (`v3-performance.md`), so the operator may trade the hardware boundary for speed | gVisor only (no cross-session hardware boundary); Firecracker (no virtio-fs); QEMU (attack surface) |
+| D-03 | Same runtime everywhere. **Amended 2026-11-27 (owner):** the same two runtimes on every platform, chosen explicitly by the operator; never a fallback | One security model per choice, the same everywhere; no silent downgrade: a session asked to run under one runtime fails rather than run under the other | gVisor fallback (two models, silent-downgrade path) |
 | D-04 | No fallback runtime; refuse on failed probe | See D-03 | — |
 | D-05 | Drop WSL2; Hyper-V-backed VM on Windows; Windows Home unsupported | Same image and a real VM boundary | WSL2 (shared kernel, in-distro interop controls) |
 | D-06 (reversed) | **Drop k3s** | Replaced by `sandboxd` + containerd + Kata (D-01) | Keep k3s (rev. 1 rationale "switching cost > gain" no longer holds once Cilium is gone and brokering needs a per-session gateway anyway) |

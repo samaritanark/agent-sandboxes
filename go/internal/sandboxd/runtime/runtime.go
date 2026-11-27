@@ -23,16 +23,24 @@ import (
 )
 
 const (
-	// Namespace is sandboxd's containerd namespace; nothing else uses it.
-	Namespace = "sandbox"
 	// KataRuntime is the shim, found as containerd-shim-kata-v2 on containerd's PATH.
 	KataRuntime = "io.containerd.kata.v2"
 	// KataConfig selects Cloud Hypervisor (S1: Kata accepts only its shipped configuration
 	// files, so the selection is the runtime's config path).
 	KataConfig = "/opt/kata/share/defaults/kata-containers/configuration-clh.toml"
+	// GVisorRuntime is gVisor's shim, containerd-shim-runsc-v1 on containerd's PATH.
+	GVisorRuntime = "io.containerd.runsc.v1"
+	// GVisorConfig is the shim's configuration, which sets runsc's flags (the image's
+	// /usr/lib/sandbox/runsc.toml: the systrap platform, gVisor's own network stack, and the
+	// spec's seccomp profile applied by the sentry, which runsc otherwise ignores).
+	GVisorConfig = "/usr/lib/sandbox/runsc.toml"
 	// Socket is containerd's.
 	Socket = "/run/containerd/containerd.sock"
 )
+
+// criContainerType is the CRI annotation that says what a container is in a pod; gVisor's shim
+// reads it.
+const criContainerType = "io.kubernetes.cri.container-type"
 
 // ociMounts are m's mounts as OCI bind mounts.
 func ociMounts(ms []Mount) []specs.Mount {
@@ -75,6 +83,13 @@ func SpecOpts(m MicroVM, image ...oci.SpecOpts) []oci.SpecOpts {
 	)
 	if m.Hostname != "" {
 		opts = append(opts, oci.WithHostname(m.Hostname))
+	}
+	if m.Runtime == GVisor {
+		// each gVisor container is a sandbox of its own: gVisor's shim gives `runsc create` the
+		// container's I/O only for a sandbox, and otherwise captures its output through a pipe
+		// that runsc hands on to the sandbox as the container's stdout, so the shim waits on it
+		// until the sandbox ends (release 20260914.0 for good, later ones for 5 s)
+		opts = append(opts, oci.WithAnnotations(map[string]string{criContainerType: "sandbox"}))
 	}
 	return append(opts,
 		oci.WithUIDGID(m.UID, m.GID),
@@ -127,10 +142,18 @@ func (r *Runtime) Create(ctx context.Context, m MicroVM) error {
 	_, err = r.c.NewContainer(ctx, m.ID,
 		client.WithImage(img),
 		client.WithNewSnapshot(m.ID+"-rootfs", img),
-		client.WithRuntime(KataRuntime, &runtimeoptions.Options{ConfigPath: KataConfig}),
+		withRuntime(m.Runtime),
 		client.WithNewSpec(SpecOpts(m, imageConfig(img, m))...),
 	)
 	return err
+}
+
+// withRuntime is the shim and its configuration for kind.
+func withRuntime(kind string) client.NewContainerOpts {
+	if kind == GVisor {
+		return client.WithRuntime(GVisorRuntime, &runtimeoptions.Options{ConfigPath: GVisorConfig})
+	}
+	return client.WithRuntime(KataRuntime, &runtimeoptions.Options{ConfigPath: KataConfig})
 }
 
 // Start boots m's microVM and starts its process, with its I/O on creator (cio.NullIO for none).

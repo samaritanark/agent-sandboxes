@@ -16,8 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/containerd/containerd/v2/pkg/cio"
-
 	"github.com/samaritanark/agent-sandboxes/go/internal/l7"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/auditlog"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/brokerstore"
@@ -69,13 +67,6 @@ func loadTLS(l *log.Logger) (*daemon.TLS, error) {
 
 // ClientGroup's members may use the socket besides root (the policy CLI's user).
 const ClientGroup = "sandbox"
-
-// kata adapts runtime.Runtime to the daemon: no terminal is attached yet, so output is dropped.
-type kata struct{ *runtime.Runtime }
-
-func (k kata) Start(ctx context.Context, id string) error {
-	return k.Runtime.Start(ctx, id, cio.NullIO)
-}
 
 func memTotalMiB() (int, error) {
 	f, err := os.Open("/proc/meminfo")
@@ -144,7 +135,7 @@ func serve() error {
 		return err
 	}
 	d := &daemon.Daemon{
-		Journal: &journal.Store{Dir: JournalDir}, Runtime: kata{rt}, NetNS: netns.Manager{},
+		Journal: &journal.Store{Dir: JournalDir}, Runtime: microVMs{rt}, NetNS: netns.Manager{},
 		Network: network{}, Gateways: gws, TLS: tlsConf, Broker: &brokerStore{store: brokerstore.Store{Dir: brokerstore.Dir}},
 		Resolvers: resolvers, AuditRoot: auditlog.Root,
 		NetNSPath: netns.Path, Budget: limits.Budget{VMMemoryMiB: mem},

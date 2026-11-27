@@ -47,6 +47,10 @@ The credential broker's key is kept in the macOS keychain (item
 
 overlay: /path/to/overlay-myteam     # team overlay dir (or SANDBOX_OVERLAY env)
 
+runtime: gvisor                      # kata (default) or gvisor; run --runtime overrides it.
+                                     #   Read only from this file, never a repo's config.
+                                     #   See security-model.md#choosing-a-runtime
+
 extra_allowed_domains:               # merged with the tier allowlist on every run
   - git.example.com                  #   (also settable via env or an overlay profile)
   - artifactory.example.com

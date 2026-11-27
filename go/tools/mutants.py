@@ -1157,7 +1157,7 @@ m(RL, '\tif s.KeepAlive {\n\t\tc.out("==> Disconnected from', '\tif false {\n\t\
 m(RL, '\tif s.DryRun {', '\tif false {', R_RS)
 m(RL, '\tif err := l.Sessions.Start(spec); err != nil {', '\tif l.Sessions.Start(spec); false {', R_RS)
 m(RL, '\tif sessionID != "" {\n\t\tcmd = append(cmd, agents.SessionIDFlag(agent), sessionID)', '\tif false {\n\t\tcmd = append(cmd, agents.SessionIDFlag(agent), sessionID)', R_RS)
-m(RL, '\trow("Runtime", "kata")', '\trow("Runtime", "gvisor")', R_RS)
+m(RL, '\t\trt = sessionspec.RuntimeKata\n\t}\n\trow("Runtime", rt)', '\t\trt = "gvisor"\n\t}\n\trow("Runtime", rt)', R_RS)
 m(RL, '\trow("Log", c.tilde(rec.LogDir))', '\trow("Log", rec.LogDir)', R_RS)
 m(RL, '\tcase 0:\n\t\trow("Repo", "emptyDir (ephemeral)")', '\tcase 0:', R_RS)
 VL = "cmd/sandbox-vm/launch.go"
@@ -1383,7 +1383,7 @@ m("internal/cli/runspec.go", '\tfor _, a := range catalogue.List(d.Path, "args")
 m("cmd/sandbox-vm/launch.go", '\t\tif !sessionID.MatchString(id) {', '\t\tif false {', "TestWriteMCPConfig", pkg="../cmd/sandbox-vm")
 m("cmd/sandbox-vm/launch.go", '\t\tif st, err := os.Lstat(dir); err != nil || !st.IsDir() {', '\t\tif false {', "TestWriteMCPConfig", pkg="../cmd/sandbox-vm")
 m("internal/sandboxd/daemon/daemon.go", '\t\t\targs, imageArgs = append(append([]string(nil), args...), dep.Args...), nil // command, then args', '\t\t\timageArgs = nil', "TestDependencyArgs", pkg="sandboxd/daemon")
-m("internal/sandboxd/daemon/daemon.go", '\t\tm := runtime.MicroVM{ID: cid, Image: dep.Image, Args: args, ImageArgs: imageArgs, Env:', '\t\tm := runtime.MicroVM{ID: cid, Image: dep.Image, Args: args, Env:', "TestDependencyArgs", pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\t\tm := runtime.MicroVM{ID: cid, Runtime: spec.Runtime, Image: dep.Image, Args: args, ImageArgs: imageArgs, Env:', '\t\tm := runtime.MicroVM{ID: cid, Runtime: spec.Runtime, Image: dep.Image, Args: args, Env:', "TestDependencyArgs", pkg="sandboxd/daemon")
 
 # ---- the sync during resume (2026-11-26)
 m("internal/host/app/runsecrets.go", '\t\t\tif _, err = os.Stat(filepath.Join(a.env.StateDir, "sync", rid, "state.json")); err == nil {', '\t\t\tif true {', "TestPrepareResume", pkg="host/app")
@@ -1436,8 +1436,8 @@ m(RF, '\tsealed, err := brokerseal.SealBound(key, ref, newAccess, binding)', '\t
 m(RF, '\tif status != http.StatusOK {', '\tif status >= 500 {', R_RF, pkg="../cmd/sandboxd")
 m(RF, '\tnewExp, err := jwtExp(newAccess)\n\tif err != nil {\n\t\treturn 0, err\n\t}', '\tnewExp, _ := jwtExp(newAccess)', R_RF, pkg="../cmd/sandboxd")
 m(RF, '"refresh_token": string(refresh), "scope": client.scope})', '"refresh_token": string(refresh)})', R_RF, pkg="../cmd/sandboxd")
-m("cmd/sandboxd/kata_proc.go", '\t\t\tif string(args[i]) == "-id" && string(args[i+1]) == id {', '\t\t\tif string(args[i+1]) == id {', "TestMicroVMProcess", pkg="../cmd/sandboxd")
-m("cmd/sandboxd/kata_proc.go", '\t\t\tif bytes.HasPrefix(a, []byte("/run/vc/vm/"+id+"/")) {', '\t\t\tif bytes.Contains(a, []byte(id)) {', "TestMicroVMProcess", pkg="../cmd/sandboxd")
+m("cmd/sandboxd/microvm_proc.go", '\t\t\tif string(args[i]) == "-id" && string(args[i+1]) == id {', '\t\t\tif string(args[i+1]) == id {', "TestMicroVMProcess", pkg="../cmd/sandboxd")
+m("cmd/sandboxd/microvm_proc.go", '\t\t\tif bytes.HasPrefix(a, []byte("/run/vc/vm/"+id+"/")) {', '\t\t\tif bytes.Contains(a, []byte(id)) {', "TestMicroVMProcess", pkg="../cmd/sandboxd")
 m("internal/sandboxd/daemon/daemon.go", '\t\t\td.logf("could not remove orphan microVM %s: %v", c, err)', '\t\t\treturn err', "TestReconcileStuckOrphan", pkg="sandboxd/daemon")
 m("internal/sandboxd/daemon/server.go", '\t\texp, err := d.Broker.Refresh(ctx, req.ID, d.Expiry.MaxKeepAlive()+time.Hour)', '\t\texp, err := d.Broker.Refresh(ctx, req.ID, time.Hour)', "TestBrokerRefresh", pkg="sandboxd/daemon")
 RC = "internal/cli/runagent.go"
@@ -1504,3 +1504,25 @@ m("cmd/sandbox-vm/rebuild.go", '\treturn err == nil && strings.TrimSpace(ls) != 
 # ---- the pinned known_hosts file, written while other ssh processes read it (internal/host/sshx)
 m("internal/host/sshx/sshx.go", 'tmp, err := os.CreateTemp(filepath.Dir(c.KnownHosts), ".known_hosts-*") // mode 0600',
   'tmp, err := os.OpenFile(c.KnownHosts, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o600) // mode 0600', "TestPinConcurrent", pkg="host/sshx")
+
+# the runtime choice (owner decision, 2026-11-27): gVisor beside Kata
+SS = "internal/sessionspec/sessionspec.go"
+m(SS, '\tif s.Runtime != "" && s.Runtime != RuntimeKata && s.Runtime != RuntimeGVisor {', '\tif false {', "TestValidateRefuses")
+m(SS, '\tif s.Runtime != "" && s.Runtime != RuntimeKata && s.Runtime != RuntimeGVisor {', '\tif s.Runtime != "" && s.Runtime != RuntimeKata {', "TestRuntimes")
+m("internal/sandboxd/daemon/daemon.go", '\t\tm := runtime.MicroVM{ID: cid, Runtime: spec.Runtime, Image: dep.Image, Args: args, ImageArgs:', '\t\tm := runtime.MicroVM{ID: cid, Image: dep.Image, Args: args, ImageArgs:', "TestRuntimeOfSession", pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\tagent := runtime.MicroVM{ID: id, Runtime: spec.Runtime, Image: spec.Image,', '\tagent := runtime.MicroVM{ID: id, Image: spec.Image,', "TestRuntimeOfSession", pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\t\trt = sessionspec.RuntimeKata\n', '', "TestRuntimeOfSession", pkg="sandboxd/daemon")
+RT = "internal/cli/run.go"
+m(RT, '\t\tcase deviation.Fixed(deviation.RuntimeChoice) && val("--runtime", func(v string) { s.Runtime = v }):', '\t\tcase deviation.Fixed(deviation.RuntimeChoice) && val("--runtime", func(v string) {}):', "TestLaunchRuntime")
+m(RT, '\t\t\ts.Runtime, from = config.ExtractYAMLScalar(c.env.Env.UserConfig, "runtime"), "runtime: in "+c.tilde(c.env.Env.UserConfig)', '\t\t\tfrom = "runtime: in "+c.tilde(c.env.Env.UserConfig)', "TestLaunchRuntime")
+m(RT, '\t\tif s.Runtime != sessionspec.RuntimeKata && s.Runtime != sessionspec.RuntimeGVisor {', '\t\tif s.Runtime == "" {', "TestLaunchRuntime")
+m(RT, '\t\tif s.Runtime == "" {\n\t\t\ts.Runtime = sessionspec.RuntimeKata\n\t\t}', '', "TestLaunchRuntime")
+m("internal/cli/runlaunch.go", '\trow("Runtime", rt)', '\trow("Runtime", "kata")', "TestLaunchRuntime")
+m("internal/cli/runspec.go", 'Tier: tierN, Runtime: s.Runtime,', 'Tier: tierN,', "TestLaunchRuntime")
+m("internal/cli/cli.go", '\tif name == "usage_run" && deviation.Fixed(deviation.RuntimeChoice) {', '\tif false {', "TestLaunchRuntime")
+MP = "cmd/sandboxd/microvm_proc.go"
+m(MP, '\tcase "containerd-shim-kata-v2", "containerd-shim-runsc-v1":', '\tcase "containerd-shim-kata-v2":', "TestMicroVMProcess", pkg="../cmd/sandboxd")
+m(MP, '\t\t\tif bytes.HasPrefix(a, []byte("/")) && bytes.HasSuffix(a, bundle) {', '\t\t\tif bytes.Contains(a, bundle) {', "TestMicroVMProcess", pkg="../cmd/sandboxd")
+m(MP, '\t\t\ta = bytes.TrimPrefix(a, []byte("--bundle="))\n', '', "TestMicroVMProcess", pkg="../cmd/sandboxd")
+m(MP, '\tcase "runsc-sandbox", "runsc-gofer":', '\tcase "runsc-sandbox":', "TestMicroVMProcess", pkg="../cmd/sandboxd")
+m("internal/sandboxd/daemon/daemon.go", 'func depContainer(id, dep string) string { return dep + "." + id }', 'func depContainer(id, dep string) string { return id + "." + dep }', "TestRuntimeOfSession", pkg="sandboxd/daemon")

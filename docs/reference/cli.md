@@ -93,6 +93,8 @@ sandbox run [OPTIONS]
   --infra-endpoint <URL>            tier 3, repeatable
   --name <NAME>                     a label for the session
   --keep-alive                      keep the session after you detach
+  --runtime <kata|gvisor>           default: runtime: in ~/.sandbox/config.yaml,
+                                    else kata (see Security model)
   --dry-run                         print the session spec and start nothing
   --i-accept-unmasked-secrets       see Vetting and secret exceptions
   --i-accept-unvetted-repo
@@ -120,13 +122,15 @@ this page says otherwise.
 
 ### What changed from v2
 
-- **`run`** starts a session as Kata microVMs in the VM instead of a pod. The
+- **`run`** starts a session as Kata microVMs (or gVisor sandboxes) in the VM instead of a pod. The
   repositories you name are synced into the VM before the launch and back while
   the agent runs; see [Architecture](../explanation/architecture.md#workspace-sync).
   The agent's login comes from the credential broker (`sandbox onboard`), not
   from a directory the agent can read. A profile's `secrets:` are brokered,
   readable, or withheld according to each secret's binding, and `run` prints
   which. `--dry-run` prints the session spec (JSON) instead of v2's manifests.
+- **`--runtime`** is new: a session runs under Kata (the default) or gVisor.
+  See [Choosing a runtime](../explanation/security-model.md#choosing-a-runtime).
 - **`--infra-token`** is brokered: the agent's variable holds a placeholder, and
   the gateway puts the token into requests to the `--infra-endpoint` hosts as a
   bearer token.

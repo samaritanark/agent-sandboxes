@@ -197,7 +197,11 @@ func specSummary(s *sessionspec.Spec) map[string]any {
 	for _, d := range s.Dependencies {
 		deps = append(deps, map[string]any{"name": d.Name, "image": d.Image, "port": d.Port})
 	}
-	return map[string]any{"name": s.Name, "agent": s.Agent, "tier": s.Tier, "image": s.Image, "keep_alive": s.KeepAlive,
+	rt := s.Runtime
+	if rt == "" {
+		rt = sessionspec.RuntimeKata
+	}
+	return map[string]any{"name": s.Name, "agent": s.Agent, "tier": s.Tier, "runtime": rt, "image": s.Image, "keep_alive": s.KeepAlive,
 		"bindings": bindings, "dependencies": deps, "allow": s.Egress.Allow, "extra_ports": s.Egress.ExtraPorts}
 }
 
@@ -268,7 +272,11 @@ var ErrNotReady = errors.New("sandboxd is reconciling its sessions; try again")
 func agentNetNS(id string) string        { return "sbx-" + id + "-a" }
 func gatewayNetNS(id string) string      { return "sbx-" + id + "-g" }
 func depNetNS(id, dep string) string     { return "sbx-" + id + "-d-" + dep }
-func depContainer(id, dep string) string { return id + "." + dep } // containerd ids allow single separators; session ids have no dots
+// depContainer is a dependency's container id: its name, then the session's. The session id comes
+// last so that no container id is a prefix of another (runsc resolves an id by prefix and refuses
+// an ambiguous one, the agent's included): session ids have no dots and a fixed shape, and
+// dependency names come from the catalogue. containerd ids allow single separators.
+func depContainer(id, dep string) string { return dep + "." + id }
 
 // holding is the specs of sessions that hold memory now.
 func (d *Daemon) holding(except string) ([]*sessionspec.Spec, error) {
@@ -577,7 +585,7 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 		if len(args) > 0 {
 			args, imageArgs = append(append([]string(nil), args...), dep.Args...), nil // command, then args
 		}
-		m := runtime.MicroVM{ID: cid, Image: dep.Image, Args: args, ImageArgs: imageArgs, Env: append(env(dep.Env), trustEnv...),
+		m := runtime.MicroVM{ID: cid, Runtime: spec.Runtime, Image: dep.Image, Args: args, ImageArgs: imageArgs, Env: append(env(dep.Env), trustEnv...),
 			UID: uint32(dep.RunAsUser), GID: uint32(dep.RunAsUser), NetNS: d.NetNSPath(depNetNS(id, dep.Name)),
 			Mounts: append([]runtime.Mount{rc}, trustMounts...), CPUs: dep.Resources.CPUs, MemoryMiB: dep.Resources.MemoryMiB, Hostname: dep.Name}
 		if err := d.step(id, KindContainer, cid, func() error {
@@ -603,7 +611,7 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 		}
 		mounts, agentEnv = append(mounts, m), append(agentEnv, e...)
 	}
-	agent := runtime.MicroVM{ID: id, Image: spec.Image, Args: spec.Command, Env: agentEnv,
+	agent := runtime.MicroVM{ID: id, Runtime: spec.Runtime, Image: spec.Image, Args: spec.Command, Env: agentEnv,
 		UID: AgentUID, GID: AgentUID, Mounts: mounts, NetNS: d.NetNSPath(ns),
 		CPUs: spec.Resources.CPUs, MemoryMiB: spec.Resources.MemoryMiB, Hostname: "sandbox"}
 	return d.step(id, KindContainer, id, func() error {

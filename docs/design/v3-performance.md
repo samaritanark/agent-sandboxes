@@ -98,9 +98,12 @@ None of these changes what a session can reach, read, or do.
   The bash stops at the first repository whose scan fails; scanning in parallel makes the later
   repositories' calls and warnings happen anyway (the launch is still refused). A deviation from
   the oracle.
-- **B. Run agents under gVisor in the appliance VM on macOS** (Kata stays on Linux, where nesting
-  is cheap). v2's speed (prompt 0.4 s, echo 9 ms); the boundary becomes gVisor's user-space kernel
-  inside the appliance VM instead of a hardware VM.
+- **B. Run agents under gVisor in the appliance VM.** Decided 2026-11-27 as an operator choice on
+  every platform (`run --runtime gvisor`, or `runtime: gvisor` in `~/.sandbox/config.yaml`; Kata
+  stays the default); see [Choosing a runtime](../explanation/security-model.md#choosing-a-runtime).
+  Measured on the 4-CPU test VM: attach 0.5 s (Kata 2.7 s), Claude Code's first screen about 0.8 s
+  after launch (Kata 6.8 s), key echo 13-29 ms median (Kata 64 ms); a tier 2 session reaches the
+  prompt 1.3 s after launch.
 - **C. One VM per session on the host** (Virtualization.framework), no nesting. Near the
   appliance-VM numbers with a hardware boundary; the host binary would manage a VM per session, and
   the workspace copies and network would have to reach it.

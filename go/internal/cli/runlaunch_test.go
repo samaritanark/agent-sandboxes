@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
+	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
 
@@ -219,5 +220,61 @@ func TestLaunchMCP(t *testing.T) {
 	if len(fs.started[0].Dependencies) != 2 || fs.started[0].Dependencies[0].Name != "everything-mcp" ||
 		strings.Join(fs.started[0].Dependencies[0].Args, " ") != "node dist/sse.js" || len(fs.started[0].Dependencies[0].Command) != 0 {
 		t.Errorf("deps %+v", fs.started[0].Dependencies)
+	}
+}
+
+// TestLaunchRuntime (deviation.RuntimeChoice): --runtime picks the session's runtime, runtime: in
+// the operator's config.yaml is the default, kata otherwise; the spec carries it to sandboxd and the
+// banner names it. Anything else stops run before anything starts, and the help lists the option.
+func TestLaunchRuntime(t *testing.T) {
+	defer deviation.Force(deviation.RuntimeChoice)()
+	for _, c := range []struct {
+		config string
+		args   []string
+		want   string
+	}{
+		{"", nil, "kata"},
+		{"", []string{"--runtime", "gvisor"}, "gvisor"},
+		{"runtime: gvisor\n", nil, "gvisor"},
+		{"runtime: gvisor # faster on macOS\n", []string{"--runtime=kata"}, "kata"},
+	} {
+		e, fs, _ := launchEnv(t)
+		if c.config != "" {
+			os.MkdirAll(filepath.Dir(e.UserConfig), 0o755)
+			os.WriteFile(e.UserConfig, []byte(c.config), 0o644)
+		}
+		var out, errb bytes.Buffer
+		if rc := Run(append([]string{"run"}, c.args...), e, &out, &errb); rc != 0 {
+			t.Fatalf("%q %q: %d\n%s", c.config, c.args, rc, errb.String())
+		}
+		if len(fs.started) != 1 || fs.started[0].Runtime != c.want || !strings.Contains(out.String(), "  Runtime    "+c.want+"\n") {
+			t.Errorf("%q %q: want %s\n%s", c.config, c.args, c.want, out.String())
+		}
+		if err := fs.started[0].Validate(sessionspec.Options{}); err != nil {
+			t.Errorf("sandboxd refuses it: %v", err)
+		}
+	}
+	for _, c := range []struct{ config, arg, msg string }{
+		{"", "--runtime=runc", "Unknown runtime 'runc' (--runtime). Use kata or gvisor."},
+		{"runtime: runsc\n", "", "Unknown runtime 'runsc' (runtime: in ~/.sandbox/config.yaml). Use kata or gvisor."},
+	} {
+		e, fs, _ := launchEnv(t)
+		os.MkdirAll(filepath.Dir(e.UserConfig), 0o755)
+		os.WriteFile(e.UserConfig, []byte(c.config), 0o644)
+		args := []string{"run"}
+		if c.arg != "" {
+			args = append(args, c.arg)
+		}
+		var errb bytes.Buffer
+		if rc := Run(args, e, &bytes.Buffer{}, &errb); rc != 1 || !strings.Contains(errb.String(), c.msg) || len(fs.started) != 0 {
+			t.Errorf("%q: %d %q", args, rc, errb.String())
+		}
+	}
+	e, _, _ := launchEnv(t)
+	var out bytes.Buffer
+	Run([]string{"run", "--help"}, e, &out, &bytes.Buffer{})
+	if !strings.Contains(out.String(), "--keep-alive  ") || !strings.Contains(out.String(), "  --runtime <kata|gvisor>           Isolation runtime") ||
+		strings.Index(out.String(), "--runtime") > strings.Index(out.String(), "--i-accept-unmasked-secrets") {
+		t.Errorf("help:\n%s", out.String())
 	}
 }

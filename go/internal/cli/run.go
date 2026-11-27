@@ -11,6 +11,7 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"github.com/samaritanark/agent-sandboxes/go/internal/gate"
+	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 	"github.com/samaritanark/agent-sandboxes/go/internal/tier"
 )
 
@@ -28,6 +29,7 @@ type LaunchSpec struct {
 	DryRun, KeepAlive, AllowExecPlugin  bool
 	AcceptUnmasked, AcceptUnvetted      bool
 	AcceptDrift                         bool
+	Runtime                             string // sessionspec.RuntimeKata or RuntimeGVisor; empty in legacy mode
 	BaseURL                             string // OPENCODE_BASE_URL after --base-url
 	HomeDir                             string // SANDBOX_AGENT_HOME_OVERRIDE
 	HasSecrets                          bool
@@ -176,6 +178,7 @@ func runDecide(c *cmdCtx, args []string) LaunchSpec {
 		case a == "--dry-run":
 			s.DryRun = true
 		case val("--name", func(v string) { s.Name = v }):
+		case deviation.Fixed(deviation.RuntimeChoice) && val("--runtime", func(v string) { s.Runtime = v }):
 		case a == "--keep-alive":
 			s.KeepAlive = true
 		case a == "--i-accept-unmasked-secrets":
@@ -269,6 +272,18 @@ func runDecide(c *cmdCtx, args []string) LaunchSpec {
 	c.out("==> Validating inputs...")
 	if err := agents.Validate(s.Agent); err != nil {
 		c.fail(err)
+	}
+	if deviation.Fixed(deviation.RuntimeChoice) {
+		from := "--runtime"
+		if s.Runtime == "" {
+			s.Runtime, from = config.ExtractYAMLScalar(c.env.Env.UserConfig, "runtime"), "runtime: in "+c.tilde(c.env.Env.UserConfig)
+		}
+		if s.Runtime == "" {
+			s.Runtime = sessionspec.RuntimeKata
+		}
+		if s.Runtime != sessionspec.RuntimeKata && s.Runtime != sessionspec.RuntimeGVisor {
+			c.die("Unknown runtime '%s' (%s). Use kata or gvisor.", s.Runtime, from)
+		}
 	}
 	if err := tier.Validate(s.Tier); err != nil {
 		c.fail(err)

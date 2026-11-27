@@ -246,7 +246,11 @@ func TestPinConcurrent(t *testing.T) {
 					return
 				default:
 				}
-				if b, err := os.ReadFile(c.KnownHosts); err != nil || !ok[string(b)] {
+				b, err := os.ReadFile(c.KnownHosts)
+				if err != nil && runtime.GOOS == "windows" {
+					continue // a sharing violation while the file is being replaced
+				}
+				if err != nil || !ok[string(b)] {
 					select {
 					case bad <- fmt.Sprintf("read %q, %v", b, err):
 					default:

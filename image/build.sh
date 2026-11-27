@@ -66,8 +66,8 @@ else
   mirror=(--local-mirror "file://${repo}")
 fi
 
-# The runtime (design 5.3.1, 5.5): containerd, runc, nerdctl, and buildkit from nerdctl-full, and Kata
-# with Cloud Hypervisor from kata-go-static (S1: kata-static holds only the Rust shim), each fetched
+# The runtime (design 5.3.1, 5.5): containerd, runc, nerdctl, and buildkit from nerdctl-full, Kata
+# with Cloud Hypervisor from kata-go-static (S1: kata-static holds only the Rust shim), and gVisor, each fetched
 # and checked against image/artifacts.lock. Only what the image uses is unpacked: no QEMU,
 # Firecracker, rootless or stargz tools, or GPU and confidential guest images.
 art="${here}/mkosi.cache/artifacts-${goarch}"
@@ -137,6 +137,20 @@ envoy_bin="$(ls "${art}"/envoy-*-linux-* 2>/dev/null | head -1)"
 install -m 0755 "${envoy_bin}" "${tree}/usr/local/bin/envoy"
 
 # betterleaks, the secret scanner the in-VM gates run before every tier 2 and 3 launch (v2's pin).
+# gVisor, the runtime of sessions run with --runtime gvisor (owner decision, 2026-11-27): runsc,
+# its containerd shim (io.containerd.runsc.v1, found on containerd's PATH), and the gvisor-bin/
+# sidecars runsc runs from beside its own binary, all root-owned; runsc's flags are
+# /usr/lib/sandbox/runsc.toml (mkosi.extra).
+install -d "${unpack}/gvisor"
+tar -C "${unpack}/gvisor" -xjf "${art}"/gvisor.tar.bz2
+g="${unpack}/gvisor"
+install -m 0755 "${g}/runsc" "${g}/containerd-shim-runsc-v1" "${tree}/usr/local/bin/"
+install -d -m 0755 "${tree}/usr/local/bin/gvisor-bin"
+for b in "${g}"/gvisor-bin/*; do
+  install -m 0755 "${b}" "${tree}/usr/local/bin/gvisor-bin/"
+done
+[[ -x "${tree}/usr/local/bin/gvisor-bin/gvisor_sentry" ]] || { echo "the gVisor bundle has no gvisor-bin/gvisor_sentry" >&2; exit 1; }
+
 install -d "${unpack}/betterleaks"
 tar -C "${unpack}/betterleaks" -xzf "${art}"/betterleaks_*_linux_*.tar.gz betterleaks
 install -m 0755 "${unpack}/betterleaks/betterleaks" "${tree}/usr/local/bin/betterleaks"

@@ -212,6 +212,11 @@ const (
 	// takes --bind, --inject, --allow-readable, and --withhold, `bind` changes a binding, `list`
 	// shows it, and the help says so.
 	SecretBindings ID = "secret-bindings"
+	// RuntimeChoice: v2 ran every session under gVisor and v3 under Kata. A session can now run
+	// under either (owner decision, 2026-11-27): `run --runtime kata|gvisor`, defaulting to
+	// runtime: in ~/.sandbox/config.yaml and then to kata; the banner names the one used and the
+	// help says so.
+	RuntimeChoice ID = "runtime-choice"
 )
 
 var (

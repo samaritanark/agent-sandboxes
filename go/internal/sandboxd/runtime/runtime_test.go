@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	runtimeoptions "github.com/containerd/containerd/api/types/runtimeoptions/v1"
 	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/pkg/oci"
+	"github.com/containerd/typeurl/v2"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -71,8 +73,12 @@ func TestHardening(t *testing.T) {
 }
 
 func TestCheck(t *testing.T) {
-	if err := vm().Check(); err != nil {
-		t.Fatal(err)
+	for _, rt := range []string{"", Kata, GVisor} {
+		m := vm()
+		m.Runtime = rt
+		if err := m.Check(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for name, f := range map[string]func(*MicroVM){
 		"root":       func(m *MicroVM) { m.UID = 0 },
@@ -82,11 +88,43 @@ func TestCheck(t *testing.T) {
 		"no image":   func(m *MicroVM) { m.Image = "" },
 		"relative":   func(m *MicroVM) { m.Mounts = append(m.Mounts, Mount{Source: "x", Target: "/x"}) },
 		"over root":  func(m *MicroVM) { m.Mounts = append(m.Mounts, Mount{Source: "/x", Target: "/"}) },
+		"runtime":    func(m *MicroVM) { m.Runtime = "runc" },
 	} {
 		m := vm()
 		f(&m)
 		if m.Check() == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// TestWithRuntime: a session runs under the shim and configuration of its runtime, Kata unless it
+// asks for gVisor.
+func TestWithRuntime(t *testing.T) {
+	for kind, want := range map[string][2]string{"": {KataRuntime, KataConfig}, Kata: {KataRuntime, KataConfig},
+		GVisor: {GVisorRuntime, GVisorConfig}} {
+		var c containers.Container
+		if err := withRuntime(kind)(context.Background(), nil, &c); err != nil {
+			t.Fatal(err)
+		}
+		var o runtimeoptions.Options
+		if err := typeurl.UnmarshalTo(c.Runtime.Options, &o); err != nil {
+			t.Fatal(err)
+		}
+		if c.Runtime.Name != want[0] || o.ConfigPath != want[1] {
+			t.Errorf("%q: %s %s", kind, c.Runtime.Name, o.ConfigPath)
+		}
+	}
+}
+
+// TestGVisorIsASandbox: a gVisor container is marked as a sandbox of its own (gVisor's shim gives
+// `runsc create` the container's I/O only then); a Kata one is not marked.
+func TestGVisorIsASandbox(t *testing.T) {
+	for rt, want := range map[string]string{"": "", Kata: "", GVisor: "sandbox"} {
+		m := vm()
+		m.Runtime = rt
+		if got := spec(t, m).Annotations[criContainerType]; got != want {
+			t.Errorf("%q: %q", rt, got)
 		}
 	}
 }
