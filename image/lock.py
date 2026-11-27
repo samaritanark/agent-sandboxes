@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 
@@ -155,12 +156,25 @@ def read_lock(path):
 
 
 def fetch(url, dest, sha, size):
-    """Download url to dest; keep it only if its size and SHA-256 match."""
+    """Download url to dest; keep it only if its size and SHA-256 match. A failed download is tried
+    twice more (Launchpad's file URLs are slow and sometimes answer 502); a mismatch is not."""
+    for attempt in range(3):
+        err = fetch_once(url, dest, sha, size)
+        if err is None or err == MISMATCH or "404" in err:
+            return err
+        time.sleep(5 * (attempt + 1))
+    return err
+
+
+MISMATCH = "size or SHA-256 differs from the lock"
+
+
+def fetch_once(url, dest, sha, size):
     h = hashlib.sha256()
     n = 0
     tmp = dest + ".part"
     try:
-        with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
+        with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
             while True:
                 b = r.read(1 << 20)
                 if not b:
@@ -176,7 +190,7 @@ def fetch(url, dest, sha, size):
         return str(e)
     if n != size or h.hexdigest() != sha:
         os.unlink(tmp)
-        return "size or SHA-256 differs from the lock"
+        return MISMATCH
     os.rename(tmp, dest)
     return None
 
