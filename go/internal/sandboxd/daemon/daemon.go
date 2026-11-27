@@ -269,9 +269,10 @@ func (d *Daemon) logf(f string, a ...any) {
 // ErrNotReady is returned until Reconcile has finished.
 var ErrNotReady = errors.New("sandboxd is reconciling its sessions; try again")
 
-func agentNetNS(id string) string        { return "sbx-" + id + "-a" }
-func gatewayNetNS(id string) string      { return "sbx-" + id + "-g" }
-func depNetNS(id, dep string) string     { return "sbx-" + id + "-d-" + dep }
+func agentNetNS(id string) string    { return "sbx-" + id + "-a" }
+func gatewayNetNS(id string) string  { return "sbx-" + id + "-g" }
+func depNetNS(id, dep string) string { return "sbx-" + id + "-d-" + dep }
+
 // depContainer is a dependency's container id: its name, then the session's. The session id comes
 // last so that no container id is a prefix of another (runsc resolves an id by prefix and refuses
 // an ambiguous one, the agent's included): session ids have no dots and a fixed shape, and

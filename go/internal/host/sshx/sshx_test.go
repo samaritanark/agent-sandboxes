@@ -246,9 +246,15 @@ func TestPinConcurrent(t *testing.T) {
 					return
 				default:
 				}
+				if runtime.GOOS == "windows" {
+					// Windows refuses a rename over an open file: read the way ssh does (once per
+					// connection), not in a loop that keeps the file open, and allow the sharing
+					// violation a read gets during the rename itself
+					time.Sleep(time.Millisecond)
+				}
 				b, err := os.ReadFile(c.KnownHosts)
 				if err != nil && runtime.GOOS == "windows" {
-					continue // a sharing violation while the file is being replaced
+					continue
 				}
 				if err != nil || !ok[string(b)] {
 					select {
