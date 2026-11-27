@@ -1,7 +1,7 @@
 # Trying v3 on a Mac
 
 A working guide for the owner's trial of the v3 rewrite before the v3 pull request. It is not
-user documentation. State as of 2026-11-26; S8.md "Start here" says what changed since.
+user documentation. State as of 2026-11-27; S8.md "Start here" says what changed since.
 
 ## What works
 
@@ -16,6 +16,10 @@ user documentation. State as of 2026-11-26; S8.md "Start here" says what changed
   `~/.sandbox/egress-rules.yaml`, `--keep-alive`, `list`, `stop`, `resume`.
 - opencode with `OPENCODE_API_KEY` and `OPENCODE_BASE_URL` set (not yet run against a real
   endpoint).
+- `--runtime gvisor` (or `runtime: gvisor` in `~/.sandbox/config.yaml`): the session runs under
+  gVisor instead of Kata. On a Mac this is the fast option: Claude Code shows its first screen
+  about a second after launch and echoes keys in 15-30 ms, against 6-7 s and 50-80 ms under Kata
+  (4-CPU test VM). The trade-off is in docs/explanation/security-model.md, "Choosing a runtime".
 
 ## What does not work yet
 
@@ -23,6 +27,9 @@ user documentation. State as of 2026-11-26; S8.md "Start here" says what changed
 - Resuming a session that was stopped (a live keep-alive session resumes).
 - `sandbox upgrade`, prebuilt agent images in the appliance (you build them once with
   `sandbox rebuild`), Windows and Linux hosts (Linux uses qemu; not part of this trial).
+- Files over 64 MB are not synced (v2 synced them).
+- A dependency that exits is not restarted; the catalogue's `everything-mcp` exits a few seconds
+  after it starts if nothing connects to it.
 
 ## Beside v2
 
@@ -60,6 +67,19 @@ answer `n` to keep it.
    (`sandbox3 run --agent opencode ...`); the key is sealed for that launch and brokered to the
    endpoint's host, and the model list is fetched on the Mac.
 
+## Updating an existing install
+
+The VM's image cannot be upgraded in place yet, so an update is a reinstall that keeps your state:
+
+1. Rebuild the host binary from the branch: `cd go && go build -o ~/bin/sandbox3 ./cmd/sandbox`.
+2. Build the image as in step 3 above (or use one already built for you).
+3. `sandbox3 uninstall` and answer `n` to every question (keeps profiles, secrets, logs, sync
+   state); never `--purge`.
+4. `sandbox3 install --dev-image <image> ...` with your memory and CPU settings, then steps 5 and
+   6 again: the agent images and the logins live in the VM, so rebuild and onboard again.
+5. For gVisor by default: add `runtime: gvisor` to `~/.sandbox/config.yaml` (pass
+   `--runtime kata` for a session that should still get a microVM).
+
 ## Using it
 
 - `sandbox3 run --repo ~/code/some-repo` (tier 1: history kept for the session only), or
@@ -68,6 +88,9 @@ answer `n` to keep it.
   the Mac while it runs and at the end. Changes to executable config (`.git/config`, hooks, and the
   like) are withheld: `sandbox3 sync review`.
 - `sandbox3 list`, `sandbox3 stop ID`, `sandbox3 run --keep-alive ...` then `sandbox3 resume ID`.
+- `sandbox3 run --runtime gvisor ...` for one session under gVisor; the banner's `Runtime` line
+  says which one a session got.
+- A tier 1 session's Claude Code asks whether to trust `/workspace`: answer yes (no ends it).
 - Session logs and audit records: `~/.sandbox/logs/<session>/`.
 
 ## What to note during the trial

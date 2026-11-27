@@ -2,8 +2,9 @@
 
 Sandboxed execution environment for AI coding agents. Start with the
 [README](../README.md) for what this is and a quick start; the pages below go
-deeper. These pages describe v3 (the `v3` branch): agents in Kata microVMs inside
-an appliance VM, with a credential broker and a per-session gateway.
+deeper. These pages describe v3 (the `v3` branch): agents in Kata microVMs (or gVisor
+sandboxes, your choice per session) inside an appliance VM, with a credential
+broker and a per-session gateway.
 
 Before you operate this for anyone but yourself, read **[PRINCIPLES.md](../PRINCIPLES.md)**:
 what the sandbox defends against, what it doesn't, and your accountability as

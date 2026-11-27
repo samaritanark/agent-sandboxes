@@ -24,7 +24,7 @@ URL). The sandbox runs each dependency in its *own microVM*, reached over the ne
 server that speaks **HTTP/SSE**.
 
 What this feature adds: instead of running an MCP server loose on your machine, the sandbox runs it
-as a locked-down neighbor of the agent: its own Kata microVM, its own egress allowlist (none, here),
+as a locked-down neighbor of the agent: its own Kata microVM (or gVisor sandbox), its own egress allowlist (none, here),
 reachable only by that one session through the session's gateway, gone at teardown. See
 [MCP & service dependencies](../how-to/mcp-and-dependencies.md) for the design in brief.
 

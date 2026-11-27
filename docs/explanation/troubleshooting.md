@@ -95,6 +95,18 @@ positives](../how-to/secret-exceptions.md).
 
 ## Inside a session
 
+**Claude Code is slow to start or lags behind the keyboard (macOS).** Under Kata
+the session's microVM is nested inside the sandbox VM, and on Apple silicon that
+costs several seconds at start and tens of milliseconds per keystroke. Run the
+session with `--runtime gvisor` (or set `runtime: gvisor` in
+`~/.sandbox/config.yaml`): it starts in about a second and echoes keys in
+milliseconds, with gVisor's boundary instead of a hardware VM; see
+[Choosing a runtime](security-model.md#choosing-a-runtime).
+
+**Claude Code asks whether to trust `/workspace`.** A tier 1 session has no
+repository Claude Code already trusts, so it asks once per session; answer yes.
+Answering no ends the session.
+
 **The agent cannot reach a host.** `sandbox flows <SESSION_ID>` lists every
 connection and request with its decision. A name not on the allowlist gets no
 DNS answer; a blocked or unlisted destination shows `refused` or `blocked`. Add

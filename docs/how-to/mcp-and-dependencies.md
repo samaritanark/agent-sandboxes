@@ -7,10 +7,11 @@ the allowlist — an **MCP server** (a process that advertises tools the agent
 can call, like browser automation or a ticket-system bridge), or a plain
 **service** the session talks to directly (a dev database, a message broker).
 A profile can declare those, and the sandbox brings each one up as its **own
-microVM** for the life of the session, then tears it down.
+microVM** for the life of the session, then tears it down. A dependency that exits is not restarted (v2's pods were):
+the agent sees it gone until the next session.
 
 The rule the whole feature rests on: **a dependency gets no more network reach than the
-session has.** In v3 each dependency is its own Kata microVM with its own link to the session's
+session has.** In v3 each dependency is its own Kata microVM (a gVisor sandbox in a `--runtime gvisor` session) with its own link to the session's
 gateway. Its egress is its catalogue entry's allowlist, checked against the same block lists; it
 mounts no workspace and no host path; the agent reaches it only through the gateway, at
 `<name>.deps.sandbox.internal:<port>`, and it cannot reach the agent, the other dependencies, or

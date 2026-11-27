@@ -4,8 +4,8 @@
 
 **macOS**: macOS 15 or later on Apple M3 or later, and [vfkit](https://github.com/crc-org/vfkit)
 (`brew install vfkit`) for the default driver. `--driver lima` needs Lima
-instead. The sandbox VM needs nested virtualization (Kata runs a microVM per
-session inside it), which Apple's Virtualization framework offers on M3 and
+instead. The sandbox VM needs nested virtualization (Kata, the default
+runtime, runs a microVM per session inside it; gVisor does not need it), which Apple's Virtualization framework offers on M3 and
 later.
 
 **Linux**: arm64 or x86_64, `qemu-system-<arch>` for the default driver, and

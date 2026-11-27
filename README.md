@@ -12,7 +12,8 @@
 Works with Claude Code, OpenAI Codex CLI, and OpenCode. GitHub Copilot CLI and the
 xAI Grok CLI are not yet available in v3.
 
-Each agent session runs in its own Kata Containers microVM inside a dedicated
+Each agent session runs in its own Kata Containers microVM (or, if you choose,
+its own gVisor sandbox, which is much faster on macOS) inside a dedicated
 appliance VM. All of its traffic goes through a per-session gateway that
 enforces a default-deny egress allowlist and holds the agent's credentials:
 the agent sees placeholders, and the gateway puts the real values into
@@ -32,7 +33,7 @@ Use this sandbox when you want an AI agent to run shell commands, edit
 files, and reach the network on your behalf, **and you don't fully trust
 what it might do**. The agent can only reach the domains its tier allows,
 never sees your `~/.ssh/`, `~/.aws/`, or `~/.kube/`, never holds your
-login tokens, and anything it breaks stays inside a microVM you can stop
+login tokens, and anything it breaks stays inside a sandbox you can stop
 with `sandbox stop`.
 
 You probably **don't** need this if you're just chatting with an LLM

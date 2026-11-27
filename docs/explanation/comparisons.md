@@ -22,7 +22,7 @@ a runtime alone does nothing about.
 
 | Tool | What it is | Containment boundary | Default-deny egress | Credential isolation | Overlaps this tool? |
 |------|------------|----------------------|---------------------|----------------------|----------------------|
-| **Agent Sandbox** (this) | Policy layer over per-session microVMs in an appliance VM | Kata microVM (its own kernel, Cloud Hypervisor), inside a VM with nothing of your machine mounted | Yes — per-tier allowlist through a per-session gateway | Yes — credentials brokered: the agent holds placeholders | — |
+| **Agent Sandbox** (this) | Policy layer over per-session microVMs in an appliance VM | Kata microVM (its own kernel, Cloud Hypervisor) by default, or a gVisor sandbox if you choose; either way inside a VM with nothing of your machine mounted | Yes — per-tier allowlist through a per-session gateway | Yes — credentials brokered: the agent holds placeholders | — |
 | **Apple `container`** | macOS container runtime | Hardware VM, one per container | No | No | No — complementary |
 | **Docker / Podman** | Container runtimes | Shared-kernel namespaces (weaker) | No | No | No — not required (agent images are built with nerdctl + buildkit inside the appliance VM) |
 | **Dev Containers** (VS Code) | Reproducible dev environment | Same as Docker | No | No — assumes trusted code | No — different goal |

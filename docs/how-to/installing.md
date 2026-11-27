@@ -4,7 +4,7 @@
 
 v3 has two parts: the `sandbox` host binary on your machine, and an appliance
 VM that runs everything else (the policy layer, `sandboxd`, the agents' Kata
-microVMs, and each session's gateway). `sandbox install` creates the VM from an
+microVMs or gVisor sandboxes, and each session's gateway). `sandbox install` creates the VM from an
 appliance image.
 
 There are no signed release images yet, so you build the image yourself and
@@ -108,6 +108,12 @@ sandbox doctor
 `doctor` checks the driver, netd, that the VM answers and its version, nested
 virtualization in the VM (`/dev/kvm`, which Kata needs), and that the VM cannot
 reach your machine. Every line should say `ok`.
+
+On macOS, Kata microVMs run nested inside the sandbox VM, which makes Claude
+Code take several seconds to start and lag a little behind the keyboard. If
+that matters more to you than Kata's hardware boundary, make gVisor your default
+(add `runtime: gvisor` to `~/.sandbox/config.yaml`) or pass `--runtime gvisor`
+to `sandbox run`. See [Choosing a runtime](../explanation/security-model.md#choosing-a-runtime).
 
 ## 6. Build the agent images
 

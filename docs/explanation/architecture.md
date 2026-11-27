@@ -2,7 +2,8 @@
 
 [← Documentation](../index.md)
 
-v3 runs every agent in a microVM inside a dedicated Linux VM on your machine,
+v3 runs every agent in a microVM (or a gVisor sandbox, if you choose; see
+[Choosing a runtime](security-model.md#choosing-a-runtime)) inside a dedicated Linux VM on your machine,
 the **appliance VM**. Nothing of your machine is mounted into that VM: your
 repositories are synced into it, your settings are copied in, and logs are
 pulled back, each by the `sandbox` binary on your machine over SSH. v3 runs on
@@ -26,7 +27,7 @@ macOS and Linux; Windows follows in a later release. The full design is
  ┌───────────────▼───────────────────────────────────────────────────────┐
  │ policy layer (`sandbox` in the VM): tiers, gates, vetting, masks,      │
  │   overlays, catalogue, profiles  ──►  session spec (JSON)              │
- │ sandboxd: containerd + Kata, networks, gateways, the broker store,     │
+ │ sandboxd: containerd + Kata/gVisor, networks, gateways, broker store,  │
  │   lifecycle, teardown, audit                                           │
  │ /var/lib/sandbox/{workspaces, agent-history, broker, logs, operator}   │
  │                                                                        │
@@ -72,7 +73,8 @@ lists, the L7 rules, the credential bindings, the dependencies, and the limits.
 
 **sandboxd** is the session supervisor. It checks the spec again, then builds
 the session: a network namespace and gateway for it, a Kata microVM (Cloud
-Hypervisor) for the agent and one per dependency, the interception
+Hypervisor) for the agent and one per dependency (gVisor sandboxes instead for a
+session run with `--runtime gvisor`), the interception
 certificates, and the credential handover. It journals every resource before it
 creates it, so a crash or a reboot never leaves one behind: at start it tears
 down whatever it did not see finish. It ends a session when you stop it, when
@@ -109,6 +111,11 @@ The agent works on a copy of each repository in the VM
   are held back in `~/.sandbox/quarantine`; `sandbox sync review` shows the diff
   and applies or discards each.
 - A change made on both sides at once is a conflict and is held the same way.
+- Files larger than 64 MB are not synced in either direction (v2's Mutagen
+  synced them). They are skipped without a message: the agent does not see
+  them, and a large file the agent writes stays in the VM.
+- If a sync connection drops during a session it is made again; a repository
+  stays in sync for the whole session.
 
 The copy belongs to an unprivileged sync user in the VM; the gates' own git in
 the VM runs as another unprivileged user, so a repository's configuration
@@ -128,7 +135,7 @@ history is kept per agent, tier, and repository set in
 
 ## Images
 
-The appliance image carries Kata, containerd, Envoy, betterleaks, and the Go
+The appliance image carries Kata, gVisor, containerd, Envoy, betterleaks, and the Go
 binaries, built from pinned, checksummed inputs (`image/artifacts.lock`,
 `image/packages.*.lock`). Agent images are built in the VM with
 `sandbox rebuild` and run by digest. Releasing signed images, and
@@ -136,8 +143,8 @@ binaries, built from pinned, checksummed inputs (`image/artifacts.lock`,
 
 ## What v2 had that v3 does not
 
-k3s, Cilium, Hubble, gVisor, CoreDNS, Helm, and the per-host setup scripts are
-gone. So are host mounts: on macOS v2 mounted parts of your home into its VM; on
+k3s, Cilium, Hubble, CoreDNS, Helm, and the per-host setup scripts are gone;
+gVisor is no longer the default but stays available as a runtime you choose. So are host mounts: on macOS v2 mounted parts of your home into its VM; on
 Linux v2 ran the cluster on your machine itself. In v3 nothing on your machine
 is reachable from the VM except the SSH channel and the sync, which the host
 drives.
