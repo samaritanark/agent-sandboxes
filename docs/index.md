@@ -29,6 +29,7 @@ the operator.
 - [MCP & service dependencies](how-to/mcp-and-dependencies.md)
 - [Tier 3 infra credentials](how-to/tier3-infra-credentials.md)
 - [Resume and keep-alive sessions](how-to/resuming-sessions.md)
+- [Kata or gVisor](how-to/runtimes.md)
 - [Clusters and hosts behind a corporate VPN](how-to/corporate-vpn.md)
 - [Corporate TLS-intercept proxies (Zscaler, Netskope…)](how-to/tls-intercept-proxies.md)
 - [Rebuild agent images](how-to/rebuilding-images.md)

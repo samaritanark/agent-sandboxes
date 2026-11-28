@@ -13,8 +13,8 @@ Works with Claude Code, OpenAI Codex CLI, and OpenCode. GitHub Copilot CLI and t
 xAI Grok CLI are not yet available in v3.
 
 Each agent session runs in its own Kata Containers microVM (or, if you choose,
-its own gVisor sandbox, which is much faster on macOS) inside a dedicated
-appliance VM. All of its traffic goes through a per-session gateway that
+its own gVisor sandbox; see [Kata or gVisor](docs/how-to/runtimes.md)) inside a
+dedicated appliance VM. All of its traffic goes through a per-session gateway that
 enforces a default-deny egress allowlist and holds the agent's credentials:
 the agent sees placeholders, and the gateway puts the real values into
 requests to the hosts they are bound to. Your repositories are copied into

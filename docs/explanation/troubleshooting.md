@@ -97,11 +97,9 @@ positives](../how-to/secret-exceptions.md).
 
 **Claude Code is slow to start or lags behind the keyboard (macOS).** Under Kata
 the session's microVM is nested inside the sandbox VM, and on Apple silicon that
-costs several seconds at start and tens of milliseconds per keystroke. Run the
-session with `--runtime gvisor` (or set `runtime: gvisor` in
-`~/.sandbox/config.yaml`): it starts in about a second and echoes keys in
-milliseconds, with gVisor's boundary instead of a hardware VM; see
-[Choosing a runtime](security-model.md#choosing-a-runtime).
+costs several seconds at start and tens of milliseconds per keystroke. The
+gVisor runtime does not nest; [Kata or gVisor](../how-to/runtimes.md) explains
+what changes if you use it.
 
 **Claude Code asks whether to trust `/workspace`.** A tier 1 session has no
 repository Claude Code already trusts, so it asks once per session; answer yes.

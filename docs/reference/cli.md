@@ -94,7 +94,7 @@ sandbox run [OPTIONS]
   --name <NAME>                     a label for the session
   --keep-alive                      keep the session after you detach
   --runtime <kata|gvisor>           default: runtime: in ~/.sandbox/config.yaml,
-                                    else kata (see Security model)
+                                    else kata (see Kata or gVisor)
   --dry-run                         print the session spec and start nothing
   --i-accept-unmasked-secrets       see Vetting and secret exceptions
   --i-accept-unvetted-repo
@@ -130,7 +130,7 @@ this page says otherwise.
   readable, or withheld according to each secret's binding, and `run` prints
   which. `--dry-run` prints the session spec (JSON) instead of v2's manifests.
 - **`--runtime`** is new: a session runs under Kata (the default) or gVisor.
-  See [Choosing a runtime](../explanation/security-model.md#choosing-a-runtime).
+  See [Kata or gVisor](../how-to/runtimes.md).
 - **`--infra-token`** is brokered: the agent's variable holds a placeholder, and
   the gateway puts the token into requests to the `--infra-endpoint` hosts as a
   bearer token.

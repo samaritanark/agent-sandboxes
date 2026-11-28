@@ -109,11 +109,10 @@ sandbox doctor
 virtualization in the VM (`/dev/kvm`, which Kata needs), and that the VM cannot
 reach your machine. Every line should say `ok`.
 
-On macOS, Kata microVMs run nested inside the sandbox VM, which makes Claude
-Code take several seconds to start and lag a little behind the keyboard. If
-that matters more to you than Kata's hardware boundary, make gVisor your default
-(add `runtime: gvisor` to `~/.sandbox/config.yaml`) or pass `--runtime gvisor`
-to `sandbox run`. See [Choosing a runtime](../explanation/security-model.md#choosing-a-runtime).
+Sessions run under Kata by default. On macOS, Kata microVMs run nested inside
+the sandbox VM, which makes agents slower to start and respond; gVisor is the
+other runtime you can choose. [Kata or gVisor](runtimes.md) explains the
+differences in use and in the security model.
 
 ## 6. Build the agent images
 

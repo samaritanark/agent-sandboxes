@@ -4,7 +4,7 @@
 
 v3 replaces v2's k3s, Cilium, and gVisor stack with an appliance VM that runs
 each session in a Kata microVM, or under gVisor if you choose (`--runtime gvisor`;
-see [Choosing a runtime](../explanation/security-model.md#choosing-a-runtime)). Your settings carry over: v3 reads `~/.sandbox`
+see [Kata or gVisor](runtimes.md)). Your settings carry over: v3 reads `~/.sandbox`
 in v2's formats. A few things have to be redone, because v3 handles credentials
 differently. This page covers what `sandbox install` does with a v2 install,
 what you redo, and how to remove v2 when you're done with it.

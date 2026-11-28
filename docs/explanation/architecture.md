@@ -3,7 +3,7 @@
 [← Documentation](../index.md)
 
 v3 runs every agent in a microVM (or a gVisor sandbox, if you choose; see
-[Choosing a runtime](security-model.md#choosing-a-runtime)) inside a dedicated Linux VM on your machine,
+[Kata or gVisor](../how-to/runtimes.md)) inside a dedicated Linux VM on your machine,
 the **appliance VM**. Nothing of your machine is mounted into that VM: your
 repositories are synced into it, your settings are copied in, and logs are
 pulled back, each by the `sandbox` binary on your machine over SSH. v3 runs on

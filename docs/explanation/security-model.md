@@ -43,16 +43,14 @@ From the agent outward:
 Sessions run under Kata unless you choose gVisor, per session
 (`sandbox run --runtime gvisor`) or as your default (`runtime: gvisor` in
 `~/.sandbox/config.yaml`). A repository's own `.sandbox/config.yaml` cannot
-choose it. The banner and the audit trail (`session_requested`) record which
-one a session used.
+choose it, and a session never falls back from one to the other. The banner and
+the audit trail (`session_requested`) record which one a session used.
 
 | | Kata (default) | gVisor |
 |---|---|---|
-| What stands between the agent and the appliance VM's kernel | a hardware-virtualized guest with its own Linux kernel | gVisor's user-space kernel (the sentry), itself confined by seccomp to a limited set of the VM kernel's system calls |
-| Between two sessions | separate VMs | separate gVisor sandboxes in the same kernel |
-| An escape needs | a guest kernel exploit, then a Cloud Hypervisor (or KVM) escape | a sentry exploit, then an exploit of the VM kernel through the calls the sentry may make |
-| Speed where the appliance VM is itself a VM (macOS) | nested virtualization: Claude Code takes several seconds to start, keys echo in tens of milliseconds | about v2's: under a second to start, keys echo in milliseconds |
-| Speed on Linux with KVM | near native | near native for computation, slower system calls |
+| Between the agent and the appliance VM's kernel | a hardware-virtualized guest with its own Linux kernel | gVisor's user-space kernel (the sentry), itself confined by seccomp to a limited set of the VM kernel's system calls |
+| Between two sessions | separate VMs | separate gVisor sandboxes on the same kernel |
+| An escape to the appliance VM needs | a guest kernel exploit, then a Cloud Hypervisor (or KVM) escape | a sentry exploit, then an exploit of the VM kernel through the calls the sentry may make |
 
 Everything else is the same under both: the agent runs as uid 1000 with no
 capabilities and no privilege escalation, the default seccomp profile applies to
@@ -62,9 +60,8 @@ link, and the gateway enforces egress the same way), and the appliance VM,
 `sandbox netd`, the credential broker, and the sync gate stand behind it either
 way. v2 ran every session under gVisor, without the appliance VM's boundary.
 
-Choose Kata where the extra boundary matters more than responsiveness, for
-example for tier 3 sessions that hold infrastructure credentials, or on Linux
-hosts where Kata is fast anyway.
+Neither runtime is recommended over the other. [Kata or gVisor](../how-to/runtimes.md)
+covers why one might choose each, and what changes in use.
 
 ## Credential brokering
 

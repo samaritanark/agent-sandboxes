@@ -19,7 +19,7 @@ user documentation. State as of 2026-11-27; S8.md "Start here" says what changed
 - `--runtime gvisor` (or `runtime: gvisor` in `~/.sandbox/config.yaml`): the session runs under
   gVisor instead of Kata. On a Mac this is the fast option: Claude Code shows its first screen
   about a second after launch and echoes keys in 15-30 ms, against 6-7 s and 50-80 ms under Kata
-  (4-CPU test VM). The trade-off is in docs/explanation/security-model.md, "Choosing a runtime".
+  (4-CPU test VM). The differences are in docs/how-to/runtimes.md.
 
 ## What does not work yet
 
