@@ -54,7 +54,19 @@ type Intercept struct {
 	Name       string `json:"name"`
 	CertChain  string `json:"cert_chain"`
 	PrivateKey string `json:"private_key"`
-	SDS        string `json:"sds,omitempty"` // the gateway writes the leaf's SDS file here (envoyconf.Intercept)
+	SDS        string `json:"sds,omitempty"`  // the gateway writes the leaf's SDS file here (envoyconf.Intercept)
+	Kube       *Kube  `json:"kube,omitempty"` // a tier 3 cluster's gateway name: its API server
+}
+
+// Kube is a cluster's API server (envoyconf.Kube): files are absolute paths the gateway may read.
+type Kube struct {
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	PathPrefix string `json:"path_prefix,omitempty"`
+	SNI        string `json:"sni"`
+	CAFile     string `json:"ca_file,omitempty"`
+	ClientCert string `json:"client_cert,omitempty"`
+	ClientKey  string `json:"client_key,omitempty"`
 }
 
 // Dep is a dependency the agent reaches at <name>.deps.sandbox.internal:<port>.

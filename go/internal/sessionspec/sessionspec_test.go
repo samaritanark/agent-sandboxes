@@ -328,3 +328,21 @@ func TestKube(t *testing.T) {
 		}
 	}
 }
+
+// TestUpstream: a cluster's API server as the gateway reaches it.
+func TestUpstream(t *testing.T) {
+	for _, c := range []struct {
+		k                    KubeCluster
+		host, prefix, server string
+		port                 int
+	}{
+		{KubeCluster{Server: "https://10.0.0.5:6443"}, "10.0.0.5", "", "10.0.0.5", 6443},
+		{KubeCluster{Server: "https://k.example.com/"}, "k.example.com", "", "k.example.com", 443},
+		{KubeCluster{Server: "https://r.example.com/k8s/clusters/c-x", TLSServerName: "kubernetes"}, "r.example.com", "/k8s/clusters/c-x", "kubernetes", 443},
+	} {
+		h, p, pre, sn := c.k.Upstream()
+		if h != c.host || p != c.port || pre != c.prefix || sn != c.server {
+			t.Errorf("%+v: %s %d %s %s", c.k, h, p, pre, sn)
+		}
+	}
+}

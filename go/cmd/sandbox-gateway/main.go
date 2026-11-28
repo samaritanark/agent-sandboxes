@@ -141,6 +141,10 @@ func run() error {
 			el := envoyconf.Link{Addr: l.Listen, Ports: l.Ports, Allow: l.Allow, BlockDomains: l.BlockDomains, BrokerSocket: brokerSockets[len(conf.Links)]}
 			for _, ic := range l.Intercept {
 				ei := envoyconf.Intercept{Name: ic.Name, CertChain: ic.CertChain, PrivateKey: ic.PrivateKey, SDS: ic.SDS, Rules: l.L7}
+				if k := ic.Kube; k != nil {
+					ei.Kube = &envoyconf.Kube{Host: k.Host, Port: k.Port, PathPrefix: k.PathPrefix, SNI: k.SNI, CAFile: k.CAFile,
+						ClientCert: k.ClientCert, ClientKey: k.ClientKey}
+				}
 				if ic.SDS != "" {
 					// the leaf is read through this file, so sandboxd can renew it in place
 					b, err := envoyconf.SDSSecret(ei)

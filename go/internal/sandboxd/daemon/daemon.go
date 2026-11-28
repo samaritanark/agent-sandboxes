@@ -30,6 +30,7 @@ import (
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/gwpolicy"
+	"github.com/samaritanark/agent-sandboxes/go/internal/kubeapi"
 	"github.com/samaritanark/agent-sandboxes/go/internal/l7"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/auditlog"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/journal"
@@ -74,6 +75,8 @@ type GatewayRunner interface {
 	// slot is the session's uplink index, unique among live sessions: each gateway runs as its
 	// own user, derived from it.
 	Start(ctx context.Context, id, gatewayNS, dir string, slot int, files, leaves map[string][]byte) (int, error)
+	// User is the uid (and gid) the gateway of uplink slot runs as.
+	User(slot int) int
 	// Renew installs leaves (by file name: "0.crt", "0.key", ...) as dir/tls/v<version>, readable
 	// only by the gateway, then points the symlink dir/tls/live at it with one rename (the
 	// gateway's Envoy reloads on it) and removes the older versions.
@@ -103,6 +106,10 @@ type Broker interface {
 	// Refresh renews an agent's OAuth login in the store when its access token expires within
 	// minValid, and returns the access token's expiry (Unix seconds).
 	Refresh(ctx context.Context, ref string, minValid time.Duration) (int64, error)
+	// WriteClientCerts decrypts each cluster's client certificate and key (an entry sealed with
+	// an mtls binding to that cluster's gateway name, its PEM blocks) into <name>.crt and
+	// <name>.key in dir, readable only by uid, then leaves dir readable only by uid.
+	WriteClientCerts(ctx context.Context, dir string, uid int, certs map[string]ClientCert) error
 	// WriteReadable decrypts each file's reference (files: file name to reference) into its own
 	// file in dir, readable only by uid, then leaves dir readable only by uid; an entry not sealed
 	// as readable is refused.
@@ -134,11 +141,12 @@ type Paths func(name string) string
 const (
 	KindContainer = "container"
 	KindNetNS     = "netns"
-	KindMasks     = "masks"    // the session's directory of empty mask files and directories
-	KindUplink    = "uplink"   // an uplink index (its interfaces go with the gateway namespace)
-	KindGateway   = "gateway"  // the gateway process (its id in the resource's note)
-	KindReadable  = "readable" // the session's directory of readable secrets, on a tmpfs
-	KindView      = "view"     // a workspace view (views.go): its directory, by name
+	KindMasks     = "masks"      // the session's directory of empty mask files and directories
+	KindUplink    = "uplink"     // an uplink index (its interfaces go with the gateway namespace)
+	KindGateway   = "gateway"    // the gateway process (its id in the resource's note)
+	KindReadable  = "readable"   // the session's directory of readable secrets, on a tmpfs
+	KindKubeCerts = "kube-certs" // tier 3 clusters' client certificates for the gateway, on a tmpfs
+	KindView      = "view"       // a workspace view (views.go): its directory, by name
 )
 
 // AgentUID is the agent's user in its microVM.
@@ -163,6 +171,9 @@ type Daemon struct {
 	Budget      limits.Budget
 	Expiry      limits.Expiry
 	SessionRoot string // sessionspec.SessionStore in production
+	// KubeRoot holds each tier 3 session's clusters' client certificates for its gateway; it must
+	// be on a tmpfs (/run in production). "" refuses a session with an mtls cluster.
+	KubeRoot string
 	// ReadableRoot holds each session's readable secrets (--allow-readable); it must be on a tmpfs
 	// (/run in production). "" refuses any session with readable secrets.
 	ReadableRoot string
@@ -519,6 +530,9 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 	gwDir := filepath.Join(d.SessionRoot, id, "gateway")
 	names := [][]string{interceptNames(spec.Egress, spec.Bindings)}
 	rules := [][]l7.Rule{spec.Egress.L7}
+	for _, k := range spec.Kube {
+		rules[0] = append(append([]l7.Rule(nil), rules[0]...), kubeapi.DenyRules(k.Name)...)
+	}
 	for _, dep := range spec.Dependencies {
 		names = append(names, interceptNames(dep.Egress, dep.Bindings))
 		rules = append(rules, dep.Egress.L7)
@@ -540,6 +554,9 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 
 	uplink, err := d.freeUplink()
 	if err != nil {
+		return err
+	}
+	if err := d.kubeUpstreams(ctx, spec, gwDir, uplink, &pol, files); err != nil {
 		return err
 	}
 	if err := d.step(id, KindUplink, strconv.Itoa(uplink), func() error {
@@ -702,7 +719,7 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 	if s, err = d.Journal.Load(id); err != nil {
 		return err
 	}
-	order := map[string]int{KindContainer: 0, KindGateway: 1, KindNetNS: 2, KindUplink: 3, KindView: 4, KindReadable: 5, KindMasks: 6}
+	order := map[string]int{KindContainer: 0, KindGateway: 1, KindNetNS: 2, KindUplink: 3, KindView: 4, KindReadable: 5, KindKubeCerts: 5, KindMasks: 6}
 	live := s.Live()
 	sort.SliceStable(live, func(i, j int) bool { return order[live[i].Kind] < order[live[j].Kind] })
 	for _, r := range live {
@@ -724,6 +741,8 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 			err = d.dropView(id, r.Name)
 		case KindReadable:
 			err = os.RemoveAll(d.readableDir(id))
+		case KindKubeCerts:
+			err = os.RemoveAll(d.kubeCertDir(id))
 		case KindMasks:
 			d.collect(id) // the last connections, before the gateway's directory goes
 			err = os.RemoveAll(d.maskDir(id))

@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -99,6 +100,122 @@ func (b *brokerStore) WriteReadable(ctx context.Context, dir string, uid int, fi
 	}
 	defer brokerstore.Wipe(job)
 	return runHelper(ctx, "__readable-handover", "readable-secrets helper", job)
+}
+
+// kubeJob is the kube helper's job: each cluster's client certificate to write (file base name:
+// its reference and gateway name).
+type kubeJob struct {
+	Key   []byte                       `json:"key"`
+	Store string                       `json:"store"`
+	Dir   string                       `json:"dir"`
+	UID   int                          `json:"uid"`
+	Certs map[string]daemon.ClientCert `json:"certs"`
+}
+
+func (b *brokerStore) WriteClientCerts(ctx context.Context, dir string, uid int, certs map[string]daemon.ClientCert) error {
+	b.mu.Lock()
+	if b.key == nil {
+		b.mu.Unlock()
+		return errors.New("the broker key has not been pushed from the host (run 'sandbox vm start' there)")
+	}
+	job, err := json.Marshal(kubeJob{Key: b.key, Store: b.store.Dir, Dir: dir, UID: uid, Certs: certs})
+	b.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	defer brokerstore.Wipe(job)
+	return runHelper(ctx, "__kube-handover", "client-certificate helper", job)
+}
+
+// kubeHandover is the kube helper: decrypt each cluster's client certificate and key into files
+// readable only by the gateway's user, wipe, exit.
+func kubeHandover() int {
+	fail := func(err error) int { fmt.Fprintln(os.Stderr, err); return 1 }
+	raw, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+	if err != nil {
+		return fail(err)
+	}
+	defer brokerstore.Wipe(raw)
+	var job kubeJob
+	if err := json.Unmarshal(raw, &job); err != nil {
+		return fail(fmt.Errorf("unreadable job: %w", err))
+	}
+	defer brokerstore.Wipe(job.Key)
+	if err := writeClientCerts(job); err != nil {
+		return fail(err)
+	}
+	return 0
+}
+
+// writeClientCerts does the kube helper's work: an entry is used only if it was sealed with an
+// mtls binding to the cluster's gateway name, and only as its certificate and key.
+func writeClientCerts(job kubeJob) error {
+	st := brokerstore.Store{Dir: job.Store}
+	for name, c := range job.Certs {
+		if !validFileName(name) {
+			return fmt.Errorf("client certificate: bad file name %q", name)
+		}
+		sealed, err := st.Get(c.Ref)
+		if err != nil {
+			return fmt.Errorf("credential %s is not in the broker store", c.Ref)
+		}
+		v, b, bound, err := brokerseal.OpenBound(job.Key, c.Ref, sealed)
+		if err != nil {
+			return err
+		}
+		if err = b.Allows([]string{c.Host}, "mtls", false); !bound {
+			err = errors.New("it was sealed without a binding")
+		}
+		if err == nil && (len(b.Hosts) != 1 || b.Hosts[0] != c.Host) {
+			err = fmt.Errorf("it is bound to %v, not %s alone", b.Hosts, c.Host)
+		}
+		if err != nil {
+			brokerstore.Wipe(v)
+			return fmt.Errorf("credential %s is not %s's client certificate: %w", c.Ref, c.Host, err)
+		}
+		cert, key, err := splitCertKey(v)
+		brokerstore.Wipe(v)
+		if err == nil {
+			err = writeOwned(filepath.Join(job.Dir, name+".crt"), cert, job.UID)
+		}
+		if err == nil {
+			err = writeOwned(filepath.Join(job.Dir, name+".key"), key, job.UID)
+		}
+		brokerstore.Wipe(key)
+		if err != nil {
+			return err
+		}
+	}
+	if err := os.Chown(job.Dir, job.UID, -1); err != nil {
+		return err
+	}
+	return os.Chmod(job.Dir, 0o500)
+}
+
+// splitCertKey separates a client credential's PEM blocks: the certificates (the client's first,
+// then any chain) and its one private key.
+func splitCertKey(v []byte) (cert, key []byte, err error) {
+	rest := v
+	for {
+		var blk *pem.Block
+		blk, rest = pem.Decode(rest)
+		if blk == nil {
+			break
+		}
+		switch {
+		case blk.Type == "CERTIFICATE":
+			cert = append(cert, pem.EncodeToMemory(blk)...)
+		case strings.HasSuffix(blk.Type, "PRIVATE KEY"):
+			if key != nil {
+				return nil, nil, errors.New("more than one private key")
+			}
+			key = pem.EncodeToMemory(blk)
+		}
+	}
+	if cert == nil || key == nil {
+		return nil, nil, errors.New("not a PEM certificate and private key")
+	}
+	return cert, key, nil
 }
 
 // runHelper runs a short-lived copy of sandboxd with job on its stdin, written synchronously.

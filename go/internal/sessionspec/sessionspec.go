@@ -70,6 +70,23 @@ type KubeCluster struct {
 	TLSServerName string `json:"tls_server_name,omitempty"`
 }
 
+// Upstream is the cluster's API server as the gateway reaches it: host and port, the path to put in
+// front of each request's, and the name its certificate must carry (tls_server_name, else the
+// host). The server URL is one CheckKubeServer accepts.
+func (k KubeCluster) Upstream() (host string, port int, prefix, serverName string) {
+	u, _ := url.Parse(k.Server)
+	host, port = u.Hostname(), 443
+	if p, err := strconv.Atoi(u.Port()); err == nil {
+		port = p
+	}
+	prefix = strings.TrimRight(u.EscapedPath(), "/")
+	serverName = host
+	if k.TLSServerName != "" {
+		serverName = k.TLSServerName
+	}
+	return host, port, prefix, serverName
+}
+
 // DefaultMaxDependencies is v2's SANDBOX_MAX_DEPS_PER_SESSION default (design 5.5.3).
 const DefaultMaxDependencies = 6
 

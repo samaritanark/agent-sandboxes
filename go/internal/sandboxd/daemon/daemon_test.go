@@ -203,6 +203,8 @@ func (f *fakeGW) Reload(_ context.Context, id, dir string, slot, generation int,
 	return os.WriteFile(filepath.Join(dir, "policy.json"), policy, 0o400)
 }
 
+func (f *fakeGW) User(slot int) int { return 70000 + slot }
+
 func (f *fakeGW) Stop(_ context.Context, id string, pid int) error {
 	if f.running[id] != pid {
 		return errors.New("wrong pid")
@@ -555,6 +557,8 @@ type fakeBroker struct {
 	failWith error
 	// the uid the readable files were written for
 	readableUID int
+	// the uid the client certificates were written for
+	certUID int
 }
 
 func (f *fakeBroker) SetKey(k []byte) error    { f.key = append([]byte(nil), k...); return nil }
@@ -572,6 +576,18 @@ func (f *fakeBroker) Bindings() (map[string]brokerseal.Binding, error) {
 }
 
 // WriteReadable writes "value of <ref>\n" for each file, as the helper would write the value.
+func (f *fakeBroker) WriteClientCerts(_ context.Context, dir string, uid int, certs map[string]ClientCert) error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	for name, c := range certs {
+		os.WriteFile(filepath.Join(dir, name+".crt"), []byte("cert of "+c.Ref+" for "+c.Host+"\n"), 0o400)
+		os.WriteFile(filepath.Join(dir, name+".key"), []byte("key of "+c.Ref+"\n"), 0o400)
+	}
+	f.certUID = uid
+	return nil
+}
+
 func (f *fakeBroker) WriteReadable(_ context.Context, dir string, uid int, files map[string]string) error {
 	if f.failWith != nil {
 		return f.failWith

@@ -170,6 +170,9 @@ func (g *gateways) Renew(_ context.Context, id, dir string, slot, version int, l
 	return installLeaves(dir, GatewayIDBase+slot, version, leaves)
 }
 
+// User is the uid (and gid) the gateway of uplink slot runs as.
+func (g *gateways) User(slot int) int { return GatewayIDBase + slot }
+
 // Reload puts policy in place of dir's policy.json (atomically, the gateway's own file) and sends
 // the gateway SIGHUP; it returns once the gateway reports generation and Envoy listens again.
 func (g *gateways) Reload(ctx context.Context, id, dir string, slot, generation int, policy []byte) error {

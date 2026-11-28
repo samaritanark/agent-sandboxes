@@ -1135,7 +1135,7 @@ m("internal/sandboxd/daemon/daemon.go", '\t\t\td.readable[id] = append(d.readabl
 SB = "cmd/sandboxd/broker.go"
 m(SB, '\treturn n != "" && n != "." && n != ".." && !strings.ContainsAny(n, "/\\x00")', '\treturn n != ""', "TestWriteReadable", pkg="../cmd/sandboxd")
 m(SB, 'os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o400', 'os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o400', "TestWriteReadable", pkg="../cmd/sandboxd")
-m(SB, '\treturn os.Chmod(job.Dir, 0o500)', '\treturn nil', "TestWriteReadable", pkg="../cmd/sandboxd")
+m(SB, '\treturn os.Chmod(job.Dir, 0o500)\n}\n\n// validFileName', '\treturn nil\n}\n\n// validFileName', "TestWriteReadable", pkg="../cmd/sandboxd")
 m("internal/sessionspec/sessionspec.go", '\tif len(s.Readable) > MaxReadable {', '\tif false {', "TestValidateRefuses")
 m("internal/sessionspec/sessionspec.go", '\t\tfor _, v := range []string{r.EnvVar, file} {', '\t\tfor _, v := range []string{r.EnvVar} {', "TestValidateRefuses")
 
@@ -1289,7 +1289,7 @@ R_SB2 = "TestOpenLinks|TestWriteReadable"
 m(SB2, '\t\t\tif _, secret := brokerseal.SecretName(u.Ref); secret && !bound {', '\t\t\tif false {', R_SB2, pkg="../cmd/sandboxd")
 m(SB2, '\t\t\tif bound {\n\t\t\t\tif err := b.Allows(u.Hosts, u.Inject, false); err != nil {', '\t\t\tif false {\n\t\t\t\tif err := b.Allows(u.Hosts, u.Inject, false); err != nil {', R_SB2, pkg="../cmd/sandboxd")
 m(SB2, '\t\tif err = b.Allows(nil, "", true); !bound {', '\t\tif err = nil; !bound {', R_SB2, pkg="../cmd/sandboxd")
-m(SB2, '\t\t\terr = errors.New("it was sealed without a binding")', '\t\t\terr = nil', R_SB2, pkg="../cmd/sandboxd")
+m(SB2, '\t\tif err = b.Allows(nil, "", true); !bound {\n\t\t\terr = errors.New("it was sealed without a binding")', '\t\tif err = b.Allows(nil, "", true); !bound {\n\t\t\terr = nil', R_SB2, pkg="../cmd/sandboxd")
 m(SB2, '\t\t\topened = append(opened, v)\n\t\t\tif _, secret', '\t\t\tif _, secret', R_SB2, pkg="../cmd/sandboxd")
 m("internal/sandboxd/daemon/daemon.go", 'refs[i] = append(refs[i], Use{Ref: b.Ref, Hosts: b.Hosts, Inject: b.Inject})', 'refs[i] = append(refs[i], Use{Ref: b.Ref, Inject: b.Inject})', "TestBroker", pkg="sandboxd/daemon")
 m("internal/sandboxd/daemon/server.go", '\t\t\tif refs, err = d.Broker.List(); err == nil {\n\t\t\t\tbindings, err = d.Broker.Bindings()\n\t\t\t}', '\t\t\trefs, err = d.Broker.List()', "TestBrokerList", pkg="sandboxd/daemon")
@@ -1684,3 +1684,22 @@ m("internal/gateway/envoyconf/intercept.go", '\t\t\t\tif i != 0 || l.BrokerSocke
 m("internal/gateway/envoyconf/intercept.go", '\t\tupgrades = kubeUpgrades\n', '', R_EK, pkg="gateway/envoyconf")
 m("internal/gateway/broker/extproc.go", '\t\t\t\t\traw = true\n\t\t\t\t\tresp.ModeOverride = headersOnly\n', '', "TestRawStream", pkg="gateway/broker")
 m("internal/gateway/broker/broker.go", '\t\t\tout.RawStream = true // allowed above for clusters only\n', '', "TestDecide|TestRawStream", pkg="gateway/broker")
+
+# the kube helper (client certificates for a cluster's gateway)
+KH = "cmd/sandboxd/broker.go"
+m(KH, '\t\tif err == nil && (len(b.Hosts) != 1 || b.Hosts[0] != c.Host) {', '\t\tif false {', "TestWriteClientCerts", pkg="../cmd/sandboxd",
+  equivalent="Allows refuses another host, and an mtls binding has one host (brokerseal.Validate)")
+m(KH, '\t\tif err = b.Allows([]string{c.Host}, "mtls", false); !bound {', '\t\tif err = nil; !bound {', "TestWriteClientCerts", pkg="../cmd/sandboxd")
+m(KH, '\t\t\tif key != nil {\n\t\t\t\treturn nil, nil, errors.New("more than one private key")', '\t\t\tif false {\n\t\t\t\treturn nil, nil, errors.New("more than one private key")', "TestWriteClientCerts", pkg="../cmd/sandboxd")
+m(KH, '\treturn os.Chmod(job.Dir, 0o500)\n}\n\n// splitCertKey', '\treturn nil\n}\n\n// splitCertKey', "TestWriteClientCerts", pkg="../cmd/sandboxd")
+DK = "internal/sandboxd/daemon/kube.go"
+R_DK = "TestKubeSession"
+m(DK, '\t\t\tif b.Inject == "mtls" && len(b.Hosts) == 1 && b.Hosts[0] == k.Name {', '\t\t\tif b.Inject == "mtls" {', R_DK, pkg="sandboxd/daemon",
+  equivalent="the spec allows one binding per cluster, and an mtls binding only for a gateway name")
+m(DK, '\t\t\tfiles[name] = []byte(k.CA)\n', '', R_DK, pkg="sandboxd/daemon")
+m(DK, '\t\t\tku.ClientCert, ku.ClientKey = filepath.Join(certDir, c+".crt"), filepath.Join(certDir, c+".key")\n', '', R_DK, pkg="sandboxd/daemon")
+m(DK, '\t\tif d.Broker == nil || d.KubeRoot == "" {', '\t\tif d.Broker == nil {', R_DK, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\t\trules[0] = append(append([]l7.Rule(nil), rules[0]...), kubeapi.DenyRules(k.Name)...)\n', '', R_DK, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\t\tcase KindKubeCerts:\n\t\t\terr = os.RemoveAll(d.kubeCertDir(id))', '\t\tcase KindKubeCerts:\n\t\t\terr = nil', R_DK, pkg="sandboxd/daemon")
+m("internal/sessionspec/sessionspec.go", '\t\tserverName = k.TLSServerName\n', '', "TestUpstream")
+m("internal/sessionspec/sessionspec.go", '\tprefix = strings.TrimRight(u.EscapedPath(), "/")', '\tprefix = u.EscapedPath()', "TestUpstream")

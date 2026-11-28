@@ -139,7 +139,7 @@ func serve() error {
 		Network: network{}, Gateways: gws, TLS: tlsConf, Broker: &brokerStore{store: brokerstore.Store{Dir: brokerstore.Dir}},
 		Resolvers: resolvers, AuditRoot: auditlog.Root,
 		NetNSPath: netns.Path, Budget: limits.Budget{VMMemoryMiB: mem},
-		SessionRoot: sessionspec.SessionStore, ReadableRoot: ReadableRoot, Log: l,
+		SessionRoot: sessionspec.SessionStore, ReadableRoot: ReadableRoot, KubeRoot: KubeRoot, Log: l,
 		Mounter: &viewMounter{stage: "/run/sandboxd/stage"},
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
