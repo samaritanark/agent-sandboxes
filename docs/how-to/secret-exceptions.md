@@ -21,15 +21,13 @@ This page is about the third one.
 
 In v3 the gate runs in the sandbox VM, against its copy of each repository (synced from your
 checkout just before the scan), with the betterleaks the appliance ships (1.8.1). The rules,
-messages, and files below are v2's. Two things differ in this build:
+messages, and files below are v2's. One thing differs in this build, and one works differently:
 
 - `sandbox exceptions add` writes `.betterleaksignore` in the VM's copy; the change comes back to
   your checkout with the next sync (`sandbox sync once --repo <path>` brings it now). Commit it
   there.
-- Signing the attestation with `sandbox vet` (step 4) is not available yet; see
-  [Vetting](vetting.md#attest-a-repo) for signing the tag with git on your machine. Signing a tag
-  by hand skips `vet`'s acknowledgment prompt, so read the repository's `.betterleaksignore`
-  before you sign: every entry there is a value the agent will be able to read.
+- `sandbox vet` (step 4) signs on your machine and lists the exceptions the signature vouches for
+  before it signs, as in v2 (see [Vetting](vetting.md#attest-a-repo)).
 
 ## What an exception is
 
