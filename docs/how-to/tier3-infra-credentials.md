@@ -98,7 +98,11 @@ How it works in v3, and how it differs from v2:
 - **The gateway refuses some API calls whatever the credential's role allows:** reading or
   changing Secrets, minting ServiceAccount tokens (TokenRequest), and creating or approving
   CertificateSigningRequests. Each would turn the agent's use of the credential into a new
-  credential that outlives the session. `kubectl exec`, `logs -f`, `port-forward`, and watches
+  credential that outlives the session. It also reads the body of every create, update, and patch
+  and refuses one that asks for a privileged container, a `hostPath` volume, or the node's network,
+  PID, or IPC namespace (in a pod, any controller's pod template, a custom resource that embeds one,
+  or a JSON patch), since each lets a container out onto the node; a body it cannot read (YAML that
+  is not JSON, protobuf) is refused too. `kubectl exec`, `logs -f`, `port-forward`, and watches
   work.
 - **A warning when the identity can do anything:** at launch the host runs `kubectl auth can-i '*'
   '*' --all-namespaces` with your kubeconfig and warns on `yes` (cluster-admin or an equivalent).

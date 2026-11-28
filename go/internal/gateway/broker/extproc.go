@@ -71,6 +71,15 @@ var skipResponse = &procmodev3.ProcessingMode{ResponseHeaderMode: procmodev3.Pro
 // headersOnly scrubs a response's headers and leaves its stream alone (Outcome.RawStream).
 var headersOnly = &procmodev3.ProcessingMode{ResponseHeaderMode: procmodev3.ProcessingMode_SEND, ResponseBodyMode: procmodev3.ProcessingMode_NONE}
 
+// clusterHost is a cluster's gateway name (sessionspec.KubeName), whose writes are inspected.
+func clusterHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if h, port, ok := strings.Cut(host, ":"); ok && port == "443" {
+		host = h
+	}
+	return strings.HasSuffix(host, kubeDomain)
+}
+
 // Process handles one HTTP request's exchange.
 func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
 	var scrub *Scrubber
@@ -78,6 +87,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 	var raw bool              // a SPDY stream to a cluster (Outcome.RawStream)
 	var reps []Replacement
 	var ev Event
+	inspect, contentType := false, "" // a write to a cluster, whose body is checked (riskyWorkload)
 	reflected := func() {
 		hits := 0
 		if scrub != nil {
@@ -120,6 +130,9 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				}
 				if !strings.HasPrefix(h.Key, ":") {
 					in.Headers = append(in.Headers, Header{Name: strings.ToLower(h.Key), Value: v})
+				}
+				if strings.EqualFold(h.Key, "content-type") {
+					contentType = v
 				}
 			}
 			ev.Host = in.Host
@@ -168,6 +181,27 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				}
 			} else {
 				resp.ModeOverride = skipResponse
+			}
+			if clusterHost(in.Host) && (ev.Method == "POST" || ev.Method == "PUT" || ev.Method == "PATCH") && !o.RawStream {
+				// the body comes whole before the request goes on; the response modes are as above
+				inspect = true
+				mode := &procmodev3.ProcessingMode{RequestBodyMode: procmodev3.ProcessingMode_BUFFERED,
+					ResponseHeaderMode: procmodev3.ProcessingMode_SKIP, ResponseBodyMode: procmodev3.ProcessingMode_NONE}
+				if o.Injected {
+					mode.ResponseHeaderMode, mode.ResponseBodyMode = procmodev3.ProcessingMode_SEND, procmodev3.ProcessingMode_STREAMED
+				}
+				resp.ModeOverride = mode
+			}
+		case *extprocv3.ProcessingRequest_RequestBody:
+			resp = &extprocv3.ProcessingResponse{Response: &extprocv3.ProcessingResponse_RequestBody{RequestBody: &extprocv3.BodyResponse{}}}
+			if !inspect {
+				break
+			}
+			if why := riskyWorkload(contentType, r.RequestBody.GetBody()); why != "" {
+				e := ev
+				e.Type, e.Reason = "refused", "the cluster deny-list: "+why
+				s.record(e)
+				resp = immediate(typev3.StatusCode_Forbidden, "broker_refused_workload")
 			}
 		case *extprocv3.ProcessingRequest_ResponseHeaders:
 			mut := &extprocv3.HeaderMutation{}
@@ -234,8 +268,6 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				resp.Response = &extprocv3.ProcessingResponse_RequestTrailers{RequestTrailers: &extprocv3.TrailersResponse{}}
 			case *extprocv3.ProcessingRequest_ResponseTrailers:
 				resp.Response = &extprocv3.ProcessingResponse_ResponseTrailers{ResponseTrailers: &extprocv3.TrailersResponse{}}
-			case *extprocv3.ProcessingRequest_RequestBody:
-				resp.Response = &extprocv3.ProcessingResponse_RequestBody{RequestBody: &extprocv3.BodyResponse{}}
 			}
 		}
 		if err := stream.Send(resp); err != nil {

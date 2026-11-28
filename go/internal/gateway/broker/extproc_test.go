@@ -3,6 +3,7 @@ package broker
 import (
 	"bytes"
 	"io"
+	"strings"
 	"testing"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -168,5 +169,45 @@ func TestRawStream(t *testing.T) {
 	out, _ = process(t, reqHeaders(wsRequest...), respHeaders(":status", "101"))
 	if out[0].GetModeOverride() != nil {
 		t.Errorf("a WebSocket upgrade's stream skipped: %v", out[0].GetModeOverride())
+	}
+}
+
+func reqBody(b string) *extprocv3.ProcessingRequest {
+	return &extprocv3.ProcessingRequest{Request: &extprocv3.ProcessingRequest_RequestBody{RequestBody: &extprocv3.HttpBody{Body: []byte(b), EndOfStream: true}}}
+}
+
+// TestWorkloadBody (design 5.9.5): a write to a cluster has its body buffered and checked before it
+// goes on, keeping the response scrubbed; a privileged or node-namespace workload is refused (403,
+// recorded); an ordinary one passes; reads, and writes to other hosts, are not buffered.
+func TestWorkloadBody(t *testing.T) {
+	pod := func(spec string) string { return `{"kind":"Pod","spec":` + spec + `}` }
+	write := reqHeaders(":authority", "kube-0.gw.sandbox.internal", ":path", "/api/v1/namespaces/a/pods", ":method", "POST",
+		"authorization", "Bearer "+phK, "content-type", "application/json")
+	out, evs := process(t, write, reqBody(pod(`{"hostNetwork":true,"containers":[{"name":"x"}]}`)))
+	if len(out) != 2 {
+		t.Fatalf("%v", out)
+	}
+	if m := out[0].GetModeOverride(); m.GetRequestBodyMode().String() != "BUFFERED" || m.GetResponseBodyMode().String() != "STREAMED" || m.GetResponseHeaderMode().String() != "SEND" {
+		t.Errorf("mode %v", m)
+	}
+	if ir := out[1].GetImmediateResponse(); ir == nil || ir.GetStatus().GetCode().String() != "Forbidden" {
+		t.Errorf("not refused: %v", out[1])
+	}
+	if len(evs) != 2 || evs[1].Type != "refused" || !strings.Contains(evs[1].Reason, "hostNetwork") || evs[1].Path != "/api/v1/namespaces/a/pods" {
+		t.Errorf("events %+v", evs)
+	}
+	out, evs = process(t, write, reqBody(pod(`{"containers":[{"name":"x","image":"nginx"}]}`)))
+	if len(out) != 2 || out[1].GetRequestBody() == nil || len(evs) != 1 {
+		t.Errorf("an ordinary pod: %v %+v", out, evs)
+	}
+	// a read is not buffered
+	out, _ = process(t, reqHeaders(":authority", "kube-0.gw.sandbox.internal", ":path", "/api/v1/namespaces/a/pods", ":method", "GET", "authorization", "Bearer "+phK))
+	if out[0].GetModeOverride().GetRequestBodyMode().String() == "BUFFERED" {
+		t.Error("a read was buffered")
+	}
+	// another host's write is not either
+	out, _ = process(t, reqHeaders(":authority", "api.github.com", ":path", "/repos", ":method", "POST", "authorization", "Bearer "+phGH))
+	if out[0].GetModeOverride().GetRequestBodyMode().String() == "BUFFERED" {
+		t.Error("a write to another host was buffered")
 	}
 }

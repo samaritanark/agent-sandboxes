@@ -8,8 +8,8 @@
 //   - TokenRequest (a service account's token);
 //   - creating and approving CertificateSigningRequests (a client certificate the cluster trusts).
 //
-// Workloads that would reach the node (hostPath, privileged, hostNetwork) need the request body
-// and are refused by the broker, not here.
+// Workloads that would reach the node (privileged, hostPath, hostNetwork, hostPID, hostIPC) need
+// the request body and are refused by the gateway's broker (broker.riskyWorkload), not here.
 package kubeapi
 
 import "github.com/samaritanark/agent-sandboxes/go/internal/l7"

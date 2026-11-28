@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -107,7 +108,11 @@ func fakeAPIServer(t *testing.T, addr netip.Addr, p kubePKI, mtls bool) {
 		case "":
 			auth = "none"
 		}
+		body, _ := io.ReadAll(r.Body)
 		line := fmt.Sprintf("path=%s auth=%s client=%q", r.URL.RequestURI(), auth, who)
+		if len(body) > 0 {
+			line += fmt.Sprintf(" body=%d", len(body))
+		}
 		if strings.EqualFold(r.Header.Get("Upgrade"), "SPDY/3.1") {
 			c, rw, _ := w.(http.Hijacker).Hijack()
 			rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: SPDY/3.1\r\n\r\n" + line + "\n")
@@ -202,6 +207,27 @@ func TestKubeEndToEnd(t *testing.T) {
 	}
 	if code, body := get(k1, "/api"); code != "403" || strings.Contains(body, "path=") {
 		t.Errorf("mtls without the placeholder: %s %s", code, body)
+	}
+	// a workload's body is checked before it goes on: a privileged pod is refused, an ordinary one
+	// arrives whole
+	postBody := func(body string) (string, string) {
+		args := []string{"-sS", "-o", "-", "-w", "\n%{http_code}", "--max-time", "10", "--cacert", gwCA, "--resolve", k0 + ":443:" + gw.String(),
+			"-H", "Authorization: Bearer " + ph0, "-H", "Content-Type: application/json", "--data-binary", body}
+		out, _ := exec.Command("curl", append(args, "https://"+k0+"/api/v1/namespaces/default/pods")...).CombinedOutput()
+		s := strings.TrimSpace(string(out))
+		i := strings.LastIndex(s, "\n")
+		if i < 0 {
+			return s, ""
+		}
+		return s[i+1:], s[:i]
+	}
+	priv := `{"kind":"Pod","spec":{"containers":[{"name":"x","securityContext":{"privileged":true}}]}}`
+	if code, body := postBody(priv); code != "403" || strings.Contains(body, "path=") {
+		t.Errorf("privileged pod: %s %s", code, body)
+	}
+	ok := `{"kind":"Pod","spec":{"containers":[{"name":"x","image":"nginx"}]}}`
+	if code, body := postBody(ok); code != "200" || !strings.Contains(body, fmt.Sprintf("auth=token client=\"\" body=%d", len(ok))) {
+		t.Errorf("ordinary pod: %s %s", code, body)
 	}
 	// kubectl exec over SPDY
 	conf := &tls.Config{ServerName: k0, RootCAs: x509.NewCertPool()}
