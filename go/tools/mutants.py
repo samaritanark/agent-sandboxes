@@ -1181,7 +1181,7 @@ m(HR, '\tif h == "" || !strings.HasPrefix(h, "/") || path.Clean(h) != h || h == 
 m(AA, '\t\targv = append(argv, h) // the VM links', '\t\t_ = append(argv, h) // the VM links', R_HR, pkg="host/app")
 MI = "cmd/sandbox-vm/mirror.go"
 m(MI, '\tif len(parts) < 3 {', '\tif len(parts) < 2 {', "TestMirror", pkg="../cmd/sandbox-vm")
-m(MI, '\t\tif parts[1] == r {', '\t\tif false {', "TestMirror", pkg="../cmd/sandbox-vm")
+m(MI, '\t\tif parts[1] == r && !varHome {', '\t\tif false {', "TestMirror", pkg="../cmd/sandbox-vm")
 m(MI, '\tif target != OperatorDir && !copyTarget.MatchString(target) {', '\tif false {', "TestMirror", pkg="../cmd/sandbox-vm")
 m(MI, '\t\tcase !st.IsDir():', '\t\tcase false:', "TestMirror", pkg="../cmd/sandbox-vm")
 m(MI, '&& cur == target {', '{', "TestMirror", pkg="../cmd/sandbox-vm")
