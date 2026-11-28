@@ -1618,3 +1618,4 @@ JN = "internal/sandboxd/journal/journal.go"
 m(JN, '\t\tif err != nil || !prev.State.Ended() || len(prev.Live()) > 0 {', '\t\tif err != nil || !prev.State.Ended() {', "TestCreateAgain", pkg="sandboxd/journal")
 m(JN, '\t\tif err != nil || !prev.State.Ended() || len(prev.Live()) > 0 {', '\t\tif err != nil || len(prev.Live()) > 0 {', "TestCreateAgain", pkg="sandboxd/journal")
 m(JN, '\t\tif err := os.Rename(st.path(spec.ID), st.path(spec.ID)+".ended"); err != nil {', '\t\tif err := os.Remove(st.path(spec.ID)); err != nil {', "TestCreateAgain", pkg="sandboxd/journal")
+m("internal/host/syncengine/git.go", '\tif err != nil || !st.Mode().IsRegular() || st.Size() <= syncproto.MaxBody {', '\tif true {', "TestLargeObject")

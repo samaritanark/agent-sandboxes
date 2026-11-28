@@ -2,6 +2,7 @@ package syncengine
 
 import (
 	"bytes"
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,4 +89,44 @@ func (o *oldAgent) Call(h syncproto.Header, body []byte) (syncproto.Header, []by
 		return syncproto.Header{Err: `unknown operation "write-part"`}, nil, nil
 	}
 	return o.StreamVM.Call(h, body)
+}
+
+// TestLargeObject: a git object larger than one message (a committed large file that does not
+// compress) reaches the VM in parts, so the git phase does not fail on it.
+func TestLargeObject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes a 70 MB object")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	host, vmdir, state := t.TempDir(), t.TempDir(), t.TempDir()
+	git(t, host, "init", "-q", "--template=", "-b", "main")
+	b := make([]byte, syncproto.MaxBody+(6<<20))
+	rand.Read(b)
+	if err := os.WriteFile(filepath.Join(host, "noise.bin"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, host, "add", "noise.bin")
+	git(t, host, "-c", "user.email=t@e", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "x")
+	e := &Engine{Repo: host, StateFile: filepath.Join(state, "s.json"), VM: pipeVM(t, vmdir)}
+	rep, err := e.Sync()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var obj string
+	for _, p := range rep.ToVM {
+		if syncproto.IsObjectPath(p) {
+			if st, err := os.Stat(filepath.Join(host, p)); err == nil && st.Size() > syncproto.MaxBody {
+				obj = p
+			}
+		}
+	}
+	if obj == "" {
+		t.Fatalf("no large object sent: %v", rep.ToVM)
+	}
+	hb, _ := os.ReadFile(filepath.Join(host, obj))
+	vb, _ := os.ReadFile(filepath.Join(vmdir, obj))
+	if !bytes.Equal(hb, vb) {
+		t.Error("the object differs in the VM")
+	}
 }

@@ -82,6 +82,30 @@ func (e *Engine) vmRead(p string) ([]byte, string, error) {
 	return body, r.FP, nil
 }
 
+// objectInParts sends a host object or pack larger than a message to the VM in parts (sendParts);
+// large is false when it is small enough to go whole, and sent whether it went.
+func (e *Engine) objectInParts(hg *hostGit, p string) (sent, large bool, err error) {
+	r, rel, err := hg.loc(p)
+	if err != nil {
+		return false, false, err
+	}
+	st, err := r.Lstat(rel)
+	if err != nil || !st.Mode().IsRegular() || st.Size() <= syncproto.MaxBody {
+		return false, false, err
+	}
+	f, err := r.Open(rel)
+	if err != nil {
+		return false, true, err
+	}
+	fp, _, err := syncproto.FingerprintReader(f, false)
+	f.Close()
+	if err != nil {
+		return false, true, err
+	}
+	got, err := e.sendParts(r, rel, p, fp, "")
+	return got != "", true, err
+}
+
 func (e *Engine) vmWrite(p string, data []byte, base string) (string, bool, error) {
 	r, _, err := e.VM.Call(syncproto.Header{Op: syncproto.OpWrite, Path: p, Base: base}, data)
 	if err != nil {
@@ -197,6 +221,14 @@ func (e *Engine) syncGit(hg *hostGit, repo *gitref.Repo, st *State, host, vm map
 	for p := range host {
 		if syncproto.IsObjectPath(p) {
 			if _, have := vm[p]; !have {
+				if sent, large, err := e.objectInParts(hg, p); err != nil {
+					return err
+				} else if large {
+					if sent {
+						rep.ToVM = append(rep.ToVM, p)
+					}
+					continue
+				}
 				b, err := hostRead(p)
 				if err != nil {
 					return err
