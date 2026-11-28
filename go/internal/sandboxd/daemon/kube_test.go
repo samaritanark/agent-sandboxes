@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -43,6 +44,9 @@ func TestKubeSession(t *testing.T) {
 	fb := &fakeBroker{}
 	r.d.Broker = fb
 	r.d.KubeRoot = filepath.Join(t.TempDir(), "kube")
+	var checked string
+	defer func(f func(string) error) { kubeTraversable = f }(kubeTraversable)
+	kubeTraversable = func(d string) error { checked = d; return nil } // a temporary directory's parents are private
 	sp, err := sessionspec.Decode(bytes.NewReader(spec("s-k8s", 4096)))
 	if err != nil {
 		t.Fatal(err)
@@ -97,6 +101,21 @@ func TestKubeSession(t *testing.T) {
 	if _, err := os.Stat(certDir); err == nil {
 		t.Error("the client certificates outlived the session")
 	}
+	if checked != r.d.KubeRoot {
+		t.Errorf("the gateways' reach to %s was not checked (%q)", r.d.KubeRoot, checked)
+	}
+	if st, err := os.Stat(r.d.KubeRoot); err != nil || st.Mode().Perm() != 0o711 {
+		t.Errorf("KubeRoot mode: %v %v", st.Mode(), err)
+	}
+	// a KubeRoot the gateways cannot reach stops the start
+	r3 := newRig(t)
+	r3.d.TLS, r3.d.Broker, r3.d.KubeRoot = r.d.TLS, fb, r.d.KubeRoot
+	kubeTraversable = func(string) error { return errors.New("the gateways cannot reach it") }
+	sp.ID, sp.Name = "s-k8s3", "s-k8s3"
+	b, _ = sp.Encode()
+	if _, err := r3.d.Start(ctx, b); err == nil || !strings.Contains(err.Error(), "cannot reach") {
+		t.Errorf("unreachable KubeRoot: %v", err)
+	}
 	// an mtls cluster with no tmpfs for its certificate is refused
 	r2 := newRig(t)
 	r2.d.TLS, r2.d.Broker = r.d.TLS, fb
@@ -104,5 +123,22 @@ func TestKubeSession(t *testing.T) {
 	b, _ = sp.Encode()
 	if _, err := r2.d.Start(ctx, b); err == nil || !strings.Contains(err.Error(), "client-certificate") {
 		t.Errorf("no KubeRoot: %v", err)
+	}
+}
+
+// TestTraversable: a gateway's user must pass through every directory above its certificates;
+// a private one anywhere on the path is named.
+func TestTraversable(t *testing.T) {
+	if err := traversable("/usr/bin"); err != nil {
+		t.Errorf("/usr/bin: %v", err)
+	}
+	priv := filepath.Join(t.TempDir(), "private")
+	os.MkdirAll(filepath.Join(priv, "kube"), 0o711)
+	os.Chmod(priv, 0o700)
+	if err := traversable(filepath.Join(priv, "kube")); err == nil || !strings.Contains(err.Error(), priv+" is mode 700") {
+		t.Errorf("private parent: %v", err)
+	}
+	if err := traversable(filepath.Join(priv, "missing")); err == nil {
+		t.Error("a missing directory passed")
 	}
 }

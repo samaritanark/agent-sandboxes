@@ -379,6 +379,9 @@ func brokerHandover() int {
 // openLinks opens each link's credentials for the gateway, each checked against the binding the
 // host sealed with it: an operator secret must carry one, and every binding of it in the spec must
 // be one its binding allows. opened is every value opened, for the caller to wipe, error or not.
+// mtlsMarker is what the gateway's broker gets for a client-certificate binding: not the value.
+const mtlsMarker = "client-certificate"
+
 func openLinks(st brokerstore.Store, key []byte, links [][]daemon.Use) (h gwpolicy.Handover, opened [][]byte, err error) {
 	for _, uses := range links {
 		m := map[string][]byte{}
@@ -399,6 +402,12 @@ func openLinks(st brokerstore.Store, key []byte, links [][]daemon.Use) (h gwpoli
 				if err := b.Allows(u.Hosts, u.Inject, false); err != nil {
 					return h, opened, fmt.Errorf("credential %s: %w", u.Ref, err)
 				}
+			}
+			if u.Inject == "mtls" {
+				// the gateway's Envoy presents the certificate from its own files (kubeHandover);
+				// the broker only checks and removes the placeholder, so it never holds the key
+				m[u.Ref] = []byte(mtlsMarker)
+				continue
 			}
 			m[u.Ref] = v
 		}

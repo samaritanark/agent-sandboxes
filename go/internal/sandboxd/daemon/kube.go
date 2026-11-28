@@ -23,6 +23,26 @@ type ClientCert struct {
 	Ref, Host string
 }
 
+// kubeTraversable is traversable (tests: a temporary directory's parents are private).
+var kubeTraversable = traversable
+
+// traversable checks that a gateway's own user can reach dir: it and every directory above it let
+// others pass (the gateway opens its client certificate files itself, by path).
+func traversable(dir string) error {
+	for p := filepath.Clean(dir); ; p = filepath.Dir(p) {
+		st, err := os.Stat(p)
+		if err != nil {
+			return err
+		}
+		if st.Mode().Perm()&0o001 == 0 {
+			return fmt.Errorf("the gateways cannot reach %s: %s is mode %o", dir, p, st.Mode().Perm())
+		}
+		if p == filepath.Dir(p) {
+			return nil
+		}
+	}
+}
+
 func (d *Daemon) kubeCertDir(id string) string { return filepath.Join(d.KubeRoot, id) }
 
 // kubeUpstreams sets each cluster's upstream on its intercepted name in pol, adding its CA to
@@ -48,6 +68,12 @@ func (d *Daemon) kubeUpstreams(ctx context.Context, spec *sessionspec.Spec, gwDi
 		certDir = d.kubeCertDir(id)
 		if err := d.step(id, KindKubeCerts, "kube-certs", func() error {
 			if err := os.MkdirAll(d.KubeRoot, 0o711); err != nil {
+				return err
+			}
+			if err := os.Chmod(d.KubeRoot, 0o711); err != nil {
+				return err
+			}
+			if err := kubeTraversable(d.KubeRoot); err != nil {
 				return err
 			}
 			return os.Mkdir(certDir, 0o700)

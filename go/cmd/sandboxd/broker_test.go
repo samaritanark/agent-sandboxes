@@ -72,6 +72,20 @@ func TestOpenLinks(t *testing.T) {
 	if err != nil || len(h.Links) != 2 || string(h.Links[0]["secret.GH"]) != "gh" || string(h.Links[0]["anthropic"]) != "tok" || string(h.Links[1]["secret.GH"]) != "gh" || len(opened) != 3 {
 		t.Fatalf("%v %v %d", err, h, len(opened))
 	}
+	// a client certificate is checked against its binding but never handed to the gateway's broker
+	k8s := "kube-0.gw.sandbox.internal"
+	put("infra.kube.0", "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n-----BEGIN PRIVATE KEY-----\nK\n-----END PRIVATE KEY-----\n",
+		&brokerseal.Binding{Hosts: []string{k8s}, Inject: "mtls"})
+	h, _, err = openLinks(st, key, [][]daemon.Use{{use("infra.kube.0", "mtls", k8s)}})
+	if err != nil || string(h.Links[0]["infra.kube.0"]) != mtlsMarker {
+		t.Errorf("client certificate: %v %q", err, h.Links)
+	}
+	if _, _, err := openLinks(st, key, [][]daemon.Use{{use("infra.kube.0", "mtls", "evil.example.com")}}); err == nil {
+		t.Error("a client certificate was handed over for another host")
+	}
+	if _, _, err := openLinks(st, key, [][]daemon.Use{{use("infra.kube.0", "bearer", k8s)}}); err == nil {
+		t.Error("a client certificate was handed over as a bearer token")
+	}
 	for name, u := range map[string]daemon.Use{
 		"another host":      use("secret.GH", "bearer", "evil.example.com"),
 		"another injection": use("secret.GH", "query:token", "api.github.com"),

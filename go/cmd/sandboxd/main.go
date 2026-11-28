@@ -33,8 +33,9 @@ const Socket = daemon.Socket
 // ReadableRoot holds the sessions' readable secrets: on /run, a tmpfs, so never on the state disk.
 const ReadableRoot = "/run/sandboxd/readable"
 
-// KubeRoot holds tier 3 sessions' client certificates for their gateways (a tmpfs).
-const KubeRoot = "/run/sandboxd/kube"
+// KubeRoot holds tier 3 sessions' client certificates for their gateways (a tmpfs). Not under
+// /run/sandboxd, which is private to root: each gateway's user opens its files itself.
+const KubeRoot = "/run/sandbox-kube"
 
 func usage() int {
 	fmt.Fprintln(os.Stderr, "usage: sandboxd serve | sandboxd ctl start SPEC.json | stop ID [REASON] | heartbeat ID | list | attach ID -- CMD... |\n"+

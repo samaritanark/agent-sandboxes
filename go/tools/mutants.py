@@ -1765,3 +1765,11 @@ m("internal/cli/runprep.go", '\t\tif !resumeSessionIDRE.MatchString(id) || confi
 m("internal/cli/runprep.go", '\t\trec.ID = id\n', '', "TestLaunchHostEndpoints")
 m("internal/cli/runkube.go", '\t\tif err != nil || !ap.Addr().Is4() || ap.Port() == 0 {', '\t\tif err != nil {', "TestLaunchHostEndpoints")
 m("internal/cli/runlaunch.go", '\tfor _, l := range c.hostEndpoints(spec) {', '\tfor _, l := range []string{} {', "TestLaunchHostEndpoints")
+
+# found end to end (dev.28): the gateways' reach to their client certificates, and the key kept
+# out of the gateway's broker
+m(DK, '\t\t\tif err := kubeTraversable(d.KubeRoot); err != nil {', '\t\t\tif err := error(nil); err != nil {', R_DK, pkg="sandboxd/daemon")
+m(DK, '\t\t\tif err := os.Chmod(d.KubeRoot, 0o711); err != nil {', '\t\t\tif err := os.Chmod(d.KubeRoot, 0o700); err != nil {', R_DK, pkg="sandboxd/daemon")
+m(DK, '\t\tif st.Mode().Perm()&0o001 == 0 {', '\t\tif false {', "TestTraversable", pkg="sandboxd/daemon")
+m(DK, '\t\tif p == filepath.Dir(p) {\n\t\t\treturn nil', '\t\tif true {\n\t\t\treturn nil', "TestTraversable", pkg="sandboxd/daemon")
+m(KH, '\t\t\tif u.Inject == "mtls" {\n\t\t\t\t// the gateway', '\t\t\tif false {\n\t\t\t\t// the gateway', "TestOpenLinks", pkg="../cmd/sandboxd")
