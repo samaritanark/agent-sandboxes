@@ -56,6 +56,10 @@ type LaunchEnv struct {
 	// RefreshCredential has the broker renew an agent's OAuth login (sandboxd's broker-refresh) and
 	// returns its access token's expiry (Unix seconds).
 	RefreshCredential func(ref string) (int64, error)
+	// PrepareAgentHome makes an unbrokered agent's home at a tier (sessionspec.AgentHomePath),
+	// writes each seed file it does not have yet, checks the agent's own settings, and returns
+	// warnings for the operator (OQ-01).
+	PrepareAgentHome func(agent string, tier int, seed map[string][]byte) ([]string, error)
 	// WriteAgentFiles writes a session's agent configuration and makes its history directory
 	// (setUpAgent); nil refuses agents that need them.
 	WriteAgentFiles func(id string, f AgentFiles) error

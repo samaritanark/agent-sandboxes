@@ -9,12 +9,10 @@
 | claude   | sandbox:claude   | `claude setup-token`, then `sandbox onboard --agent claude`; brokered to `api.anthropic.com` | `claude.ai`, `*.claude.ai`, `claude.com`, `*.claude.com`, `api.anthropic.com`, `console.anthropic.com`, `statsig.anthropic.com`, `sentry.io` |
 | codex    | sandbox:codex    | a ChatGPT login: `sandbox onboard --agent codex`; brokered to `chatgpt.com` and refreshed by the broker | `api.openai.com`, `auth.openai.com`, `auth0.openai.com`, `chatgpt.com`, `cdn.openai.com` |
 | opencode | sandbox:opencode | `OPENCODE_API_KEY` and `OPENCODE_BASE_URL` in your shell; brokered to the endpoint's host | the host of `OPENCODE_BASE_URL` |
+| copilot  | sandbox:copilot  | its own device login in the session; **not brokered**, kept in the VM per tier | `github.com`, `api.github.com`, `*.githubcopilot.com`, `*.individual.githubcopilot.com`, `*.business.githubcopilot.com`, `*.enterprise.githubcopilot.com`, `copilot-proxy.githubusercontent.com`, `origin-tracker.githubusercontent.com`, `copilot-telemetry.githubusercontent.com`, `collector.github.com`, `default.exp-tas.com` |
+| grok     | sandbox:grok     | its own device login in the session; **not brokered**, kept in the VM per tier | `api.x.ai`, `accounts.x.ai`, `auth.x.ai`, `grok.com` |
 
-copilot and grok are not available in v3 yet: their broker adapters are not
-built, and `sandbox run` and `sandbox onboard` refuse them. They come in a later
-release.
-
-The agent never holds its real credential. Its token variable or file holds a
+Except for copilot and grok, the agent never holds its real credential. Its token variable or file holds a
 placeholder, and the session's gateway replaces it on requests to the agent's
 API host. See [Security model](../explanation/security-model.md#credential-brokering).
 

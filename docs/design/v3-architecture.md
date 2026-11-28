@@ -1644,8 +1644,11 @@ and does not require it.
 #### 5.9.9 Exceptions and later releases
 
 - If S2 finds an agent cannot be brokered, it MUST be listed in
-  `docs/reference/credential-exceptions.md`, require an explicit org-overlay
-  allowance, and produce an audit event per session (OQ-01).
+  `docs/reference/credential-exceptions.md`, warn at every launch, and produce an
+  audit event per session (OQ-01, resolved 2026-11-27: allowed with a warning; no
+  overlay allowance is required). Copilot and Grok run this way: each keeps its
+  own login in an agent home in the VM, one per agent and tier
+  (`/var/lib/sandbox/agent-home/<agent>/tier<N>`, sessionspec `agent-home`).
 - R2+ items from the brokering design are recorded so v3 does not foreclose
   them: request signing (AWS SigV4, GCP JWT, OAuth client-credentials, HMAC),
   SSH keys and git-over-ssh via agent forwarding, and (R3+)

@@ -266,6 +266,33 @@ func TestHistoryMounts(t *testing.T) {
 	}
 }
 
+// TestAgentHomeMounts (OQ-01): only copilot and grok mount an agent home, their own at their own
+// tier, writable.
+func TestAgentHomeMounts(t *testing.T) {
+	for name, c := range map[string]struct {
+		agent, src string
+		ro, ok     bool
+	}{
+		"copilot":      {"copilot", AgentHomeStore + "/copilot/tier2", false, true},
+		"grok":         {"grok", AgentHomeStore + "/grok/tier2", false, true},
+		"another tier": {"copilot", AgentHomeStore + "/copilot/tier3", false, false},
+		"another's":    {"copilot", AgentHomeStore + "/grok/tier2", false, false},
+		"brokered":     {"claude", AgentHomeStore + "/claude/tier2", false, false},
+		"read-only":    {"grok", AgentHomeStore + "/grok/tier2", true, false},
+		"escape":       {"grok", AgentHomeStore + "/grok/tier2/../../x", false, false},
+	} {
+		s := good()
+		s.Agent = c.agent
+		s.Mounts = append(s.Mounts, Mount{Kind: AgentHome, Source: c.src, Target: "/home/agent/.copilot", ReadOnly: c.ro})
+		if err := s.Validate(Options{}); (err == nil) != c.ok {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if AgentHomePath("grok", 3) != "/var/lib/sandbox/agent-home/grok/tier3" {
+		t.Error(AgentHomePath("grok", 3))
+	}
+}
+
 // testCA is a self-signed certificate in PEM.
 func testCA(t *testing.T) string {
 	t.Helper()

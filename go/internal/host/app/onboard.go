@@ -28,7 +28,7 @@ import (
 const onboardUsage = `sandbox onboard — Put an agent's login into the sandbox VM's credential broker
 
 USAGE:
-  sandbox onboard [--agent claude|codex] [--dry-run] [--from-auth-json FILE]
+  sandbox onboard [--agent claude|codex|copilot|grok] [--dry-run] [--from-auth-json FILE]
 
 CLAUDE CODE:
   1. On this machine, run:  claude setup-token
@@ -49,8 +49,14 @@ CODEX (a ChatGPT login):
   sealed into the sandbox VM's broker, which refreshes it; sessions see placeholders.
   --from-auth-json FILE imports a Codex auth.json instead (a login nothing else uses).
 
+COPILOT AND GROK (logins the broker cannot hold):
+  sandbox onboard --agent copilot|grok
+  then sign in in the first session (a device login: open the link it shows and enter the code).
+  The login is kept in the sandbox VM, in the agent's own home for that tier, and the agent can
+  read it: each launch warns and records it. For grok, ~/.grok/config.toml is copied (unless it
+  pins a model api_key or env_key) with whole-repository upload turned off.
+
 OTHER AGENTS:
-  copilot and grok are not yet available in v3 (their broker adapters are not built).
   opencode needs no onboarding: run it with OPENCODE_API_KEY and OPENCODE_BASE_URL set.
 `
 
@@ -94,7 +100,8 @@ func (a *app) onboard(args []string) int {
 		fmt.Fprintln(a.env.Stdout, "opencode needs no onboarding: run it with OPENCODE_API_KEY and OPENCODE_BASE_URL set on this machine.")
 		return 0
 	case "copilot", "grok":
-		a.die("%s is not yet available in v3: its credential broker adapter is not built.", agent)
+		a.onboardUnbrokered(agent, dry)
+		return 0
 	default:
 		a.die("--agent must be one of: claude, codex, opencode, copilot, grok, all")
 	}
@@ -115,6 +122,32 @@ func (a *app) onboard(args []string) int {
 	fmt.Fprintln(a.env.Stdout, "    Sealed the token into the sandbox VM's credential broker (bound to api.anthropic.com).")
 	fmt.Fprintln(a.env.Stdout, "Onboard complete. Run 'sandbox run --agent claude' to launch a session.")
 	return 0
+}
+
+// grokCredKey finds a per-model key in Grok's config.toml (v2 refused to stage such a file).
+var grokCredKey = regexp.MustCompile(`(?m)^[ \t]*(api_key|env_key)[ \t]*=`)
+
+// onboardUnbrokered is onboarding for an agent whose login cannot be brokered (OQ-01): nothing is
+// signed in here; grok's settings are staged for its home.
+func (a *app) onboardUnbrokered(agent string, dry bool) {
+	name := map[string]string{"copilot": "GitHub Copilot CLI", "grok": "xAI Grok"}[agent]
+	fmt.Fprintf(a.env.Stdout, "==> %s\n", name)
+	if agent == "grok" {
+		b, err := os.ReadFile(filepath.Join(a.env.Home, ".grok", "config.toml"))
+		switch {
+		case err != nil:
+		case grokCredKey.Match(b):
+			fmt.Fprintln(a.env.Stdout, "    ~/.grok/config.toml pins a per-model api_key/env_key: NOT copied (it would outrank the login).")
+		default:
+			for _, f := range a.stageAgentConfig("grok", []string{"config.toml"}, dry) {
+				fmt.Fprintf(a.env.Stdout, "    Copied ~/.grok/%s to ~/.sandbox/agent-config/grok/ (whole-repository upload is turned off in the session)\n", f)
+			}
+		}
+	}
+	fmt.Fprintf(a.env.Stdout, "    %s's login cannot be held by the credential broker. Sign in in your first session\n", agent)
+	fmt.Fprintln(a.env.Stdout, "    (a device login); the login is kept in the sandbox VM for sessions at that tier, and the agent")
+	fmt.Fprintln(a.env.Stdout, "    can read it. Each launch warns and records it in the session's audit record.")
+	fmt.Fprintf(a.env.Stdout, "Onboard complete. Run 'sandbox run --agent %s' to launch a session.\n", agent)
 }
 
 // readClaudeToken takes the token from CLAUDE_CODE_OAUTH_TOKEN, or asks for it (without echo on a

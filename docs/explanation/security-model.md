@@ -65,7 +65,8 @@ covers why one might choose each, and what changes in use.
 
 ## Credential brokering
 
-The agent never holds a real credential. A session's credentials (the agent's
+The agent never holds a real credential (except the Copilot and Grok logins,
+below). A session's credentials (the agent's
 login, profile secrets with a binding, `--infra-token`, opencode's key) are
 **bindings**: the agent's variable or file holds a placeholder, and the session's
 gateway puts the real value into requests to the hosts the binding names, in the
@@ -127,6 +128,14 @@ with it. `sandboxd` journals each resource before it creates it, so a crash or
 reboot of the VM ends every session it cannot vouch for at the next start.
 
 ## Accepted risks
+
+- **Copilot and Grok hold their own logins** (OQ-01). Their GitHub and xAI
+  logins cannot be brokered yet, so the agent signs in itself and its login is
+  kept in its home in the VM, one per tier. The agent can read it and use it
+  from any allowed host; each launch warns and records an
+  `unbrokered-credential` audit event. A Copilot session's allowlist includes
+  `github.com` and `api.github.com`, so a tier 1 Copilot session is less
+  isolated than a tier 1 Claude one (as in v2).
 
 - **Root in the appliance VM** (a microVM escape that also escapes Kata, or a
   gVisor escape for a session that runs under gVisor) can

@@ -193,6 +193,8 @@ func (a *app) migrateV2(v v2Install) {
 				fmt.Fprintln(out, "      claude: run 'claude setup-token', then: sandbox onboard --agent claude")
 			case "codex":
 				fmt.Fprintln(out, "      codex:  sandbox onboard --agent codex")
+			case "copilot", "grok":
+				fmt.Fprintf(out, "      %s: sandbox onboard --agent %s, then sign in in its first session (its login is kept in the VM, not brokered)\n", agent, agent)
 			default:
 				fmt.Fprintf(out, "      %s: not yet available in v3\n", agent)
 			}

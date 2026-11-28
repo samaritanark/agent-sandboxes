@@ -173,7 +173,7 @@ your PATH, so nothing runs v2's script by accident.
 - `sandbox sync review` shows workspace changes the sync withheld.
 - Removed: `configure-network` (the VM follows the host's networking).
   Not built yet: `sandbox upgrade`, kubeconfigs with exec credential plugins,
-  resuming a stopped tier 3 session,
-  Copilot and Grok, and Windows.
+  resuming a stopped tier 3 session, brokering Copilot's and Grok's logins
+  (they sign in in the session, as in v2), and Windows.
 
 The [CLI reference](../reference/cli.md) has the full list.

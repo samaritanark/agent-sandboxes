@@ -165,7 +165,8 @@ this page says otherwise.
   session. Other stopped sessions are recreated (see What changed).
 - `run --allow-exec-plugin`: kubeconfigs with exec credential plugins are refused
   (see [Tier 3 infra credentials](../how-to/tier3-infra-credentials.md)).
-- The copilot and grok agents.
+- Brokering the copilot and grok logins: they run with their own login, as in
+  v2 (see [Onboarding agents](../how-to/onboarding-agents.md#copilot-and-grok-not-brokered)).
 - Signing an attestation with `vet --repo` (`vet --status` works).
 
 ## Session naming

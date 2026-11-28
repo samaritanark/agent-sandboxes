@@ -1775,3 +1775,27 @@ m(DK, '\t\tif p == filepath.Dir(p) {\n\t\t\treturn nil', '\t\tif true {\n\t\t\tr
 m(KH, '\t\t\tif u.Inject == "mtls" {\n\t\t\t\t// the gateway', '\t\t\tif false {\n\t\t\t\t// the gateway', "TestOpenLinks", pkg="../cmd/sandboxd")
 m("internal/cli/runlaunch.go", '\t\t\taudit.RecordEndReason(rec.LogDir, "start-failed", firstErrLine(err))\n', '', "TestLaunchRefusals")
 m("internal/cli/runlaunch.go", '\t\t\taudit.UpdateEndTime(rec.LogDir, c.stamp())\n', '', "TestLaunchRefusals")
+
+# OQ-01: copilot and grok with their own login in an agent home
+m("internal/sessionspec/sessionspec.go", '\t\t\tif !Unbrokered[s.Agent] || m.Source != AgentHomePath(s.Agent, s.Tier) || m.ReadOnly {', '\t\t\tif m.Source != AgentHomePath(s.Agent, s.Tier) || m.ReadOnly {', "TestAgentHomeMounts")
+m("internal/sessionspec/sessionspec.go", '\t\t\tif !Unbrokered[s.Agent] || m.Source != AgentHomePath(s.Agent, s.Tier) || m.ReadOnly {', '\t\t\tif !Unbrokered[s.Agent] || m.Source != AgentHomePath(s.Agent, s.Tier) {', "TestAgentHomeMounts")
+GK = "internal/agents/grok.go"
+m(GK, '\t\tif m[1] != "true" {', '\t\tif false {', "TestGrokConfig")
+m(GK, '\tif grokTables.MatchString(s) {', '\tif false {', "TestGrokConfig")
+m(GK, '\tif grokCredKey.MatchString(s) {', '\tif false {', "TestGrokConfig")
+m(GK, '\tif len(cfg) == 0 {\n\t\treturn []byte(GrokPrivacyBlock), warnings', '\tif false {\n\t\treturn []byte(GrokPrivacyBlock), warnings', "TestGrokConfig")
+AH = "cmd/sandbox-vm/agenthome.go"
+R_AH = "TestPrepareAgentHome"
+m(AH, '\t\tif !sessionspec.Unbrokered[agent] || tier < 1 || tier > 3 {', '\t\tif tier < 1 || tier > 3 {', R_AH, pkg="../cmd/sandbox-vm")
+m(AH, '\t\tif st, err := os.Lstat(home); err != nil || !st.IsDir() {', '\t\tif st, err := os.Stat(home); err != nil || !st.IsDir() {', R_AH, pkg="../cmd/sandbox-vm")
+m(AH, '\t\t\tif _, err := os.Lstat(filepath.Join(home, name)); errors.Is(err, os.ErrNotExist) {', '\t\t\tif true {', R_AH, pkg="../cmd/sandbox-vm")
+m(AH, '\t\t\tif !validFileName(name) {', '\t\t\tif false {', R_AH, pkg="../cmd/sandbox-vm")
+m(AH, '\tf, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)', '\tf, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)', R_AH, pkg="../cmd/sandbox-vm")
+m(AH, '\t\tif out != nil {\n\t\t\tif err := writeHomeFile', '\t\tif false {\n\t\t\tif err := writeHomeFile', R_AH, pkg="../cmd/sandbox-vm")
+UB = "internal/cli/runagent.go"
+m(UB, '\t\taudit.LogEvent(rec.LogDir, "unbrokered-credential", msg, c.stamp())\n', '', "TestLaunchUnbrokered")
+m(UB, '\tc.warn("%s", msg)\n\tif isDir', '\tif isDir', "TestLaunchUnbrokered")
+m(UB, '\t\tc.warn("%s", w)\n', '', "TestLaunchUnbrokered")
+m(UB, '\t\t\tseed[name] = b\n', '', "TestLaunchUnbrokered")
+m(UB, '\tif c.env.Launch.PrepareAgentHome == nil {', '\tif false {', "TestLaunchUnbrokered")
+m("internal/host/app/onboard.go", '\t\tcase grokCredKey.Match(b):', '\t\tcase false:', "TestOnboardClaude")

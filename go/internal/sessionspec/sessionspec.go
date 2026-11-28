@@ -41,7 +41,20 @@ const (
 	// AgentHistoryStore holds each agent's history per tier and repository set (design 5.7,
 	// D-14): <agent>/tier<N>/<key>, mounted only into sessions of that agent at that tier.
 	AgentHistoryStore = "/var/lib/sandbox/agent-history"
+	// AgentHomeStore holds the homes of the agents whose login cannot be brokered (OQ-01:
+	// Unbrokered): <agent>/tier<N>, the agent's own directory, login included, kept across that
+	// agent's sessions at that tier.
+	AgentHomeStore = "/var/lib/sandbox/agent-home"
 )
+
+// Unbrokered are the agents that keep their own login in an agent home (OQ-01, allowed with a
+// warning): GitHub Copilot CLI and xAI Grok, whose OAuth logins v2 also kept in the pod.
+var Unbrokered = map[string]bool{"copilot": true, "grok": true}
+
+// AgentHomePath is agent's home at tier.
+func AgentHomePath(agent string, tier int) string {
+	return path.Join(AgentHomeStore, agent, "tier"+strconv.Itoa(tier))
+}
 
 // The runtimes a session's agent and dependencies can run under (owner decision, 2026-11-27).
 const (
@@ -132,6 +145,7 @@ const (
 	CABundle    MountKind = "ca-bundle"
 	MCPConfig   MountKind = "mcp-config"
 	Kubeconfig  MountKind = "kubeconfig" // generated, placeholders only
+	AgentHome   MountKind = "agent-home" // an unbrokered agent's own home (AgentHomeStore)
 )
 
 // Mount is one mount into the session's microVM. Source is a VM path (empty for masks); Target is
@@ -492,6 +506,10 @@ func checkMounts(s *Spec, bad func(string, ...any)) {
 			own := cleanAbs(m.Source) && under(m.Source, sessionDir) && m.Source != sessionDir
 			if !own && (s.Tier < 2 || m.Source != HistoryPath(s.Agent, s.Tier, path.Base(m.Source)) || !historyKeyRE.MatchString(path.Base(m.Source))) {
 				bad("%s: source must be this session's history: in %s, or at tier 2 and 3 %s", w, sessionDir, HistoryPath(s.Agent, s.Tier, "<key>"))
+			}
+		case AgentHome:
+			if !Unbrokered[s.Agent] || m.Source != AgentHomePath(s.Agent, s.Tier) || m.ReadOnly {
+				bad("%s: an agent home is only for %s, writable, at %s", w, "copilot and grok", AgentHomePath(s.Agent, s.Tier))
 			}
 		case AgentConfig, CABundle, MCPConfig, Kubeconfig:
 			if !cleanAbs(m.Source) || !under(m.Source, sessionDir) || m.Source == sessionDir {

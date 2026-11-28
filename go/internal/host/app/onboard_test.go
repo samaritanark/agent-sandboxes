@@ -58,8 +58,26 @@ func TestOnboardClaude(t *testing.T) {
 			t.Errorf("%q: %+v", bad, r)
 		}
 	}
-	if r, tr := run("", nil, "--agent", "grok"); r.rc != 1 || len(tr.ctl) != 0 {
+	// copilot and grok (OQ-01): nothing goes to the broker; grok's settings are staged unless they
+	// pin a model key
+	if r, tr := run("", nil, "--agent", "copilot"); r.rc != 0 || len(tr.ctl) != 0 || !strings.Contains(r.out, "Sign in in your first session") {
+		t.Errorf("copilot: %+v", r)
+	}
+	gcfg := filepath.Join(state, "agent-config", "grok", "config.toml")
+	os.MkdirAll(filepath.Join(home, ".grok"), 0o700)
+	os.WriteFile(filepath.Join(home, ".grok", "config.toml"), []byte("[model.grok-4]\napi_key = \"xai-k\"\n"), 0o600)
+	if r, tr := run("", nil, "--agent", "grok"); r.rc != 0 || len(tr.ctl) != 0 || !strings.Contains(r.out, "NOT copied") {
+		t.Errorf("grok with a model key: %+v", r)
+	}
+	if _, err := os.Stat(gcfg); err == nil {
+		t.Error("a config with a model key was staged")
+	}
+	os.WriteFile(filepath.Join(home, ".grok", "config.toml"), []byte("[ui]\n"), 0o600)
+	if r, _ := run("", nil, "--agent", "grok"); r.rc != 0 || !strings.Contains(r.out, "Copied ~/.grok/config.toml") {
 		t.Errorf("grok: %+v", r)
+	}
+	if b, _ := os.ReadFile(gcfg); string(b) != "[ui]\n" {
+		t.Errorf("staged %q", b)
 	}
 	if r, tr := run("", nil, "--dry-run"); r.rc != 0 || len(tr.ctl) != 0 {
 		t.Errorf("dry run: %+v", r)

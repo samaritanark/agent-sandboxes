@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/audit"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
 
@@ -90,6 +92,10 @@ func historyKey(copies []string) string {
 // the files the VM writes before the start. It stops the launch for an agent without an adapter
 // (other than opencode, whose key is brokered by the host) or one not onboarded.
 func (c *cmdCtx) setUpAgent(spec *sessionspec.Spec, s LaunchSpec, rec SessionRecord) *AgentFiles {
+	if h, ok := unbrokered[s.Agent]; ok {
+		c.setUpAgentHome(spec, s, rec, h)
+		return nil
+	}
 	ad, ok := adapters[s.Agent]
 	if !ok {
 		if s.Agent == "opencode" {
@@ -175,6 +181,52 @@ func (c *cmdCtx) setUpAgent(spec *sessionspec.Spec, s LaunchSpec, rec SessionRec
 	c.out("==> %s: credential brokered to %s; configuration re-staged; history %s", s.Agent, strings.Join(ad.hosts, ", "),
 		map[bool]string{true: "kept for this agent, tier, and repository set", false: "kept for this session only"}[f.HistoryKey != ""])
 	return f
+}
+
+// agentHome is an agent whose login cannot be brokered (OQ-01): its own home in the guest, kept in
+// the VM per tier, which its own device login writes; the files staged from the operator's
+// onboarded copy (~/.sandbox/agent-config/<agent>/) that seed a new home; and how it signs in.
+type agentHome struct {
+	dir     string
+	account string
+	login   string
+	staged  []string
+}
+
+var unbrokered = map[string]agentHome{
+	"copilot": {dir: AgentHome + "/.copilot", account: "GitHub", login: "sign in when Copilot asks (or with /login): a device login"},
+	"grok":    {dir: AgentHome + "/.grok", account: "xAI", login: "sign in when Grok asks (grok login --device-auth): a device login", staged: []string{"config.toml"}},
+}
+
+// setUpAgentHome mounts an unbrokered agent's home (sessionspec.AgentHome), warns that the agent
+// holds its own login, and records it in the session's audit record (OQ-01: allowed with a
+// warning and an audit record per session).
+func (c *cmdCtx) setUpAgentHome(spec *sessionspec.Spec, s LaunchSpec, rec SessionRecord, h agentHome) {
+	if c.env.Launch.PrepareAgentHome == nil {
+		c.die("'run' with %s needs the sandbox VM's agent homes.", s.Agent)
+	}
+	seed := map[string][]byte{}
+	src := filepath.Join(c.env.Home, ".sandbox", "agent-config", s.Agent)
+	for _, name := range h.staged {
+		if b, err := os.ReadFile(filepath.Join(src, name)); err == nil {
+			seed[name] = b
+		}
+	}
+	warnings, err := c.env.Launch.PrepareAgentHome(s.Agent, spec.Tier, seed)
+	if err != nil {
+		c.die("could not prepare %s's home in the sandbox VM: %v", s.Agent, err)
+	}
+	for _, w := range warnings {
+		c.warn("%s", w)
+	}
+	spec.Mounts = append(spec.Mounts, sessionspec.Mount{Kind: sessionspec.AgentHome, Source: sessionspec.AgentHomePath(s.Agent, spec.Tier), Target: h.dir})
+	msg := fmt.Sprintf("%s's %s login cannot be brokered: the agent holds it, in its home in the sandbox VM (kept for tier %d sessions of %s), and can use it from any host this session's allowlist allows.",
+		s.Agent, h.account, spec.Tier, s.Agent)
+	c.warn("%s", msg)
+	if isDir(rec.LogDir) {
+		audit.LogEvent(rec.LogDir, "unbrokered-credential", msg, c.stamp())
+	}
+	c.out("==> %s: not brokered (OQ-01); %s, kept in the sandbox VM for tier %d", s.Agent, h.login, spec.Tier)
 }
 
 // AgentConfigDir and SessionHistoryDir are sandboxd's names (daemon.AgentConfigDir,

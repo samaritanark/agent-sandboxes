@@ -44,6 +44,7 @@ the operator.
 - [Agents & tiers](reference/agents-and-tiers.md): supported agents, allowlists, the tier model.
 - [Configuration](reference/configuration.md): `config.yaml` keys and precedence.
 - [Audit logs](reference/audit-logs.md): what's recorded and where.
+- [Credential exceptions](reference/credential-exceptions.md): the agents whose login is not brokered.
 - [Platform requirements](reference/platform-requirements.md)
 
 ## Explanation: why it works this way

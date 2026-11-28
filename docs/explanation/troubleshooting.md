@@ -59,8 +59,10 @@ broker refreshes Codex's ChatGPT login before a launch when it is about to
 expire; the token endpoint refused (the login was signed out, revoked, or
 unused for too long). Run `sandbox onboard --agent codex` again.
 
-**`'run' with copilot (grok) is not yet available in v3`.** Their broker
-adapters are not built; use claude, codex, or opencode.
+**`WARNING: copilot's GitHub login cannot be brokered`** (or grok's xAI
+login). Expected: these agents hold their own login (see [Onboarding
+agents](../how-to/onboarding-agents.md#copilot-and-grok-not-brokered)). Each
+launch warns and records it.
 
 **`No runnable image for agent '<agent>'`.** The agent's image has not been built
 in this VM: `sandbox rebuild --agent base`, then `sandbox rebuild --agent <agent>`
