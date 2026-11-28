@@ -110,8 +110,9 @@ what changes if you use it.
 **The agent cannot reach a host.** `sandbox flows <SESSION_ID>` lists every
 connection and request with its decision. A name not on the allowlist gets no
 DNS answer; a blocked or unlisted destination shows `refused` or `blocked`. Add
-the host with `--allow-domain` on the next launch (`sandbox allow` on a running
-session is not available in v3 yet).
+the host with `sandbox allow <SESSION_ID> --add-domain <host>` (it resets the
+agent's open connections; the session stays), or with `--allow-domain` on the
+next launch.
 
 **A request gets `403` and the session's events show `credential_misuse` or
 `credential_missing`.** The agent sent a placeholder to a host it is not bound

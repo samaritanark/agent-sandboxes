@@ -138,12 +138,12 @@ refused there.
 
 ## Live-updating a running session
 
-v2's `sandbox allow <SESSION_ID> --add-domain <domain>` widened a running session's allowlist in
-place. **It is not available in v3 yet**: the domains still go through the same checks, then the
-command stops, because the running session's gateway cannot take a new allowlist yet. Stop the
-session and start a new one with `--allow-domain` (or add the domain to
-`extra_allowed_domains:`). With `--keep-alive` and `--tier 2` or `3`, the agent's conversation
-history is kept, so you can pick it up with the agent's `/resume`.
+`sandbox allow <SESSION_ID> --add-domain <domain>` widens a running session's allowlist, as in
+v2. The domains go through the same checks as at launch (the block lists, the org list), then the
+session's gateway takes the new allowlist: its resolver and connection check at once, and its Envoy
+by a restart. The session and your terminal stay; connections the agent had open to the internet
+are reset (the agent's next request opens a new one). The session's record lists the added domains
+and its audit log has an `allowlist_extended` event.
 
 ## Rules for a domain's requests
 

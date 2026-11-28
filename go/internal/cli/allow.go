@@ -148,6 +148,9 @@ func cmdAllow(c *cmdCtx, args []string) {
 	if pod == "" {
 		pod = "sandbox-" + sessionID
 	}
+	if c.env.SessionLive == nil && c.env.ApplyPolicy == nil && c.env.Launch.Sessions != nil {
+		c.allowHooks()
+	}
 	if c.env.SessionLive == nil || c.env.ApplyPolicy == nil {
 		c.die("'allow' is not yet available in the Go port of the sandbox CLI: the domains pass the checks, but the session runtime (sandboxd) does not exist yet.")
 	}
@@ -219,4 +222,22 @@ func jqInterp(v jqjson.Value) string {
 		return v.Str
 	}
 	return strings.TrimSuffix(jqjson.Encode(v), "\n")
+}
+
+// allowHooks are allow's session hooks on sandboxd: a session is live while sandboxd holds it,
+// and the widened allowlist goes to its gateway, which reloads it (its Envoy restarts, resetting
+// the agent's open outbound connections; the session stays).
+func (c *cmdCtx) allowHooks() {
+	s := c.env.Launch.Sessions
+	c.env.SessionLive = func(id, _ string) bool {
+		live, err := s.Live(id)
+		if err != nil {
+			c.die("Cannot ask sandboxd about session %s: %v", id, err)
+		}
+		return live
+	}
+	c.env.ApplyPolicy = func(req PolicyRequest) error {
+		_, err := s.Allow(req.SessionID, req.Extras)
+		return err
+	}
 }

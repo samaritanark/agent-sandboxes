@@ -24,6 +24,8 @@ type fakeSessions struct {
 	startErr   error
 	stopErr    error
 	listErr    error
+	allowed    []string
+	allowErr   error
 }
 
 func (f *fakeSessions) Start(s *sessionspec.Spec) error {
@@ -49,6 +51,14 @@ func (f *fakeSessions) List() ([]SessionState, error) {
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeSessions) Allow(id string, names []string) (int, error) {
+	if f.allowErr != nil {
+		return 0, f.allowErr
+	}
+	f.allowed = append(f.allowed, id+" "+strings.Join(names, ","))
+	return len(names), nil
 }
 
 func (f *fakeSessions) Live(id string) (bool, error) {
@@ -357,4 +367,38 @@ func TestResumeRecreates(t *testing.T) {
 		t.Errorf("%d %d\n%s", rc, len(fs.started)-n, errb.String())
 	}
 	_ = sj
+}
+
+// TestAllowOnSandboxd: allow widens a running session on sandboxd (its gateway reloads) after the
+// names pass the block lists, records them, and refuses a session that is not running.
+func TestAllowOnSandboxd(t *testing.T) {
+	e, fs, _ := launchEnv(t)
+	e.SessionLive, e.ApplyPolicy = nil, nil
+	var out, errb bytes.Buffer
+	if rc := Run([]string{"run", "--keep-alive"}, e, &out, &errb); rc != 0 {
+		t.Fatal(errb.String())
+	}
+	id := fs.started[0].ID
+	out.Reset()
+	if rc := Run([]string{"allow", id, "--add-domain", "pypi.org"}, e, &out, &errb); rc != 0 {
+		t.Fatalf("%d\n%s\n%s", rc, out.String(), errb.String())
+	}
+	if len(fs.allowed) != 1 || !strings.HasPrefix(fs.allowed[0], id+" ") || !strings.Contains(fs.allowed[0], "pypi.org") ||
+		!strings.Contains(out.String(), "Applied: 1 new domain(s).") {
+		t.Errorf("%q\n%s", fs.allowed, out.String())
+	}
+	if b, _ := os.ReadFile(filepath.Join(e.LogsDir, id, "session.json")); !strings.Contains(string(b), `"pypi.org"`) {
+		t.Error("the record does not list the domain")
+	}
+	// a blocked name never reaches sandboxd
+	errb.Reset()
+	if rc := Run([]string{"allow", id, "--add-domain", "x.pastebin.com"}, e, &bytes.Buffer{}, &errb); rc == 0 || len(fs.allowed) != 1 {
+		t.Errorf("blocked: %d %q", rc, errb.String())
+	}
+	// a stopped session
+	Run([]string{"stop", id}, e, &bytes.Buffer{}, &bytes.Buffer{})
+	errb.Reset()
+	if rc := Run([]string{"allow", id, "--add-domain", "example.org"}, e, &bytes.Buffer{}, &errb); rc != 1 || !strings.Contains(errb.String(), "not running") {
+		t.Errorf("stopped: %d %q", rc, errb.String())
+	}
 }

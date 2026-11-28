@@ -21,8 +21,10 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
+	"time"
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"google.golang.org/grpc"
@@ -67,16 +69,23 @@ func run() error {
 	for _, d := range p.Deps {
 		deps = append(deps, d.Name)
 	}
+	resolvers := make([]*resolver.Server, len(p.Links))
+	resolverPolicies := func(p *gwpolicy.Policy) {
+		for i, l := range p.Links {
+			rp := &resolver.Policy{Allow: l.Allow, BlockDomains: l.BlockDomains, Gateway: l.Listen}
+			if i == 0 {
+				rp.Dependencies = deps
+			}
+			resolvers[i].SetPolicy(rp)
+		}
+	}
 	for i, l := range p.Links {
 		res := &resolver.Server{}
-		rp := &resolver.Policy{Allow: l.Allow, BlockDomains: l.BlockDomains, Gateway: l.Listen}
-		if i == 0 {
-			rp.Dependencies = deps
-		}
-		res.SetPolicy(rp)
+		resolvers[i] = res
 		addr := net.JoinHostPort(l.Listen.String(), "53")
 		go func() { failed <- fmt.Errorf("resolver %s: %w", addr, res.ListenAndServe(addr)) }()
 	}
+	resolverPolicies(p)
 
 	// the connection check, on a socket only this user can reach
 	sock := filepath.Join(*dir, "authz.sock")
@@ -91,11 +100,14 @@ func run() error {
 			log.Printf("refused %q on %s: %s", d.SNI, d.Link, d.Reason)
 		}
 	}}
-	pols := map[netip.Addr]*authz.Policy{}
-	for _, l := range p.Links {
-		pols[l.Listen] = &authz.Policy{Allow: l.Allow, BlockDomains: l.BlockDomains}
+	authzPolicies := func(p *gwpolicy.Policy) {
+		pols := map[netip.Addr]*authz.Policy{}
+		for _, l := range p.Links {
+			pols[l.Listen] = &authz.Policy{Allow: l.Allow, BlockDomains: l.BlockDomains}
+		}
+		az.SetPolicies(pols)
 	}
-	az.SetPolicies(pols)
+	authzPolicies(p)
 	g := grpc.NewServer()
 	authv3.RegisterAuthorizationServer(g, az)
 	go func() { failed <- fmt.Errorf("authz: %w", g.Serve(ln)) }()
@@ -121,53 +133,119 @@ func run() error {
 	}
 	defer stopBrokers()
 
-	// Envoy
-	conf := envoyconf.Config{AuthzSocket: sock, AdminSocket: filepath.Join(*dir, "admin.sock"), Resolvers: p.Resolvers,
-		AccessLog: filepath.Join(*dir, "connections.log"), UpstreamCAs: p.UpstreamCAs}
-	for _, l := range p.Links {
-		el := envoyconf.Link{Addr: l.Listen, Ports: l.Ports, Allow: l.Allow, BlockDomains: l.BlockDomains, BrokerSocket: brokerSockets[len(conf.Links)]}
-		for _, ic := range l.Intercept {
-			ei := envoyconf.Intercept{Name: ic.Name, CertChain: ic.CertChain, PrivateKey: ic.PrivateKey, SDS: ic.SDS, Rules: l.L7}
-			if ic.SDS != "" {
-				// the leaf is read through this file, so sandboxd can renew it in place
-				b, err := envoyconf.SDSSecret(ei)
-				if err != nil {
-					return err
+	// Envoy, restarted with a new configuration when the policy is reloaded
+	envoyConf := func(p *gwpolicy.Policy) (string, error) {
+		conf := envoyconf.Config{AuthzSocket: sock, AdminSocket: filepath.Join(*dir, "admin.sock"), Resolvers: p.Resolvers,
+			AccessLog: filepath.Join(*dir, "connections.log"), UpstreamCAs: p.UpstreamCAs}
+		for _, l := range p.Links {
+			el := envoyconf.Link{Addr: l.Listen, Ports: l.Ports, Allow: l.Allow, BlockDomains: l.BlockDomains, BrokerSocket: brokerSockets[len(conf.Links)]}
+			for _, ic := range l.Intercept {
+				ei := envoyconf.Intercept{Name: ic.Name, CertChain: ic.CertChain, PrivateKey: ic.PrivateKey, SDS: ic.SDS, Rules: l.L7}
+				if ic.SDS != "" {
+					// the leaf is read through this file, so sandboxd can renew it in place
+					b, err := envoyconf.SDSSecret(ei)
+					if err != nil {
+						return "", err
+					}
+					if err := os.WriteFile(ic.SDS, b, 0o600); err != nil {
+						return "", err
+					}
 				}
-				if err := os.WriteFile(ic.SDS, b, 0o600); err != nil {
-					return err
-				}
+				el.Intercept = append(el.Intercept, ei)
 			}
-			el.Intercept = append(el.Intercept, ei)
+			conf.Links = append(conf.Links, el)
 		}
-		conf.Links = append(conf.Links, el)
+		for _, d := range p.Deps {
+			conf.Deps = append(conf.Deps, envoyconf.Dep{Name: d.Name, Port: d.Port, Addr: d.Addr})
+		}
+		bs, err := conf.Bootstrap()
+		if err != nil {
+			return "", err
+		}
+		confPath := filepath.Join(*dir, "envoy.json")
+		return confPath, os.WriteFile(confPath, bs, 0o600)
 	}
-	for _, d := range p.Deps {
-		conf.Deps = append(conf.Deps, envoyconf.Dep{Name: d.Name, Port: d.Port, Addr: d.Addr})
+	startEnvoy := func(confPath string) (*exec.Cmd, chan error, error) {
+		e := exec.Command(*envoyBin, envoyconf.Args(confPath)...)
+		e.Stdout, e.Stderr = os.Stderr, os.Stderr
+		e.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL} // never outlive the gateway
+		if err := e.Start(); err != nil {
+			return nil, nil, err
+		}
+		done := make(chan error, 1)
+		go func() { done <- e.Wait() }()
+		return e, done, nil
 	}
-	bs, err := conf.Bootstrap()
+	confPath, err := envoyConf(p)
 	if err != nil {
 		return err
 	}
-	confPath := filepath.Join(*dir, "envoy.json")
-	if err := os.WriteFile(confPath, bs, 0o600); err != nil {
+	e, envoyDone, err := startEnvoy(confPath)
+	if err != nil {
 		return err
 	}
-	e := exec.Command(*envoyBin, envoyconf.Args(confPath)...)
-	e.Stdout, e.Stderr = os.Stderr, os.Stderr
-	e.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL} // never outlive the gateway
-	if err := e.Start(); err != nil {
-		return err
-	}
-	go func() { failed <- fmt.Errorf("envoy exited: %v", e.Wait()) }()
 	log.Printf("serving %d links, %d dependencies", len(p.Links), len(p.Deps))
 
-	select {
-	case <-ctx.Done():
-		e.Process.Signal(syscall.SIGTERM)
-		return nil
-	case err := <-failed:
-		e.Process.Kill()
-		return err
+	// SIGHUP: reload the policy (sandbox allow). Only the allowlists may change (SameShape): the
+	// resolvers and the connection check take them at once, and Envoy, whose filter chains hold
+	// them, is restarted, which resets the connections open through it; the brokers and the
+	// session stay.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	for {
+		select {
+		case <-ctx.Done():
+			e.Process.Signal(syscall.SIGTERM)
+			return nil
+		case err := <-failed:
+			e.Process.Kill()
+			return err
+		case err := <-envoyDone:
+			return fmt.Errorf("envoy exited: %v", err)
+		case <-hup:
+			np, err := reload(*policyPath, p)
+			if err != nil {
+				log.Printf("policy not reloaded: %v", err)
+				continue
+			}
+			resolverPolicies(np)
+			authzPolicies(np)
+			confPath, err := envoyConf(np)
+			if err != nil {
+				log.Printf("policy not reloaded: %v", err)
+				continue
+			}
+			e.Process.Signal(syscall.SIGTERM)
+			select {
+			case <-envoyDone:
+			case <-time.After(10 * time.Second):
+				e.Process.Kill()
+				<-envoyDone
+			}
+			if e, envoyDone, err = startEnvoy(confPath); err != nil {
+				return fmt.Errorf("envoy did not restart: %w", err)
+			}
+			p = np
+			os.WriteFile(filepath.Join(*dir, gwpolicy.ReloadedFile), []byte(strconv.Itoa(p.Generation)+"\n"), 0o600)
+			log.Printf("reloaded the policy (generation %d)", p.Generation)
+		}
 	}
+}
+
+// reload reads the policy file again and accepts it only if it changes nothing but what a
+// running gateway can take (gwpolicy.Policy.SameShape).
+func reload(path string, cur *gwpolicy.Policy) (*gwpolicy.Policy, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	np, err := gwpolicy.Decode(b)
+	if err != nil {
+		return nil, err
+	}
+	if err := cur.SameShape(np); err != nil {
+		return nil, err
+	}
+	return np, nil
 }

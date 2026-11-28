@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -23,7 +24,7 @@ const Socket = "/run/sandboxd.sock"
 
 // Request is one call on sandboxd's socket. One request per connection.
 type Request struct {
-	Op     string          `json:"op"` // start, stop, heartbeat, list, attach, canary, broker-key, broker-put, broker-delete, broker-list
+	Op     string          `json:"op"` // start, stop, heartbeat, list, attach, allow (Args: the names), canary, broker-key, broker-put, broker-delete, broker-list
 	Spec   json.RawMessage `json:"spec,omitempty"`
 	ID     string          `json:"id,omitempty"` // a session, or for broker-put and broker-delete a credential reference
 	Reason string          `json:"reason,omitempty"`
@@ -193,6 +194,12 @@ func (d *Daemon) call(ctx context.Context, req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, ID: req.ID}
+	case "allow":
+		n, err := d.Allow(ctx, req.ID, req.Args)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, ID: req.ID, Detail: strconv.Itoa(n)}
 	case "canary":
 		detail, err := d.Canary(ctx, req.ID)
 		if err != nil {

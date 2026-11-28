@@ -27,6 +27,9 @@ type Sessions interface {
 	Stop(id, reason string) error
 	// Live is whether sandboxd holds the session and it has not ended.
 	Live(id string) (bool, error)
+	// Allow adds names to a running session's allowlist (its gateway reloads; `sandbox allow`)
+	// and returns how many were new.
+	Allow(id string, names []string) (int, error)
 	// List is every session sandboxd holds that has not ended, with its state (sandboxd's:
 	// REQUESTED, ADMITTED, STARTING, RUNNING, STOPPING, FAILED).
 	List() ([]SessionState, error)

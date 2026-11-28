@@ -128,15 +128,17 @@ func (f *fakeNet) Up(_ context.Context, s netsetup.Session) error {
 }
 
 type fakeGW struct {
-	running  map[string]int
-	policies map[string]gwpolicy.Policy
-	files    map[string]map[string][]byte
-	leaves   map[string]map[string][]byte
-	versions map[string]int
-	renewErr error
-	renews   int
-	stopped  []string
-	calls    *[]string
+	running   map[string]int
+	policies  map[string]gwpolicy.Policy
+	files     map[string]map[string][]byte
+	leaves    map[string]map[string][]byte
+	versions  map[string]int
+	renewErr  error
+	renews    int
+	reloadErr error
+	reloads   int
+	stopped   []string
+	calls     *[]string
 }
 
 func (f *fakeGW) Renew(_ context.Context, id, dir string, slot, version int, leaves map[string][]byte) error {
@@ -173,9 +175,32 @@ func (f *fakeGW) Start(_ context.Context, id, ns, dir string, slot int, files, l
 		f.files = map[string]map[string][]byte{}
 	}
 	f.files[id] = files
+	os.MkdirAll(dir, 0o700)
+	os.WriteFile(filepath.Join(dir, "policy.json"), files["policy.json"], 0o400)
 	f.running[id] = 4000 + len(f.running)
 	*f.calls = append(*f.calls, "gateway "+id)
 	return f.running[id], nil
+}
+
+func (f *fakeGW) Reload(_ context.Context, id, dir string, slot, generation int, policy []byte) error {
+	if f.running[id] == 0 {
+		return errors.New("no gateway")
+	}
+	if f.reloadErr != nil {
+		return f.reloadErr
+	}
+	p, err := gwpolicy.Decode(policy)
+	if err != nil {
+		return err
+	}
+	if p.Generation != generation {
+		return fmt.Errorf("generation %d in a policy of %d", generation, p.Generation)
+	}
+	f.policies[id] = *p
+	f.reloads++
+	*f.calls = append(*f.calls, "reload gateway "+id)
+	os.Remove(filepath.Join(dir, "policy.json")) // as the real one, by replacing the file
+	return os.WriteFile(filepath.Join(dir, "policy.json"), policy, 0o400)
 }
 
 func (f *fakeGW) Stop(_ context.Context, id string, pid int) error {

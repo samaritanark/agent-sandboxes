@@ -1630,3 +1630,21 @@ m(CN, '\tif code != 0 {', '\tif false {', R_CN, pkg="sandboxd/daemon")
 m(CN, '\tdefer d.NetNS.Delete(context.WithoutCancel(ctx), ns)\n', '', R_CN, pkg="sandboxd/daemon")
 m(CN, '\tif kind != runtime.Kata && kind != runtime.GVisor {', '\tif false {', R_CN, pkg="sandboxd/daemon")
 m("internal/host/app/doctor.go", '\t\treport(err == nil, "a canary sandbox under "+', '\t\treport(true, "a canary sandbox under "+', "TestDoctor", pkg="host/app")
+
+# sandbox allow on sandboxd (gateway reload)
+AL = "internal/sandboxd/daemon/allow.go"
+R_AL = "TestAllow"
+m(AL, '\t\tif n != "" && !slices.Contains(spec.Egress.Allow, n) {', '\t\tif n != "" {', R_AL, pkg="sandboxd/daemon")
+m(AL, '\tif err := spec.Validate(sessionspec.Options{}); err != nil {', '\tif false {', R_AL, pkg="sandboxd/daemon")
+m(AL, '\tpol.Generation++\n', '', R_AL, pkg="sandboxd/daemon")
+m(AL, '\tpol.Links[0].Allow = spec.Egress.Allow\n', '', R_AL, pkg="sandboxd/daemon")
+m(AL, '\tif err := d.Journal.SetSpec(id, &spec, "allowlist extended: "+strings.Join(added, ",")); err != nil {\n\t\treturn 0, err\n\t}\n', '', R_AL, pkg="sandboxd/daemon")
+m(AL, '\tif _, ok := d.live[id]; !ok {', '\tif false {', R_AL, pkg="sandboxd/daemon",
+  equivalent="a session that is not running has no journal record or no live gateway slot, so Allow fails either way")
+m(AL, '\t\tn = strings.TrimSpace(n)\n', '', R_AL, pkg="sandboxd/daemon")
+GP = "internal/gateway/gwpolicy/gwpolicy.go"
+m(GP, '\t\tal[i].Allow, al[i].BlockDomains = nil, nil\n\t\tbl[i].Allow, bl[i].BlockDomains = nil, nil\n', '', "TestSameShape", pkg="gateway/gwpolicy")
+m(GP, '\tif len(a.Links) != len(b.Links) {', '\tif false {', "TestSameShape", pkg="gateway/gwpolicy")
+m(GP, '\tif !bytes.Equal(ja, jb) {', '\tif false {', "TestSameShape", pkg="gateway/gwpolicy")
+m("internal/cli/allow.go", '\t\t_, err := s.Allow(req.SessionID, req.Extras)', '\t\t_, err := s.Allow(req.SessionID, nil)', "TestAllowOnSandboxd")
+m("internal/cli/allow.go", '\t\treturn live\n', '\t\treturn true\n', "TestAllowOnSandboxd")

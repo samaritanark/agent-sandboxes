@@ -85,6 +85,18 @@ func (sandboxd) Live(id string) (bool, error) {
 	return false, nil
 }
 
+func (sandboxd) Allow(id string, names []string) (int, error) {
+	resp, err := daemon.Call(context.Background(), daemon.Socket, daemon.Request{Op: "allow", ID: id, Args: names})
+	if err != nil {
+		return 0, fmt.Errorf("cannot reach sandboxd: %w", err)
+	}
+	if !resp.OK {
+		return 0, errors.New(strings.TrimSpace(resp.Error))
+	}
+	n, _ := strconv.Atoi(resp.Detail)
+	return n, nil
+}
+
 func (sandboxd) Stop(id, reason string) error {
 	return call(daemon.Request{Op: "stop", ID: id, Reason: reason})
 }

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/gateway/gwpolicy"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/daemon"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sandboxd/netsetup"
 )
@@ -167,6 +168,48 @@ func (g *gateways) Renew(_ context.Context, id, dir string, slot, version int, l
 		return fmt.Errorf("gateway slot %d, leaves version %d", slot, version)
 	}
 	return installLeaves(dir, GatewayIDBase+slot, version, leaves)
+}
+
+// Reload puts policy in place of dir's policy.json (atomically, the gateway's own file) and sends
+// the gateway SIGHUP; it returns once the gateway reports generation and Envoy listens again.
+func (g *gateways) Reload(ctx context.Context, id, dir string, slot, generation int, policy []byte) error {
+	if slot < 0 || slot > 0xffff {
+		return fmt.Errorf("gateway slot %d", slot)
+	}
+	gid := GatewayIDBase + slot
+	tmp := filepath.Join(dir, ".policy.json.new")
+	os.Remove(tmp)
+	if err := os.WriteFile(tmp, policy, 0o400); err != nil {
+		return err
+	}
+	if err := os.Chown(tmp, gid, gid); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, "policy.json")); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if out, err := exec.CommandContext(ctx, "systemctl", "kill", "--kill-whom=main", "--signal=SIGHUP", unit(id)).CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl kill: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	want := strconv.Itoa(generation)
+	ns := daemon.GatewayNetNS(id)
+	deadline := time.After(20 * time.Second)
+	for {
+		b, _ := os.ReadFile(filepath.Join(dir, gwpolicy.ReloadedFile))
+		if strings.TrimSpace(string(b)) == want && listening(ns, netsetup.GatewayAddr.String()+":443") {
+			return nil
+		}
+		select {
+		case <-deadline:
+			log, _ := os.ReadFile(filepath.Join(dir, "gateway.log"))
+			return fmt.Errorf("the gateway did not reload within 20 s: %s", lastLine(string(log)))
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func (g *gateways) Start(ctx context.Context, id, ns, dir string, slot int, files, leaves map[string][]byte) (int, error) {

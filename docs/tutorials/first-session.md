@@ -125,9 +125,8 @@ sandbox resume ses-20261126-143022-a7b3
 sandbox stop   ses-20261126-143022-a7b3
 ```
 
-`resume` syncs the repositories first. It works while the session is running;
-resuming a session that was stopped is not available in v3 yet. See [Resuming
-sessions](../how-to/resuming-sessions.md).
+`resume` syncs the repositories first. A session that was stopped is recreated
+from its record. See [Resuming sessions](../how-to/resuming-sessions.md).
 
 ## Where to next
 

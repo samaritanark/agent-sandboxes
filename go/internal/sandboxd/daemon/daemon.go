@@ -78,6 +78,10 @@ type GatewayRunner interface {
 	// only by the gateway, then points the symlink dir/tls/live at it with one rename (the
 	// gateway's Envoy reloads on it) and removes the older versions.
 	Renew(ctx context.Context, id, dir string, slot, version int, leaves map[string][]byte) error
+	// Reload replaces the policy.json of the gateway in dir with policy, and has the running
+	// gateway reload it (sandbox allow); it returns once the gateway serves the policy's
+	// generation.
+	Reload(ctx context.Context, id, dir string, slot, generation int, policy []byte) error
 	// Stop ends it (pid as Start returned it).
 	Stop(ctx context.Context, id string, pid int) error
 }
@@ -277,8 +281,11 @@ func (d *Daemon) logf(f string, a ...any) {
 // ErrNotReady is returned until Reconcile has finished.
 var ErrNotReady = errors.New("sandboxd is reconciling its sessions; try again")
 
-func agentNetNS(id string) string    { return "sbx-" + id + "-a" }
-func gatewayNetNS(id string) string  { return "sbx-" + id + "-g" }
+func agentNetNS(id string) string   { return "sbx-" + id + "-a" }
+func gatewayNetNS(id string) string { return "sbx-" + id + "-g" }
+
+// GatewayNetNS is the network namespace session id's gateway runs in.
+func GatewayNetNS(id string) string  { return gatewayNetNS(id) }
 func depNetNS(id, dep string) string { return "sbx-" + id + "-d-" + dep }
 
 // depContainer is a dependency's container id: its name, then the session's. The session id comes

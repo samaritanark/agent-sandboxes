@@ -71,6 +71,36 @@ type Policy struct {
 	Resolvers []netip.Addr `json:"resolvers"`
 	// UpstreamCAs is the roots intercepted upstreams are verified against
 	UpstreamCAs string `json:"upstream_cas,omitempty"`
+	// Generation counts the policy's versions: a running gateway reloads its policy on SIGHUP
+	// (`sandbox allow`) and then writes the generation it serves to ReloadedFile in its directory
+	Generation int `json:"generation,omitempty"`
+}
+
+// ReloadedFile is where, in its directory, a gateway writes the generation of the policy it
+// serves after a reload.
+const ReloadedFile = "reloaded"
+
+// SameShape reports whether q differs from p only in what a running gateway can take on a
+// reload: each link's allowlist and blocked names, and the generation. Its links, their
+// addresses, ports, bindings, interception, and rules, the dependencies, and the resolvers stay.
+func (p *Policy) SameShape(q *Policy) error {
+	a, b := *p, *q
+	a.Generation, b.Generation = 0, 0
+	if len(a.Links) != len(b.Links) {
+		return errors.New("the links changed")
+	}
+	al, bl := append([]Link(nil), a.Links...), append([]Link(nil), b.Links...)
+	for i := range al {
+		al[i].Allow, al[i].BlockDomains = nil, nil
+		bl[i].Allow, bl[i].BlockDomains = nil, nil
+	}
+	a.Links, b.Links = al, bl
+	ja, _ := json.Marshal(a)
+	jb, _ := json.Marshal(b)
+	if !bytes.Equal(ja, jb) {
+		return errors.New("more than the allowlists changed")
+	}
+	return nil
 }
 
 // Decode reads a policy strictly.

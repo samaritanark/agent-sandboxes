@@ -235,6 +235,19 @@ func (st *Store) update(id string, f func(*Session) error) (*Session, error) {
 	return s, st.write(s)
 }
 
+// SetSpec replaces a running session's spec (a widened allowlist, `sandbox allow`), recording why.
+func (st *Store) SetSpec(id string, spec *sessionspec.Spec, why string) error {
+	_, err := st.update(id, func(s *Session) error {
+		if s.State != Running {
+			return fmt.Errorf("journal: session %s is %s, not RUNNING", id, s.State)
+		}
+		s.Spec = spec
+		s.Events = append(s.Events, Event{st.now(), why})
+		return nil
+	})
+	return err
+}
+
 // Transition moves a session to to, recording why. Moving to TERMINATED needs every resource
 // released or recorded as teardown-incomplete.
 func (st *Store) Transition(id string, to State, why string) (*Session, error) {

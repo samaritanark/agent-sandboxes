@@ -139,6 +139,9 @@ this page says otherwise.
   repositories, runtime, extra domains, and profile's dependencies: the
   workspace gates run again, and the agent resumes its conversation.
 - **`flows`** reads the gateway's records, not Hubble.
+- **`allow`** widens a running session as before; its gateway restarts Envoy to
+  take the new allowlist, which resets the agent's open connections (the session
+  stays).
 - **`status`** reports the VM; there is no cluster to report.
 - **`rebuild`** builds the agent images inside the VM. Each image is recorded by
   digest, and `image-builds.log` records the digest rather than the agent's
@@ -157,7 +160,6 @@ this page says otherwise.
 ### Not available yet
 
 - `upgrade` (reinstall with a newer image for now).
-- `allow` (adding domains to a running session).
 - Resuming a stopped tier 3 or opencode session, or one whose profile binds
   secrets: `resume` says why and prints the `run` command for an equivalent
   session. Other stopped sessions are recreated (see What changed).
