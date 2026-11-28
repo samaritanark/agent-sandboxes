@@ -173,6 +173,7 @@ func (a *app) syncConn(ep driver.SSHEndpoint, repo, id, ws string, live context.
 		for {
 			start := time.Now()
 			r, err := e.Sync()
+			a.recordLedger(id, r.Ledger)
 			passed = passed || err == nil
 			release()
 			if each != nil {
@@ -191,6 +192,7 @@ func (a *app) syncConn(ep driver.SSHEndpoint, repo, id, ws string, live context.
 		}
 	}
 	rep, err = e.Sync()
+	a.recordLedger(id, rep.Ledger)
 	if err == nil {
 		e.SaveCache()
 	}

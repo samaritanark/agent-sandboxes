@@ -245,31 +245,29 @@ follow.
 
 ## Attest a repo
 
-> **Not yet in v3:** creating the attestation with `sandbox vet`, and the
-> launch-time attest below. Signing needs your key, which stays on your machine,
-> and the part of the VM's CLI that would ask the host to sign is not built. Until
-> it is, a reviewer signs the tag with git on the host, which is the same
-> artifact the gate verifies:
->
-> ```bash
-> cd ~/repos/app
-> git -c gpg.format=ssh -c user.signingkey=~/.ssh/id_ed25519.pub \
->   tag -s -m "agent-vetted" agent-vetted/$(git rev-parse HEAD)
-> git push origin agent-vetted/$(git rev-parse HEAD)
-> ```
->
-> The next `sandbox run` sees the tag (it syncs the repository, tags included,
-> into the VM's copy first). `sandbox vet --status` reads the VM's copy as of its
-> last sync, so run `sandbox sync once --repo ~/repos/app` first after tagging.
-> Every check below works as described.
-
-In v2, a reviewer, after reading the tree, signs the current `HEAD`:
+A reviewer, after reading the tree, signs the current `HEAD`:
 
 ```bash
 sandbox vet --repo ~/repos/app
 # → creates signed tag agent-vetted/<sha>, then tells you how to push it:
 git -C ~/repos/app push origin agent-vetted/$(git -C ~/repos/app rev-parse HEAD)
 ```
+
+How it works in v3 (your key never leaves your machine, and the host never runs
+git against the repository, whose config and hooks could run code it chose):
+the host syncs the repository, and the VM checks its copy (a clean tree when
+required, an existing tag, the recorded secret exceptions) and builds the exact
+tag `git tag -s` would sign; the host checks that it names your `HEAD`, shows
+it, signs it with `ssh-keygen -Y sign` (or `gpg`), and the VM assembles the tag
+and verifies it against the trust roots; only then does the host write the tag
+into your repository. If the sync took commits that an agent made in a session
+and they are at or below `HEAD`, `vet` lists them and asks you to acknowledge
+them (or pass `--yes`), as it does for secret exceptions.
+
+The tagger is your git identity (`git config --global user.name` and
+`user.email`). In v3, `vet` does not offer to set up signing for you: set
+`vetting_signing_key` (below) or git's `user.signingkey`, and it says so if
+neither works.
 
 Pushing the tag lets other operators verify the same attestation. `sandbox vet`
 uses your own git signing configuration (`user.signingkey`, `gpg.format`); your
@@ -384,7 +382,17 @@ enforced.
 
 ## Attest at launch (authorized signers)
 
-(Not yet in v3; see [Attest a repo](#attest-a-repo).)
+**In v3 the launch does not offer this**: the launch runs in the sandbox VM,
+where your signing key never is. A launch that `required` would refuse for an
+unvetted repository says so and names the command instead:
+
+```
+  /home/you/repos/app is not vetted at HEAD 1ff36c4.... To attest it, run on your machine:
+      sandbox vet --repo /home/you/repos/app
+  then launch again.
+```
+
+What follows is v2's launch-time offer.
 
 Sometimes you'd rather sign than accept drift — or the repo is unvetted, or the
 drift is over the cap. So when `required` would refuse an interactive launch and

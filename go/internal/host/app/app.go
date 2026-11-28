@@ -39,6 +39,8 @@ type Env struct {
 	// runs kubectl).
 	Kubectl func(args []string) ([]byte, string, error)
 	// HostAddrs and LookupHost are this machine's addresses and resolver (tests; nil: the real ones).
+	// GitConfig reads one key of the operator's global git configuration (tests; nil runs git).
+	GitConfig  func(key string) string
 	HostAddrs  func() ([]netip.Prefix, error)
 	LookupHost func(string) ([]netip.Addr, error)
 	Driver     driver.Driver
@@ -132,6 +134,8 @@ func Run(ctx context.Context, args []string, env Env) (rc int) {
 			return a.migrate(args[1:])
 		case "flows":
 			return a.flows(args[1:])
+		case "vet":
+			return a.vet(args[1:])
 		case "status":
 			return a.vm([]string{"status"})
 		}

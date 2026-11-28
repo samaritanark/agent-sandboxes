@@ -80,9 +80,10 @@ var allowed = map[string][]string{
 		"l7", "link", "mounts", "onboard", "sandboxd/limits", "secretcmd", "secrets", "sessionspec", "tier", "vetting", "workspace"},
 
 	// The host binary's packages (design 5.1). They import only each other.
-	"host/driver":     {},
-	"host/release":    {},
-	"host/app":        {"brokerseal", "secrets", "host/auditpull", "host/brokerkey", "host/driver", "host/release", "host/sizing", "host/syncengine", "host/syncgate", "opstate"},
+	"host/driver":  {},
+	"host/release": {},
+	"host/app": {"brokerseal", "secrets", "host/auditpull", "host/brokerkey", "host/driver", "host/gitobj", "host/gitref", "host/release", "host/sizing",
+		"host/syncengine", "host/syncgate", "opstate"},
 	"host/sizing":     {},
 	"host/syncgate":   {"tables", "yamllist"},
 	"host/gitobj":     {},

@@ -372,9 +372,18 @@ func (c *cmdCtx) workspaceGates(agent, baseURL string, repos []string, acceptUnm
 	a := vetting.Attester{Ctx: v, Out: c.stdout, Err: c.stderr, Stdin: c.stdin,
 		Warn: func(m string) { c.warn("%s", m) },
 		Scan: func(r, accept string) []string { return gate.ScanRepoSecrets(c.env.Env, r, accept, c.stderr) }}
+	inline := a.InlineAttest
+	if c.env.Launch.Sessions != nil {
+		// a launch on sandboxd runs in the VM, where the operator's signing key never is: attesting
+		// is the host's `sandbox vet` (design 5.1.3, D-20)
+		inline = func(repo, sha string) bool {
+			c.errOut("  %s is not vetted at HEAD %.12s. To attest it, run on your machine:\n      sandbox vet --repo %s\n  then launch again.", repo, sha, repo)
+			return false
+		}
+	}
 	vd := vetting.GateDeps{Out: c.stdout, Err: c.stderr, Stdin: c.stdin, TTY: c.env.StdinTTY && c.env.StdoutTTY,
 		Status: v.StatusRepo, RecordOverride: recordOverride, SigningConfigured: v.SigningConfigured,
-		InlineAttest: a.InlineAttest,
+		InlineAttest: inline,
 		Cfg: vetting.GateConfig{ForbidOverride: v.ForbidUnvettedOverride(), TrustRoots: v.TrustRoots(),
 			TrustRoot: v.TrustRoot(), Cap: v.MaxCommitsBehind(), AgeCap: v.MaxAgeDays(), AgeDays: v.AgeDays}}
 	rc, sum := vd.VettingGateRepos(v.ResolvePosture(), tf(acceptUnvettedFlag), tf(acceptDrift), repos)

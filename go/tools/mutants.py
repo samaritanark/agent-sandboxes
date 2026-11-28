@@ -1799,3 +1799,27 @@ m(UB, '\t\tc.warn("%s", w)\n', '', "TestLaunchUnbrokered")
 m(UB, '\t\t\tseed[name] = b\n', '', "TestLaunchUnbrokered")
 m(UB, '\tif c.env.Launch.PrepareAgentHome == nil {', '\tif false {', "TestLaunchUnbrokered")
 m("internal/host/app/onboard.go", '\t\tcase grokCredKey.Match(b):', '\t\tcase false:', "TestOnboardClaude")
+
+# vet signing split between the VM and the host (D-20)
+VS = "internal/vetting/sign.go"
+R_VS = "TestSignSplit"
+m(VS, '\tif !taggerRE.MatchString(tagger) {', '\tif false {', R_VS)
+m(VS, '\tif head == "" || !bytes.HasPrefix(tag, []byte("object "+head+"\\ntype commit\\ntag "+name+"\\ntagger ")) {', '\tif head == "" {', R_VS)
+m(VS, '\tif !bytes.Contains(tag, []byte("\\n-----BEGIN SSH SIGNATURE-----")) && !bytes.Contains(tag, []byte("\\n-----BEGIN PGP SIGNATURE-----")) {', '\tif false {', R_VS)
+m(VS, '\t\tif _, ok := VerifyTag(dir, name, r, a.TrustFormat()); ok {', '\t\tif true {', R_VS)
+m(VS, '\t\tp.Already = true\n', '', R_VS)
+m(VS, '\toid, err := git(tag, "mktag")', '\toid, err := git(tag, "hash-object", "-t", "tag", "-w", "--stdin", "--literally")', R_VS)
+VH = "internal/host/app/vet.go"
+R_VH = "TestVet"
+m(VH, '\tif p.Head != head {', '\tif false {', R_VH)
+m(VH, '\tif p.Tag != "agent-vetted/"+head || !strings.HasPrefix(p.Payload, gitref.TagHeader(head, p.Tag)+tagger+"\\n\\n") {', '\tif p.Tag != "agent-vetted/"+head {', R_VH)
+m(VH, '\tif p.Tag != "agent-vetted/"+head || !strings.HasPrefix(p.Payload, gitref.TagHeader(head, p.Tag)+tagger+"\\n\\n") {', '\tif !strings.HasPrefix(p.Payload, gitref.TagHeader(head, p.Tag)+tagger+"\\n\\n") {', R_VH)
+m(VH, '\tif p.Already {', '\tif false {', R_VH)
+m(VH, '\tif made := a.sessionCommits(r, repo, head); len(made) > 0 {', '\tif made := []string(nil); len(made) > 0 {', R_VH)
+m(VH, '\tif len(p.Exceptions) > 0 {', '\tif false {', R_VH)
+m(VH, '\t\tcase !a.env.StdinTTY:', '\t\tcase false:', R_VH)
+m(VH, '\t\t\tif l := strings.ToLower(strings.TrimSpace(line)); l != "y" && l != "yes" {', '\t\t\tif false {', R_VH)
+m(VH, '\tif rc != 0 {\n\t\treturn rc\n\t}\n\tvar fin', '\tif false {\n\t\treturn rc\n\t}\n\tvar fin', R_VH, equivalent="the fake VM never refuses the finish; covered end to end")
+m(VH, '\t\tif ok, err := st.IsAncestor(f[0], head); err == nil && ok {', '\t\tif true {', R_VH, equivalent="the test's ledger names HEAD itself")
+m("internal/host/app/syncone.go", '\ta.recordLedger(id, rep.Ledger)\n', '', "TestLedgerRecorded")
+m("internal/cli/runprep.go", '\tif c.env.Launch.Sessions != nil {\n\t\t// a launch on sandboxd runs in the VM', '\tif false {\n\t\t// a launch on sandboxd runs in the VM', "TestLaunchInlineAttest")

@@ -278,3 +278,32 @@ func TestLaunchHostEndpoints(t *testing.T) {
 		t.Errorf("used id: %d %s", rc, errb.String())
 	}
 }
+
+// TestLaunchInlineAttest (D-20): a launch on sandboxd runs in the VM, where the operator's signing
+// key is not, so an unvetted repository is not offered for signing there: the launch says to run
+// `sandbox vet --repo` on the host, and stops (vetting required).
+func TestLaunchInlineAttest(t *testing.T) {
+	e, fs, home := launchEnv(t)
+	repo := filepath.Join(home, "app")
+	for _, args := range [][]string{{"init", "-q", repo}, {"-C", repo, "-c", "user.name=t", "-c", "user.email=t@e", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "a"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatal(string(out))
+		}
+	}
+	e.Launch.WorkspaceCopy = func(string) (string, error) { return "/var/lib/sandbox/workspaces/0123456789abcdef", nil }
+	os.MkdirAll(filepath.Join(home, ".sandbox", "vetting"), 0o700)
+	os.MkdirAll(filepath.Join(home, ".ssh"), 0o700)
+	key := filepath.Join(home, ".ssh", "id")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
+		t.Skip(string(out))
+	}
+	pub, _ := os.ReadFile(key + ".pub")
+	os.WriteFile(filepath.Join(home, ".sandbox", "vetting", "allowed_signers"), []byte("op@example.com "+string(pub)), 0o644)
+	os.WriteFile(e.UserConfig, []byte("vetting: required\nvetting_signing_key: "+key+".pub\n"), 0o644)
+	e.StdinTTY, e.StdoutTTY = true, true
+	var errb bytes.Buffer
+	rc := Run([]string{"run", "--tier", "2", "--repo", repo}, e, &bytes.Buffer{}, &errb)
+	if rc == 0 || len(fs.started) != 0 || !strings.Contains(errb.String(), "To attest it, run on your machine:\n      sandbox vet --repo "+repo) {
+		t.Errorf("%d %d\n%s", rc, len(fs.started), errb.String())
+	}
+}

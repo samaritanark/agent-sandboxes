@@ -53,6 +53,12 @@ const syncAgent = "__sync-agent"
 // VM (importhistory.go).
 const importHistoryCmd = "__import-history"
 
+// vetPrepare and vetFinish are the VM's halves of `sandbox vet --repo` (cli.VetPrepare, VetFinish).
+const (
+	vetPrepare = "__vet-prepare"
+	vetFinish  = "__vet-finish"
+)
+
 // canaryCmd runs the capability probe's canary under a runtime (design 5.2.3 check 3) for the
 // host's `sandbox doctor`: one line, what it found, or the error, with status 1.
 const canaryCmd = "__canary"
@@ -142,6 +148,12 @@ func main() {
 		b, _ := json.Marshal(map[string][]string{"repos": repos})
 		os.Stdout.Write(append(b, '\n'))
 		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == vetPrepare {
+		os.Exit(cli.VetPrepare(os.Args[2:], cliEnv(), os.Stdout, os.Stderr))
+	}
+	if len(os.Args) >= 2 && os.Args[1] == vetFinish {
+		os.Exit(cli.VetFinish(os.Args[2:], cliEnv(), os.Stdin, os.Stdout, os.Stderr))
 	}
 	if len(os.Args) >= 2 && os.Args[1] == runBindings {
 		os.Exit(printRunBindings(os.Args[2:], cliEnv()))

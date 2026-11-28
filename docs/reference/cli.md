@@ -112,6 +112,7 @@ sandbox profile save | list | show | delete ...
 sandbox mask add --repo <PATH> <RELPATH>...
 sandbox mask list --repo <PATH>
 sandbox exceptions add | list | migrate --repo <PATH> ...
+sandbox vet --repo <PATH> [--message <MSG>] [--yes]
 sandbox vet --status --repo <PATH>
 sandbox link ...
 sandbox version
@@ -167,7 +168,8 @@ this page says otherwise.
   (see [Tier 3 infra credentials](../how-to/tier3-infra-credentials.md)).
 - Brokering the copilot and grok logins: they run with their own login, as in
   v2 (see [Onboarding agents](../how-to/onboarding-agents.md#copilot-and-grok-not-brokered)).
-- Signing an attestation with `vet --repo` (`vet --status` works).
+- The attest offer at launch (run `sandbox vet --repo` on your machine instead),
+  and `vet` setting up git signing for you.
 
 ## Session naming
 
