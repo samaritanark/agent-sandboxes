@@ -289,9 +289,14 @@ func (c *cmdCtx) mcpConfig(s LaunchSpec, rec SessionRecord) string {
 }
 
 // closingHistory says where the agent's conversation history is (design 5.7): with an adapter,
-// in the VM per agent, tier, and repository set, or gone with a tier 1 session; otherwise v2's
-// line.
+// in the VM per agent, tier, and repository set, or gone with a tier 1 session; for copilot and
+// grok, in their home in the VM per tier; otherwise v2's line.
 func (c *cmdCtx) closingHistory(agent, tierV string) {
+	if _, ok := unbrokered[agent]; ok {
+		c.out("    Conversation history is kept in %s's home in the sandbox VM for tier %s.", agent, tierV)
+		c.out("    To continue: start a new %s session at tier %s and use the agent's /resume command.", agent, tierV)
+		return
+	}
 	if _, ok := adapters[agent]; !ok {
 		c.out("    Conversation history preserved in ~/.sandbox/agent-home/%s/", agent)
 		c.out("    To continue: start a new session and use the agent's /resume command.")

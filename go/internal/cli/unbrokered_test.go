@@ -65,6 +65,9 @@ func TestLaunchUnbrokered(t *testing.T) {
 		if !strings.Contains(errb.String(), c.agent+"'s "+c.account+" login cannot be brokered: the agent holds it") || !strings.Contains(errb.String(), "a warning from the VM") {
 			t.Errorf("%s: %s", c.agent, errb.String())
 		}
+		if !strings.Contains(out.String(), "Conversation history is kept in "+c.agent+"'s home in the sandbox VM for tier 1.") {
+			t.Errorf("%s: closing: %s", c.agent, out.String())
+		}
 		if !strings.Contains(out.String(), "==> "+c.agent+": not brokered (OQ-01)") {
 			t.Errorf("%s: %s", c.agent, out.String())
 		}
