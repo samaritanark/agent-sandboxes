@@ -184,6 +184,15 @@ func TestLaunchRefusals(t *testing.T) {
 	if rc := Run([]string{"run"}, e, &bytes.Buffer{}, &errb); rc != 1 || !strings.Contains(errb.String(), "failed to start: not admitted: memory") || len(fs.attached) != 0 {
 		t.Errorf("start failure: %d %q", rc, errb.String())
 	}
+	// the record shows it ended, with why, not running
+	if ents, _ := os.ReadDir(e.LogsDir); len(ents) == 1 {
+		b, _ := os.ReadFile(filepath.Join(e.LogsDir, ents[0].Name(), "session.json"))
+		if !strings.Contains(string(b), `"end_reason": "start-failed"`) || !strings.Contains(string(b), `"end_detail": "not admitted: memory"`) || strings.Contains(string(b), `"end_time": null`) {
+			t.Errorf("record:\n%s", b)
+		}
+	} else {
+		t.Errorf("logs: %v", ents)
+	}
 	e, fs, _ = launchEnv(t)
 	errb.Reset()
 	if rc := Run([]string{"run", "--agent", "codex"}, e, &bytes.Buffer{}, &errb); rc != 1 || !strings.Contains(errb.String(), "No runnable image for agent 'codex'") || len(fs.started) != 0 {

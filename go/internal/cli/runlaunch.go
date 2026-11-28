@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/samaritanark/agent-sandboxes/go/internal/agents"
+	"github.com/samaritanark/agent-sandboxes/go/internal/audit"
 	"github.com/samaritanark/agent-sandboxes/go/internal/bashcompat"
 	"github.com/samaritanark/agent-sandboxes/go/internal/catalogue"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
@@ -247,6 +248,10 @@ func (c *cmdCtx) startSession(s LaunchSpec, rec SessionRecord) (mcp string, star
 	}
 	c.out("==> Starting session...")
 	if err := l.Sessions.Start(spec); err != nil {
+		if isDir(rec.LogDir) { // the record shows the session ended, not running
+			audit.UpdateEndTime(rec.LogDir, c.stamp())
+			audit.RecordEndReason(rec.LogDir, "start-failed", firstErrLine(err))
+		}
 		c.die("Session %s failed to start: %v", rec.ID, err)
 	}
 	return mcp, true

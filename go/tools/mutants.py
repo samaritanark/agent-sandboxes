@@ -1773,3 +1773,5 @@ m(DK, '\t\t\tif err := os.Chmod(d.KubeRoot, 0o711); err != nil {', '\t\t\tif err
 m(DK, '\t\tif st.Mode().Perm()&0o001 == 0 {', '\t\tif false {', "TestTraversable", pkg="sandboxd/daemon")
 m(DK, '\t\tif p == filepath.Dir(p) {\n\t\t\treturn nil', '\t\tif true {\n\t\t\treturn nil', "TestTraversable", pkg="sandboxd/daemon")
 m(KH, '\t\t\tif u.Inject == "mtls" {\n\t\t\t\t// the gateway', '\t\t\tif false {\n\t\t\t\t// the gateway', "TestOpenLinks", pkg="../cmd/sandboxd")
+m("internal/cli/runlaunch.go", '\t\t\taudit.RecordEndReason(rec.LogDir, "start-failed", firstErrLine(err))\n', '', "TestLaunchRefusals")
+m("internal/cli/runlaunch.go", '\t\t\taudit.UpdateEndTime(rec.LogDir, c.stamp())\n', '', "TestLaunchRefusals")
