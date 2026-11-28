@@ -51,6 +51,8 @@ var allowed = map[string][]string{
 	// domain matching shared by the policy layer and the gateway and resolver: pure functions
 	"egressmatch": {},
 	"l7":          {"egressmatch"},
+	// tier 3's API deny-list (design 5.9.5), as L7 rules
+	"kubeapi": {"l7"},
 	// the gateway (design 5.8): each session's resolver, gateway controller, and broker
 	"gateway/resolver":  {"egressmatch"},
 	"gateway/authz":     {"egressmatch"},
