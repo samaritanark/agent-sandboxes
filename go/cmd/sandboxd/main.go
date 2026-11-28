@@ -6,6 +6,7 @@
 //	sandboxd ctl start SPEC.json    start a session from a session spec
 //	sandboxd ctl stop ID [REASON]   stop a session
 //	sandboxd ctl heartbeat ID       renew a session's attach lease
+//	sandboxd ctl rebind ID          hand a running session's gateway its credentials again
 //	sandboxd ctl list               list sessions
 //	sandboxd ctl attach ID -- CMD...  run CMD in the session's agent microVM with this terminal
 //	sandboxd ctl broker-key         take the broker store key on stdin (the host pushes it)
@@ -98,6 +99,8 @@ func ctl(args []string) int {
 		if len(args) == 3 {
 			req.Reason = args[2]
 		}
+	case args[0] == "rebind" && len(args) == 2:
+		req = daemon.Request{Op: "rebind", ID: args[1]}
 	case args[0] == "heartbeat" && len(args) == 2:
 		req = daemon.Request{Op: "heartbeat", ID: args[1]}
 	case args[0] == "list" && len(args) == 1:

@@ -172,7 +172,7 @@ your PATH, so nothing runs v2's script by accident.
 - `sandbox flows` reads the gateway's request log instead of Hubble.
 - `sandbox sync review` shows workspace changes the sync withheld.
 - Removed: `configure-network` (the VM follows the host's networking).
-  Not built yet: upgrading from published releases, renewing an exec plugin's credential during a session,
+  Not built yet: upgrading from published releases, renewing an exec plugin's credential after you detach,
   resuming a stopped tier 3 session, brokering Copilot's and Grok's logins
   (they sign in in the session, as in v2), and Windows.
 

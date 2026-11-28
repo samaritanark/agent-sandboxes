@@ -121,8 +121,17 @@ func (a *app) lookupHost(h string) ([]netip.Addr, error) {
 	return ips, err
 }
 
-// declareEndpoints opens eps for a new session's ID and returns the run's environment for them.
-func (a *app) declareEndpoints(eps []netip.AddrPort) []string {
+// newSessionID is a session ID the host chooses for a launch (cli: SessionIDEnv), when it needs to
+// know it: to declare endpoints under it, or to renew its credentials.
+func (a *app) newSessionID() string {
+	b := make([]byte, 2)
+	rand.Read(b)
+	now := a.env.Now().UTC()
+	return "ses-" + now.Format("20060102") + "-" + now.Format("150405") + "-" + hex.EncodeToString(b)
+}
+
+// declareEndpoints opens eps for session id and returns the run's environment for them.
+func (a *app) declareEndpoints(id string, eps []netip.AddrPort) []string {
 	if len(eps) == 0 {
 		return nil
 	}
@@ -131,10 +140,7 @@ func (a *app) declareEndpoints(eps []netip.AddrPort) []string {
 		a.die("%s is an address of this machine. Reaching it from a session needs a declared endpoint, which the %s driver cannot open one by one; reinstall with the vfkit driver (macOS) or the qemu driver (Linux).",
 			eps[0], a.env.Driver.Name())
 	}
-	b := make([]byte, 2)
-	rand.Read(b)
 	now := a.env.Now().UTC()
-	id := "ses-" + now.Format("20060102") + "-" + now.Format("150405") + "-" + hex.EncodeToString(b)
 	if err := dd.DeclareEndpoints(a.ctx, id, eps, now.Add(endpointLifetime)); err != nil {
 		a.die("could not declare this machine's endpoints for the session: %v", err)
 	}
@@ -143,7 +149,7 @@ func (a *app) declareEndpoints(eps []netip.AddrPort) []string {
 		s[i] = ep.String()
 	}
 	fmt.Fprintf(a.env.Stdout, "==> Declared host endpoint(s) %s (this machine) for session %s, until it ends\n", strings.Join(s, " "), id)
-	return []string{SessionIDEnv + "=" + id, HostEndpointsEnv + "=" + strings.Join(s, ",")}
+	return []string{HostEndpointsEnv + "=" + strings.Join(s, ",")}
 }
 
 // releaseEndpoints closes the declared endpoints of sessions sandboxd no longer runs. When the

@@ -255,7 +255,17 @@ func (a *app) proxy(args []string) int {
 		if prep.kube != "" {
 			extra = append(extra, prep.kube)
 		}
-		extra = append(extra, a.declareEndpoints(prep.endpoints)...)
+		if len(prep.endpoints) > 0 || len(prep.pump) > 0 {
+			id := a.newSessionID()
+			extra = append(extra, SessionIDEnv+"="+id)
+			extra = append(extra, a.declareEndpoints(id, prep.endpoints)...)
+			if len(prep.pump) > 0 {
+				ctx, cancel := context.WithCancel(a.ctx)
+				pumped := make(chan struct{})
+				go func() { a.runPump(ctx, ep, id, prep.pump); close(pumped) }()
+				defer func() { cancel(); <-pumped }()
+			}
+		}
 		live := a.startLiveSync(ep, prep.synced)
 		defer live.finish()
 	}

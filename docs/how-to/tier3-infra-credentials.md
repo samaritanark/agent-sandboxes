@@ -127,10 +127,13 @@ WARN: kubeconfig '/home/you/.kube/eks.yaml' gets its credential from the exec pl
 ==> Cluster eks: credential from the exec plugin 'aws' (valid until 2026-11-28 15:04 UTC)
 ```
 
-The credential is not renewed during the session: once it expires (EKS tokens after 15 minutes,
-GKE's after about an hour) the session's `kubectl` gets `401 Unauthorized`, and the next launch gets
-a new one. For a long session, mint a longer-lived token (below). In v2 the plugin was copied into
-the pod without its configuration, so every call failed.
+While you are attached, the sandbox renews the credential shortly before it expires (EKS tokens
+last 15 minutes): it runs the plugin again on your machine, without a terminal, and hands the new
+credential to the session's gateway; renewals are logged in `~/.sandbox/logs/token-pump.log`. After
+you detach from a `--keep-alive` session nothing renews it, so once it expires the session's
+`kubectl` gets `401 Unauthorized` until you resume. If a renewal fails (your own login with the plugin
+expired), it stops; sign in on your machine and launch again. In v2 the plugin was copied into the
+pod without its configuration, so every call failed.
 
 Refused, with what to do instead:
 

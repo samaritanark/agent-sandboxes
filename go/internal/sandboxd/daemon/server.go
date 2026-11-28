@@ -206,6 +206,11 @@ func (d *Daemon) call(ctx context.Context, req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, ID: req.ID, Detail: detail}
+	case "rebind":
+		if err := d.Rebind(ctx, req.ID); err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, ID: req.ID}
 	case "heartbeat":
 		if err := d.Heartbeat(req.ID); err != nil {
 			return fail(err)

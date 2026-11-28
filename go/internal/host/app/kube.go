@@ -45,6 +45,7 @@ type kubeCluster struct {
 	Source        string `json:"source"`
 	value         []byte
 	exec          *execSpec // the exec credential plugin that gives the credential, run on the host
+	expires       time.Time // the exec plugin's credential's expiry (zero: none given)
 }
 
 // execSpec is a kubeconfig user's exec credential plugin (client.authentication.k8s.io).

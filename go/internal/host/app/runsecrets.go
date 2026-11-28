@@ -321,6 +321,7 @@ type runPrep struct {
 	opencodeConfig string
 	kube           string
 	endpoints      []netip.AddrPort
+	pump           []pumpJob // exec-plugin clusters whose credential is renewed while attached
 }
 
 func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (p runPrep) {
@@ -381,6 +382,12 @@ func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (
 		p.opencodeConfig = a.prepareOpencode(ep, pp.OpencodeBaseURL, args)
 	}
 	p.endpoints = a.hostEndpoints(args, clusters)
+	for i, k := range clusters {
+		if k.exec != nil {
+			p.pump = append(p.pump, pumpJob{index: i, exec: k.exec, kubeconfig: k.Source,
+				inject: map[string]string{"token": "bearer", "mtls": "mtls"}[k.Auth], expires: k.expires})
+		}
+	}
 	p.synced = a.syncAndMirror(ep, repos)
 	return p
 }

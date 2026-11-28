@@ -54,6 +54,9 @@ echo '{"kind":"ExecCredential","apiVersion":"client.authentication.k8s.io/v1","s
 	if rc != 0 || !strings.Contains(out, "==> Cluster eks: credential from the exec plugin './bin/aws' (valid until 2027-01-15 09:00 UTC)") {
 		t.Fatalf("%d\n%s\n%s", rc, out, errb)
 	}
+	if argv := strings.Join(tr.runs[len(tr.runs)-1], " "); !strings.Contains(argv, SessionIDEnv+"=ses-") {
+		t.Errorf("no session ID for the pump: %q", argv)
+	}
 	key, _ := k.Load()
 	sealed := false
 	for i, c := range tr.ctl {
@@ -115,5 +118,79 @@ echo '{"kind":"ExecCredential","apiVersion":"client.authentication.k8s.io/v1","s
 		if rc, tr, _, errb := run("", false, "--allow-exec-plugin"); rc != 1 || len(tr.runs) != 0 || !strings.Contains(errb, "did not give a credential") {
 			t.Errorf("%s: %d %s", name, rc, errb)
 		}
+	}
+}
+
+// TestPump (design 5.9.5): while the operator is attached, an exec plugin's credential is renewed
+// before it expires: the plugin runs again, the new credential is sealed into the broker store bound
+// as before, and sandboxd hands the session's gateway its credentials again; it stops when the run
+// ends, and a plugin that fails stops renewing (logged, never printed on the agent's terminal).
+func TestPump(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test plugin is a shell script")
+	}
+	dir, state := t.TempDir(), t.TempDir()
+	plugin := filepath.Join(dir, "aws")
+	now := time.Unix(1800000000, 0)
+	later := now.Add(time.Hour).UTC().Format(time.RFC3339)
+	os.WriteFile(plugin, []byte("#!/bin/sh\necho '{\"kind\":\"ExecCredential\",\"status\":{\"token\":\"renewed-tok\",\"expirationTimestamp\":\""+later+"\"}}'\n"), 0o755)
+	k := brokerkey.File{Path: filepath.Join(state, "broker.key")}
+	tr := &fakeTransport{release: goodRelease}
+	var out bytes.Buffer
+	a := &app{env: Env{Transport: tr, StateDir: state, Stdout: &out, Stderr: &out, Now: func() time.Time { return now }, BrokerKey: k},
+		ctx: context.Background()}
+	if _, err := a.brokerKey(); err != nil { // made at install in real life
+		t.Fatal(err)
+	}
+	out.Reset()
+	id := "ses-20270115-080000-beef"
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		a.runPump(ctx, driver.SSHEndpoint{}, id, []pumpJob{{index: 0, exec: &execSpec{Command: plugin, Args: []string{"eks", "get-token"}}, kubeconfig: filepath.Join(dir, "config"),
+			inject: "bearer", expires: now.Add(pumpLead)}}) // due now
+		close(done)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(tr.ctl) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if len(tr.ctl) != 2 || tr.ctl[0][1] != "broker-put" || tr.ctl[0][2] != "infra.kube.0" || tr.ctl[1][1] != "rebind" || tr.ctl[1][2] != id {
+		t.Fatalf("ctl %q", tr.ctl)
+	}
+	key, _ := k.Load()
+	v, b, _, err := brokerseal.OpenBound(key, "infra.kube.0", tr.ctlIn[0])
+	if err != nil || string(v) != "renewed-tok" || b.Inject != "bearer" || len(b.Hosts) != 1 || b.Hosts[0] != "kube-0.gw.sandbox.internal" {
+		t.Errorf("sealed %q %+v %v", v, b, err)
+	}
+	logb, _ := os.ReadFile(filepath.Join(state, "logs", "token-pump.log"))
+	if !strings.Contains(string(logb), id+" cluster 0: credential renewed") || out.Len() != 0 {
+		t.Errorf("log %q, terminal %q", logb, out.String())
+	}
+	// a plugin that fails: logged, nothing stored, and the pump ends by itself
+	os.WriteFile(plugin, []byte("#!/bin/sh\nexit 4\n"), 0o755)
+	tr.ctl = nil
+	a.runPump(context.Background(), driver.SSHEndpoint{}, id, []pumpJob{{index: 0, exec: &execSpec{Command: plugin, Args: []string{"eks", "get-token"}},
+		inject: "bearer", expires: now}})
+	logb, _ = os.ReadFile(filepath.Join(state, "logs", "token-pump.log"))
+	if len(tr.ctl) != 0 || !strings.Contains(string(logb), "failed") {
+		t.Errorf("failing plugin: %q %s", tr.ctl, logb)
+	}
+	// no expiry given: nothing to renew, and the pump ends at once
+	tr.ctl = nil
+	ended := make(chan struct{})
+	go func() {
+		a.runPump(context.Background(), driver.SSHEndpoint{}, id, []pumpJob{{index: 0, exec: &execSpec{Command: plugin}}})
+		close(ended)
+	}()
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pump waited on a credential with no expiry")
+	}
+	if len(tr.ctl) != 0 {
+		t.Errorf("a credential with no expiry was renewed: %q", tr.ctl)
 	}
 }

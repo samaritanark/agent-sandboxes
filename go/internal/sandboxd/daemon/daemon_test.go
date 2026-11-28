@@ -1042,3 +1042,37 @@ func TestHostEndpointScoping(t *testing.T) {
 		t.Errorf("withdrawn: %v", r.net.hosteps)
 	}
 }
+
+// TestRebind (the exec-plugin token pump, design 5.9.5): a running session's gateway is handed its
+// policy's credentials again, as at the start; a session that is not running, or binds nothing, is
+// refused.
+func TestRebind(t *testing.T) {
+	r := newRig(t)
+	ca, _, _ := pki.LoadOrCreate(t.TempDir(), *r.now)
+	r.d.TLS = &TLS{CA: ca, Baseline: []l7.Rule{{Host: l7.AnyHost, Methods: []string{"TRACE"}, Action: l7.Deny}}}
+	fb := &fakeBroker{}
+	r.d.Broker = fb
+	ctx := context.Background()
+	sp, _ := sessionspec.Decode(bytes.NewReader(spec("s-reb", 2048)))
+	sp.Bindings = []sessionspec.Binding{{Ref: "infra.kube.0", Hosts: []string{"api.anthropic.com"}, Inject: "bearer", Placeholder: "sbxph_" + strings.Repeat("Q", 43)}}
+	b, _ := sp.Encode()
+	id, err := r.d.Start(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fb.handed = nil
+	if resp := r.d.call(ctx, Request{Op: "rebind", ID: id}); !resp.OK {
+		t.Fatalf("rebind: %s", resp.Error)
+	}
+	if refs := fb.handed[id]; len(refs) != 1 || fmt.Sprint(refs[0]) != "[{infra.kube.0 [api.anthropic.com] bearer}]" || len(fb.sockets) != 2 {
+		t.Errorf("handed %v %v", refs, fb.sockets)
+	}
+	plain, _ := r.d.Start(ctx, spec("s-none", 1024))
+	if err := r.d.Rebind(ctx, plain); err == nil || !strings.Contains(err.Error(), "binds no credentials") {
+		t.Errorf("no bindings: %v", err)
+	}
+	r.d.Stop(ctx, id, "operator stop")
+	if err := r.d.Rebind(ctx, id); err == nil || !strings.Contains(err.Error(), "not running") {
+		t.Errorf("stopped: %v", err)
+	}
+}

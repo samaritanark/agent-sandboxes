@@ -32,5 +32,5 @@ credential is scoped to the cluster:
 | `gke-gcloud-auth-plugin`, `gcloud` | general-purpose (refused) | a gcloud access token, which works against Google Cloud APIs beyond the cluster |
 | any other `aws` command, any other plugin | refused | not classified |
 
-An overlay exception for a general-purpose plugin is not built yet. The credential is fetched once
-per launch and not renewed.
+An overlay exception for a general-purpose plugin is not built yet. The credential is renewed while
+you are attached, and not after you detach.

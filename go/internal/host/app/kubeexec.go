@@ -19,6 +19,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
+	"github.com/samaritanark/agent-sandboxes/go/internal/host/driver"
 )
 
 // execClass is what an exec plugin's credential authorizes (design 5.9.5): only cluster-scoped
@@ -95,6 +98,7 @@ func (a *app) execCredential(k *kubeCluster, kubeconfig string, args []string) {
 	if !cred.expires.IsZero() {
 		until = "valid until " + cred.expires.UTC().Format("2006-01-02 15:04 UTC")
 	}
+	k.expires = cred.expires
 	if cred.token != "" {
 		k.Auth, k.value = "token", []byte(cred.token)
 	} else {
@@ -180,4 +184,88 @@ func (a *app) runExecPlugin(e *execSpec, kubeconfig string) (execCred, error) {
 		return execCred{}, fmt.Errorf("its ExecCredential has no token and no client certificate")
 	}
 	return r, nil
+}
+
+// pumpJob is one exec-plugin cluster whose credential the pump renews while the operator is attached
+// (design 5.9.5): the invocation captured from the operator's own kubeconfig at run, never from the VM.
+type pumpJob struct {
+	index      int
+	exec       *execSpec
+	kubeconfig string
+	inject     string
+	expires    time.Time
+}
+
+// pumpLead is how long before a credential's expiry the pump renews it.
+var pumpLead = 2 * time.Minute
+
+// runPump renews each job's credential shortly before it expires, until ctx ends (the operator
+// detaches or the session ends): the plugin runs again, the new credential is sealed into the
+// broker store, and sandboxd hands the session's gateway its credentials again. It writes only to
+// ~/.sandbox/logs/token-pump.log (the terminal is the agent's). A failure stops that cluster's
+// renewal; its kubectl then gets 401 once the credential expires (OQ-09: fail closed).
+func (a *app) runPump(ctx context.Context, ep driver.SSHEndpoint, id string, jobs []pumpJob) {
+	logf := func(f string, v ...any) {
+		dir := filepath.Join(a.env.StateDir, "logs")
+		os.MkdirAll(dir, 0o700)
+		if fh, err := os.OpenFile(filepath.Join(dir, "token-pump.log"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600); err == nil {
+			fmt.Fprintf(fh, "%s %s %s\n", a.env.Now().UTC().Format(time.RFC3339), id, fmt.Sprintf(f, v...))
+			fh.Close()
+		}
+	}
+	done := make(chan struct{}, len(jobs))
+	for _, j := range jobs {
+		if j.expires.IsZero() {
+			done <- struct{}{}
+			continue
+		}
+		go func(j pumpJob) {
+			defer func() { done <- struct{}{} }()
+			for {
+				wait := j.expires.Sub(a.env.Now()) - pumpLead
+				if wait < 0 {
+					wait = 0
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(wait):
+				}
+				cred, err := a.runExecPlugin(j.exec, j.kubeconfig)
+				if err != nil {
+					logf("cluster %d: the exec plugin '%s' failed: %v; not renewed", j.index, j.exec.Command, err)
+					return
+				}
+				v := []byte(cred.token)
+				if cred.token == "" {
+					v = append(append([]byte(cred.cert), '\n'), cred.key...)
+				}
+				key, err := a.brokerKey()
+				if err == nil {
+					var sealed []byte
+					sealed, err = brokerseal.SealBound(key, kubeRef(j.index), v, brokerseal.Binding{Hosts: []string{kubeName(j.index)}, Inject: j.inject})
+					brokerseal.Wipe(key)
+					if err == nil {
+						err = a.sandboxd(ep, bytes.NewReader(sealed), "broker-put", kubeRef(j.index))
+					}
+					if err == nil {
+						err = a.sandboxd(ep, strings.NewReader(""), "rebind", id)
+					}
+				}
+				brokerseal.Wipe(v)
+				if err != nil {
+					logf("cluster %d: could not renew its credential: %v", j.index, err)
+					return
+				}
+				logf("cluster %d: credential renewed (until %s)", j.index, cred.expires.UTC().Format(time.RFC3339))
+				if cred.expires.IsZero() || !cred.expires.After(j.expires) {
+					return // no later expiry: nothing to schedule
+				}
+				j.expires = cred.expires
+			}
+		}(j)
+	}
+	for range jobs {
+		<-done
+	}
 }
