@@ -12,6 +12,7 @@ import (
 	"github.com/samaritanark/agent-sandboxes/go/internal/audit"
 	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
+	"github.com/samaritanark/agent-sandboxes/go/internal/jqjson"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
 )
 
@@ -304,4 +305,56 @@ func TestLaunchSharedTree(t *testing.T) {
 	if rc := Run([]string{"run", "--repo", repo}, e, &bytes.Buffer{}, &errb); rc != 1 || !strings.Contains(errb.String(), "shared_tree_policy: deny") || len(fs.started) != 1 {
 		t.Errorf("%d %d\n%s", rc, len(fs.started), errb.String())
 	}
+}
+
+// TestResumeRecreates: resuming a session that has stopped starts it again on sandboxd from its
+// record, under its own ID and runtime, and resumes the agent's conversation; a session the
+// record cannot rebuild (tier 3, opencode, a profile that binds secrets) says why and starts
+// nothing.
+func TestResumeRecreates(t *testing.T) {
+	defer deviation.Force(deviation.RuntimeChoice)()
+	e, fs, home := launchEnv(t)
+	e.SessionPhase, e.RecreateSession, e.Attach = nil, nil, nil // sandboxd's, not v2's hooks
+	var out, errb bytes.Buffer
+	if rc := Run([]string{"run", "--runtime", "gvisor"}, e, &out, &errb); rc != 0 {
+		t.Fatal(errb.String())
+	}
+	id := fs.started[0].ID
+	if len(fs.stopped) != 1 {
+		t.Fatalf("stopped %q", fs.stopped)
+	}
+	out.Reset()
+	errb.Reset()
+	if rc := Run([]string{"resume", id}, e, &out, &errb); rc != 0 {
+		t.Fatalf("%d\n%s\n%s", rc, out.String(), errb.String())
+	}
+	if len(fs.started) != 2 || fs.started[1].ID != id || fs.started[1].Runtime != "gvisor" {
+		t.Fatalf("started %+v", fs.started)
+	}
+	last := fs.attached[len(fs.attached)-1]
+	if len(last) != 4 || last[0] != id || last[1] != "claude" || last[2] != "--resume" || last[3] == "" {
+		t.Errorf("attached %q", last)
+	}
+	if !strings.Contains(out.String(), "==> Recreating session "+id) {
+		t.Errorf("%s", out.String())
+	}
+	if b, _ := os.ReadFile(filepath.Join(e.LogsDir, id, "session.json")); !strings.Contains(string(b), `"recreated"`) {
+		t.Error("no recreated event")
+	}
+	if rec, _ := sessionRecord(filepath.Join(e.LogsDir, id, "session.json")); jqRawField(rec, "end_time", "") == "" {
+		t.Error("the session's end was not recorded again when it stopped")
+	}
+
+	// a profile that binds secrets cannot be rebuilt here
+	os.MkdirAll(filepath.Join(home, ".sandbox", "profiles"), 0o755)
+	os.WriteFile(filepath.Join(home, ".sandbox", "profiles", "sec.yaml"), []byte("tier: 1\nsecrets:\n  - API_TOKEN\n"), 0o644)
+	sj := filepath.Join(e.LogsDir, id, "session.json")
+	audit.SetField(filepath.Join(e.LogsDir, id), "profile", jqjson.Str("sec"))
+	n := len(fs.started)
+	errb.Reset()
+	if rc := Run([]string{"resume", id}, e, &bytes.Buffer{}, &errb); rc != 1 || len(fs.started) != n ||
+		!strings.Contains(errb.String(), "its profile 'sec' binds secrets") {
+		t.Errorf("%d %d\n%s", rc, len(fs.started)-n, errb.String())
+	}
+	_ = sj
 }

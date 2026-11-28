@@ -88,7 +88,8 @@ func TestListActive(t *testing.T) {
 }
 
 // TestResumeOnSandboxd: a live session is attached with the agent's resume command and kept or
-// stopped after as v2 did; a stopped one prints the relaunch command.
+// stopped after as v2 did; a stopped one its record cannot rebuild prints why and the relaunch
+// command.
 func TestResumeOnSandboxd(t *testing.T) {
 	e, fs, _ := launchEnv(t)
 	e.SessionPhase, e.RecreateSession, e.Attach = nil, nil, nil
@@ -106,9 +107,13 @@ func TestResumeOnSandboxd(t *testing.T) {
 	if strings.Join(fs.stopped, ",") != "ses-r operator stop" || !strings.Contains(out.String(), "Session ses-r stopped.") {
 		t.Errorf("teardown: %q %q", fs.stopped, out.String())
 	}
+	// stopped: recreated from its record (TestResumeRecreates), unless the record cannot rebuild it
+	sessionJSON(t, e, "ses-r", `{"agent":"claude","tier":"3","agent_session_id":"u-1"}`)
 	errb.Reset()
-	if rc := Run([]string{"resume", "ses-r"}, e, &bytes.Buffer{}, &errb); rc != 1 || !strings.Contains(errb.String(), "not yet available in v3") || !strings.Contains(errb.String(), "sandbox run --agent claude --tier 1") {
-		t.Errorf("stopped: %d %q", rc, errb.String())
+	n := len(fs.started)
+	if rc := Run([]string{"resume", "ses-r"}, e, &bytes.Buffer{}, &errb); rc != 1 || len(fs.started) != n ||
+		!strings.Contains(errb.String(), "tier 3's --infra-token files are not recorded") || !strings.Contains(errb.String(), "sandbox run --agent claude --tier 3") {
+		t.Errorf("stopped tier 3: %d %q", rc, errb.String())
 	}
 }
 

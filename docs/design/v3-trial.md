@@ -24,7 +24,8 @@ user documentation. State as of 2026-11-27; S8.md "Start here" says what changed
 ## What does not work yet
 
 - copilot and grok (their broker adapters are not built); `--infra-kubeconfig`.
-- Resuming a session that was stopped (a live keep-alive session resumes).
+- Resuming a stopped tier 3 or opencode session, or one whose profile binds secrets (other stopped
+  sessions are recreated).
 - `sandbox upgrade`, prebuilt agent images in the appliance (you build them once with
   `sandbox rebuild`), Windows and Linux hosts (Linux uses qemu; not part of this trial).
 - Files over 64 MiB reach the VM, but the agent's changes to them do not come back (the sync gate's

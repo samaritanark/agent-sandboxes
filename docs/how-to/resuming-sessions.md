@@ -29,10 +29,13 @@ A kept-alive session ends on its own after 24 hours with nothing attached, or 7 
 session that is not kept alive ends about two minutes after its terminal goes away. `sandbox stop
 <SESSION_ID>` ends one at once.
 
-**Not yet in v3:** resuming a session that has already stopped. v2 recreated its pod from the
-session record; v3 says it cannot and prints the `sandbox run` command that starts an equivalent
-session. Its conversation history is still there (tiers 2 and 3), so `/resume` in the new session
-continues it.
+**A session that has stopped** is recreated by `resume` from its record, as v2 recreated its pod:
+under the same ID, with its repositories, runtime, extra domains, and profile's dependencies. The
+workspace gates run again first, and the agent picks up its conversation (tiers 2 and 3 keep it;
+a tier 1 session's went with it). Three kinds cannot be recreated this way, and `resume` says why
+and prints the `sandbox run` command for an equivalent session: tier 3 (its `--infra-token` files
+are not recorded), opencode (its key comes from your shell at each launch), and a session whose
+profile binds secrets (only `sandbox run` sends them from your machine).
 
 ## The workspace sync
 

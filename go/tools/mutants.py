@@ -782,9 +782,10 @@ m(RS, '\tif sessionID == "" {\n\t\tc.die("Usage: sandbox resume', '\tif false {\
 m(RS, '\tif !config.IsFile(sj) {\n\t\tc.die("Session not found', '\tif false {\n\t\tc.die("Session not found', R_CL)
 m(RS, '\tpod := jqAlt(sj, "pod_name", "")\n\tif pod == "" {\n\t\tpod = "sandbox-" + sessionID\n\t}\n\tif !config', '\tpod := jqAlt(sj, "pod_name", "")\n\tif !config', R_CL)
 m(RS, '\t} else if phase != "Running" {', '\t} else if false {', R_CL)
-m(RS, '\tcase bashcompat.ArithCmp(tierV, "3", "eq"):', '\tcase false:', R_CL)
+m(RS, '\tcase bashcompat.ArithCmp(tierV, "3", "eq"):\n\t\treturn "tier 3 infra credentials are never persisted"', '\tcase false:\n\t\treturn "tier 3 infra credentials are never persisted"', R_CL)
+m(RS, '\tcase bashcompat.ArithCmp(tierV, "3", "eq"):\n\t\treturn "tier 3\'s --infra-token', '\tcase false:\n\t\treturn "tier 3\'s --infra-token', "TestResumeOnSandboxd")
 m(RS, '\tcase profile != "":', '\tcase false:', R_CL)
-m(RS, '\tcase agent == "opencode":', '\tcase false:', R_CL)
+m(RS, '\tcase agent == "opencode":\n\t\treturn "opencode reads', '\tcase false:\n\t\treturn "opencode reads', R_CL)
 m(RS, '\tif profile != "" {\n\t\tcmd += " --profile " + profile', '\tif false {\n\t\tcmd += " --profile " + profile', R_CL)
 m(RS, '\t\tcmd += " --name \'" + name + "\'"', '\t\tcmd += " --name " + name', R_CL)
 m(RS, '\tfor _, d := range c.resumeExtras(rec, agent, tierV) {', '\tfor _, d := range jqLines(rec.Get("allowed_domains")) {', R_CL)
@@ -1222,7 +1223,7 @@ m("internal/cli/sessions.go", '\tif len(live) == 0 {\n\t\treturn\n\t}', '', R_ST
 m("internal/cli/sessions.go", '"RUNNING": "Running",', '"RUNNING": "Pending",', R_ST)
 m("internal/cli/sessions.go", 'tabwriter.NewWriter(c.stdout, 0, 8, 3,', 'tabwriter.NewWriter(c.stdout, 0, 8, 2,', R_ST)
 m("internal/cli/resume.go", '\t\tif r.KeepAlive {\n\t\t\tc.out("==> Disconnected from', '\t\tif false {\n\t\t\tc.out("==> Disconnected from', "TestResumeOnSandboxd")
-m("internal/cli/resume.go", '\t\tif b == "" && onSandboxd {', '\t\tif false {', "TestResumeOnSandboxd")
+m("internal/cli/resume.go", '\t\t\tmcp = c.recreateOnSandboxd(sessionID, keepAlive, acceptUnmasked, acceptUnvetted, acceptDrift)', '\t\t\tc.recreateSession(sessionID, acceptUnmasked, acceptUnvetted, acceptDrift)', "TestResumeRecreates")
 m("internal/cli/resume.go", '\t\tif !live {\n\t\t\treturn false, ""\n\t\t}', '', "TestResumeOnSandboxd")
 
 # ---- the live sync during a run (internal/host/app/livesync.go, syncone.go)
@@ -1604,3 +1605,16 @@ m("internal/sandboxd/daemon/daemon.go", '\t\td.trackDependency(id, dep.Name, cid
 m("internal/sandboxd/daemon/daemon.go", '\tdelete(d.deps, id)\n', '', R_DP, pkg="sandboxd/daemon")
 m("internal/sandboxd/daemon/daemon.go", '\td.restartDependencies(ctx, now)\n', '', R_DP, pkg="sandboxd/daemon")
 m("internal/cli/runagent.go", '\tif len(projects) == 0 {\n\t\tprojects["/workspace"] = trust\n\t}\n', '', "TestClaudeJSONTrust")
+
+# resume recreates a stopped session on sandboxd
+RS = "internal/cli/resume.go"
+R_RS2 = "TestResumeRecreates"
+m(RS, '\t\tif onSandboxd {\n\t\t\tb = c.recreateBlocker(sj)\n\t\t}\n', '', R_RS2)
+m(RS, '\t\tif len(config.ExtractYAMLList(p, "secrets")) > 0 {', '\t\tif false {', R_RS2)
+m(RS, '\t\tDomains: c.resumeExtras(rec, agent, tierV), KeepAlive: keepAlive, Runtime: jqRawField(rec, "runtime", "")}', '\t\tDomains: c.resumeExtras(rec, agent, tierV), KeepAlive: keepAlive}', R_RS2)
+m(RS, '\taudit.LogEvent(logDir, "recreated", "Recreated from its record by \'sandbox resume\'", c.stamp())\n', '', R_RS2)
+m("internal/audit/audit.go", '\tif s.Runtime != "" {\n\t\tv, _ = v.Set("runtime", Str(s.Runtime))\n\t}\n', '', R_RS2, pkg="cli")
+JN = "internal/sandboxd/journal/journal.go"
+m(JN, '\t\tif err != nil || !prev.State.Ended() || len(prev.Live()) > 0 {', '\t\tif err != nil || !prev.State.Ended() {', "TestCreateAgain", pkg="sandboxd/journal")
+m(JN, '\t\tif err != nil || !prev.State.Ended() || len(prev.Live()) > 0 {', '\t\tif err != nil || len(prev.Live()) > 0 {', "TestCreateAgain", pkg="sandboxd/journal")
+m(JN, '\t\tif err := os.Rename(st.path(spec.ID), st.path(spec.ID)+".ended"); err != nil {', '\t\tif err := os.Remove(st.path(spec.ID)); err != nil {', "TestCreateAgain", pkg="sandboxd/journal")

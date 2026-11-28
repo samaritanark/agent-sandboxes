@@ -136,7 +136,8 @@ func (st *Store) now() time.Time {
 
 func (st *Store) path(id string) string { return filepath.Join(st.Dir, id+".json") }
 
-// Create journals a new session in REQUESTED.
+// Create journals a new session in REQUESTED. An ID already journaled is refused unless that
+// session ended with nothing left (its record is then moved to <id>.json.ended).
 func (st *Store) Create(spec *sessionspec.Spec) (*Session, error) {
 	if spec == nil || !idRE.MatchString(spec.ID) {
 		return nil, errors.New("journal: invalid session id")
@@ -147,7 +148,15 @@ func (st *Store) Create(spec *sessionspec.Spec) (*Session, error) {
 		return nil, err
 	}
 	if _, err := os.Lstat(st.path(spec.ID)); err == nil {
-		return nil, ErrExists
+		// a session that ended with every resource released may be started again under its ID
+		// (resume recreates a stopped session); its record is kept beside the new one
+		prev, err := st.read(spec.ID)
+		if err != nil || !prev.State.Ended() || len(prev.Live()) > 0 {
+			return nil, ErrExists
+		}
+		if err := os.Rename(st.path(spec.ID), st.path(spec.ID)+".ended"); err != nil {
+			return nil, err
+		}
 	}
 	now := st.now()
 	s := &Session{ID: spec.ID, State: Requested, Spec: spec, Created: now, Updated: now,

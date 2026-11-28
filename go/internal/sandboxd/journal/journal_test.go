@@ -140,3 +140,46 @@ func TestListAndCorruption(t *testing.T) {
 		t.Errorf("traversal: %v", err)
 	}
 }
+
+// TestCreateAgain: a session may be started again under its ID (resume's recreate) only once it
+// ended with every resource released; its old record is kept beside the new one. One that ended
+// with a resource left, or has not ended, keeps its ID.
+func TestCreateAgain(t *testing.T) {
+	st := store(t)
+	run := func(id string, leave bool) {
+		t.Helper()
+		st.Create(spec(id))
+		st.Transition(id, Admitted, "")
+		st.Transition(id, Starting, "")
+		st.Intend(id, "container", id)
+		st.Mark(id, "container", id, Created, "")
+		st.Transition(id, Running, "")
+		st.Transition(id, Stopping, "operator stop")
+		if leave {
+			st.Mark(id, "container", id, Incomplete, "shim stuck")
+		} else {
+			st.Mark(id, "container", id, Released, "")
+		}
+		if _, err := st.Transition(id, Terminated, "done"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("s-clean", false)
+	s, err := st.Create(spec("s-clean"))
+	if err != nil || s.State != Requested {
+		t.Fatalf("recreate: %+v %v", s, err)
+	}
+	if _, err := os.Stat(filepath.Join(st.Dir, "s-clean.json.ended")); err != nil {
+		t.Error("the old record was not kept")
+	}
+	if l, err := st.List(); err != nil || len(l) != 1 {
+		t.Errorf("list: %d %v", len(l), err)
+	}
+	if _, err := st.Create(spec("s-clean")); !errors.Is(err, ErrExists) {
+		t.Errorf("a live session's ID taken again: %v", err)
+	}
+	run("s-left", true)
+	if _, err := st.Create(spec("s-left")); !errors.Is(err, ErrExists) {
+		t.Errorf("an ID with a resource left taken again: %v", err)
+	}
+}

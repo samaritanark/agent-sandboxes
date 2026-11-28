@@ -167,10 +167,11 @@ func cmdResume(c *cmdCtx, args []string) {
 		c.die("'resume' is not yet available in the Go port of the sandbox CLI: the session runtime (sandboxd) does not exist yet.")
 	}
 	exists, phase := c.env.SessionPhase(sessionID, pod)
+	mcp := false
 	if !exists {
 		b := c.resumeBlocker(sj)
-		if b == "" && onSandboxd {
-			b = "recreating a stopped session from its record is not yet available in v3"
+		if onSandboxd {
+			b = c.recreateBlocker(sj)
 		}
 		if b != "" {
 			rec, _ := sessionRecord(sj)
@@ -183,7 +184,11 @@ func cmdResume(c *cmdCtx, args []string) {
 			c.errOut("  %s", c.resumeGuide(rec))
 			panic(exit(1))
 		}
-		c.recreateSession(sessionID, acceptUnmasked, acceptUnvetted, acceptDrift)
+		if onSandboxd {
+			mcp = c.recreateOnSandboxd(sessionID, keepAlive, acceptUnmasked, acceptUnvetted, acceptDrift)
+		} else {
+			c.recreateSession(sessionID, acceptUnmasked, acceptUnvetted, acceptDrift)
+		}
 	} else if phase != "Running" {
 		c.die("Pod is not running (phase: %s). Use 'sandbox stop %s' to clean up.", phase, sessionID)
 	}
@@ -195,6 +200,9 @@ func cmdResume(c *cmdCtx, args []string) {
 	cmd = append(cmd, strings.Fields(agents.SandboxFlags(agent))...)
 	if rf := agents.ResumeFlag(agent); agentSessionID != "" && rf != "" {
 		cmd = append(cmd, rf, agentSessionID)
+	}
+	if mcp || onSandboxd && recordHasMCP(sj) {
+		cmd = append(cmd, agents.MCPLaunchArgs(agent)...)
 	}
 	c.env.Attach(AttachRequest{SessionID: sessionID, Pod: pod, Command: cmd, KeepAlive: keepAlive})
 }
@@ -250,6 +258,103 @@ func (c *cmdCtx) recreateSession(sessionID string, acceptUnmasked, acceptUnvette
 	repos := jqLines(rec.Get("repos"))
 	extras := c.resumeExtras(rec, agent, tierV)
 
+	c.recheckGates(logDir, agent, tierV, repos, acceptUnmasked, acceptUnvetted, acceptDrift)
+
+	c.out("==> Recreating pod for %s (%s, tier %s)...", sessionID, agent, tierV)
+	policy := PolicyRequest{SessionID: sessionID, Agent: agent, Tier: tierV,
+		KubeAPICIDR: jqRawField(rec, "kube_api_cidr", ""), KubeAPIPort: jqRawField(rec, "kube_api_port", ""),
+		KubeHostEntity: jqRawField(rec, "kube_host_entity", ""), Extras: extras}
+	manifest := ManifestRequest{SessionID: sessionID, Agent: agent, Tier: tierV, Image: "docker.io/library/sandbox:" + agent,
+		Name: name, User: user, PodName: pod, Repos: repos}
+	if err := c.env.RecreateSession(policy, manifest); err != nil {
+		c.die("%v", err)
+	}
+	c.out("==> Applying CiliumNetworkPolicy...")
+	c.out("==> Applying pod...")
+	c.out("==> Waiting for pod to become Ready...")
+}
+
+// recordHasMCP is whether a session's record lists an MCP dependency (its agent then starts with
+// the MCP configuration's flags, as at run).
+func recordHasMCP(sj string) bool {
+	rec, ok := sessionRecord(sj)
+	if !ok {
+		return false
+	}
+	if deps := rec.Get("dependencies"); deps.Kind == jqjson.Array {
+		for _, d := range deps.Arr {
+			if jqRawField(d, "kind", "") == "mcp" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// recreateBlocker is why a stopped session cannot be started again on sandboxd from its record,
+// or "" when it can. The agent's login is in the broker store, and the workspace and history in
+// the VM; what is missing is what only the host's pre-pass of `sandbox run` sends (bound secrets,
+// opencode's key) or what the record does not hold (tier 3's token files).
+func (c *cmdCtx) recreateBlocker(sj string) string {
+	tierV, agent, profile := jqAlt(sj, "tier", "1"), jqAlt(sj, "agent", "claude"), jqAlt(sj, "profile", "")
+	switch {
+	case bashcompat.ArithCmp(tierV, "3", "eq"):
+		return "tier 3's --infra-token files are not recorded, so they cannot be brokered again"
+	case agent == "opencode":
+		return "opencode's key comes from your shell at each launch"
+	case profile != "" && !config.IsNumericProfile(profile):
+		p, ok := config.FindProfilePath(c.env.Env, profile)
+		if !ok {
+			return "its profile '" + profile + "' no longer exists"
+		}
+		if len(config.ExtractYAMLList(p, "secrets")) > 0 {
+			return "its profile '" + profile + "' binds secrets, which only 'sandbox run' sends from your machine"
+		}
+	}
+	return ""
+}
+
+// recreateOnSandboxd starts a stopped session again from its record (design 5.14): the workspace
+// gates run again, then the session is built as at run, with its ID, repositories, runtime,
+// extra domains, and the profile's dependencies, and the agent resumes its conversation. It
+// returns whether the session has MCP dependencies.
+func (c *cmdCtx) recreateOnSandboxd(sessionID string, keepAlive, acceptUnmasked, acceptUnvetted, acceptDrift bool) bool {
+	logDir := c.env.LogsDir + "/" + sessionID
+	sj := logDir + "/session.json"
+	rec, _ := sessionRecord(sj)
+	agent, tierV := jqRawField(rec, "agent", "claude"), jqRawField(rec, "tier", "1")
+	repos := jqLines(rec.Get("repos"))
+	c.recheckGates(logDir, agent, tierV, repos, acceptUnmasked, acceptUnvetted, acceptDrift)
+	s := LaunchSpec{Agent: agent, Tier: tierV, Repos: repos, Name: jqRawField(rec, "name", ""),
+		Profile: jqRawField(rec, "profile", ""), Overlay: jqRawField(rec, "overlay", ""),
+		Domains: c.resumeExtras(rec, agent, tierV), KeepAlive: keepAlive, Runtime: jqRawField(rec, "runtime", "")}
+	var mcps, services string
+	if s.Profile != "" && !config.IsNumericProfile(s.Profile) {
+		if p, ok := config.FindProfilePath(c.env.Env, s.Profile); ok {
+			mcps = strings.Join(config.ExtractYAMLList(p, "mcps"), ",")
+			services = strings.Join(config.ExtractYAMLList(p, "services"), ",")
+		}
+	}
+	r := SessionRecord{ID: sessionID, PodName: jqRawField(rec, "pod_name", "sandbox-"+sessionID), LogDir: logDir,
+		Image: sessionImage(agent), DomainCount: len(jqLines(rec.Get("allowed_domains")))}
+	deps, ok := c.resolveDependencies(sessionID, agent, mcps, services)
+	if !ok {
+		c.die("Dependency resolution failed; the session was not recreated.")
+	}
+	r.Dependencies = deps
+	r.Policy = PolicyRequest{SessionID: sessionID, Agent: agent, Tier: tierV, Extras: s.Domains}
+	c.out("==> Recreating session %s (%s, tier %s)...", sessionID, agent, tierV)
+	mcp, _ := c.startSession(s, r)
+	audit.SetField(logDir, "end_time", jqjson.Value{}) // running again
+	audit.LogEvent(logDir, "recreated", "Recreated from its record by 'sandbox resume'", c.stamp())
+	return mcp != ""
+}
+
+// sessionImage is the agent's image tag for a tier 1 or 2 session.
+func sessionImage(agent string) string { return "docker.io/library/sandbox:" + agent }
+
+// recheckGates runs a tier 2 or 3 session's workspace gates again before it is recreated.
+func (c *cmdCtx) recheckGates(logDir, agent, tierV string, repos []string, acceptUnmasked, acceptUnvetted, acceptDrift bool) {
 	if tierAtLeast(tierV, "2") && len(repos) > 0 {
 		c.out("==> Re-checking workspace gates before recreate...")
 		for _, r := range repos {
@@ -268,19 +373,6 @@ func (c *cmdCtx) recreateSession(sessionID string, acceptUnmasked, acceptUnvette
 		}
 		audit.FlushOverrides(logDir, overrides, c.stamp())
 	}
-
-	c.out("==> Recreating pod for %s (%s, tier %s)...", sessionID, agent, tierV)
-	policy := PolicyRequest{SessionID: sessionID, Agent: agent, Tier: tierV,
-		KubeAPICIDR: jqRawField(rec, "kube_api_cidr", ""), KubeAPIPort: jqRawField(rec, "kube_api_port", ""),
-		KubeHostEntity: jqRawField(rec, "kube_host_entity", ""), Extras: extras}
-	manifest := ManifestRequest{SessionID: sessionID, Agent: agent, Tier: tierV, Image: "docker.io/library/sandbox:" + agent,
-		Name: name, User: user, PodName: pod, Repos: repos}
-	if err := c.env.RecreateSession(policy, manifest); err != nil {
-		c.die("%v", err)
-	}
-	c.out("==> Applying CiliumNetworkPolicy...")
-	c.out("==> Applying pod...")
-	c.out("==> Waiting for pod to become Ready...")
 }
 
 // tierAtLeast is `[[ "$tier" -ge N ]]` on a recorded tier.

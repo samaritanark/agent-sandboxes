@@ -123,6 +123,40 @@ func agentCommand(agent, sessionID string) []string {
 // launch is cmd_run Steps 8 to 12 on sandboxd.
 func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	l := c.env.Launch
+	mcp, started := c.startSession(s, rec)
+	if !started {
+		return
+	}
+	c.out("")
+	c.banner(s, rec)
+	c.out("")
+	c.out("==> Attaching to session (Ctrl-D or 'exit' to end)...")
+	cmd := agentCommand(s.Agent, rec.AgentSessionID)
+	if mcp != "" {
+		cmd = append(cmd, agents.MCPLaunchArgs(s.Agent)...)
+	}
+	if _, err := l.Sessions.Attach(rec.ID, cmd); err != nil {
+		c.warn("%v", err)
+	}
+	c.out("")
+	if s.KeepAlive {
+		c.out("==> Disconnected from session %s (pod kept alive).", rec.ID)
+		c.out("    Resume:  sandbox resume %s", rec.ID)
+		c.out("    Stop:    sandbox stop %s", rec.ID)
+		c.out("    Logs:    %s", rec.LogDir)
+		return
+	}
+	c.out("==> Disconnected — tearing down session to free cluster resources...")
+	c.stopSession(rec.ID)
+	c.out("")
+	c.closingHistory(s.Agent, s.Tier)
+}
+
+// startSession builds the session's spec and starts it on sandboxd (run, and resume's recreate).
+// It returns the agent's MCP configuration ("" for none), and whether the session started (a dry
+// run prints the spec instead).
+func (c *cmdCtx) startSession(s LaunchSpec, rec SessionRecord) (mcp string, started bool) {
+	l := c.env.Launch
 	// what this build cannot launch yet says so before anything is built
 	switch {
 	case len(s.InfraKubeconfigs) > 0:
@@ -154,7 +188,7 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 		c.bindOpencode(spec, s)
 	}
 	agentFiles := c.setUpAgent(spec, s, rec)
-	mcp := c.mcpConfig(s, rec)
+	mcp = c.mcpConfig(s, rec)
 	if mcp != "" {
 		spec.Mounts = append(spec.Mounts, sessionspec.Mount{Kind: sessionspec.MCPConfig,
 			Source: sessionspec.SessionStore + "/" + rec.ID + "/" + MCPDir, Target: agents.MCPConfigDir, ReadOnly: true})
@@ -170,7 +204,7 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 		c.out("%s", b)
 		c.out("")
 		c.out("Dry run complete. No resources applied.")
-		return
+		return mcp, false
 	}
 	if agentFiles != nil {
 		if l.WriteAgentFiles == nil {
@@ -192,29 +226,7 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	if err := l.Sessions.Start(spec); err != nil {
 		c.die("Session %s failed to start: %v", rec.ID, err)
 	}
-	c.out("")
-	c.banner(s, rec)
-	c.out("")
-	c.out("==> Attaching to session (Ctrl-D or 'exit' to end)...")
-	cmd := agentCommand(s.Agent, rec.AgentSessionID)
-	if mcp != "" {
-		cmd = append(cmd, agents.MCPLaunchArgs(s.Agent)...)
-	}
-	if _, err := l.Sessions.Attach(rec.ID, cmd); err != nil {
-		c.warn("%v", err)
-	}
-	c.out("")
-	if s.KeepAlive {
-		c.out("==> Disconnected from session %s (pod kept alive).", rec.ID)
-		c.out("    Resume:  sandbox resume %s", rec.ID)
-		c.out("    Stop:    sandbox stop %s", rec.ID)
-		c.out("    Logs:    %s", rec.LogDir)
-		return
-	}
-	c.out("==> Disconnected — tearing down session to free cluster resources...")
-	c.stopSession(rec.ID)
-	c.out("")
-	c.closingHistory(s.Agent, s.Tier)
+	return mcp, true
 }
 
 // MCPDir is where in the session's directory its MCP configuration goes (sandboxd's

@@ -135,7 +135,9 @@ type Session struct {
 	// deviation.RetentionMinimum the record's retention_days is it (null for none) instead of v2's
 	// unenforced 90 or 180.
 	RetentionMinDays *int
-	InfraKubeconfig  bool
+	// Runtime is the session's runtime (deviation.RuntimeChoice); "" leaves it out of the record.
+	Runtime         string
+	InfraKubeconfig bool
 }
 
 // WriteSessionJSON is audit_write_session_json: it writes <logDir>/session.json and returns the
@@ -186,6 +188,9 @@ func WriteSessionJSON(logDir string, s Session) (string, error) {
 		"kube_host_entity", Str(s.KubeHostEntity), "infra_token", BoolV(s.InfraToken),
 		"infra_kubeconfig", BoolV(s.InfraKubeconfig), "allowed_domains", domains,
 		"retention_days", retention(s))
+	if s.Runtime != "" {
+		v, _ = v.Set("runtime", Str(s.Runtime))
+	}
 	return line, os.WriteFile(p, []byte(Encode(v)), 0o666)
 }
 

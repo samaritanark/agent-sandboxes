@@ -296,7 +296,7 @@ func runPrepare(c *cmdCtx, s *LaunchSpec) SessionRecord {
 		User: c.env.User, Repos: s.Repos, Name: s.Name, PodName: rec.PodName, StartTime: c.stamp(),
 		CredentialType: agents.CredentialType(s.Agent), Domains: domains, Profile: s.Profile,
 		Overlay: s.Overlay, InfraToken: len(s.InfraTokens) > 0, InfraKubeconfig: len(s.InfraKubeconfigs) > 0,
-		RetentionMinDays: keep})
+		RetentionMinDays: keep, Runtime: s.Runtime})
 	if line != "" {
 		c.out("%s", line)
 	}

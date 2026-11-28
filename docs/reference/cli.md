@@ -134,7 +134,10 @@ this page says otherwise.
 - **`--infra-token`** is brokered: the agent's variable holds a placeholder, and
   the gateway puts the token into requests to the `--infra-endpoint` hosts as a
   bearer token.
-- **`resume`** syncs the session's repositories before it reattaches.
+- **`resume`** syncs the session's repositories before it reattaches. A session
+  that has stopped is recreated from its record, under its own ID, with its
+  repositories, runtime, extra domains, and profile's dependencies: the
+  workspace gates run again, and the agent resumes its conversation.
 - **`flows`** reads the gateway's records, not Hubble.
 - **`status`** reports the VM; there is no cluster to report.
 - **`rebuild`** builds the agent images inside the VM. Each image is recorded by
@@ -155,8 +158,9 @@ this page says otherwise.
 
 - `upgrade` (reinstall with a newer image for now) and `ca`.
 - `allow` (adding domains to a running session).
-- Resuming a session that has stopped. A `--keep-alive` session that is still
-  running resumes.
+- Resuming a stopped tier 3 or opencode session, or one whose profile binds
+  secrets: `resume` says why and prints the `run` command for an equivalent
+  session. Other stopped sessions are recreated (see What changed).
 - `run --infra-kubeconfig`, `--infra-kube-context`, and `--allow-exec-plugin`.
 - The copilot and grok agents.
 - Signing an attestation with `vet --repo` (`vet --status` works).
