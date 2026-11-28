@@ -307,7 +307,7 @@ func TestClaudeJSONTrust(t *testing.T) {
 		spec *sessionspec.Spec
 		want string
 	}{
-		{ws(), `{"hasCompletedOnboarding":true,"projects":{}}`},
+		{ws(), `{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true}}}`}, // tier 1's empty workspace
 		{ws("/workspace"), `{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true}}}`},
 		{ws("/workspace/a", "/workspace/b"), `{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true},"/workspace/a":{"hasTrustDialogAccepted":true},"/workspace/b":{"hasTrustDialogAccepted":true}}}`},
 	} {

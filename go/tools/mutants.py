@@ -1603,3 +1603,4 @@ m(DP, '\t\t\t\td.audit(session, auditlog.Events, "dependency_exited", map[string
 m("internal/sandboxd/daemon/daemon.go", '\t\td.trackDependency(id, dep.Name, cid)\n', '', R_DP, pkg="sandboxd/daemon")
 m("internal/sandboxd/daemon/daemon.go", '\tdelete(d.deps, id)\n', '', R_DP, pkg="sandboxd/daemon")
 m("internal/sandboxd/daemon/daemon.go", '\td.restartDependencies(ctx, now)\n', '', R_DP, pkg="sandboxd/daemon")
+m("internal/cli/runagent.go", '\tif len(projects) == 0 {\n\t\tprojects["/workspace"] = trust\n\t}\n', '', "TestClaudeJSONTrust")

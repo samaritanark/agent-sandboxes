@@ -101,10 +101,6 @@ costs several seconds at start and tens of milliseconds per keystroke. The
 gVisor runtime does not nest; [Kata or gVisor](../how-to/runtimes.md) explains
 what changes if you use it.
 
-**Claude Code asks whether to trust `/workspace`.** A tier 1 session has no
-repository Claude Code already trusts, so it asks once per session; answer yes.
-Answering no ends the session.
-
 **The agent cannot reach a host.** `sandbox flows <SESSION_ID>` lists every
 connection and request with its decision. A name not on the allowlist gets no
 DNS answer; a blocked or unlisted destination shows `refused` or `blocked`. Add

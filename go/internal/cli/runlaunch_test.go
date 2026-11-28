@@ -121,7 +121,7 @@ func TestLaunch(t *testing.T) {
 	if err := sp.Validate(sessionspec.Options{}); err != nil {
 		t.Errorf("sandboxd refuses it: %v", err)
 	}
-	if len(fs.agentFiles) != 1 || string(fs.agentFiles[0].Config[".claude.json"]) != `{"hasCompletedOnboarding":true,"projects":{}}`+"\n" || fs.agentFiles[0].HistoryKey != "" {
+	if len(fs.agentFiles) != 1 || string(fs.agentFiles[0].Config[".claude.json"]) != `{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true}}}`+"\n" || fs.agentFiles[0].HistoryKey != "" {
 		t.Errorf("files %+v", fs.agentFiles)
 	}
 	if m := fs.started[0].Resources.MemoryMiB; m != 5632 { // scaled to the VM's 7936 MiB

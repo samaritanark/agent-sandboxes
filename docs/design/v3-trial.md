@@ -91,7 +91,6 @@ The VM's image cannot be upgraded in place yet, so an update is a reinstall that
 - `sandbox3 list`, `sandbox3 stop ID`, `sandbox3 run --keep-alive ...` then `sandbox3 resume ID`.
 - `sandbox3 run --runtime gvisor ...` for one session under gVisor; the banner's `Runtime` line
   says which one a session got.
-- A tier 1 session's Claude Code asks whether to trust `/workspace`: answer yes (no ends it).
 - Session logs and audit records: `~/.sandbox/logs/<session>/`.
 
 ## What to note during the trial

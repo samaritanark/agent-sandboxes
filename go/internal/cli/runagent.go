@@ -200,6 +200,11 @@ func claudeJSON(spec *sessionspec.Spec) string {
 			}
 		}
 	}
+	// a session with no repository starts in an empty /workspace that goes with it: nothing there
+	// to distrust, and v2's kept agent home remembered the answer after the first session
+	if len(projects) == 0 {
+		projects["/workspace"] = trust
+	}
 	b, _ := json.Marshal(map[string]any{"hasCompletedOnboarding": true, "projects": projects})
 	return string(b) + "\n"
 }
