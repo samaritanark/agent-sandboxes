@@ -43,10 +43,10 @@ authoritative lists are in `go/internal/agents/agents.go` and
 |------|-----------|---------------|--------------|---------------|
 | 1 | an empty `/workspace`, or the repos you name | none | none | kept for the session only |
 | 2 | your repo(s), synced into the VM | `github.com`, `api.github.com`, `codeload.github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`, `raw.githubusercontent.com`, `pypi.org`, `files.pythonhosted.org`, `registry.npmjs.org`, `registry.terraform.io`, `go.dev`, `dl.google.com`, `proxy.golang.org`, `sum.golang.org` | `--repo` (repeatable; each a git repository) | kept per agent, tier, and repository set |
-| 3 | as tier 2 | tier 2, plus the hosts of `--infra-endpoint` | `--repo`, and `--infra-token` | as tier 2 |
+| 3 | as tier 2 | tier 2, plus the hosts of `--infra-endpoint` and each cluster's gateway name | `--repo`, and `--infra-token` or `--infra-kubeconfig` | as tier 2 |
 
 Tier 3 uses the `sandbox:<agent>-infra` image variant, which adds the infra
-tooling. `--infra-kubeconfig` is not available in v3 yet.
+tooling, `kubectl` among it.
 
 ### Workspaces
 

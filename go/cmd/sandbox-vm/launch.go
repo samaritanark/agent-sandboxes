@@ -165,26 +165,41 @@ func vmMemory() (int, error) {
 // (sessionspec.SessionStore/<id>/mcp/config.json), where the spec mounts it read-only.
 func writeMCPConfig(store string) func(string, []byte) (string, error) {
 	return func(id string, content []byte) (string, error) {
-		if !sessionID.MatchString(id) {
-			return "", fmt.Errorf("not a session id: %q", id)
-		}
-		sess := filepath.Join(store, id)
-		if err := os.MkdirAll(sess, 0o700); err != nil {
-			return "", err
-		}
-		dir := filepath.Join(sess, daemon.MCPDir)
-		if err := os.Mkdir(dir, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
-			return "", err
-		}
-		if st, err := os.Lstat(dir); err != nil || !st.IsDir() {
-			return "", fmt.Errorf("%s is not a directory", dir)
-		}
-		tmp := filepath.Join(dir, ".config.json.tmp")
-		if err := os.WriteFile(tmp, content, 0o644); err != nil {
-			return "", err
-		}
-		return dir, os.Rename(tmp, filepath.Join(dir, agents.MCPConfigFile))
+		return writeSessionFile(store, id, daemon.MCPDir, agents.MCPConfigFile, content)
 	}
+}
+
+// writeKubeconfig writes a tier 3 session's kubeconfig (placeholders only) where its spec mounts it
+// from: cli.KubeDir in the session's directory.
+func writeKubeconfig(store string) func(string, []byte) error {
+	return func(id string, cfg []byte) error {
+		_, err := writeSessionFile(store, id, cli.KubeDir, "config", cfg)
+		return err
+	}
+}
+
+// writeSessionFile writes name in the session's directory sub (made if missing, and not a link),
+// replacing it whole; it returns the directory.
+func writeSessionFile(store, id, sub, name string, content []byte) (string, error) {
+	if !sessionID.MatchString(id) {
+		return "", fmt.Errorf("not a session id: %q", id)
+	}
+	sess := filepath.Join(store, id)
+	if err := os.MkdirAll(sess, 0o700); err != nil {
+		return "", err
+	}
+	dir := filepath.Join(sess, sub)
+	if err := os.Mkdir(dir, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+		return "", err
+	}
+	if st, err := os.Lstat(dir); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", dir)
+	}
+	tmp := filepath.Join(dir, "."+name+".tmp")
+	if err := os.WriteFile(tmp, content, 0o644); err != nil {
+		return "", err
+	}
+	return dir, os.Rename(tmp, filepath.Join(dir, name))
 }
 
 var sessionID = regexp.MustCompile(`^ses-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$`)

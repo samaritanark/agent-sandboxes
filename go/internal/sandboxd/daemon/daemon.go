@@ -398,6 +398,9 @@ func (d *Daemon) step(id, kind, name string, create func() error) error {
 // the spec mounts (sessionspec.MCPConfig); it goes with the session.
 const MCPDir = "mcp"
 
+// KubeDir is where in a session's directory the CLI writes a tier 3 session's kubeconfig (cli.KubeDir).
+const KubeDir = "kube"
+
 // AgentConfigDir and SessionHistoryDir are where in a session's directory the CLI puts the agent's
 // re-staged configuration and a tier 1 session's history; both go with the session.
 const (
@@ -747,7 +750,8 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 			d.collect(id) // the last connections, before the gateway's directory goes
 			err = os.RemoveAll(d.maskDir(id))
 			os.RemoveAll(filepath.Join(d.SessionRoot, id, "gateway"))
-			os.RemoveAll(filepath.Join(d.SessionRoot, id, MCPDir)) // the run's generated MCP configuration
+			os.RemoveAll(filepath.Join(d.SessionRoot, id, MCPDir))  // the run's generated MCP configuration
+			os.RemoveAll(filepath.Join(d.SessionRoot, id, KubeDir)) // and kubeconfig
 			// the re-staged agent configuration (a writable copy) and tier 1 history go with the
 			// session (design 5.7 items 3 and 4); history above tier 1 lives elsewhere and stays
 			os.RemoveAll(filepath.Join(d.SessionRoot, id, AgentConfigDir))

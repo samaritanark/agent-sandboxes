@@ -34,6 +34,9 @@ type Transport interface {
 
 // Env is everything the dispatcher touches.
 type Env struct {
+	// Kubectl runs the host's kubectl with args and returns its output and error text (tests; nil
+	// runs kubectl).
+	Kubectl   func(args []string) ([]byte, string, error)
 	Driver    driver.Driver
 	Transport Transport
 	Stdin     io.Reader
@@ -228,9 +231,12 @@ func (a *app) proxy(args []string) int {
 			a.die("%v", err)
 		}
 		args = append([]string{"run"}, absRepos(args[1:], wd)...)
-		repos, cfg := a.prepareRun(ep, args[1:], archive)
+		repos, cfg, kube := a.prepareRun(ep, args[1:], archive)
 		if cfg != "" {
 			extra = append(extra, OpencodeConfigEnv+"="+cfg)
+		}
+		if kube != "" {
+			extra = append(extra, kube)
 		}
 		live := a.startLiveSync(ep, repos)
 		defer live.finish()

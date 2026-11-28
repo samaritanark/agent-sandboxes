@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -33,6 +34,7 @@ type LaunchSpec struct {
 	BaseURL                             string // OPENCODE_BASE_URL after --base-url
 	HomeDir                             string // SANDBOX_AGENT_HOME_OVERRIDE
 	HasSecrets                          bool
+	Kube                                []KubeCluster // tier 3's clusters, as the host read them (runkube.go)
 }
 
 var (
@@ -372,7 +374,8 @@ func runDecide(c *cmdCtx, args []string) LaunchSpec {
 			}
 		}
 		for _, k := range s.InfraKubeconfigs {
-			if !config.IsFile(k) {
+			// the host read them (KubeEnv); a run without the host checks what it can see
+			if c.env.Getenv(KubeEnv) == "" && !config.IsFile(k) {
 				c.die("Kubeconfig file not found: %s.", k)
 			}
 		}
@@ -513,15 +516,28 @@ func runDecide(c *cmdCtx, args []string) LaunchSpec {
 }
 
 // cmdRun is cmd_run up to the cluster work: the launch decisions (B1), then the gates and the
-// session record (B3). The session itself is sandboxd's in v3 and does not exist yet; nor does
-// the broker that takes --infra-kubeconfig (design 5.9.5), which replaces v2's Step 1b.
+// session record (B3), then the launch through sandboxd. The host read --infra-kubeconfig and
+// sealed its credentials (design 5.9.5, which replaces v2's Step 1b); the clusters arrive in KubeEnv.
 func cmdRun(c *cmdCtx, args []string) {
 	s := runDecide(c, args)
 	if c.env.StopAtDecisions && c.env.RunHandoff != nil {
 		c.env.RunHandoff(s, nil)
 		return
 	}
-	if len(s.InfraKubeconfigs) > 0 {
+	if len(s.InfraKubeconfigs) > 0 && c.env.Launch.Sessions != nil {
+		ks, err := c.kubeClusters()
+		if err == nil && ks == nil {
+			err = errors.New("--infra-kubeconfig is read on your machine by the host's sandbox binary; run the launch from there")
+		} else if err == nil && len(ks) != len(s.InfraKubeconfigs) {
+			err = fmt.Errorf("the host described %d clusters for %d --infra-kubeconfig", len(ks), len(s.InfraKubeconfigs))
+		}
+		if err != nil {
+			c.fail(err)
+		}
+		c.out("==> Checking %d cluster(s) from --infra-kubeconfig...", len(ks))
+		c.checkKubeServers(ks)
+		s.Kube = ks
+	} else if len(s.InfraKubeconfigs) > 0 {
 		c.die("--infra-kubeconfig is not yet available in the Go port of the sandbox CLI: v3 hands kubeconfigs to the credential broker (design 5.9.5), which does not exist yet.")
 	}
 	rec := runPrepare(c, &s)

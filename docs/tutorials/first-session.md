@@ -105,8 +105,9 @@ sandbox run --agent claude --tier 3 --repo ~/repos/infra \
   --infra-token vault=~/.vault-token --infra-endpoint https://vault.example.com
 ```
 
-`--infra-kubeconfig` is not available in v3 yet. See [Tier 3 infra
-credentials](../how-to/tier3-infra-credentials.md).
+For a Kubernetes cluster, give its kubeconfig instead (or as well):
+`--infra-kubeconfig ~/.kube/dev-cluster.yaml`. The credential stays out of the
+session; see [Tier 3 infra credentials](../how-to/tier3-infra-credentials.md).
 
 ## 8. List sessions, view logs and flows
 

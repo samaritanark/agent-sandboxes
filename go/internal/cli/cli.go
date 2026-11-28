@@ -8,6 +8,7 @@ import (
 	"embed"
 	"fmt"
 	"io"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -73,6 +74,8 @@ type Env struct {
 	// SessionLive answers whether a session's workload is running (v2: kubectl get pod), and
 	// ApplyPolicy replaces a live session's egress policy (v2: build_cilium_policy | kubectl
 	// apply). Both are sandboxd's in v3; while nil, `allow` stops before touching the session.
+	// LookupHost resolves a name (net.LookupIP when nil): the run's check of an API server's address.
+	LookupHost  func(string) ([]netip.Addr, error)
 	SessionLive func(sessionID, pod string) bool
 	ApplyPolicy func(PolicyRequest) error
 	// SessionPhase reports whether a session's workload exists and its phase (v2: kubectl get pod);

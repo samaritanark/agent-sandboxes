@@ -313,10 +313,22 @@ func (a *app) readSecret(name string) (v []byte, absent bool, err error) {
 // from the host store is removed from the VM's, so the run stops with v2's message instead of
 // binding a stale copy. When the pre-pass fails, nothing is pushed or synced: the run that follows
 // stops the same way and says why.
-func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (synced []string, opencodeConfig string) {
-	out, err := a.env.Transport.Output(a.ctx, ep, a.vmArgv(append([]string{RunBindings}, args...)...), maxBindingsOutput)
+func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (synced []string, opencodeConfig, kube string) {
+	// tier 3's kubeconfigs are read here, on the host, before the VM decides anything about them
+	clusters := a.readKubeconfigs(args)
+	var extra []string
+	if len(clusters) > 0 {
+		kube = kubeEnv(clusters)
+		extra = append(extra, kube)
+	}
+	defer func() {
+		for _, k := range clusters {
+			brokerseal.Wipe(k.value)
+		}
+	}()
+	out, err := a.env.Transport.Output(a.ctx, ep, a.vmArgvEnv(extra, append([]string{RunBindings}, args...)...), maxBindingsOutput)
 	if err != nil {
-		return nil, ""
+		return nil, "", kube
 	}
 	pp, err := parsePrepass(out)
 	names, repos, tokens, infraHosts := pp.Secrets, pp.Repos, pp.InfraTokens, pp.InfraHosts
@@ -354,10 +366,11 @@ func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (
 	}
 	a.pushSecrets(ep, names)
 	a.pushInfraTokens(ep, tokens, infraHosts)
+	a.pushKube(ep, clusters)
 	if pp.OpencodeBaseURL != "" {
 		opencodeConfig = a.prepareOpencode(ep, pp.OpencodeBaseURL, args)
 	}
-	return a.syncAndMirror(ep, repos), opencodeConfig
+	return a.syncAndMirror(ep, repos), opencodeConfig, kube
 }
 
 // pushSecrets seals and pushes the named secrets from the host store, each with its binding.

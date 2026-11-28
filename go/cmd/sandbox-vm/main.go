@@ -175,7 +175,7 @@ func main() {
 	env.CredentialPresent, env.CredentialBinding = broker.present, broker.binding
 	env.Builder = nerdctlBuilder{mapFile: BuiltImages}
 	env.Launch = cli.LaunchEnv{Sessions: sandboxd{}, AgentImage: agentImage(BuiltImages, AgentImages), WorkspaceCopy: workspaceCopyOf("/"),
-		VMMemoryMiB: vmMemory, WriteMCPConfig: writeMCPConfig(sessionspec.SessionStore),
+		VMMemoryMiB: vmMemory, WriteMCPConfig: writeMCPConfig(sessionspec.SessionStore), WriteKubeconfig: writeKubeconfig(sessionspec.SessionStore),
 		RefreshCredential: refreshCredential,
 		WriteAgentFiles:   writeAgentFiles(sessionspec.SessionStore, sessionspec.AgentHistoryStore, daemon.AgentUID)}
 	os.Exit(cli.Run(os.Args[1:], env, os.Stdout, os.Stderr))

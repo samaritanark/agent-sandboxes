@@ -172,7 +172,8 @@ your PATH, so nothing runs v2's script by accident.
 - `sandbox flows` reads the gateway's request log instead of Hubble.
 - `sandbox sync review` shows workspace changes the sync withheld.
 - Removed: `configure-network` (the VM follows the host's networking).
-  Not built yet: `sandbox upgrade`, `--infra-kubeconfig`, resuming a session
-  that was stopped, Copilot and Grok, and Windows.
+  Not built yet: `sandbox upgrade`, kubeconfigs with exec credential plugins,
+  clusters on your own machine or LAN, resuming a stopped tier 3 session,
+  Copilot and Grok, and Windows.
 
 The [CLI reference](../reference/cli.md) has the full list.

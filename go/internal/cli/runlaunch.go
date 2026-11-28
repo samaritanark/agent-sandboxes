@@ -50,6 +50,8 @@ type LaunchEnv struct {
 	// WriteMCPConfig writes the agent's MCP configuration for session id where sandboxd mounts it
 	// from (its session directory) and returns that directory; nil refuses MCP dependencies.
 	WriteMCPConfig func(id string, content []byte) (string, error)
+	// WriteKubeconfig writes the agent's kubeconfig into the session's directory, at KubeDir/config.
+	WriteKubeconfig func(id string, cfg []byte) error
 	// RefreshCredential has the broker renew an agent's OAuth login (sandboxd's broker-refresh) and
 	// returns its access token's expiry (Unix seconds).
 	RefreshCredential func(ref string) (int64, error)
@@ -161,10 +163,6 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 func (c *cmdCtx) startSession(s LaunchSpec, rec SessionRecord) (mcp string, started bool) {
 	l := c.env.Launch
 	// what this build cannot launch yet says so before anything is built
-	switch {
-	case len(s.InfraKubeconfigs) > 0:
-		c.die("'run' with --infra-kubeconfig is not yet available in the Go port: its credentials go to the gateway (design 5.9.5).")
-	}
 	c.out("==> Building pod manifest...")
 	tag := strings.TrimPrefix(rec.Image, "docker.io/library/")
 	image, err := l.AgentImage(tag)
@@ -189,6 +187,17 @@ func (c *cmdCtx) startSession(s LaunchSpec, rec SessionRecord) (mcp string, star
 	}
 	if s.Agent == "opencode" {
 		c.bindOpencode(spec, s)
+	}
+	var kubeconfig []byte
+	if len(s.Kube) > 0 {
+		var lines []string
+		kubeconfig, lines = c.bindKube(spec, s.Kube)
+		for _, l := range lines {
+			c.out("%s", l)
+		}
+		spec.Mounts = append(spec.Mounts, sessionspec.Mount{Kind: sessionspec.Kubeconfig,
+			Source: sessionspec.SessionStore + "/" + rec.ID + "/" + KubeDir, Target: KubeconfigDir, ReadOnly: true})
+		spec.Env = append(spec.Env, sessionspec.EnvVar{Name: "KUBECONFIG", Value: KubeconfigPath})
 	}
 	agentFiles := c.setUpAgent(spec, s, rec)
 	mcp = c.mcpConfig(s, rec)
@@ -215,6 +224,14 @@ func (c *cmdCtx) startSession(s LaunchSpec, rec SessionRecord) (mcp string, star
 		}
 		if err := l.WriteAgentFiles(rec.ID, *agentFiles); err != nil {
 			c.die("could not stage the agent's configuration and history: %v", err)
+		}
+	}
+	if kubeconfig != nil {
+		if l.WriteKubeconfig == nil {
+			c.die("'run' with --infra-kubeconfig needs the sandbox VM's session store.")
+		}
+		if err := l.WriteKubeconfig(rec.ID, kubeconfig); err != nil {
+			c.die("could not write the session's kubeconfig: %v", err)
 		}
 	}
 	if mcp != "" {
