@@ -49,9 +49,9 @@ Limits of this build:
   The gateway verifies the endpoint's certificate against the system roots and your extra CAs,
   so an endpoint with a private CA (a cluster's API server) needs that CA in
   `~/.sandbox/extra-ca-certs/` (see [TLS-intercepting proxies](tls-intercept-proxies.md)).
-- An endpoint in a network your machine is directly attached to (its LAN, a VPN's subnet) or on
-  the machine itself cannot be reached from the sandbox VM yet: the VM's network refuses those
-  addresses, and declaring such endpoints (design 5.2.6) is not built.
+- An endpoint on your machine itself is reached through a declared endpoint (see [Clusters and
+  endpoints on your machine](#clusters-and-endpoints-on-your-machine)). Other machines on your LAN
+  or behind your VPN are reached like any other destination.
 
 Credential lifetime is still yours to manage: revoke a token at its issuer when you are done.
 `run` reminds you when a session that held one ends.
@@ -113,9 +113,8 @@ Refused, with what to do instead:
   credential.
 - **`insecure-skip-tls-verify`**: the gateway verifies every API server, so the kubeconfig needs
   the cluster's `certificate-authority-data`. **`proxy-url`** is refused too.
-- **A cluster on your own machine or LAN** (k3d, kind, minikube, a VPN-only API server) is not
-  reachable from the sandbox VM yet: the VM's network refuses those addresses, and declaring such
-  endpoints (design 5.2.6) is not built. A cluster reachable over the internet works.
+- **A server on loopback** (`https://127.0.0.1:6443`, as k3d and kind write it): a session's
+  127.0.0.1 is its own. Point the kubeconfig at your machine's LAN address instead (below).
 
 A static ServiceAccount token, minted on the cluster as before:
 
@@ -132,6 +131,41 @@ kubectl config set-credentials sandbox-agent --token="$(cat ~/.tokens/dev-cluste
 Use the lowest role the agent needs (`view`, a namespace-scoped Role, or a custom Role);
 `cluster-admin` is never appropriate for an agent session (PRINCIPLES.md, "Credential
 isolation").
+
+## Clusters and endpoints on your machine
+
+The sandbox VM cannot reach any address of your machine: its network (`sandbox netd`) refuses
+your machine's loopback and LAN addresses, so a session cannot reach services you run locally.
+A tier 3 launch whose cluster API server or `--infra-endpoint` is one of your machine's
+addresses opens that one address and port, for that session only:
+
+```bash
+# k3d writes https://0.0.0.0:<port>; v2's script rewrites it to your machine's LAN address
+examples/k3d-podman/bake-kubeconfig.sh sandbox-target
+sandbox run --agent claude --tier 3 --repo ~/repos/infra \
+  --infra-kubeconfig ~/.kube/sandbox-k3d-sandbox-target.yaml
+```
+
+```text
+==> Declared host endpoint(s) 192.168.1.178:6443 (this machine) for session ses-20261128-101500-3f2a, until it ends
+...
+==> Host endpoint 192.168.1.178:6443: an address of your machine, open to this session while it runs
+```
+
+- The host decides, by resolving the server's name itself and comparing it with your machine's
+  addresses; the VM cannot ask for one.
+- The endpoint closes when the session ends: checked after every `sandbox` command (a detached
+  `--keep-alive` session's at the next command after it ends), at `sandbox vm stop`, and in any
+  case after 7 days and an hour, the longest a session can live. The declarations are in
+  `~/.sandbox/vm/vfkit/endpoints` (`vm/qemu/` on Linux); you can also add a line `ADDRESS:PORT` there yourself for an
+  endpoint that stays open.
+- The cluster's certificate must be valid for the address the kubeconfig names: k3d's is valid for
+  your LAN address only if the cluster was created with `--k3s-arg "--tls-san=<address>@server:*"`
+  (v2 had the same requirement).
+- Only the drivers whose network is `sandbox netd` (vfkit on macOS, qemu on Linux) can open
+  endpoints one by one. With `--driver lima` the launch stops and says so.
+- The address and port are open to the whole sandbox VM while declared; each other session's
+  gateway still refuses it unless that session's allowlist names it.
 
 > **Combining credentials widens the blast radius.** A session handed several tokens can use all
 > of them, toward all of their endpoints, and the in-sandbox agent is the adversary in this tool's

@@ -1232,7 +1232,7 @@ m("internal/host/app/syncone.go", '\tif live != nil && live.Err() == nil {\n\tpa
 m("internal/host/app/syncone.go", 'if liveOn := live != nil && live.Err() == nil; !liveOn && tries >= syncTries {', 'if liveOn := live != nil && live.Err() == nil; !liveOn && tries >= 1 {', "TestLiveSync|TestSyncGivesUp", pkg="host/app")
 m("internal/host/app/syncone.go", 'if liveOn := live != nil && live.Err() == nil; !liveOn && tries >= syncTries {', 'if liveOn := live != nil && live.Err() == nil; tries >= syncTries {', "TestLiveSync|TestSyncGivesUp", pkg="host/app")
 m("internal/host/app/livesync.go", '\tl.toHost += len(rep.ToHost)', '\tl.toHost += 0', "TestLiveSync", pkg="host/app")
-m("internal/host/app/app.go", '\t\tlive := a.startLiveSync(ep, repos)\n\t\tdefer live.finish()\n', '\t\tlive := a.startLiveSync(ep, repos)\n\t\t_ = live\n', "TestLiveSync|TestRun", pkg="host/app",
+m("internal/host/app/app.go", '\t\tlive := a.startLiveSync(ep, prep.synced)\n\t\tdefer live.finish()\n', '\t\tlive := a.startLiveSync(ep, prep.synced)\n\t\t_ = live\n', "TestLiveSync|TestRun", pkg="host/app",
   equivalent="no host test drives a proxied run with repositories through a live sync")
 
 # ---- the agent's memory default scaled to the VM (internal/sandboxd/limits, cli/runspec.go)
@@ -1369,7 +1369,7 @@ m(OC, '\tif n == 0 {', '\tif n < 0 {', R_OC, pkg="host/app")
 m(OC, '\t\t\tif m.ID != "" {', '\t\t\tif true {', R_OC, pkg="host/app")
 m(OC, 'brokerseal.Binding{Hosts: []string{strings.ToLower(u.Hostname())}, Inject: "bearer"}', 'brokerseal.Binding{}', R_OC, pkg="host/app")
 m("internal/host/app/runsecrets.go", '\t\tif v := a.getenv(k); v != "" && len(v) <= 2048 && !strings.ContainsAny(v, "\\x00\\n\\r") {', '\t\tif v := a.getenv(k); false && v != "" {', R_OC, pkg="host/app")
-m("internal/host/app/app.go", '\t\t\textra = append(extra, OpencodeConfigEnv+"="+cfg)', '', R_OC, pkg="host/app")
+m("internal/host/app/app.go", '\t\t\textra = append(extra, OpencodeConfigEnv+"="+prep.opencodeConfig)', '', R_OC, pkg="host/app")
 OB = "internal/cli/runbind.go"
 m(OB, '\tif !ok || b.Allows([]string{host}, "bearer", false) != nil || !sessionspec.Reachable(host, spec.Egress) {', '\tif !ok {', "TestBindOpencode")
 m(OB, '\tif cfg == "" {\n\t\tc.die("opencode\'s configuration', '\tif false {\n\t\tc.die("opencode\'s configuration', "TestBindOpencode")
@@ -1734,3 +1734,34 @@ m(RK, '\t\tif err := sessionspec.CheckKubeServer(k.Server); err != nil {', '\t\t
 m("internal/cli/run.go", '\t\t} else if err == nil && len(ks) != len(s.InfraKubeconfigs) {', '\t\t} else if false {', R_RK)
 m("internal/cli/runlaunch.go", '\t\tspec.Env = append(spec.Env, sessionspec.EnvVar{Name: "KUBECONFIG", Value: KubeconfigPath})\n', '', R_RK)
 m("internal/cli/runlaunch.go", 'Target: KubeconfigDir, ReadOnly: true})', 'Target: KubeconfigDir})', R_RK)
+
+# declared host endpoints (5.2.6): netd's file, the host's declaration and release, the run's use
+ND = "internal/host/netd/policy.go"
+m(ND, '\t\tif en.Expires.IsZero() || now().Before(en.Expires) {', '\t\tif true {', "TestDeclare|TestEndpointsFile", pkg="host/netd")
+m(ND, '\t\t\tcase k == "session" && en.Session == "" && sessionRE.MatchString(v):', '\t\t\tcase k == "session":', "TestDeclare", pkg="host/netd")
+m(ND, '\t\t\tcase k == "expires" && en.Expires.IsZero():', '\t\t\tcase k == "expires":', "TestDeclare", pkg="host/netd")
+m(ND, '\t\t\tb.WriteString(" session=" + e.Session)\n', '', "TestDeclare", pkg="host/netd")
+NDD = "internal/host/netd/declare.go"
+m(NDD, '\t\t\tif e.Session != session && (e.Expires.IsZero() || now.Before(e.Expires)) {', '\t\t\tif e.Expires.IsZero() || now.Before(e.Expires) {', "TestDeclare", pkg="host/netd")
+m(NDD, '\t\t\tif (e.Expires.IsZero() || now.Before(e.Expires)) && (e.Session == "" || live(e.Session)) {', '\t\t\tif e.Session == "" || live(e.Session) {', "TestDeclare", pkg="host/netd")
+m(NDD, '\t\t\tif (e.Expires.IsZero() || now.Before(e.Expires)) && (e.Session == "" || live(e.Session)) {', '\t\t\tif (e.Expires.IsZero() || now.Before(e.Expires)) && live(e.Session) {', "TestDeclare", pkg="host/netd")
+m(NDD, '\tif !sessionRE.MatchString(session) {', '\tif false {', "TestDeclare", pkg="host/netd")
+m(NDD, '\t\tif !ep.Addr().Is4() || ep.Port() == 0 {', '\t\tif false {', "TestDeclare", pkg="host/netd")
+m(NDD, '\tif len(out) == 0 {\n\t\tif err := os.Remove(path)', '\tif false {\n\t\tif err := os.Remove(path)', "TestDeclare", pkg="host/netd")
+HR = "internal/host/app/hostreach.go"
+R_HR = "TestRunDeclaresHostEndpoints"
+m(HR, '\t\t\tif !ad.Is4() || ad.IsLoopback() || !own[ad] {', '\t\t\tif !ad.Is4() || !own[ad] {', R_HR)
+m(HR, '\t\t\tif !ad.Is4() || ad.IsLoopback() || !own[ad] {', '\t\t\tif !ad.Is4() || ad.IsLoopback() {', R_HR)
+m(HR, '\t\t\taddrs, _ = a.lookupHost(u.Hostname())\n', '', R_HR)
+m(HR, '\t\tport = 80\n', '', R_HR)
+m(HR, '\tif err := dd.DeclareEndpoints(a.ctx, id, eps, now.Add(endpointLifetime)); err != nil {', '\tif err := dd.DeclareEndpoints(a.ctx, id, eps, time.Time{}); err != nil {', R_HR)
+m(HR, '\t\tif len(f) >= 3 && f[2] != "TERMINATED" && f[2] != "FAILED" {', '\t\tif len(f) >= 3 {', R_HR)
+m(HR, '\t\tif len(f) >= 3 && f[2] != "TERMINATED" && f[2] != "FAILED" {', '\t\tif false {', R_HR)
+m(HR, '\treturn []string{SessionIDEnv + "=" + id, HostEndpointsEnv + "=" + strings.Join(s, ",")}', '\treturn []string{HostEndpointsEnv + "=" + strings.Join(s, ",")}', R_HR)
+m("internal/host/app/app.go", '\ta.releaseEndpoints(ep) // a session that ended', '\t// a session that ended', R_HR)
+m("internal/host/app/app.go", '\t\ta.releaseAllEndpoints()\n', '', R_HR)
+m("internal/host/app/app.go", '\t\textra = append(extra, a.declareEndpoints(prep.endpoints)...)\n', '', R_HR)
+m("internal/cli/runprep.go", '\t\tif !resumeSessionIDRE.MatchString(id) || config.Exists(c.env.LogsDir+"/"+id) {', '\t\tif !resumeSessionIDRE.MatchString(id) {', "TestLaunchHostEndpoints")
+m("internal/cli/runprep.go", '\t\trec.ID = id\n', '', "TestLaunchHostEndpoints")
+m("internal/cli/runkube.go", '\t\tif err != nil || !ap.Addr().Is4() || ap.Port() == 0 {', '\t\tif err != nil {', "TestLaunchHostEndpoints")
+m("internal/cli/runlaunch.go", '\tfor _, l := range c.hostEndpoints(spec) {', '\tfor _, l := range []string{} {', "TestLaunchHostEndpoints")

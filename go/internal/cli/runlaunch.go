@@ -188,6 +188,9 @@ func (c *cmdCtx) startSession(s LaunchSpec, rec SessionRecord) (mcp string, star
 	if s.Agent == "opencode" {
 		c.bindOpencode(spec, s)
 	}
+	for _, l := range c.hostEndpoints(spec) {
+		c.out("%s", l)
+	}
 	var kubeconfig []byte
 	if len(s.Kube) > 0 {
 		var lines []string

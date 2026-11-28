@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,16 +37,19 @@ type Transport interface {
 type Env struct {
 	// Kubectl runs the host's kubectl with args and returns its output and error text (tests; nil
 	// runs kubectl).
-	Kubectl   func(args []string) ([]byte, string, error)
-	Driver    driver.Driver
-	Transport Transport
-	Stdin     io.Reader
-	Stdout    io.Writer
-	Stderr    io.Writer
-	StdinTTY  bool
-	StateDir  string // ~/.sandbox
-	User      string
-	Now       func() time.Time
+	Kubectl func(args []string) ([]byte, string, error)
+	// HostAddrs and LookupHost are this machine's addresses and resolver (tests; nil: the real ones).
+	HostAddrs  func() ([]netip.Prefix, error)
+	LookupHost func(string) ([]netip.Addr, error)
+	Driver     driver.Driver
+	Transport  Transport
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
+	StdinTTY   bool
+	StateDir   string // ~/.sandbox
+	User       string
+	Now        func() time.Time
 	// HostCommands are the host operations of 5.1.3 that run without the VM, by name; each gets
 	// the arguments after its name and returns the exit code.
 	HostCommands map[string]func(ctx context.Context, args []string) int
@@ -231,14 +235,15 @@ func (a *app) proxy(args []string) int {
 			a.die("%v", err)
 		}
 		args = append([]string{"run"}, absRepos(args[1:], wd)...)
-		repos, cfg, kube := a.prepareRun(ep, args[1:], archive)
-		if cfg != "" {
-			extra = append(extra, OpencodeConfigEnv+"="+cfg)
+		prep := a.prepareRun(ep, args[1:], archive)
+		if prep.opencodeConfig != "" {
+			extra = append(extra, OpencodeConfigEnv+"="+prep.opencodeConfig)
 		}
-		if kube != "" {
-			extra = append(extra, kube)
+		if prep.kube != "" {
+			extra = append(extra, prep.kube)
 		}
-		live := a.startLiveSync(ep, repos)
+		extra = append(extra, a.declareEndpoints(prep.endpoints)...)
+		live := a.startLiveSync(ep, prep.synced)
 		defer live.finish()
 	}
 	if len(args) > 1 && args[0] == "resume" {
@@ -248,6 +253,7 @@ func (a *app) proxy(args []string) int {
 		}
 	}
 	rc, err := a.env.Transport.Run(a.ctx, ep, a.vmArgvEnv(extra, args...), a.env.Stdin, a.env.Stdout, a.env.Stderr, a.env.StdinTTY)
+	a.releaseEndpoints(ep) // a session that ended (this one, or a detached one) closes its endpoints
 	if err != nil {
 		a.die("cannot run the command in the sandbox VM: %v", err)
 	}
@@ -338,6 +344,7 @@ func (a *app) vm(args []string) int {
 		if err := a.env.Driver.Stop(a.ctx); err != nil {
 			a.die("could not stop the sandbox VM: %v", err)
 		}
+		a.releaseAllEndpoints()
 		fmt.Fprintln(a.env.Stdout, "The sandbox VM is stopped.")
 		return 0
 	case "status":

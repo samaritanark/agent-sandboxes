@@ -19,10 +19,10 @@ That means:
   networks: v2's `sandbox configure-network` is gone.
 - **Names your VPN's DNS serves**: the VM's DNS also goes through netd to your
   machine's resolver. Split DNS for VPN zones has not been verified yet.
-- **Addresses of your machine itself** (loopback, its LAN addresses) are never
-  reachable from the VM. A cluster that listens only on your machine, such as a
-  local k3d cluster, would need a declared Tier 3 endpoint, which v3 does not
-  wire up yet.
+- **Addresses of your machine itself** (loopback, its LAN addresses) are not
+  reachable from the VM, except an address and port a tier 3 launch declares
+  for its cluster or `--infra-endpoint` (see [Tier 3 infra
+  credentials](tier3-infra-credentials.md#clusters-and-endpoints-on-your-machine)).
 
 > **Not yet verified.** VPN-routed destinations through netd are part of the
 > design but have not been tested end to end (spike S7 lists them as open).

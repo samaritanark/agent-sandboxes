@@ -16,6 +16,8 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -117,17 +119,29 @@ func HostPrefixes() ([]netip.Prefix, error) {
 	return out, nil
 }
 
-// EndpointsFile reads the declared endpoints from a file of "ip:port" lines ('#' starts a
-// comment), re-reading it when it changes. A missing file declares nothing; a file that cannot be
-// read or parsed is an error, so Policy refuses everything until it is fixed.
+// EndpointsFile reads the declared endpoints from a file of lines "ip:port [session=ID]
+// [expires=UNIX]" ('#' starts a comment), re-reading it when it changes. An entry past its expiry
+// is not declared, whether or not the host has removed it yet, so an endpoint closes on time even
+// if the host that declared it is gone. A missing file declares nothing; a file that cannot be read
+// or parsed is an error, so Policy refuses everything until it is fixed.
 type EndpointsFile struct {
 	Path string
+	Now  func() time.Time // time.Now when nil
 
-	mu    sync.Mutex
-	mtime time.Time
-	size  int64
-	set   map[netip.AddrPort]bool
-	err   error
+	mu      sync.Mutex
+	mtime   time.Time
+	size    int64
+	entries []Endpoint
+	read    bool
+	err     error
+}
+
+// Endpoint is one declared endpoint: Session is the session it was declared for ("" for one the
+// operator wrote by hand), Expires when it closes (zero: never).
+type Endpoint struct {
+	Addr    netip.AddrPort
+	Session string
+	Expires time.Time
 }
 
 func (e *EndpointsFile) Read() (map[netip.AddrPort]bool, error) {
@@ -135,43 +149,95 @@ func (e *EndpointsFile) Read() (map[netip.AddrPort]bool, error) {
 	defer e.mu.Unlock()
 	st, err := os.Stat(e.Path)
 	if os.IsNotExist(err) {
-		e.set, e.err, e.mtime, e.size = nil, nil, time.Time{}, -1
+		e.entries, e.read, e.err, e.mtime, e.size = nil, false, nil, time.Time{}, -1
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if e.set != nil || e.err != nil {
-		if st.ModTime().Equal(e.mtime) && st.Size() == e.size {
-			return e.set, e.err
+	if !e.read || !st.ModTime().Equal(e.mtime) || st.Size() != e.size {
+		e.mtime, e.size, e.read = st.ModTime(), st.Size(), true
+		e.entries, e.err = ReadEndpoints(e.Path)
+	}
+	if e.err != nil {
+		return nil, e.err
+	}
+	now := time.Now
+	if e.Now != nil {
+		now = e.Now
+	}
+	set := map[netip.AddrPort]bool{}
+	for _, en := range e.entries {
+		if en.Expires.IsZero() || now().Before(en.Expires) {
+			set[en.Addr] = true
 		}
 	}
-	e.mtime, e.size = st.ModTime(), st.Size()
-	e.set, e.err = parseEndpoints(e.Path)
-	return e.set, e.err
+	return set, nil
 }
 
-func parseEndpoints(path string) (map[netip.AddrPort]bool, error) {
+// sessionRE is what a session=ID may hold.
+var sessionRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,63}$`)
+
+// ReadEndpoints parses an endpoints file; a missing one declares nothing.
+func ReadEndpoints(path string) ([]Endpoint, error) {
 	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	set := map[netip.AddrPort]bool{}
+	var out []Endpoint
 	sc := bufio.NewScanner(f)
 	for n := 1; sc.Scan(); n++ {
-		l := strings.TrimSpace(sc.Text())
+		l := sc.Text()
 		if i := strings.IndexByte(l, '#'); i >= 0 {
-			l = strings.TrimSpace(l[:i])
+			l = l[:i]
 		}
-		if l == "" {
+		fields := strings.Fields(l)
+		if len(fields) == 0 {
 			continue
 		}
-		ap, err := netip.ParseAddrPort(l)
+		bad := func(why string) error { return fmt.Errorf("%s line %d: %s: %q", path, n, why, strings.TrimSpace(l)) }
+		ap, err := netip.ParseAddrPort(fields[0])
 		if err != nil || !ap.Addr().Is4() || ap.Port() == 0 {
-			return nil, fmt.Errorf("%s line %d: not an IPv4 address and port: %q", path, n, l)
+			return nil, bad("not an IPv4 address and port")
 		}
-		set[ap] = true
+		en := Endpoint{Addr: ap}
+		for _, f := range fields[1:] {
+			k, v, _ := strings.Cut(f, "=")
+			switch {
+			case k == "session" && en.Session == "" && sessionRE.MatchString(v):
+				en.Session = v
+			case k == "expires" && en.Expires.IsZero():
+				u, err := strconv.ParseInt(v, 10, 64)
+				if err != nil || u <= 0 {
+					return nil, bad("expires is not a time")
+				}
+				en.Expires = time.Unix(u, 0)
+			default:
+				return nil, bad("unknown or repeated field " + f)
+			}
+		}
+		out = append(out, en)
 	}
-	return set, sc.Err()
+	return out, sc.Err()
+}
+
+// formatEndpoints is the file ReadEndpoints reads back.
+func formatEndpoints(es []Endpoint) []byte {
+	var b strings.Builder
+	b.WriteString("# Declared host endpoints (design 5.2.6), written by the sandbox CLI.\n")
+	for _, e := range es {
+		b.WriteString(e.Addr.String())
+		if e.Session != "" {
+			b.WriteString(" session=" + e.Session)
+		}
+		if !e.Expires.IsZero() {
+			fmt.Fprintf(&b, " expires=%d", e.Expires.Unix())
+		}
+		b.WriteByte('\n')
+	}
+	return []byte(b.String())
 }

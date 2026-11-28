@@ -7,6 +7,8 @@ package driver
 import (
 	"context"
 	"errors"
+	"net/netip"
+	"time"
 )
 
 // State is the VM's lifecycle state.
@@ -94,6 +96,17 @@ type NetworkReport struct {
 // When it is not running while the VM is, the VM has no network until the VM is restarted.
 type NetworkOwner interface {
 	Network(ctx context.Context) NetworkReport
+}
+
+// EndpointDeclarer is implemented by drivers whose host-reach control opens declared Tier 3
+// endpoints one by one (5.2.6): a session's endpoints are opened until expires, and closed once
+// the session is no longer live (or at expires, whichever is first).
+type EndpointDeclarer interface {
+	DeclareEndpoints(ctx context.Context, session string, eps []netip.AddrPort, expires time.Time) error
+	// ReleaseEndpoints closes the endpoints of every session live reports as not live.
+	ReleaseEndpoints(ctx context.Context, live func(session string) bool) error
+	// EndpointSessions is the sessions holding declared endpoints.
+	EndpointSessions(ctx context.Context) ([]string, error)
 }
 
 // Driver is one VM backend.

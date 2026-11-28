@@ -45,6 +45,9 @@ type fakeTransport struct {
 	mirrors     [][]string
 	// the doctor's canary: runtime -> its error ("" passes)
 	canaryFail map[string]string
+	// sandboxd ctl list's output
+	sessions string
+	lists    int
 }
 
 func (f *fakeTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []string, stdin io.Reader, stdout, _ io.Writer, tty bool) (int, error) {
@@ -95,6 +98,10 @@ func (f *fakeTransport) Output(_ context.Context, _ driver.SSHEndpoint, argv []s
 			return []byte(e + "\n"), errors.New("exit status 1")
 		}
 		return []byte("kernel 6.12.0-kata, probe read, 1.2 s\n"), nil
+	}
+	if strings.Join(argv, " ") == SandboxdCommand+" ctl list" {
+		f.lists++
+		return []byte(f.sessions), nil
 	}
 	switch argv[0] {
 	case "sh":

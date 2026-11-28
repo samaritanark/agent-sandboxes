@@ -137,3 +137,79 @@ func TestEndpointsFile(t *testing.T) {
 		t.Errorf("removed file: %v %v", s, err)
 	}
 }
+
+// TestDeclare (design 5.2.6): a launch declares its endpoints under its session with an expiry;
+// the worker allows them until then, and the host's release closes a session that is no longer
+// live, keeps a live one's, and keeps the operator's own entries; an expired entry is closed even
+// before the host removes it, and an unparseable file is never overwritten.
+func TestDeclare(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, EndpointsName)
+	os.WriteFile(path, []byte("10.0.0.2:5432 # the operator's\n"), 0o600)
+	now := time.Unix(1800000000, 0)
+	k3d, other := netip.MustParseAddrPort("192.168.1.178:6443"), netip.MustParseAddrPort("192.168.1.178:8443")
+	a, b := "ses-20270115-080000-beef", "ses-20270115-080100-cafe"
+	if err := Declare(dir, a, []netip.AddrPort{k3d}, now.Add(time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := Declare(dir, b, []netip.AddrPort{other}, now.Add(time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+	clock := now
+	e := &EndpointsFile{Path: path, Now: func() time.Time { return clock }}
+	s, err := e.Read()
+	if err != nil || len(s) != 3 || !s[k3d] || !s[other] {
+		t.Fatalf("%v %v", s, err)
+	}
+	if got, _ := Declared(dir); len(got) != 2 || got[0] != a || got[1] != b {
+		t.Errorf("declared %q", got)
+	}
+	// re-declaring replaces the session's endpoints
+	Declare(dir, a, []netip.AddrPort{k3d, k3d}, now.Add(time.Hour), now)
+	if es, _ := ReadEndpoints(path); len(es) != 4 {
+		t.Errorf("%+v", es)
+	}
+	Declare(dir, a, []netip.AddrPort{k3d}, now.Add(time.Hour), now)
+	// the host releases a session that is no longer live
+	if err := Release(dir, func(id string) bool { return id == b }, now); err != nil {
+		t.Fatal(err)
+	}
+	os.Chtimes(path, now.Add(time.Minute), now.Add(time.Minute))
+	if s, _ := e.Read(); s[k3d] || !s[other] || !s[netip.MustParseAddrPort("10.0.0.2:5432")] {
+		t.Errorf("after release: %v", s)
+	}
+	// past its expiry, an entry is closed before anyone removes it, and then removed
+	clock = now.Add(2 * time.Hour)
+	if s, _ := e.Read(); s[other] || len(s) != 1 {
+		t.Errorf("expired: %v", s)
+	}
+	Release(dir, func(string) bool { return true }, clock)
+	if es, _ := ReadEndpoints(path); len(es) != 1 || es[0].Session != "" {
+		t.Errorf("%+v", es)
+	}
+	// releasing the last entry removes the file
+	os.Remove(path)
+	Declare(dir, a, []netip.AddrPort{k3d}, now.Add(time.Hour), now)
+	Release(dir, func(string) bool { return false }, now)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("file left: %v", err)
+	}
+	for _, c := range []struct {
+		session string
+		ep      netip.AddrPort
+	}{{"bad id!", k3d}, {a, netip.MustParseAddrPort("[::1]:80")}, {a, netip.MustParseAddrPort("1.2.3.4:0")}} {
+		if Declare(dir, c.session, []netip.AddrPort{c.ep}, now.Add(time.Hour), now) == nil {
+			t.Errorf("declared %q %v", c.session, c.ep)
+		}
+	}
+	os.WriteFile(path, []byte("garbage\n"), 0o600)
+	if Declare(dir, a, []netip.AddrPort{k3d}, now.Add(time.Hour), now) == nil {
+		t.Error("an unparseable file was overwritten")
+	}
+	for _, bad := range []string{"1.2.3.4:80 session=a session=b\n", "1.2.3.4:80 expires=1 expires=2\n", "1.2.3.4:80 expires=x\n", "1.2.3.4:80 colour=red\n", "1.2.3.4:80 session=a/b\n"} {
+		os.WriteFile(path, []byte(bad), 0o600)
+		if _, err := ReadEndpoints(path); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

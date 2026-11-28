@@ -241,6 +241,13 @@ func runPrepare(c *cmdCtx, s *LaunchSpec) SessionRecord {
 
 	// Step 3: the session ID, the profile's dependencies, and the names.
 	rec.ID = c.sessionID()
+	if id := c.env.Getenv(SessionIDEnv); id != "" {
+		// the host declared endpoints under this ID (hostreach.go): it must be the session's
+		if !resumeSessionIDRE.MatchString(id) || config.Exists(c.env.LogsDir+"/"+id) {
+			c.die("the host's session ID %q is malformed or already used; run the launch again.", id)
+		}
+		rec.ID = id
+	}
 	c.out("==> Session ID: %s", rec.ID)
 	deps, ok := c.resolveDependencies(rec.ID, s.Agent, s.MCPs, s.Services)
 	if !ok {

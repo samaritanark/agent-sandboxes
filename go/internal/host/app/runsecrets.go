@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
@@ -313,13 +314,22 @@ func (a *app) readSecret(name string) (v []byte, absent bool, err error) {
 // from the host store is removed from the VM's, so the run stops with v2's message instead of
 // binding a stale copy. When the pre-pass fails, nothing is pushed or synced: the run that follows
 // stops the same way and says why.
-func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (synced []string, opencodeConfig, kube string) {
+// runPrep is what prepareRun prepared: the repositories synced, opencode's configuration, the
+// clusters for the run (KubeEnv), and the host endpoints to declare.
+type runPrep struct {
+	synced         []string
+	opencodeConfig string
+	kube           string
+	endpoints      []netip.AddrPort
+}
+
+func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (p runPrep) {
 	// tier 3's kubeconfigs are read here, on the host, before the VM decides anything about them
 	clusters := a.readKubeconfigs(args)
 	var extra []string
 	if len(clusters) > 0 {
-		kube = kubeEnv(clusters)
-		extra = append(extra, kube)
+		p.kube = kubeEnv(clusters)
+		extra = append(extra, p.kube)
 	}
 	defer func() {
 		for _, k := range clusters {
@@ -328,7 +338,7 @@ func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (
 	}()
 	out, err := a.env.Transport.Output(a.ctx, ep, a.vmArgvEnv(extra, append([]string{RunBindings}, args...)...), maxBindingsOutput)
 	if err != nil {
-		return nil, "", kube
+		return p
 	}
 	pp, err := parsePrepass(out)
 	names, repos, tokens, infraHosts := pp.Secrets, pp.Repos, pp.InfraTokens, pp.InfraHosts
@@ -368,9 +378,11 @@ func (a *app) prepareRun(ep driver.SSHEndpoint, args []string, archive []byte) (
 	a.pushInfraTokens(ep, tokens, infraHosts)
 	a.pushKube(ep, clusters)
 	if pp.OpencodeBaseURL != "" {
-		opencodeConfig = a.prepareOpencode(ep, pp.OpencodeBaseURL, args)
+		p.opencodeConfig = a.prepareOpencode(ep, pp.OpencodeBaseURL, args)
 	}
-	return a.syncAndMirror(ep, repos), opencodeConfig, kube
+	p.endpoints = a.hostEndpoints(args, clusters)
+	p.synced = a.syncAndMirror(ep, repos)
+	return p
 }
 
 // pushSecrets seals and pushes the named secrets from the host store, each with its binding.

@@ -36,6 +36,32 @@ type KubeCluster struct {
 	Source        string `json:"source"` // the kubeconfig on the host, for messages
 }
 
+// SessionIDEnv and HostEndpointsEnv: when a launch reaches an address of the operator's machine,
+// the host declares it in its host-reach control under a session ID it chooses, and passes both
+// (design 5.2.6; the host's hostreach.go).
+const (
+	SessionIDEnv     = "SANDBOX_SESSION_ID"
+	HostEndpointsEnv = "SANDBOX_HOST_ENDPOINTS"
+)
+
+// hostEndpoints puts the host's declared endpoints in the spec, with a line for each.
+func (c *cmdCtx) hostEndpoints(spec *sessionspec.Spec) []string {
+	raw := c.env.Getenv(HostEndpointsEnv)
+	if raw == "" {
+		return nil
+	}
+	var lines []string
+	for _, f := range strings.Split(raw, ",") {
+		ap, err := netip.ParseAddrPort(f)
+		if err != nil || !ap.Addr().Is4() || ap.Port() == 0 {
+			c.die("the host's declared endpoints are malformed: %q", raw)
+		}
+		spec.Egress.HostEndpoints = append(spec.Egress.HostEndpoints, sessionspec.HostEndpoint{Address: ap.Addr().String(), Port: int(ap.Port())})
+		lines = append(lines, fmt.Sprintf("==> Host endpoint %s: an address of your machine, open to this session while it runs", ap))
+	}
+	return lines
+}
+
 // KubeRef is cluster n's credential in the broker store.
 func KubeRef(n int) string { return fmt.Sprintf("infra.kube.%d", n) }
 

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"math/big"
 	"net/netip"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -219,5 +220,61 @@ func TestLaunchKubeRefusals(t *testing.T) {
 		if rc := Run(c.args, e, &bytes.Buffer{}, &errb); rc != 1 || !strings.Contains(errb.String(), c.want) || len(fs.started) != 0 {
 			t.Errorf("%s: %d %d %s", name, rc, len(fs.started), errb.String())
 		}
+	}
+}
+
+// TestLaunchHostEndpoints (design 5.2.6): the run starts the session under the ID the host
+// declared its endpoints for, records the endpoints in the spec, and says so; an ID that is
+// malformed or already used, or malformed endpoints, stop it before anything starts.
+func TestLaunchHostEndpoints(t *testing.T) {
+	ks := []KubeCluster{{Context: "k3d", Server: "https://192.168.1.178:6443", CA: kubeTestCA, Auth: "token", Source: "/k/a"}}
+	args := []string{"run", "--tier", "3", "--repo", "~/app", "--infra-kubeconfig", "/k/a"}
+	id := "ses-20270115-080000-cafe"
+	withEnv := func(e Env, vars map[string]string) Env {
+		g := e.Getenv
+		e.Getenv = func(k string) string {
+			if v, ok := vars[k]; ok {
+				return v
+			}
+			return g(k)
+		}
+		return e
+	}
+	e, fs, _ := kubeEnv(t, ks, nil)
+	e = withEnv(e, map[string]string{SessionIDEnv: id, HostEndpointsEnv: "192.168.1.178:6443,192.168.1.178:8200"})
+	var out, errb bytes.Buffer
+	if rc := Run(args, e, &out, &errb); rc != 0 {
+		t.Fatalf("%d\n%s\n%s", rc, out.String(), errb.String())
+	}
+	sp := fs.started[0]
+	if sp.ID != id || len(sp.Egress.HostEndpoints) != 2 || sp.Egress.HostEndpoints[0] != (sessionspec.HostEndpoint{Address: "192.168.1.178", Port: 6443}) ||
+		sp.Egress.HostEndpoints[1].Port != 8200 {
+		t.Errorf("%s %+v", sp.ID, sp.Egress.HostEndpoints)
+	}
+	if err := sp.Validate(sessionspec.Options{}); err != nil {
+		t.Errorf("sandboxd refuses it: %v", err)
+	}
+	if !strings.Contains(out.String(), "==> Session ID: "+id) || !strings.Contains(out.String(), "==> Host endpoint 192.168.1.178:6443: an address of your machine") {
+		t.Errorf("%s", out.String())
+	}
+	for name, vars := range map[string]map[string]string{
+		"malformed id":        {SessionIDEnv: "ses-1"},
+		"malformed endpoints": {HostEndpointsEnv: "192.168.1.178"},
+		"ipv6 endpoint":       {HostEndpointsEnv: "[::1]:6443"},
+	} {
+		e, fs, _ := kubeEnv(t, ks, nil)
+		e = withEnv(e, vars)
+		errb.Reset()
+		if rc := Run(args, e, &bytes.Buffer{}, &errb); rc != 1 || len(fs.started) != 0 || !strings.Contains(errb.String(), "the host's") {
+			t.Errorf("%s: %d %s", name, rc, errb.String())
+		}
+	}
+	// an ID already used
+	e, fs, _ = kubeEnv(t, ks, nil)
+	e = withEnv(e, map[string]string{SessionIDEnv: id})
+	os.MkdirAll(filepath.Join(e.LogsDir, id), 0o755)
+	errb.Reset()
+	if rc := Run(args, e, &bytes.Buffer{}, &errb); rc != 1 || len(fs.started) != 0 || !strings.Contains(errb.String(), "already used") {
+		t.Errorf("used id: %d %s", rc, errb.String())
 	}
 }

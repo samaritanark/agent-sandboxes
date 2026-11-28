@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -413,6 +414,19 @@ func (d *Driver) Endpoint(ctx context.Context) (driver.SSHEndpoint, error) {
 // errNoNetd is the state of a VM whose netd supervisor died: the link died with it.
 var errNoNetd = errors.New("sandbox netd is not running, so the sandbox VM has no network; restart the VM with: sandbox vm start")
 
+// DeclareEndpoints opens a session's declared endpoints in netd (driver.EndpointDeclarer).
+func (d *Driver) DeclareEndpoints(_ context.Context, session string, eps []netip.AddrPort, expires time.Time) error {
+	return netd.Declare(d.dir(), session, eps, expires, time.Now())
+}
+
+// ReleaseEndpoints closes the endpoints of sessions that are no longer live.
+func (d *Driver) ReleaseEndpoints(_ context.Context, live func(string) bool) error {
+	return netd.Release(d.dir(), live, time.Now())
+}
+
+// EndpointSessions is the sessions holding declared endpoints.
+func (d *Driver) EndpointSessions(context.Context) ([]string, error) { return netd.Declared(d.dir()) }
+
 // Network reports on netd (driver.NetworkOwner).
 func (d *Driver) Network(ctx context.Context) driver.NetworkReport {
 	if st, err := d.Status(ctx); err != nil || st != driver.Running {
@@ -464,3 +478,5 @@ func (d *Driver) Probe(ctx context.Context) (driver.Capabilities, error) {
 	c.Hypervisor, c.NestedVirt = probeHost(d.hv.kind(), &c)
 	return c, nil
 }
+
+var _ driver.EndpointDeclarer = (*Driver)(nil)
