@@ -19,8 +19,12 @@ import (
 // Limits.
 const (
 	MaxHeader  = 64 << 20 // a scan listing of a large tree
-	MaxBody    = 64 << 20 // one file
+	MaxBody    = 64 << 20 // one message's body: a file, or one part of a larger one
 	MaxEntries = 1_000_000
+	// MaxLarge is the largest file the host sends to the VM (in parts of at most MaxBody). Nothing
+	// larger than MaxBody goes the other way: a VM-origin file passes the host's gate whole, and
+	// the gate's per-file limit is MaxBody.
+	MaxLarge = 4 << 30
 )
 
 // Operations.
@@ -30,6 +34,11 @@ const (
 	OpWrite   = "write"   // replace a file with the body, if the path still matches Base
 	OpSymlink = "symlink" // replace with a symlink to Target, if the path still matches Base
 	OpDelete  = "delete"  // remove, if the path still matches Base
+	// OpWritePart sends a file larger than MaxBody in parts, in order from Offset 0: the first
+	// part is refused unless the path still matches Base, and the last one (Offset + body = Size)
+	// puts the file in place only if the whole matches FP. A sync agent that does not know the
+	// operation refuses it, so no older agent ever takes a part for a whole file.
+	OpWritePart = "write-part"
 )
 
 // Entry is one path in a scan.
@@ -50,6 +59,13 @@ type Header struct {
 	Err      string  `json:"err,omitempty"`
 	Conflict bool    `json:"conflict,omitempty"` // the path no longer matched Base; nothing was changed
 	BodyLen  int64   `json:"body,omitempty"`
+	Offset   int64   `json:"off,omitempty"`  // OpWritePart: where this part goes
+	Size     int64   `json:"size,omitempty"` // OpWritePart: the whole file's size
+	// Large, on a scan, asks for the fingerprints of files larger than MaxBody (without it they
+	// are "other", as before the host could send them)
+	Large bool `json:"large,omitempty"`
+	// TooLarge, on a read's reply: the file is larger than MaxBody, so it is not sent
+	TooLarge bool `json:"too_large,omitempty"`
 }
 
 // Fingerprint identifies a path's state: "" absent, "file:<sha256>[:x]", "link:<target>", "dir",
@@ -67,6 +83,20 @@ func Fingerprint(kind string, data []byte, exec bool, target string) string {
 		return "link:" + target
 	}
 	return kind
+}
+
+// FingerprintReader is Fingerprint("file", ...) of everything r yields, without holding it.
+func FingerprintReader(r io.Reader, exec bool) (string, int64, error) {
+	h := sha256.New()
+	n, err := io.Copy(h, r)
+	if err != nil {
+		return "", n, err
+	}
+	f := "file:" + hex.EncodeToString(h.Sum(nil))
+	if exec {
+		f += ":x"
+	}
+	return f, n, nil
 }
 
 // Write sends a message.

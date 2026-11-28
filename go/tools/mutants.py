@@ -1567,3 +1567,26 @@ m(CL, '&& int64(age/(24*time.Hour)) <= int64(min) {', '&& int64(age/(24*time.Hou
 m(CL, '\t\t\treturn -1, t\n\t\t}\n\t}\n\tmax, tier := -1, "unknown"', '\t\t\treturn 99, t\n\t\t}\n\t}\n\tmax, tier := -1, "unknown"', "TestRetentionMinimum")
 m(CL, '\t\tif d > max {\n\t\t\tmax, tier', '\t\tif d < max || max < 0 {\n\t\t\tmax, tier', "TestRetentionMinimum")
 m(CL, '\t\t\tc.die("%v; nothing was removed.", err)', '\t\t\tc.warn("%v", err)', "TestRetentionMinimum")
+
+# large files in parts (host to VM), held back VM to host
+PT = "internal/syncagent/parts.go"
+R_PT = "TestWritePart|TestLargeScanAndRead"
+m(PT, '\tif h.Size <= syncproto.MaxBody || h.Size > syncproto.MaxLarge || !strings.HasPrefix(h.FP, "file:") {', '\tif h.Size <= syncproto.MaxBody || !strings.HasPrefix(h.FP, "file:") {', R_PT)
+m(PT, '\tif h.Size <= syncproto.MaxBody || h.Size > syncproto.MaxLarge || !strings.HasPrefix(h.FP, "file:") {', '\tif h.Size > syncproto.MaxLarge || !strings.HasPrefix(h.FP, "file:") {', R_PT)
+m(PT, '\t\tif cur != h.Base {\n\t\t\treturn syncproto.Header{Conflict: true, FP: cur}, nil\n\t\t}\n\t\tif cur == "dir" {', '\t\tif cur == "dir" {', R_PT)
+m(PT, '\t} else if p.f == nil || h.Path != p.path || h.Offset != p.written || h.Size != p.size || h.FP != p.fp {', '\t} else if p.f == nil || h.Path != p.path {', R_PT)
+m(PT, '\tif err != nil || got != p.fp {', '\tif err != nil {', R_PT)
+m(PT, '\tdefer func() { root.Remove(p.tmp); *p = partial{} }()', '\tdefer func() { *p = partial{} }()', R_PT)
+m(PT, '\tif p.exec {\n\t\tmode = 0o755\n\t}', '', "TestLargeFiles", pkg="host/syncengine")
+SA = "internal/syncagent/syncagent.go"
+m(SA, '\t\t\tif !large && st.Mode().IsRegular() && st.Size() > syncproto.MaxBody {', '\t\t\tif false {', R_PT)
+m(SA, '\t\t\tr.TooLarge = true // larger than a message: the host\'s gate would refuse it anyway', '', R_PT)
+EN = "internal/host/syncengine/engine.go"
+R_EN = "TestLargeFiles|TestLargeFileOlderAgent"
+m(EN, '\tscan, _, err := e.VM.Call(syncproto.Header{Op: syncproto.OpScan, Large: true}, nil)', '\tscan, _, err := e.VM.Call(syncproto.Header{Op: syncproto.OpScan}, nil)', R_EN)
+m(EN, '\t\tif data == nil && strings.HasPrefix(fp, "file:") {\n\t\t\treturn e.sendParts(root, hostRel, p, h, base)\n\t\t}\n', '', R_EN)
+m(EN, '\tif r.TooLarge {\n\t\treturn nil, "", errTooLarge\n\t}\n', '', R_EN)
+m(EN, '\t\tif strings.HasPrefix(r.Err, "unknown operation") {', '\t\tif false {', R_EN)
+m(EN, '\t\tsum.Write(buf[:n])\n', '', R_EN)
+m(EN, '\tif !e.noted[n] {', '\tif true {', R_EN)
+m(EN, '\tdefer func() { rep.Notes = append(rep.Notes, e.notes...) }()', '', R_EN)

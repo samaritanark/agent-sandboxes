@@ -37,6 +37,8 @@ func ServeCached(dir, cacheFile string, r io.Reader, w io.Writer) error {
 	}
 	defer root.Close()
 	cache := &syncproto.FPCache{}
+	parts := &partial{}
+	defer parts.drop(root)
 	var saved time.Time
 	if cacheFile != "" {
 		cache.LoadFile(cacheFile)
@@ -50,7 +52,7 @@ func ServeCached(dir, cacheFile string, r io.Reader, w io.Writer) error {
 		if err != nil {
 			return err
 		}
-		reply, rbody := handle(root, cache, h, body)
+		reply, rbody := handle(root, cache, parts, h, body)
 		if err := syncproto.Write(w, reply, rbody); err != nil {
 			return err
 		}
@@ -91,7 +93,14 @@ func fingerprint(root *os.Root, p string) (string, []byte, error) {
 		return "dir", nil, nil
 	case st.Mode().IsRegular():
 		if st.Size() > syncproto.MaxBody {
-			return "other", nil, nil // too large to sync: reported as such, never transferred
+			// fingerprinted without being held; never sent to the host (OpRead says TooLarge)
+			f, err := root.Open(p)
+			if err != nil {
+				return "", nil, err
+			}
+			defer f.Close()
+			fp, _, err := syncproto.FingerprintReader(f, st.Mode()&0o111 != 0)
+			return fp, nil, err
 		}
 		b, err := root.ReadFile(p)
 		return syncproto.Fingerprint("file", b, st.Mode()&0o111 != 0, ""), b, err
@@ -99,12 +108,12 @@ func fingerprint(root *os.Root, p string) (string, []byte, error) {
 	return "other", nil, nil
 }
 
-func handle(root *os.Root, cache *syncproto.FPCache, h syncproto.Header, body []byte) (syncproto.Header, []byte) {
+func handle(root *os.Root, cache *syncproto.FPCache, parts *partial, h syncproto.Header, body []byte) (syncproto.Header, []byte) {
 	fail := func(f string, a ...interface{}) (syncproto.Header, []byte) {
 		return syncproto.Header{Err: fmt.Sprintf(f, a...)}, nil
 	}
 	if h.Op == syncproto.OpScan {
-		entries, err := scan(root, cache)
+		entries, err := scan(root, cache, h.Large)
 		if err != nil {
 			return fail("scan: %v", err)
 		}
@@ -112,6 +121,9 @@ func handle(root *os.Root, cache *syncproto.FPCache, h syncproto.Header, body []
 	}
 	if !validPath(h.Path) {
 		return fail("invalid path %q", h.Path)
+	}
+	if h.Op == syncproto.OpWritePart {
+		return parts.write(root, h, body)
 	}
 	cur, data, err := fingerprint(root, h.Path)
 	if err != nil {
@@ -122,6 +134,9 @@ func handle(root *os.Root, cache *syncproto.FPCache, h syncproto.Header, body []
 		r := syncproto.Header{FP: cur}
 		if strings.HasPrefix(cur, "link:") {
 			r.Target = strings.TrimPrefix(cur, "link:")
+		}
+		if strings.HasPrefix(cur, "file:") && data == nil {
+			r.TooLarge = true // larger than a message: the host's gate would refuse it anyway
 		}
 		return r, data
 	case syncproto.OpWrite, syncproto.OpSymlink, syncproto.OpDelete:
@@ -140,16 +155,8 @@ func handle(root *os.Root, cache *syncproto.FPCache, h syncproto.Header, body []
 // apply makes one change: parents as plain directories (a symlinked parent is refused), contents
 // through a temporary file renamed into place.
 func apply(root *os.Root, h syncproto.Header, body []byte, cur string) error {
-	parts := strings.Split(h.Path, "/")
-	for i := 1; i < len(parts); i++ {
-		d := strings.Join(parts[:i], "/")
-		st, err := root.Lstat(d)
-		if errors.Is(err, fs.ErrNotExist) {
-			break
-		}
-		if err != nil || !st.IsDir() {
-			return fmt.Errorf("%s is not a plain directory", d)
-		}
+	if err := plainParents(root, h.Path); err != nil {
+		return err
 	}
 	if h.Op == syncproto.OpDelete {
 		if cur == "dir" {
@@ -194,8 +201,25 @@ func apply(root *os.Root, h syncproto.Header, body []byte, cur string) error {
 	return nil
 }
 
-// scan lists every file and symlink under the root (directories are implied), sorted.
-func scan(root *os.Root, cache *syncproto.FPCache) ([]syncproto.Entry, error) {
+// plainParents refuses a path with a parent that exists as anything but a plain directory.
+func plainParents(root *os.Root, p string) error {
+	parts := strings.Split(p, "/")
+	for i := 1; i < len(parts); i++ {
+		d := strings.Join(parts[:i], "/")
+		st, err := root.Lstat(d)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil || !st.IsDir() {
+			return fmt.Errorf("%s is not a plain directory", d)
+		}
+	}
+	return nil
+}
+
+// scan lists every file and symlink under the root (directories are implied), sorted. Without
+// large, a file larger than MaxBody is "other" (an older host neither sends nor expects it).
+func scan(root *os.Root, cache *syncproto.FPCache, large bool) ([]syncproto.Entry, error) {
 	var out []syncproto.Entry
 	err := fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -204,7 +228,7 @@ func scan(root *os.Root, cache *syncproto.FPCache) ([]syncproto.Entry, error) {
 		if p == "." || d.IsDir() {
 			return nil
 		}
-		if strings.HasSuffix(p, ".sandbox-sync-incoming") {
+		if strings.HasSuffix(p, ".sandbox-sync-incoming") || strings.HasSuffix(p, largeTmp) {
 			return nil
 		}
 		fp := syncproto.ObjectFP
@@ -222,6 +246,9 @@ func scan(root *os.Root, cache *syncproto.FPCache) ([]syncproto.Entry, error) {
 					return nil
 				}
 				cache.Put(p, st, fp)
+			}
+			if !large && st.Mode().IsRegular() && st.Size() > syncproto.MaxBody {
+				fp = "other"
 			}
 		}
 		out = append(out, syncproto.Entry{Path: p, FP: fp})

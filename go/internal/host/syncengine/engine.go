@@ -13,6 +13,8 @@ package syncengine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,6 +82,8 @@ type Engine struct {
 	cache       syncproto.FPCache // host fingerprints by stat data
 	cacheLoaded bool
 	cacheSaved  time.Time
+	noted       map[string]bool // notes already made (note)
+	notes       []string        // the pass's notes from note
 }
 
 // cacheSaveEvery is how often a live sync writes its fingerprint cache (and at its end).
@@ -256,7 +260,14 @@ func hostFP(root *os.Root, p string) (string, []byte, error) {
 		return syncproto.Fingerprint("link", nil, false, t), nil, err
 	case st.Mode().IsRegular():
 		if st.Size() > syncproto.MaxBody {
-			return "other", nil, nil
+			// fingerprinted without being held; sent to the VM in parts (sendParts)
+			f, err := root.Open(p)
+			if err != nil {
+				return "", nil, err
+			}
+			defer f.Close()
+			fp, _, err := syncproto.FingerprintReader(f, st.Mode()&0o111 != 0)
+			return fp, nil, err
 		}
 		b, err := root.ReadFile(p)
 		return syncproto.Fingerprint("file", b, st.Mode()&0o111 != 0, ""), b, err
@@ -267,8 +278,9 @@ func hostFP(root *os.Root, p string) (string, []byte, error) {
 }
 
 // sync runs one reconciliation.
-func (e *Engine) sync() (Report, error) {
-	var rep Report
+func (e *Engine) sync() (rep Report, err error) {
+	e.notes = nil
+	defer func() { rep.Notes = append(rep.Notes, e.notes...) }()
 	state, err := e.load()
 	if err != nil {
 		return rep, err
@@ -291,7 +303,7 @@ func (e *Engine) sync() (Report, error) {
 	if err != nil {
 		return rep, err
 	}
-	scan, _, err := e.VM.Call(syncproto.Header{Op: syncproto.OpScan}, nil)
+	scan, _, err := e.VM.Call(syncproto.Header{Op: syncproto.OpScan, Large: true}, nil)
 	if err != nil {
 		return rep, fmt.Errorf("VM scan: %w", err)
 	}
@@ -329,6 +341,10 @@ func (e *Engine) sync() (Report, error) {
 			// Rule 1: never crosses. A VM version is kept for review (once), never written.
 			if v != "" && v != h && !withheld(state, p, v) {
 				c, got, err := e.fromVM(p, v, b)
+				if errors.Is(err, errTooLarge) {
+					state.Withheld[p] = v
+					continue
+				}
 				if err != nil {
 					return rep, err
 				}
@@ -365,6 +381,10 @@ func (e *Engine) sync() (Report, error) {
 				continue
 			}
 			c, got, err := e.fromVM(p, v, b)
+			if errors.Is(err, errTooLarge) {
+				e.tooLarge(state, p, v)
+				continue
+			}
 			if err != nil {
 				return rep, err
 			}
@@ -378,6 +398,10 @@ func (e *Engine) sync() (Report, error) {
 				continue
 			}
 			c, got, err := e.fromVM(p, v, b)
+			if errors.Is(err, errTooLarge) {
+				e.tooLarge(state, p, v)
+				continue
+			}
 			if err != nil {
 				return rep, err
 			}
@@ -448,6 +472,9 @@ func (e *Engine) toVMFrom(root *os.Root, hostRel, p, h, base string) (string, er
 		if fp != h {
 			return "", nil // changed while syncing: next round
 		}
+		if data == nil && strings.HasPrefix(fp, "file:") {
+			return e.sendParts(root, hostRel, p, h, base)
+		}
 		req.Op, body, req.Exec = syncproto.OpWrite, data, strings.HasSuffix(h, ":x")
 	}
 	r, _, err := e.VM.Call(req, body)
@@ -476,6 +503,9 @@ func (e *Engine) fromVM(p, v, base string) (*syncgate.Change, string, error) {
 	if r.Err != "" {
 		return nil, "", fmt.Errorf("VM read %s: %s", p, r.Err)
 	}
+	if r.TooLarge {
+		return nil, "", errTooLarge
+	}
 	var got string
 	switch {
 	case strings.HasPrefix(r.FP, "link:"):
@@ -493,6 +523,91 @@ func (e *Engine) fromVM(p, v, base string) (*syncgate.Change, string, error) {
 		return nil, "", nil
 	}
 	return c, got, nil
+}
+
+// errTooLarge: the VM's version of a path is larger than the host's gate takes (MaxBody), so it
+// stays in the VM; the pass notes it once per version (State.Withheld) and goes on.
+var errTooLarge = errors.New("larger than the sync's per-file limit")
+
+// partSize is the size of each part sendParts sends.
+const partSize = 16 << 20
+
+// sendParts sends the host's file at hostRel (fingerprint h, larger than a message) to the VM's p
+// in parts, on condition that the VM still has base there. The fingerprint is taken again as the
+// parts are read, and nothing more is sent once it differs (the file changed meanwhile: next
+// round). An older sync agent refuses the operation: the file is then not synced, with a note.
+func (e *Engine) sendParts(root *os.Root, hostRel, p, h, base string) (string, error) {
+	f, err := root.Open(hostRel)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	size := st.Size()
+	if size > syncproto.MaxLarge {
+		e.note(fmt.Sprintf("not synced to the VM: %s is larger than %d GiB", p, syncproto.MaxLarge>>30))
+		return "", nil
+	}
+	sum := sha256.New()
+	buf := make([]byte, partSize)
+	for off := int64(0); off < size; {
+		n, err := io.ReadFull(f, buf[:min(int64(partSize), size-off)])
+		if err != nil {
+			return "", nil // shorter than it was: changed meanwhile, next round
+		}
+		sum.Write(buf[:n])
+		if off+int64(n) == size {
+			got := "file:" + hex.EncodeToString(sum.Sum(nil))
+			if strings.HasSuffix(h, ":x") {
+				got += ":x"
+			}
+			if got != h {
+				return "", nil // changed while being read: next round
+			}
+		}
+		req := syncproto.Header{Op: syncproto.OpWritePart, Path: p, Base: base, FP: h, Offset: off, Size: size,
+			Exec: strings.HasSuffix(h, ":x")}
+		r, _, err := e.VM.Call(req, buf[:n])
+		if err != nil {
+			return "", fmt.Errorf("VM write-part %s: %w", p, err)
+		}
+		if strings.HasPrefix(r.Err, "unknown operation") {
+			e.note(fmt.Sprintf("not synced to the VM: %s is larger than %d MiB and the VM's sync agent cannot take it in parts (an older image)", p, syncproto.MaxBody>>20))
+			return "", nil
+		}
+		if r.Err != "" {
+			return "", fmt.Errorf("VM write-part %s: %s", p, r.Err)
+		}
+		if r.Conflict {
+			return r.FP, nil
+		}
+		off += int64(n)
+		if off == size {
+			return r.FP, nil
+		}
+	}
+	return "", nil
+}
+
+// tooLarge records that the VM's version v of p is too large to bring to the host: it is noted
+// once, and not read again until it changes.
+func (e *Engine) tooLarge(state State, p, v string) {
+	state.Withheld[p] = v
+	e.note(fmt.Sprintf("not synced to the host: %s changed in the VM and is larger than %d MiB; it stays in the VM's copy", p, syncproto.MaxBody>>20))
+}
+
+// note adds a note to the pass being made, once per text for the engine's life.
+func (e *Engine) note(n string) {
+	if e.noted == nil {
+		e.noted = map[string]bool{}
+	}
+	if !e.noted[n] {
+		e.noted[n] = true
+		e.notes = append(e.notes, n)
+	}
 }
 
 // withheld: this VM version of p was already quarantined (a deletion has the empty fingerprint,

@@ -88,8 +88,9 @@ func (c *FPCache) Dirty() bool {
 	return c.dirty
 }
 
-// cacheFileVersion names the file form; a file of any other form is ignored.
-const cacheFileVersion = "sandbox-fpcache-1"
+// cacheFileVersion names the file form; a file of any other form is ignored. Version 2: a file
+// larger than MaxBody has its content fingerprint (version 1 held "other" for it).
+const cacheFileVersion = "sandbox-fpcache-2"
 
 // cacheFile is the file form: the entries by path.
 type cacheFile struct {

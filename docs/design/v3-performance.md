@@ -109,5 +109,7 @@ None of these changes what a session can reach, read, or do.
   the workspace copies and network would have to reach it.
 - **D. runc in the appliance VM.** Fastest, but a container escape reaches the appliance VM (the
   broker, other sessions, the gateway). Not recommended.
-- **E. Files over 64 MB are not synced** (`syncproto.MaxBody`): 24 files in narthex (tool binaries
-  built for macOS, large logs). v2 showed them. A feature gap, not a performance one.
+- **E. Files over 64 MB.** Done 2026-11-27 within the design: such files (up to 4 GiB) are sent
+  to the VM in parts, so the agent sees them; the VM's changes to them stay in the VM, because the
+  host's gate takes at most 64 MiB per file from the VM (design 5.6.2's per-file limit), and the
+  sync notes each one once.

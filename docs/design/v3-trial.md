@@ -27,7 +27,8 @@ user documentation. State as of 2026-11-27; S8.md "Start here" says what changed
 - Resuming a session that was stopped (a live keep-alive session resumes).
 - `sandbox upgrade`, prebuilt agent images in the appliance (you build them once with
   `sandbox rebuild`), Windows and Linux hosts (Linux uses qemu; not part of this trial).
-- Files over 64 MB are not synced (v2 synced them).
+- Files over 64 MiB reach the VM, but the agent's changes to them do not come back (the sync gate's
+  per-file limit; the sync notes each one). v2 synced them both ways.
 - A dependency that exits is not restarted; the catalogue's `everything-mcp` exits a few seconds
   after it starts if nothing connects to it.
 

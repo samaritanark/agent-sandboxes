@@ -112,9 +112,10 @@ The agent works on a copy of each repository in the VM
   and applies or discards each. A team
   overlay can add paths to that list (`exec_vectors:`), never remove one.
 - A change made on both sides at once is a conflict and is held the same way.
-- Files larger than 64 MB are not synced in either direction (v2's Mutagen
-  synced them). They are skipped without a message: the agent does not see
-  them, and a large file the agent writes stays in the VM.
+- Files larger than 64 MiB (up to 4 GiB) reach the VM in parts, so the agent
+  sees them. Changes the VM makes to a file that large do not come back: the
+  sync gate takes at most 64 MiB per file from the VM, so such a change stays
+  in the VM's copy, and the sync says so once.
 - If a sync connection drops during a session it is made again; a repository
   stays in sync for the whole session.
 
