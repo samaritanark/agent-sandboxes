@@ -33,6 +33,8 @@ for k in /boot/vmlinuz-* /usr/lib/modules/*/vmlinuz; do
     zcat "${k}" > "${k}.raw" && mv -f "${k}.raw" "${k}"
   fi
 done
+# The state disk (the VM's second disk) holds everything sandbox upgrade keeps (usr/lib/sandbox/state-disk).
+systemctl enable sandbox-state.service
 # containerd (from build.sh's runtime tree) drives the Kata microVMs; buildkit starts on demand.
 systemctl enable containerd.service
 # sandboxd supervises the sessions; members of the sandbox group (the policy CLI's user) may use

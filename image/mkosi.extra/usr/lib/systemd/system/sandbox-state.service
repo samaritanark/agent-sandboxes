@@ -1,0 +1,17 @@
+[Unit]
+Description=The sandbox VM's state disk (design 10: sandbox upgrade replaces the system disk only)
+Documentation=file:///usr/lib/sandbox/state-disk
+DefaultDependencies=no
+ConditionPathExists=/dev/vdb
+Requires=dev-vdb.device
+After=dev-vdb.device systemd-remount-fs.service
+Before=local-fs.target containerd.service sandboxd.service buildkit.service sandbox-seed.service
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/sandbox/state-disk
+
+[Install]
+WantedBy=local-fs.target

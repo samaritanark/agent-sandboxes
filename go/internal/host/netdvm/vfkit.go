@@ -66,6 +66,7 @@ func (vfkit) command(d *Driver, s vmSpec) []string {
 		"--cpus", fmt.Sprint(s.CPUs), "--memory", fmt.Sprint(s.MemoryMiB),
 		"--bootloader", "efi,variable-store=" + filepath.Join(dir, efiVars) + ",create",
 		"--device", "virtio-blk,path=" + filepath.Join(dir, diskFile),
+		"--device", "virtio-blk,path=" + filepath.Join(dir, stateFile),
 		"--device", "virtio-net,fd=3,mac=" + s.MAC,
 		"--device", "virtio-rng",
 		"--device", "virtio-serial,logFilePath=" + filepath.Join(dir, console),

@@ -146,6 +146,7 @@ func (q qemu) command(d *Driver, s vmSpec) []string {
 		"-drive", "if=pflash,format=raw,readonly=on,file=" + s.Firmware,
 		"-drive", "if=pflash,format=raw,file=" + filepath.Join(dir, efiVars),
 		"-drive", "if=virtio,format=raw,discard=unmap,file=" + filepath.Join(dir, diskFile),
+		"-drive", "if=virtio,format=raw,discard=unmap,file=" + filepath.Join(dir, stateFile), // the guest's /dev/vdb
 		"-drive", "if=virtio,format=raw,readonly=on,file=" + filepath.Join(dir, seedDisk),
 		// netd's socket pair is the only NIC: no user-mode network, no shares
 		"-netdev", "dgram,id=n0,local.type=fd,local.str=3",

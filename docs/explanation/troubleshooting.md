@@ -21,9 +21,12 @@ machine sleeps for a long time.
 
 **`the sandbox VM image ... speaks control API N, older (or newer) than this
 sandbox binary supports`.** The host binary and the image are from different
-builds (`sandbox upgrade` is not available in v3 yet). Run `sandbox uninstall` (answer `n` to keep each kind of state) and
-install an image built from the same version (see
-[Installing](../how-to/installing.md)).
+builds. Build an image from the same version and run `sandbox upgrade --image
+<path>` (see [Updating](../how-to/updating-the-cli.md)).
+
+**`the upgrade was rolled back`.** The new image did not boot and answer, or is
+older than the installed one; the previous system disk is back and the VM runs
+as before. The reason is in the message and in `~/.sandbox/logs/upgrades.log`.
 
 **`/dev/kvm in the VM (nested virtualization)` fails in `doctor`.** The agent's
 microVMs need nested virtualization. On macOS it needs an Apple silicon Mac with

@@ -190,8 +190,11 @@ func TestRemovedAndNotYet(t *testing.T) {
 	if r := run(t, d, tr, "", "configure-network"); r.rc != 1 || !strings.Contains(r.err, "removed in v3: the VM follows host networking") {
 		t.Errorf("configure-network: %+v", r)
 	}
-	if r := run(t, d, tr, "", "upgrade"); r.rc != 1 || !strings.Contains(r.err, "not available") {
-		t.Errorf("upgrade: %+v", r)
+	if r := run(t, d, tr, "", "ca"); r.rc != 1 || !strings.Contains(r.err, "not available") {
+		t.Errorf("ca: %+v", r)
+	}
+	if r := run(t, d, tr, "", "upgrade"); r.rc != 1 || !strings.Contains(r.err, "pass --image <path>") {
+		t.Errorf("upgrade without an image: %+v", r)
 	}
 	var got []string
 	var out, errb bytes.Buffer

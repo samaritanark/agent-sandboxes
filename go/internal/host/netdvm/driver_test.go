@@ -130,8 +130,12 @@ func TestCreate(t *testing.T) {
 	if st, _ := os.Stat(d.dir()); st.Mode().Perm() != 0o700 {
 		t.Errorf("VM directory mode %v", st.Mode())
 	}
-	if st, _ := os.Stat(filepath.Join(d.dir(), diskFile)); st.Size() != 1<<30 {
-		t.Errorf("disk size %d", st.Size())
+	// the system disk is the image grown to systemDiskGiB; the state disk is the resources' disk
+	if st, _ := os.Stat(filepath.Join(d.dir(), diskFile)); st.Size() != systemDiskGiB<<30 {
+		t.Errorf("system disk size %d", st.Size())
+	}
+	if st, err := os.Stat(filepath.Join(d.dir(), stateFile)); err != nil || st.Size() != int64(res.DiskGiB)<<30 || st.Mode().Perm() != 0o600 {
+		t.Errorf("state disk %v %v", st, err)
 	}
 	if k, _ := os.ReadFile(filepath.Join(state, keyRecord)); string(k) != seed.HostKeyPublic+"\n" {
 		t.Errorf("pinned key %q", k)
@@ -146,7 +150,7 @@ func TestCreate(t *testing.T) {
 
 	argv := strings.Join(d.hv.command(d, spec), " ")
 	for _, want := range []string{"/usr/local/bin/vfkit ", "--cpus 4 ", "--memory 8192 ", "virtio-net,fd=3,mac=" + spec.MAC,
-		"virtio-blk,path=" + filepath.Join(d.dir(), diskFile), "--nested", "efi,variable-store="} {
+		"virtio-blk,path=" + filepath.Join(d.dir(), diskFile) + " --device virtio-blk,path=" + filepath.Join(d.dir(), stateFile), "--nested", "efi,variable-store="} {
 		if !strings.Contains(argv, want) {
 			t.Errorf("vfkit command lacks %q: %s", want, argv)
 		}
@@ -227,7 +231,9 @@ func TestQemuCommand(t *testing.T) {
 		argv := strings.Join(d.hv.command(d, spec), " ")
 		for _, want := range []string{"-accel kvm", "-cpu host", "-smp 4 ", "-m 8192 ", "-nodefaults", "-no-user-config",
 			"-netdev dgram,id=n0,local.type=fd,local.str=3", "virtio-net-pci,netdev=n0,mac=02:00:00:00:00:01",
-			"readonly=on,file=/fw/CODE.fd", "file=" + filepath.Join(state, "qemu", diskFile),
+			"readonly=on,file=/fw/CODE.fd",
+			// the state disk comes second: the guest's /dev/vdb, before the seed disk
+			"file=" + filepath.Join(state, "qemu", diskFile) + " -drive if=virtio,format=raw,discard=unmap,file=" + filepath.Join(state, "qemu", stateFile) + " -drive if=virtio,format=raw,readonly=on,file=" + filepath.Join(state, "qemu", seedDisk),
 			"readonly=on,file=" + filepath.Join(state, "qemu", seedDisk), "-qmp unix:"} {
 			if !strings.Contains(argv, want) {
 				t.Errorf("%s: no %q in %s", arch, want, argv)
@@ -260,5 +266,65 @@ func TestQemuSeed(t *testing.T) {
 	}
 	if st, _ := os.Stat(filepath.Join(dir, seedDisk)); st.Mode().Perm() != 0o600 {
 		t.Errorf("seed disk mode %v", st.Mode())
+	}
+}
+
+// TestReplaceSystemDisk (design 10): an upgrade replaces only the system disk, keeping the state
+// disk and the previous system disk, which RollBack puts back; a VM without a state disk (made
+// before it existed) is refused, so its state is not lost.
+func TestReplaceSystemDisk(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "vm")
+	d := &Driver{hv: vfkit{}, Tool: "/usr/local/bin/vfkit", StateDir: state, Self: "/x/sandbox"}
+	ctx := context.Background()
+	if err := d.Create(ctx, driver.ImageRef{Path: rawImage(t, t.TempDir(), 4<<20)}, driver.Resources{CPUs: 4, MemoryMiB: 8192, DiskGiB: 1}, seed); err != nil {
+		t.Fatal(err)
+	}
+	dir := d.dir()
+	f, _ := os.OpenFile(filepath.Join(dir, stateFile), os.O_WRONLY, 0)
+	f.WriteAt([]byte("STATE"), 4096)
+	f.Close()
+	head := func(p string) string {
+		b := make([]byte, 600)
+		f, err := os.Open(p)
+		if err != nil {
+			return ""
+		}
+		defer f.Close()
+		f.Read(b)
+		return string(b[512:520]) + string(b[520:528])
+	}
+	old := head(filepath.Join(dir, diskFile))
+	newImg := rawImage(t, t.TempDir(), 4<<20)
+	g, _ := os.OpenFile(newImg, os.O_WRONLY, 0)
+	g.WriteAt([]byte("NEWIMAGE"), 520)
+	g.Close()
+	if d.CanRollBack(ctx) {
+		t.Error("a fresh VM can roll back")
+	}
+	if err := d.ReplaceSystemDisk(ctx, driver.ImageRef{Path: newImg}); err != nil {
+		t.Fatal(err)
+	}
+	if h := head(filepath.Join(dir, diskFile)); !strings.HasSuffix(h, "NEWIMAGE") {
+		t.Errorf("system disk %q", h)
+	}
+	if st, _ := os.Stat(filepath.Join(dir, diskFile)); st.Size() != systemDiskGiB<<30 {
+		t.Errorf("system disk size %d", st.Size())
+	}
+	b := make([]byte, 5)
+	sf, _ := os.Open(filepath.Join(dir, stateFile))
+	sf.ReadAt(b, 4096)
+	sf.Close()
+	if string(b) != "STATE" || !d.CanRollBack(ctx) || head(filepath.Join(dir, prevDisk)) != old {
+		t.Errorf("state %q, previous kept %v", b, d.CanRollBack(ctx))
+	}
+	if err := d.RollBack(ctx); err != nil || head(filepath.Join(dir, diskFile)) != old || d.CanRollBack(ctx) {
+		t.Errorf("rollback: %v", err)
+	}
+	if err := d.RollBack(ctx); err == nil {
+		t.Error("a second rollback succeeded")
+	}
+	os.Remove(filepath.Join(dir, stateFile))
+	if err := d.ReplaceSystemDisk(ctx, driver.ImageRef{Path: newImg}); err == nil || !strings.Contains(err.Error(), "reinstall it once") {
+		t.Errorf("no state disk: %v", err)
 	}
 }

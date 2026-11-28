@@ -98,6 +98,17 @@ type NetworkOwner interface {
 	Network(ctx context.Context) NetworkReport
 }
 
+// SystemDiskReplacer is implemented by drivers whose VM keeps its state on a disk of its own, so
+// `sandbox upgrade` can replace the system disk (design 10). The VM must be stopped.
+type SystemDiskReplacer interface {
+	// ReplaceSystemDisk makes img the system disk, keeping the one it replaces for RollBack.
+	ReplaceSystemDisk(ctx context.Context, img ImageRef) error
+	// RollBack makes the kept system disk the system disk again.
+	RollBack(ctx context.Context) error
+	// CanRollBack reports whether a previous system disk is kept.
+	CanRollBack(ctx context.Context) bool
+}
+
 // EndpointDeclarer is implemented by drivers whose host-reach control opens declared Tier 3
 // endpoints one by one (5.2.6): a session's endpoints are opened until expires, and closed once
 // the session is no longer live (or at expires, whichever is first).

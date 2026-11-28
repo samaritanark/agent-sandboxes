@@ -37,13 +37,15 @@ const keyRecord = "ssh_host_key.pub"
 
 // The VM directory's files (the directory is ~/.sandbox/vm/<kind>).
 const (
-	vmConfig = "vm.json" // written last by Create: its presence means the VM exists
-	diskFile = "disk.raw"
-	efiVars  = "efivars"
-	userData = "user-data"
-	metaData = "meta-data"
-	console  = "console.log"
-	netdLog  = "netd.log"
+	vmConfig  = "vm.json"       // written last by Create: its presence means the VM exists
+	diskFile  = "disk.raw"      // the system disk: the image
+	stateFile = "state.raw"     // the state disk, which upgrade keeps (the guest's /dev/vdb)
+	prevDisk  = "disk.raw.prev" // the system disk before the last upgrade, for rolling back
+	efiVars   = "efivars"
+	userData  = "user-data"
+	metaData  = "meta-data"
+	console   = "console.log"
+	netdLog   = "netd.log"
 )
 
 // Grace is how long the guest gets to shut down before it is stopped by force.
@@ -225,6 +227,21 @@ func isRawGPT(p string) (bool, error) {
 	return string(head[512:520]) == "EFI PART", nil
 }
 
+// systemDiskGiB is the system disk's size: the image grows its root partition to fill it on first
+// boot (cloud-init growpart); the state lives on the state disk.
+const systemDiskGiB = 8
+
+func growSystemDisk(disk string) error {
+	st, err := os.Stat(disk)
+	if err != nil {
+		return err
+	}
+	if want := int64(systemDiskGiB) << 30; st.Size() < want {
+		return os.Truncate(disk, want)
+	}
+	return nil
+}
+
 // copySparse copies src to dst, skipping runs of zeros so the copy stays as sparse as the image.
 func copySparse(dst, src string) error {
 	in, err := os.Open(src)
@@ -369,13 +386,20 @@ func (d *Driver) Create(ctx context.Context, img driver.ImageRef, res driver.Res
 	if err := copySparse(disk, img.Path); err != nil {
 		return fmt.Errorf("copying the image: %w", err)
 	}
-	// The image grows its root partition to fill the disk on first boot (cloud-init growpart).
-	if st, err := os.Stat(disk); err != nil {
+	if err := growSystemDisk(disk); err != nil {
 		return err
-	} else if want := int64(res.DiskGiB) << 30; st.Size() < want {
-		if err := os.Truncate(disk, want); err != nil {
-			return err
-		}
+	}
+	// the state disk: everything sandbox upgrade keeps (the image formats it on first boot)
+	st, err := os.OpenFile(filepath.Join(dir, stateFile), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	err = st.Truncate(int64(res.DiskGiB) << 30)
+	if cerr := st.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
 	}
 	b, _ := json.MarshalIndent(spec, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, vmConfig), append(b, '\n'), 0o600); err != nil {
@@ -413,6 +437,53 @@ func (d *Driver) Endpoint(ctx context.Context) (driver.SSHEndpoint, error) {
 
 // errNoNetd is the state of a VM whose netd supervisor died: the link died with it.
 var errNoNetd = errors.New("sandbox netd is not running, so the sandbox VM has no network; restart the VM with: sandbox vm start")
+
+// ReplaceSystemDisk installs img as the system disk, keeping the current one as prevDisk
+// (driver.SystemDiskReplacer). The state disk is not touched.
+func (d *Driver) ReplaceSystemDisk(ctx context.Context, img driver.ImageRef) error {
+	if st, err := d.Status(ctx); err != nil || st != driver.Stopped {
+		return fmt.Errorf("the sandbox VM must be stopped to replace its system disk (it is %v)", st)
+	}
+	dir := d.dir()
+	if _, err := os.Stat(filepath.Join(dir, stateFile)); err != nil {
+		return errors.New("this sandbox VM keeps its state on its system disk (it was installed before the state disk existed), so upgrading it would lose that state; reinstall it once (sandbox uninstall, then sandbox install)")
+	}
+	next := filepath.Join(dir, diskFile+".next")
+	os.Remove(next)
+	if err := copySparse(next, img.Path); err != nil {
+		os.Remove(next)
+		return fmt.Errorf("copying the image: %w", err)
+	}
+	if err := growSystemDisk(next); err != nil {
+		os.Remove(next)
+		return err
+	}
+	if err := os.Rename(filepath.Join(dir, diskFile), filepath.Join(dir, prevDisk)); err != nil {
+		os.Remove(next)
+		return err
+	}
+	return os.Rename(next, filepath.Join(dir, diskFile))
+}
+
+// RollBack makes the previous system disk the system disk again.
+func (d *Driver) RollBack(ctx context.Context) error {
+	if st, err := d.Status(ctx); err != nil || st != driver.Stopped {
+		return fmt.Errorf("the sandbox VM must be stopped to roll back its system disk (it is %v)", st)
+	}
+	dir := d.dir()
+	if _, err := os.Stat(filepath.Join(dir, prevDisk)); err != nil {
+		return errors.New("no previous system disk is kept")
+	}
+	return os.Rename(filepath.Join(dir, prevDisk), filepath.Join(dir, diskFile))
+}
+
+// CanRollBack reports whether a previous system disk is kept.
+func (d *Driver) CanRollBack(context.Context) bool {
+	_, err := os.Stat(filepath.Join(d.dir(), prevDisk))
+	return err == nil
+}
+
+var _ driver.SystemDiskReplacer = (*Driver)(nil)
 
 // DeclareEndpoints opens a session's declared endpoints in netd (driver.EndpointDeclarer).
 func (d *Driver) DeclareEndpoints(_ context.Context, session string, eps []netip.AddrPort, expires time.Time) error {

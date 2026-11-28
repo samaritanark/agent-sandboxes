@@ -155,6 +155,12 @@ func (a Attester) Finish(repo string, tag []byte) ([]string, error) {
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
+	// VerifyTag reads the tag with the gates' git, which in the VM runs unprivileged
+	// (sandbox-git): the scratch repository holds only the public tag and the copy's objects'
+	// path, which that user can already read
+	if err := os.Chmod(dir, 0o755); err != nil {
+		return nil, err
+	}
 	git := func(stdin []byte, args ...string) (string, error) {
 		cmd := exec.Command(TrustedGit(), append([]string{"-C", dir, "-c", "core.hooksPath=/dev/null"}, args...)...)
 		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")

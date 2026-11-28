@@ -90,7 +90,7 @@ var removed = map[string]string{
 
 // notYet are host-only commands this build does not implement yet.
 var notYet = map[string]bool{
-	"upgrade": true, "ca": true,
+	"ca": true,
 }
 
 // Run executes one command line and returns the exit code.
@@ -136,6 +136,8 @@ func Run(ctx context.Context, args []string, env Env) (rc int) {
 			return a.flows(args[1:])
 		case "vet":
 			return a.vet(args[1:])
+		case "upgrade":
+			return a.upgrade(args[1:])
 		case "status":
 			return a.vm([]string{"status"})
 		}

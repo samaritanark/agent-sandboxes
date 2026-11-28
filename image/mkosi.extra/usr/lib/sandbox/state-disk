@@ -1,0 +1,31 @@
+#!/bin/sh
+# The sandbox VM's state disk (design 10). The VM's driver attaches it as the second disk
+# (/dev/vdb); everything that must outlive the system disk lives on it: the sessions, workspace
+# copies, agent homes and history, the broker store, and the logs (/var/lib/sandbox); sandboxd's
+# journal and CA (/var/lib/sandboxd); and the agent images and build cache (/var/lib/containerd,
+# /var/lib/buildkit). `sandbox upgrade` swaps the system disk and keeps this one. On its first use
+# it is formatted, and whatever the image had in those directories is copied onto it.
+set -eu
+dev=/dev/vdb
+state=/var/lib/sandbox-state
+# never the root disk
+root=$(findmnt -n -o SOURCE /)
+case "$root" in "$dev"|"$dev"[0-9]*) echo "state-disk: $dev holds the root file system" >&2; exit 1 ;; esac
+if ! blkid -p -o value -s TYPE "$dev" >/dev/null 2>&1; then
+	mkfs.ext4 -q -L sandbox-state -m 1 "$dev"
+elif [ "$(blkid -p -o value -s LABEL "$dev" 2>/dev/null)" != sandbox-state ]; then
+	echo "state-disk: $dev is not the sandbox state disk (no sandbox-state label); not using it" >&2
+	exit 1
+fi
+mkdir -p "$state"
+mountpoint -q "$state" || mount -o noatime,nodev,nosuid "$dev" "$state"
+chmod 0711 "$state"
+for d in sandbox sandboxd containerd buildkit; do
+	mkdir -p "/var/lib/$d"
+	if [ ! -e "$state/.$d-initialised" ]; then
+		mkdir -p "$state/$d"
+		cp -a "/var/lib/$d/." "$state/$d/"
+		touch "$state/.$d-initialised"
+	fi
+	mountpoint -q "/var/lib/$d" || mount --bind "$state/$d" "/var/lib/$d"
+done

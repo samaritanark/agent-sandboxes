@@ -160,7 +160,8 @@ this page says otherwise.
 
 ### Not available yet
 
-- `upgrade` (reinstall with a newer image for now).
+- `upgrade` from published, signed releases: `upgrade --image <path>` takes an
+  image you built (see [Updating](../how-to/updating-the-cli.md)).
 - Resuming a stopped tier 3 or opencode session, or one whose profile binds
   secrets: `resume` says why and prints the `run` command for an equivalent
   session. Other stopped sessions are recreated (see What changed).

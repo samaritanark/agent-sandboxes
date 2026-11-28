@@ -1823,3 +1823,23 @@ m(VH, '\tif rc != 0 {\n\t\treturn rc\n\t}\n\tvar fin', '\tif false {\n\t\treturn
 m(VH, '\t\tif ok, err := st.IsAncestor(f[0], head); err == nil && ok {', '\t\tif true {', R_VH, equivalent="the test's ledger names HEAD itself")
 m("internal/host/app/syncone.go", '\ta.recordLedger(id, rep.Ledger)\n', '', "TestLedgerRecorded")
 m("internal/cli/runprep.go", '\tif c.env.Launch.Sessions != nil {\n\t\t// a launch on sandboxd runs in the VM', '\tif false {\n\t\t// a launch on sandboxd runs in the VM', "TestLaunchInlineAttest")
+
+# sandbox upgrade: the system disk replaced, the state disk kept (design 10)
+UP = "internal/host/app/upgrade.go"
+R_UP = "TestUpgrade|TestOlderVersion"
+m(UP, '\t\tif before != "" && olderVersion(info.ImageVersion, before) && !downgrade {', '\t\tif before != "" && olderVersion(info.ImageVersion, before) {', R_UP)
+m(UP, '\t\tif before != "" && olderVersion(info.ImageVersion, before) && !downgrade {', '\t\tif false {', R_UP)
+m(UP, '\t\tif err := d.RollBack(a.ctx); err != nil {\n\t\t\ta.die("could not put', '\t\tif err := error(nil); err != nil {\n\t\t\ta.die("could not put', R_UP)
+m(UP, '\t\tif len(live) > 0 {', '\t\tif false {', R_UP)
+m(UP, '\t\tif err := checkDiskImage(img); err != nil {', '\t\tif err := error(nil); err != nil {', R_UP)
+m(UP, '\t} else if !d.CanRollBack(a.ctx) {', '\t} else if false {', R_UP)
+m(UP, '\t\t\treturn na < nb', '\t\t\treturn na <= nb', R_UP, equivalent="equal parts are skipped before the comparison")
+m(UP, '\treturn len(ta) > len(tb)', '\treturn false', R_UP)
+m(UP, '\t\t\treturn na < nb', '\t\t\treturn ta[i] < tb[i]', R_UP)
+ND2 = "internal/host/netdvm/driver.go"
+R_ND2 = "TestReplaceSystemDisk|TestCreate|TestQemuCommand"
+m(ND2, '\tif _, err := os.Stat(filepath.Join(dir, stateFile)); err != nil {\n\t\treturn errors.New("this sandbox VM keeps', '\tif false {\n\t\treturn errors.New("this sandbox VM keeps', R_ND2, pkg="host/netdvm")
+m(ND2, '\tif err := growSystemDisk(next); err != nil {', '\tif err := error(nil); err != nil {', R_ND2, pkg="host/netdvm")
+m(ND2, '\terr = st.Truncate(int64(res.DiskGiB) << 30)', '\terr = st.Truncate(1 << 20)', R_ND2, pkg="host/netdvm")
+m("internal/host/netdvm/vfkit.go", '\t\t"--device", "virtio-blk,path=" + filepath.Join(dir, stateFile),\n', '', R_ND2, pkg="host/netdvm")
+m("internal/host/netdvm/qemu.go", '\t\t"-drive", "if=virtio,format=raw,discard=unmap,file=" + filepath.Join(dir, stateFile), // the guest\'s /dev/vdb\n', '', R_ND2, pkg="host/netdvm")
