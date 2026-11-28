@@ -100,14 +100,21 @@ How it works in v3, and how it differs from v2:
   CertificateSigningRequests. Each would turn the agent's use of the credential into a new
   credential that outlives the session. `kubectl exec`, `logs -f`, `port-forward`, and watches
   work.
+- **A warning when the identity can do anything:** at launch the host runs `kubectl auth can-i '*'
+  '*' --all-namespaces` with your kubeconfig and warns on `yes` (cluster-admin or an equivalent).
+  Tier 3 identities must be least-privilege; the gateway's refusals are defense in depth.
 - **The checks v2 made still apply:** the API server's host and the address it resolves to are
   checked against the block lists (see [Persistent domains](persistent-domains.md#never-allow-a-personal-block-list)),
   and a server on loopback is refused.
 
-**Exec credential plugins** (`aws eks get-token`, `gke-gcloud-auth-plugin`, `kubelogin`): the
-sandbox runs the plugin on your machine, with your own configuration (`~/.aws`, gcloud, a browser
-sign-in), once at launch, after asking (`--allow-exec-plugin` skips the question, and is required
-when stdin is not a terminal), and brokers the token or client certificate it returns:
+**Exec credential plugins** whose credential only reaches the cluster (`aws eks get-token`,
+`aws-iam-authenticator`, `tsh`, `kubelogin`, `kubectl oidc-login`): the sandbox runs the plugin on
+your machine, with your own configuration (`~/.aws`, a Teleport login, a browser sign-in), once at
+launch, after asking (`--allow-exec-plugin` skips the question, and is required when stdin is not
+a terminal), and brokers the token or client certificate it returns. A plugin whose credential
+works against the cloud's own APIs (`gke-gcloud-auth-plugin`'s gcloud token), or one not on that
+list, is refused (see [Credential exceptions](../reference/credential-exceptions.md)); so is one that
+always needs a terminal: sign in with it on your machine first.
 
 ```text
 WARN: kubeconfig '/home/you/.kube/eks.yaml' gets its credential from the exec plugin 'aws'.

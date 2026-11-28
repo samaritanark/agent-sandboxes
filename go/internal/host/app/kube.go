@@ -158,6 +158,7 @@ func (a *app) readKubeconfigs(args []string) []kubeCluster {
 		if k.exec != nil {
 			a.execCredential(&k, p, args)
 		}
+		a.adminWarning(p, kargs)
 		// v2 kept each context's name, suffixed -2, -3, ... on a collision
 		name := k.Context
 		for n := 2; used[name]; n++ {
@@ -168,6 +169,26 @@ func (a *app) readKubeconfigs(args []string) []kubeCluster {
 		out = append(out, k)
 	}
 	return out
+}
+
+// adminWarning is design 5.9.5's check of the identity at launch: `kubectl auth can-i '*' '*'
+// --all-namespaces` with the operator's kubeconfig, warning when the credential can do anything
+// (cluster-admin or an equivalent). The gateway's deny-list is defense in depth, not authorization.
+func (a *app) adminWarning(path string, viewArgs []string) {
+	args := []string{"auth", "can-i", "*", "*", "--all-namespaces", "--request-timeout=10s"}
+	for _, v := range viewArgs {
+		if strings.HasPrefix(v, "--kubeconfig=") || strings.HasPrefix(v, "--context=") {
+			args = append(args, v)
+		}
+	}
+	out, _, err := a.kubectl(args...)
+	if strings.TrimSpace(string(out)) == "yes" {
+		fmt.Fprintf(a.env.Stderr, "WARN: kubeconfig '%s' can do anything in its cluster (cluster-admin or equivalent). Tier 3\n", path)
+		fmt.Fprintln(a.env.Stderr, "WARN:   identities must be least-privilege; the sandbox's API deny-list is defense in depth, not a")
+		fmt.Fprintln(a.env.Stderr, "WARN:   substitute (docs/how-to/tier3-infra-credentials.md).")
+	} else if err != nil && strings.TrimSpace(string(out)) != "no" {
+		fmt.Fprintf(a.env.Stdout, "    (could not check what kubeconfig '%s' may do: the cluster did not answer)\n", path)
+	}
 }
 
 // parseKubeconfig reads one minified kubeconfig into a cluster.

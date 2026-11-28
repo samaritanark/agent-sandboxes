@@ -21,9 +21,57 @@ import (
 	"time"
 )
 
-// execCredential runs k's exec plugin, if the operator agrees, and takes its credential.
+// execClass is what an exec plugin's credential authorizes (design 5.9.5): only cluster-scoped
+// ones are run; a general-purpose cloud credential (one that works against the cloud's own APIs)
+// and any plugin not listed are refused.
+func execClass(e *execSpec) (class, why string) {
+	base := filepath.Base(e.Command)
+	has := func(w ...string) bool {
+		for _, x := range w {
+			found := false
+			for _, a := range e.Args {
+				if a == x {
+					found = true
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+		return true
+	}
+	switch {
+	case base == "aws" && has("eks", "get-token"):
+		return "cluster", "a presigned STS token that only authenticates to EKS"
+	case base == "aws-iam-authenticator":
+		return "cluster", "a presigned STS token that only authenticates to the cluster"
+	case base == "tsh":
+		return "cluster", "short-lived Teleport client credentials for the cluster"
+	case base == "kubelogin":
+		return "cluster", "a token for the cluster's identity-provider application"
+	case base == "kubectl" && has("oidc-login"):
+		return "cluster", "an OIDC token for the cluster's client"
+	case base == "gke-gcloud-auth-plugin" || base == "gcloud":
+		return "general", "a gcloud access token, which works against Google Cloud APIs well beyond the cluster"
+	case base == "aws":
+		return "general", "an AWS command other than eks get-token"
+	}
+	return "unknown", "not on the sandbox's list of exec plugins"
+}
+
+// execCredential runs k's exec plugin, if it is a cluster-scoped one and the operator agrees, and
+// takes its credential.
 func (a *app) execCredential(k *kubeCluster, kubeconfig string, args []string) {
 	e := k.exec
+	switch class, why := execClass(e); class {
+	case "general":
+		a.die("kubeconfig '%s' gets its credential from the exec plugin '%s': %s. The sandbox does not run plugins whose credential reaches beyond the cluster (design 5.9.5); mint a cluster-only token instead (docs/how-to/tier3-infra-credentials.md).", kubeconfig, e.Command, why)
+	case "unknown":
+		a.die("kubeconfig '%s' gets its credential from the exec plugin '%s', which is %s (see docs/reference/credential-exceptions.md); bake a static token or client certificate instead.", kubeconfig, e.Command, why)
+	}
+	if e.InteractiveMode == "Always" {
+		a.die("kubeconfig '%s' has an exec plugin that always needs a terminal (interactiveMode: Always), which the sandbox does not give it; sign in with it on this machine first, or use a static token.", kubeconfig)
+	}
 	fmt.Fprintf(a.env.Stderr, "WARN: kubeconfig '%s' gets its credential from the exec plugin '%s'.\n", kubeconfig, e.Command)
 	fmt.Fprintln(a.env.Stderr, "WARN:   The sandbox runs it here, on this machine, once now, and brokers the credential it")
 	fmt.Fprintln(a.env.Stderr, "WARN:   returns for the session; it is not renewed, so kubectl in the session fails once it expires.")
@@ -80,17 +128,15 @@ func (a *app) runExecPlugin(e *execSpec, kubeconfig string) (execCred, error) {
 	if api == "" {
 		api = "client.authentication.k8s.io/v1"
 	}
-	interactive := a.env.StdinTTY && e.InteractiveMode != "Never"
-	info, _ := json.Marshal(map[string]any{"apiVersion": api, "kind": "ExecCredential", "spec": map[string]any{"interactive": interactive}})
+	// never interactive (design 5.9.5): the plugin gets no terminal, so a sign-in it needs happens
+	// on this machine beforehand (a browser opened by the plugin still works)
+	info, _ := json.Marshal(map[string]any{"apiVersion": api, "kind": "ExecCredential", "spec": map[string]any{"interactive": false}})
 	ctx, cancel := context.WithTimeout(a.ctx, 2*time.Minute) // a browser sign-in may take a while
 	defer cancel()
 	cmd := exec.CommandContext(ctx, cmdPath, e.Args...)
 	cmd.Env = append(os.Environ(), "KUBERNETES_EXEC_INFO="+string(info))
 	for _, v := range e.Env {
 		cmd.Env = append(cmd.Env, v.Name+"="+v.Value)
-	}
-	if interactive {
-		cmd.Stdin = a.env.Stdin
 	}
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, a.env.Stderr

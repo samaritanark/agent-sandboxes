@@ -107,6 +107,12 @@ func TestRunKubeconfigs(t *testing.T) {
 	k := brokerkey.File{Path: filepath.Join(state, "broker.key")}
 	var calls [][]string
 	kubectl := func(args []string) ([]byte, string, error) {
+		if args[0] == "auth" { // the cluster-admin check: a.yaml's identity can do anything
+			if strings.Contains(strings.Join(args, " "), "--kubeconfig=/k/a.yaml") {
+				return []byte("yes\n"), "", nil
+			}
+			return []byte("no\n"), "", errors.New("exit status 1")
+		}
 		calls = append(calls, args)
 		switch {
 		case strings.HasSuffix(args[len(args)-1], "a.yaml") || strings.Contains(strings.Join(args, " "), "--kubeconfig=/k/a.yaml"):
@@ -126,6 +132,10 @@ func TestRunKubeconfigs(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "==> Minifying kubeconfig 1/2: /k/a.yaml (current-context)...") || len(calls) != 2 {
 		t.Errorf("%s %q", out.String(), calls)
+	}
+	if !strings.Contains(errb.String(), "WARN: kubeconfig '/k/a.yaml' can do anything in its cluster") || strings.Contains(errb.String(), "'/k/b.yaml' can do anything") ||
+		strings.Contains(out.String(), "could not check") {
+		t.Errorf("cluster-admin warning: %s", errb.String())
 	}
 	// the clusters reach the pre-pass and the run, without a credential
 	var desc []kubeCluster

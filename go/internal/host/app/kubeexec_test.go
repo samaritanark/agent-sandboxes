@@ -28,13 +28,14 @@ func TestExecPlugin(t *testing.T) {
 	kcdir := filepath.Join(dir, "kube")
 	os.MkdirAll(filepath.Join(kcdir, "bin"), 0o755)
 	plugin := func(body string) {
-		os.WriteFile(filepath.Join(kcdir, "bin", "get-token"), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
+		os.WriteFile(filepath.Join(kcdir, "bin", "aws"), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
 	}
 	exp := time.Unix(1800003600, 0).UTC().Format(time.RFC3339)
 	plugin(`case "$KUBERNETES_EXEC_INFO" in *'"kind":"ExecCredential"'*) ;; *) exit 9 ;; esac
 [ "$CLUSTER" = prod ] || exit 8
-echo '{"kind":"ExecCredential","apiVersion":"client.authentication.k8s.io/v1","status":{"token":"exec-tok-'"$1"'","expirationTimestamp":"` + exp + `"}}'`)
-	user := map[string]any{"exec": map[string]any{"command": "./bin/get-token", "args": []string{"x1"}, "apiVersion": "client.authentication.k8s.io/v1",
+case "$KUBERNETES_EXEC_INFO" in *'"interactive":false'*) ;; *) exit 7 ;; esac
+echo '{"kind":"ExecCredential","apiVersion":"client.authentication.k8s.io/v1","status":{"token":"exec-tok-'"$3"'","expirationTimestamp":"` + exp + `"}}'`)
+	user := map[string]any{"exec": map[string]any{"command": "./bin/aws", "args": []string{"eks", "get-token", "x1"}, "apiVersion": "client.authentication.k8s.io/v1",
 		"env": []map[string]string{{"name": "CLUSTER", "value": "prod"}}}}
 	kubectl := func(args []string) ([]byte, string, error) {
 		return view("eks", "https://eks.example.com", user, nil), "", nil
@@ -50,7 +51,7 @@ echo '{"kind":"ExecCredential","apiVersion":"client.authentication.k8s.io/v1","s
 		return rc, tr, out.String(), errb.String()
 	}
 	rc, tr, out, errb := run("", false, "--allow-exec-plugin")
-	if rc != 0 || !strings.Contains(out, "==> Cluster eks: credential from the exec plugin './bin/get-token' (valid until 2027-01-15 09:00 UTC)") {
+	if rc != 0 || !strings.Contains(out, "==> Cluster eks: credential from the exec plugin './bin/aws' (valid until 2027-01-15 09:00 UTC)") {
 		t.Fatalf("%d\n%s\n%s", rc, out, errb)
 	}
 	key, _ := k.Load()
@@ -63,6 +64,26 @@ echo '{"kind":"ExecCredential","apiVersion":"client.authentication.k8s.io/v1","s
 	}
 	if !sealed {
 		t.Errorf("the plugin's token was not sealed: %q", tr.ctl)
+	}
+	// only cluster-scoped plugins run (design 5.9.5): a general-purpose cloud credential, a plugin
+	// not on the list, and an always-interactive one are refused before anything runs
+	for name, c := range map[string]struct {
+		exec map[string]any
+		want string
+	}{
+		"gke":         {map[string]any{"command": "gke-gcloud-auth-plugin"}, "reaches beyond the cluster"},
+		"other aws":   {map[string]any{"command": "aws", "args": []string{"sts", "get-session-token"}}, "reaches beyond the cluster"},
+		"unknown":     {map[string]any{"command": "./bin/aws-ish"}, "not on the sandbox's list"},
+		"interactive": {map[string]any{"command": "tsh", "args": []string{"kube", "credentials"}, "interactiveMode": "Always"}, "interactiveMode: Always"},
+	} {
+		saved := kubectl
+		kubectl = func(args []string) ([]byte, string, error) {
+			return view("x", "https://k.example.com", map[string]any{"exec": c.exec}, nil), "", nil
+		}
+		if rc, tr, _, errb := run("", false, "--allow-exec-plugin"); rc != 1 || len(tr.runs) != 0 || !strings.Contains(errb, c.want) {
+			t.Errorf("%s: %d %s", name, rc, errb)
+		}
+		kubectl = saved
 	}
 	// on a terminal it asks; no terminal and no flag stops, as v2 did
 	if rc, _, _, errb := run("y\n", true); rc != 0 {

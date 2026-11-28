@@ -17,3 +17,20 @@ session's allowlist allows (for Copilot that includes `github.com` and
 cluster credentials) is still brokered.
 
 See [Onboarding agents](../how-to/onboarding-agents.md#copilot-and-grok-not-brokered).
+
+## Exec credential plugins
+
+A tier 3 kubeconfig's exec plugin runs on your machine at launch (design 5.9.5) only when its
+credential is scoped to the cluster:
+
+| Plugin | Class | Why |
+|---|---|---|
+| `aws eks get-token` | cluster-scoped (runs) | a presigned STS token that only authenticates to EKS |
+| `aws-iam-authenticator` | cluster-scoped (runs) | the same, for the cluster |
+| `tsh` | cluster-scoped (runs) | short-lived Teleport client credentials for the cluster |
+| `kubelogin`, `kubectl oidc-login` | cluster-scoped (runs) | a token for the cluster's identity-provider application |
+| `gke-gcloud-auth-plugin`, `gcloud` | general-purpose (refused) | a gcloud access token, which works against Google Cloud APIs beyond the cluster |
+| any other `aws` command, any other plugin | refused | not classified |
+
+An overlay exception for a general-purpose plugin is not built yet. The credential is fetched once
+per launch and not renewed.
