@@ -174,6 +174,46 @@ func (r *Runtime) Start(ctx context.Context, id string, creator cio.Creator) err
 	return nil
 }
 
+// Running reports whether id's process is running (a container with no task, or a stopped one,
+// is not).
+func (r *Runtime) Running(ctx context.Context, id string) (bool, error) {
+	ctx = ctxNS(ctx)
+	c, err := r.c.LoadContainer(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	t, err := c.Task(ctx, nil)
+	if errdefs.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	st, err := t.Status(ctx)
+	if err != nil {
+		return false, err
+	}
+	return st.Status == client.Running || st.Status == client.Created || st.Status == client.Paused || st.Status == client.Pausing, nil
+}
+
+// Restart starts id's process again after it ended: its stopped task is removed, and a new one
+// started with no I/O, as at first.
+func (r *Runtime) Restart(ctx context.Context, id string, creator cio.Creator) error {
+	nctx := ctxNS(ctx)
+	c, err := r.c.LoadContainer(nctx, id)
+	if err != nil {
+		return err
+	}
+	if t, err := c.Task(nctx, nil); err == nil {
+		if _, err := t.Delete(nctx, client.WithProcessKill); err != nil && !errdefs.IsNotFound(err) {
+			return fmt.Errorf("delete task %s: %w", id, err)
+		}
+	} else if !errdefs.IsNotFound(err) {
+		return err
+	}
+	return r.Start(ctx, id, creator)
+}
+
 // Destroy stops and removes id's microVM, its container, and its snapshot: SIGTERM, then SIGKILL
 // after grace. Something already gone is not an error, so teardown can be repeated.
 func (r *Runtime) Destroy(ctx context.Context, id string, grace time.Duration) error {

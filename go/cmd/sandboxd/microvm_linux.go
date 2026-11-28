@@ -29,6 +29,10 @@ func (m microVMs) Start(ctx context.Context, id string) error {
 	return m.Runtime.Start(ctx, id, cio.NullIO)
 }
 
+func (m microVMs) Restart(ctx context.Context, id string) error {
+	return m.Runtime.Restart(ctx, id, cio.NullIO)
+}
+
 func (m microVMs) Destroy(ctx context.Context, id string, grace time.Duration) error {
 	err := m.Runtime.Destroy(ctx, id, grace)
 	if err == nil {

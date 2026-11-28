@@ -72,6 +72,9 @@ One JSON object per line, each with `seq`, `session`, `time`, and `type`:
 | `session_requested`, `session_running`, `session_end` | the session's lifecycle; `session_end` has the `end_reason` (operator stop, attach lease expired, keep-alive limits, sandboxd restarted, ...) |
 | `attached`, `detached` | a terminal attached to the agent, and its exit status |
 | `dependency_up` | a dependency microVM (a profile's `services:` or `mcps:`) started |
+| `dependency_exited` | a dependency's process ended while its session ran |
+| `dependency_restarted` | it was started again (with how many restarts so far) |
+| `dependency_restart_failed` | starting it again failed (tried again after a longer delay) |
 | `secret_readable` | a secret marked readable was given to the agent as a file |
 | `credential_injected` | the gateway put a credential into a request (host, method, path, credential reference; never the value) |
 | `credential_reflection` | a response carried an injected value, and the gateway replaced it with the placeholder before the agent saw it |

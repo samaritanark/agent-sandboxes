@@ -69,6 +69,14 @@ func (f *fakeRuntime) Destroy(_ context.Context, id string, _ time.Duration) err
 	return nil
 }
 
+func (f *fakeRuntime) Running(_ context.Context, id string) (bool, error) { return f.started[id], nil }
+
+func (f *fakeRuntime) Restart(_ context.Context, id string) error {
+	f.calls = append(f.calls, "restart "+id)
+	f.started[id] = true
+	return nil
+}
+
 func (f *fakeRuntime) Exec(context.Context, string, string, []string, bool, io.Reader, io.Writer, io.Writer) (runtime.Process, error) {
 	return nil, errors.New("this rig does not exec")
 }

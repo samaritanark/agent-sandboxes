@@ -29,8 +29,8 @@ user documentation. State as of 2026-11-27; S8.md "Start here" says what changed
   `sandbox rebuild`), Windows and Linux hosts (Linux uses qemu; not part of this trial).
 - Files over 64 MiB reach the VM, but the agent's changes to them do not come back (the sync gate's
   per-file limit; the sync notes each one). v2 synced them both ways.
-- A dependency that exits is not restarted; the catalogue's `everything-mcp` exits a few seconds
-  after it starts if nothing connects to it.
+- The catalogue's `everything-mcp` exits a few seconds after it starts if nothing connects to it;
+  sandboxd restarts it (10 s, doubling to 5 min), so it comes and goes until the agent connects.
 
 ## Beside v2
 

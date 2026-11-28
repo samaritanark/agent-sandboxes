@@ -45,6 +45,10 @@ type Runtime interface {
 	Start(ctx context.Context, id string) error
 	Destroy(ctx context.Context, id string, grace time.Duration) error
 	List(ctx context.Context) ([]string, error)
+	// Running reports whether a container's process runs; Restart starts it again after it ended
+	// (deps.go).
+	Running(ctx context.Context, id string) (bool, error)
+	Restart(ctx context.Context, id string) error
 	// Exec runs args in id's running microVM as its own process runs (attach.go).
 	Exec(ctx context.Context, id, execID string, args []string, tty bool, stdin io.Reader, stdout, stderr io.Writer) (runtime.Process, error)
 }
@@ -169,8 +173,10 @@ type Daemon struct {
 	attachSeq int
 	// readable names each live session's readable secrets' variables, for the attach wrapper
 	readable map[string][]string
-	ready    bool
-	offsets  map[string]int64 // how far each session's gateway connection log has been collected
+	// deps is each live session's dependencies, for restarting one that exits (deps.go)
+	deps    map[string][]*dependency
+	ready   bool
+	offsets map[string]int64 // how far each session's gateway connection log has been collected
 }
 
 // audit appends one record to a session's audit file; a failure is logged, never fatal (the
@@ -598,6 +604,7 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 			return err
 		}
 		d.audit(id, auditlog.Events, "dependency_up", map[string]any{"name": dep.Name, "image": dep.Image})
+		d.trackDependency(id, dep.Name, cid)
 	}
 	rc, err := resolvConf(0)
 	if err != nil {
@@ -666,6 +673,7 @@ func (d *Daemon) Stop(ctx context.Context, id, reason string) error {
 // session FAILED first.
 func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error {
 	delete(d.live, id)
+	delete(d.deps, id)
 	delete(d.leaves, id)
 	delete(d.readable, id)
 	s, err := d.Journal.Load(id)
@@ -789,6 +797,7 @@ func (d *Daemon) Reap(ctx context.Context) {
 		}
 	}
 	d.renewLeaves(ctx, now)
+	d.restartDependencies(ctx, now)
 }
 
 // Reconcile runs once at start, before any session is accepted: every journaled session that

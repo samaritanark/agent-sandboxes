@@ -1590,3 +1590,16 @@ m(EN, '\t\tif strings.HasPrefix(r.Err, "unknown operation") {', '\t\tif false {'
 m(EN, '\t\tsum.Write(buf[:n])\n', '', R_EN)
 m(EN, '\tif !e.noted[n] {', '\tif true {', R_EN)
 m(EN, '\tdefer func() { rep.Notes = append(rep.Notes, e.notes...) }()', '', R_EN)
+
+# dependencies that exit are restarted (v2's pod restarts)
+DP = "internal/sandboxd/daemon/deps.go"
+R_DP = "TestDependencyRestarts"
+m(DP, '\t\t\tif now.Sub(dep.down) < dep.delay {', '\t\t\tif false {', R_DP, pkg="sandboxd/daemon")
+m(DP, '\t\t\tif dep.delay *= 2; dep.delay > DepRestartMax {', '\t\t\tif dep.delay > DepRestartMax {', R_DP, pkg="sandboxd/daemon")
+m(DP, '\t\t\t\tdep.delay = DepRestartMax\n', '', R_DP, pkg="sandboxd/daemon")
+m(DP, '\t\t\t\tif now.Sub(dep.started) >= DepRestartReset {', '\t\t\t\tif false {', R_DP, pkg="sandboxd/daemon")
+m(DP, '\t\tif _, ok := d.live[session]; !ok {\n\t\t\tcontinue\n\t\t}\n', '', R_DP, pkg="sandboxd/daemon", equivalent="end() deletes the session's dependencies with it")
+m(DP, '\t\t\t\td.audit(session, auditlog.Events, "dependency_exited", map[string]any{"name": dep.name, "restarts": dep.restarts})\n', '', R_DP, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\t\td.trackDependency(id, dep.Name, cid)\n', '', R_DP, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\tdelete(d.deps, id)\n', '', R_DP, pkg="sandboxd/daemon")
+m("internal/sandboxd/daemon/daemon.go", '\td.restartDependencies(ctx, now)\n', '', R_DP, pkg="sandboxd/daemon")
