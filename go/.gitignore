@@ -1,0 +1,7 @@
+# binaries `go build ./cmd/...` leaves here (never committed)
+/sandbox
+/sandbox.exe
+/sandbox-vm
+/sandboxd
+/sandbox-gateway
+/sandbox-canary
