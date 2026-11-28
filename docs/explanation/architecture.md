@@ -109,7 +109,8 @@ The agent works on a copy of each repository in the VM
   could run code on your machine or change how git behaves there
   (`.git/config`, hooks, `.gitattributes` filters, `.gitmodules`, and the like)
   are held back in `~/.sandbox/quarantine`; `sandbox sync review` shows the diff
-  and applies or discards each.
+  and applies or discards each. A team
+  overlay can add paths to that list (`exec_vectors:`), never remove one.
 - A change made on both sides at once is a conflict and is held the same way.
 - Files larger than 64 MB are not synced in either direction (v2's Mutagen
   synced them). They are skipped without a message: the agent does not see

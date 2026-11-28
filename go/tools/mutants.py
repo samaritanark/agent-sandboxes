@@ -1190,7 +1190,7 @@ m(RN, '\t\tif c.prepass {\n\t\t\tbreak // the host', '\t\tif false {\n\t\t\tbrea
 m("internal/host/syncengine/engine.go", '\tif e.Copy != "" && s.Copy != e.Copy {', '\tif false {', "TestNewCopyKeepsHostFiles", pkg="host/syncengine")
 m("internal/host/syncengine/engine.go", '\t\treturn fresh(), nil\n\t}\n\tif s.Base', '\t\treturn s, nil\n\t}\n\tif s.Base', "TestNewCopyKeepsHostFiles", pkg="host/syncengine")
 m("internal/host/app/syncone.go", '\tif !epochRE.MatchString(e) {', '\tif false {', "TestCopyEpoch", pkg="host/app")
-m("internal/host/app/syncone.go", '\t\tCopy:      epoch,\n', '\t\tCopy:      epoch[:0],\n', "TestCopyEpoch", pkg="host/app",
+m("internal/host/app/syncone.go", '\t\tCopy:        epoch,\n', '\t\tCopy:        epoch[:0],\n', "TestCopyEpoch", pkg="host/app",
   equivalent="no host test drives a whole sync through the fake transport; the end-to-end run in the appliance checked it")
 m("cmd/sandbox-vm/gitenv.go", ', {"core.hooksPath", "/dev/null"}', '', "TestProtectGit", pkg="../cmd/sandbox-vm")
 m("cmd/sandbox-vm/gitenv.go", '\t\tn++\n', '', "TestProtectGit", pkg="../cmd/sandbox-vm")
@@ -1538,3 +1538,20 @@ m(ST, '\t\tdeny = config.ExtractYAMLScalar(ov+"/config.yaml", "shared_tree_polic
 m(ST, '\t\taudit.LogEvent(rec.LogDir, "shared-tree", msg, c.stamp())\n', '', "TestSharedTrees")
 m(ST, '\tif len(s.Repos) == 0 || c.env.Launch.Sessions == nil {', '\tif c.env.Launch.Sessions == nil {', "TestSharedTrees", equivalent="with no repository no other session's repos can match")
 m("internal/cli/runlaunch.go", '\tc.checkSharedTrees(s, rec)\n', '', "TestLaunchSharedTree")
+
+# the overlay's exec-vector additions (OQ-07)
+OV = "internal/host/syncgate/overlay.go"
+R_OV = "TestOverlayExecVectors|TestClassifyOverlayExecVectors"
+m(OV, '\tov := getenv("SANDBOX_OVERLAY")', '\tov := ""', R_OV)
+m(OV, '\t\tuc := getenv("USER_SANDBOX_CONFIG")', '\t\tuc := ""', R_OV)
+m(OV, '\tif strings.HasPrefix(ov, "~") {', '\tif false {', R_OV)
+m(OV, '\t\tif e = strings.Trim(e, "/ \\t"); e != "" {', '\t\tif e != "" {', R_OV)
+m(OV, '\tif errors.Is(err, fs.ErrNotExist) {\n\t\treturn nil, nil\n\t}\n\tif err != nil {\n\t\treturn nil, err\n\t}', '\tif err != nil {\n\t\treturn nil, nil\n\t}', R_OV)
+m(OV, '\t\tif loc := scalarTrailComment.FindStringIndex(v); loc != nil {', '\t\tif loc := scalarTrailComment.FindStringIndex(v); false && loc != nil {', R_OV)
+m(OV, '\t\tv = strings.NewReplacer(`"`, "", `\'`, "").Replace(v)\n', '', R_OV)
+m(OV, '\t\t\t\tif k == h.key(v) {', '\t\t\t\tif k == v {', R_OV)
+m(OV, '\t\tif len(parts) > len(keys) {\n\t\t\tcontinue\n\t\t}\n', '', R_OV)
+m(OV, '\t\t\tif keys[i] != h.key(p) {', '\t\t\tif keys[len(keys)-1-i] != h.key(p) {', R_OV)
+m("internal/host/syncgate/classify.go", '\tif overlayExec(keys, h, r.ExecVectors) {', '\tif false {', R_OV)
+m("internal/host/syncengine/engine.go", 'HooksPath: hooks, ExecVectors: e.ExecVectors}', 'HooksPath: hooks}', "TestOverlayExecVectorsHeld")
+m("internal/host/app/syncone.go", '\t\tExecVectors: vectors,\n', '', "TestSyncOverlayExecVectors", pkg="host/app")

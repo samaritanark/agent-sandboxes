@@ -116,6 +116,10 @@ var errConnEnded = errors.New("the sync's connection to the VM ended")
 // runs, and the final pass. passed says a pass succeeded on it. A connection that ends while live
 // still runs returns errConnEnded without a final pass, for the caller to connect again.
 func (a *app) syncConn(ep driver.SSHEndpoint, repo, id, ws string, live context.Context, each func(syncengine.Report, error)) (rep syncengine.Report, passed bool, err error) {
+	vectors, err := syncgate.OverlayExecVectors(a.env.Home, a.getenv)
+	if err != nil {
+		return rep, false, fmt.Errorf("cannot read the overlay's exec_vectors, so nothing is synced: %w", err)
+	}
 	// hold a slot until the first pass is made, so that only a few connections are set up at once
 	syncSlots <- struct{}{}
 	var once sync.Once
@@ -148,13 +152,14 @@ func (a *app) syncConn(ep driver.SSHEndpoint, repo, id, ws string, live context.
 		close(ended)
 	}()
 	e := &syncengine.Engine{
-		Repo:      repo,
-		Host:      syncgate.ProbeHost(repo),
-		StateFile: filepath.Join(a.env.StateDir, "sync", id, "state.json"),
-		CacheFile: filepath.Join(a.env.StateDir, "sync", id, "fpcache.json"),
-		Store:     &syncgate.Store{Dir: filepath.Join(a.env.StateDir, "quarantine")},
-		VM:        &syncengine.StreamVM{W: toAgentW, R: fromAgentR},
-		Copy:      epoch,
+		Repo:        repo,
+		ExecVectors: vectors,
+		Host:        syncgate.ProbeHost(repo),
+		StateFile:   filepath.Join(a.env.StateDir, "sync", id, "state.json"),
+		CacheFile:   filepath.Join(a.env.StateDir, "sync", id, "fpcache.json"),
+		Store:       &syncgate.Store{Dir: filepath.Join(a.env.StateDir, "quarantine")},
+		VM:          &syncengine.StreamVM{W: toAgentW, R: fromAgentR},
+		Copy:        epoch,
 	}
 	finish := func(err error) error {
 		toAgentW.Close()

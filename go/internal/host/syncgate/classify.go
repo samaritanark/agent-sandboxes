@@ -44,6 +44,7 @@ type Host struct {
 type Repo struct {
 	MaskedPaths []string // the repo's masked_paths: entries (a trailing / is a directory)
 	HooksPath   string   // the host repo's effective core.hooksPath, relative to the repo, if inside it
+	ExecVectors []string // the team overlay's additions to the exec-vector list (OverlayExecVectors)
 }
 
 // Limits on a VM-origin path.
@@ -270,6 +271,9 @@ func Classify(p string, h Host, r Repo) (Class, error) {
 		}
 	}
 	if strings.HasPrefix(keys[last], h.key(".lefthook")) {
+		return Quarantine, nil
+	}
+	if overlayExec(keys, h, r.ExecVectors) {
 		return Quarantine, nil
 	}
 	if r.HooksPath != "" {
