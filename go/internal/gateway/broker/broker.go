@@ -106,6 +106,10 @@ type Outcome struct {
 	RemoveHeaders []string // hop-by-hop and duplicates
 	Path          string   // the new ":path" when a query parameter was injected ("" to keep it)
 	Injected      bool
+	// RawStream: the request upgrades to SPDY/3.1 toward a cluster's API (kubectl exec, attach,
+	// port-forward), whose frames carry container I/O the broker does not parse; its response
+	// headers are scrubbed, its stream is not
+	RawStream bool
 
 	TooMany bool // refused by a rate limit or quota (HTTP 429, not 403)
 }
@@ -211,6 +215,11 @@ func (s *Set) Decide(r Request) Outcome {
 		}
 	}
 	out := Outcome{RemoveHeaders: removals(r.Headers)}
+	for _, h := range r.Headers {
+		if h.Name == "upgrade" && strings.EqualFold(strings.TrimSpace(h.Value), "SPDY/3.1") {
+			out.RawStream = true // allowed above for clusters only
+		}
+	}
 	for _, b := range bound {
 		if !found[b.Placeholder] {
 			// a bound destination without its placeholder: relayed as it is when it carries no

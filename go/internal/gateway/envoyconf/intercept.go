@@ -42,6 +42,7 @@ type Intercept struct {
 	PrivateKey string
 	SDS        string
 	Rules      []l7.Rule
+	Kube       *Kube // a tier 3 cluster's gateway name: its upstream (kube.go)
 }
 
 func secretName(ic Intercept) string { return "leaf:" + ic.Name }
@@ -88,6 +89,21 @@ func (c Config) checkIntercepts() error {
 			for _, r := range ic.Rules {
 				if err := r.Validate(); err != nil {
 					return fmt.Errorf("envoyconf: link %d: %s: %w", i, n, err)
+				}
+			}
+			if ic.Kube != nil {
+				// only the agent's link reaches clusters, and only through its broker, which
+				// checks every request's placeholder (an mtls cluster is otherwise ambient)
+				if i != 0 || l.BrokerSocket == "" || strings.HasPrefix(n, "*.") {
+					return fmt.Errorf("envoyconf: link %d: cluster %q needs the agent's link and its broker", i, n)
+				}
+				if err := ic.Kube.check(n); err != nil {
+					return fmt.Errorf("envoyconf: %w", err)
+				}
+				for _, f := range []string{ic.Kube.CAFile, ic.Kube.ClientCert, ic.Kube.ClientKey} {
+					if f != "" && !path.IsAbs(f) {
+						return fmt.Errorf("envoyconf: kube %s: file %q is not absolute", n, f)
+					}
 				}
 			}
 		}
@@ -245,6 +261,11 @@ func (c Config) interceptChain(link Link, ic Intercept, port int) (obj, error) {
 	if err != nil {
 		return nil, err
 	}
+	upgrades := []obj{{"upgrade_type": "websocket"}}
+	if ic.Kube != nil {
+		rs = kubeRoutes(rs, ic.Name, *ic.Kube)
+		upgrades = kubeUpgrades
+	}
 	hcm := obj{
 		"stat_prefix":                      "intercept",
 		"codec_type":                       "AUTO",
@@ -253,7 +274,7 @@ func (c Config) interceptChain(link Link, ic Intercept, port int) (obj, error) {
 		"path_with_escaped_slashes_action": "UNESCAPE_AND_FORWARD",
 		"generate_request_id":              false,
 		"server_header_transformation":     "PASS_THROUGH",
-		"upgrade_configs":                  []obj{{"upgrade_type": "websocket"}},
+		"upgrade_configs":                  upgrades,
 		"route_config": obj{
 			"name":          "intercepted",
 			"virtual_hosts": virtualHosts(ic, port, exact, rs),

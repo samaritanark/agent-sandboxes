@@ -84,9 +84,10 @@ func TestBrokerEndToEnd(t *testing.T) {
 	if code != "200" || strings.Contains(body, secret) || strings.Count(body, ph) != 5 {
 		t.Errorf("stream: %s %d placeholders, leaked %v", code, strings.Count(body, ph), strings.Contains(body, secret))
 	}
-	// the bound destination without the placeholder, and the placeholder elsewhere: refused
-	if code, body = get("https://httpbin.org/headers"); code != "403" || !strings.Contains(body, "credential broker") {
-		t.Errorf("no placeholder: %s %s", code, body)
+	// the bound destination with no credential goes on as it is (a client's unauthenticated
+	// calls), and the placeholder elsewhere is refused
+	if code, body = get("https://httpbin.org/headers"); code != "200" || strings.Contains(body, secret) || strings.Contains(body, "Authorization") {
+		t.Errorf("no credential: %s %s", code, body)
 	}
 	if code, body = get("https://api.github.com/zen", bearer); code != "403" || !strings.Contains(body, "credential broker") {
 		t.Errorf("misuse: %s %s", code, body)
@@ -104,7 +105,7 @@ func TestBrokerEndToEnd(t *testing.T) {
 		}
 	}
 	mu.Unlock()
-	if kinds["credential_injected"] != 2 || kinds["credential_reflection"] != 2 || kinds["credential_missing"] != 1 || kinds["credential_misuse"] != 1 {
+	if kinds["credential_injected"] != 2 || kinds["credential_reflection"] != 2 || kinds["credential_missing"] != 0 || kinds["credential_misuse"] != 1 {
 		t.Errorf("events %v", kinds)
 	}
 	// the broker down: nothing is forwarded, and nothing leaks

@@ -68,10 +68,14 @@ func overwrite(name, value string) *corev3.HeaderValueOption {
 // skipResponse tells Envoy not to send this request's response.
 var skipResponse = &procmodev3.ProcessingMode{ResponseHeaderMode: procmodev3.ProcessingMode_SKIP, ResponseBodyMode: procmodev3.ProcessingMode_NONE}
 
+// headersOnly scrubs a response's headers and leaves its stream alone (Outcome.RawStream).
+var headersOnly = &procmodev3.ProcessingMode{ResponseHeaderMode: procmodev3.ProcessingMode_SEND, ResponseBodyMode: procmodev3.ProcessingMode_NONE}
+
 // Process handles one HTTP request's exchange.
 func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
 	var scrub *Scrubber
 	var frames *FrameScrubber // after a WebSocket upgrade
+	var raw bool              // a SPDY stream to a cluster (Outcome.RawStream)
 	var reps []Replacement
 	var ev Event
 	reflected := func() {
@@ -158,6 +162,10 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				e := ev
 				e.Type = "credential_injected"
 				s.record(e)
+				if o.RawStream {
+					raw = true
+					resp.ModeOverride = headersOnly
+				}
 			} else {
 				resp.ModeOverride = skipResponse
 			}
@@ -166,8 +174,9 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			if scrub != nil {
 				hs := r.ResponseHeaders.GetHeaders().GetHeaders()
 				for _, h := range hs {
-					if h.Key == ":status" && headerValue(h) == "101" {
-						// the connection becomes WebSocket frames (Decide lets no other upgrade by)
+					if h.Key == ":status" && headerValue(h) == "101" && !raw {
+						// the connection becomes WebSocket frames (Decide lets no other upgrade
+						// by, except SPDY to a cluster, whose stream is not sent here)
 						frames = NewFrameScrubber(reps)
 					}
 				}

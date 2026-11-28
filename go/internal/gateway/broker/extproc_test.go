@@ -147,3 +147,26 @@ func TestProcessRateLimited(t *testing.T) {
 		t.Errorf("%+v", e)
 	}
 }
+
+// TestRawStream: kubectl exec over SPDY to a cluster has its token injected and its response
+// headers scrubbed, and Envoy is told not to send its stream, which the broker does not parse.
+func TestRawStream(t *testing.T) {
+	req := reqHeaders(":authority", "kube-0.gw.sandbox.internal", ":path", "/api/v1/namespaces/a/pods/p/exec", ":method", "POST",
+		"authorization", "Bearer "+phK, "connection", "Upgrade", "upgrade", "SPDY/3.1")
+	out, _ := process(t, req, respHeaders(":status", "101", "x-echo", "eyJkubetoken"))
+	if len(out) != 2 || out[0].GetImmediateResponse() != nil {
+		t.Fatalf("%v", out)
+	}
+	if m := out[0].GetModeOverride(); m == nil || m.GetResponseBodyMode().String() != "NONE" || m.GetResponseHeaderMode().String() != "SEND" {
+		t.Errorf("mode %v", m)
+	}
+	set := out[1].GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
+	if len(set) != 1 || string(set[0].GetHeader().GetRawValue()) != phK {
+		t.Errorf("headers %v", set)
+	}
+	// a WebSocket upgrade is still read as frames
+	out, _ = process(t, reqHeaders(wsRequest...), respHeaders(":status", "101"))
+	if out[0].GetModeOverride() != nil {
+		t.Errorf("a WebSocket upgrade's stream skipped: %v", out[0].GetModeOverride())
+	}
+}

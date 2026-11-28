@@ -297,8 +297,12 @@ func TestKube(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, f := range map[string]func(*Spec){
-		"tier 2":          func(s *Spec) { s.Tier = 2 },
-		"wrong name":      func(s *Spec) { s.Kube[0].Name = KubeName(5) },
+		"tier 2": func(s *Spec) { s.Tier = 2 },
+		"wrong name": func(s *Spec) {
+			s.Kube[0].Name = KubeName(5)
+			s.Egress.Allow = append(s.Egress.Allow, KubeName(5))
+			s.Bindings[1].Hosts = []string{KubeName(5)}
+		},
 		"http":            func(s *Spec) { s.Kube[0].Server = "http://10.0.0.5:6443" },
 		"loopback":        func(s *Spec) { s.Kube[0].Server = "https://127.0.0.1:6443" },
 		"localhost":       func(s *Spec) { s.Kube[0].Server = "https://localhost:6443" },

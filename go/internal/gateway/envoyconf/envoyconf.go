@@ -353,6 +353,13 @@ func (c Config) Bootstrap() ([]byte, error) {
 	if intercepting {
 		clusters = append(clusters, c.interceptedUpstream(timeout, false), c.interceptedUpstream(timeout, true))
 	}
+	for _, l := range c.Links {
+		for _, ic := range l.Intercept {
+			if ic.Kube != nil {
+				clusters = append(clusters, c.kubeUpstream(ic.Name, *ic.Kube, timeout))
+			}
+		}
+	}
 	for i, l := range c.Links {
 		if l.BrokerSocket != "" && len(l.Intercept) > 0 {
 			clusters = append(clusters, brokerCluster(i, l.BrokerSocket))

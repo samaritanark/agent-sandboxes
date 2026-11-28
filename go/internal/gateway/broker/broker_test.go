@@ -90,6 +90,8 @@ func TestDecide(t *testing.T) {
 		{name: "mtls: the placeholder is checked and removed", r: Request{Host: "kube-1.gw.sandbox.internal", Path: "/api", Headers: hdr("authorization", "Bearer "+phM)},
 			removed: "authorization"},
 		{name: "mtls: no placeholder, no client certificate", r: Request{Host: "kube-1.gw.sandbox.internal", Path: "/api", Headers: hdr("authorization", "Bearer x")}, refuse: true, event: "credential_missing"},
+		{name: "mtls: the placeholder elsewhere than the bearer token", r: Request{Host: "kube-1.gw.sandbox.internal", Path: "/api", Headers: hdr("x-token", phM)}, refuse: true, event: "credential_misuse"},
+		{name: "mtls: an authorization of its own beside the placeholder", r: Request{Host: "kube-1.gw.sandbox.internal", Path: "/api", Headers: hdr("authorization", "Basic eHk6eg==", "x-token", phM)}, refuse: true, event: "credential_misuse"},
 		{name: "mtls: a request with no credential at all is refused", r: Request{Host: "kube-1.gw.sandbox.internal", Path: "/version"}, refuse: true, event: "credential_missing"},
 		{name: "an upgrade elsewhere passes", r: Request{Host: "example.org", Path: "/", Headers: hdr("connection", "upgrade", "upgrade", "websocket")}},
 		{name: "CR in a header", r: Request{Host: "example.org", Path: "/", Headers: hdr("x", "a\r\nb")}, refuse: true},
