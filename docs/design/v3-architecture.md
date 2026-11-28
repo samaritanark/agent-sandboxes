@@ -1771,6 +1771,8 @@ during the session):
 - **Trust-domain warning:** launching a session that shares a tree with a
   running session of a different tier or allowlist prints a warning and
   records an audit event. An overlay MAY set `shared_tree_policy: deny`.
+  Built (2026-11-27): `go/internal/cli/sharedtree.go`, read from the running
+  sessions' records.
 
 ### 5.14 Session lifecycle
 

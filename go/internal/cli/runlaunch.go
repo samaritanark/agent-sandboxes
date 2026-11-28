@@ -162,6 +162,7 @@ func (c *cmdCtx) launch(s LaunchSpec, rec SessionRecord) {
 	for _, l := range c.registryWarnings(spec) {
 		c.errOut("%s", l)
 	}
+	c.checkSharedTrees(s, rec)
 	if s.DryRun {
 		b, _ := json.MarshalIndent(spec, "", "  ")
 		c.out("")

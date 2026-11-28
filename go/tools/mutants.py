@@ -1526,3 +1526,15 @@ m(MP, '\t\t\tif bytes.HasPrefix(a, []byte("/")) && bytes.HasSuffix(a, bundle) {'
 m(MP, '\t\t\ta = bytes.TrimPrefix(a, []byte("--bundle="))\n', '', "TestMicroVMProcess", pkg="../cmd/sandboxd")
 m(MP, '\tcase "runsc-sandbox", "runsc-gofer":', '\tcase "runsc-sandbox":', "TestMicroVMProcess", pkg="../cmd/sandboxd")
 m("internal/sandboxd/daemon/daemon.go", 'func depContainer(id, dep string) string { return dep + "." + id }', 'func depContainer(id, dep string) string { return id + "." + dep }', "TestRuntimeOfSession", pkg="sandboxd/daemon")
+
+# shared working trees (design 5.13, OQ-06)
+ST = "internal/cli/sharedtree.go"
+m(ST, '\t\tif tier == s.Tier && !diffAllow {', '\t\tif tier == s.Tier {', "TestSharedTrees")
+m(ST, '\t\tif tier == s.Tier && !diffAllow {', '\t\tif !diffAllow {', "TestSharedTrees")
+m(ST, '\t\tif st.ID == rec.ID || !resumeSessionIDRE.MatchString(st.ID) {', '\t\tif !resumeSessionIDRE.MatchString(st.ID) {', "TestSharedTrees",
+  equivalent="the launching session's own record has its own tier and allowlist, so it is skipped either way")
+m(ST, '\tslices.Sort(l)\n', '', "TestSharedTrees")
+m(ST, '\t\tdeny = config.ExtractYAMLScalar(ov+"/config.yaml", "shared_tree_policy") == "deny"', '\t\tdeny = false', "TestSharedTrees")
+m(ST, '\t\taudit.LogEvent(rec.LogDir, "shared-tree", msg, c.stamp())\n', '', "TestSharedTrees")
+m(ST, '\tif len(s.Repos) == 0 || c.env.Launch.Sessions == nil {', '\tif c.env.Launch.Sessions == nil {', "TestSharedTrees", equivalent="with no repository no other session's repos can match")
+m("internal/cli/runlaunch.go", '\tc.checkSharedTrees(s, rec)\n', '', "TestLaunchSharedTree")

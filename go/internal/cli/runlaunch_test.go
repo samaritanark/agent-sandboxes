@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/audit"
 	"github.com/samaritanark/agent-sandboxes/go/internal/brokerseal"
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"github.com/samaritanark/agent-sandboxes/go/internal/sessionspec"
@@ -276,5 +278,30 @@ func TestLaunchRuntime(t *testing.T) {
 	if !strings.Contains(out.String(), "--keep-alive  ") || !strings.Contains(out.String(), "  --runtime <kata|gvisor>           Isolation runtime") ||
 		strings.Index(out.String(), "--runtime") > strings.Index(out.String(), "--i-accept-unmasked-secrets") {
 		t.Errorf("help:\n%s", out.String())
+	}
+}
+
+// TestLaunchSharedTree: run checks for running sessions on the same repository before it starts
+// the session (design 5.13), so the overlay's deny policy stops the launch.
+func TestLaunchSharedTree(t *testing.T) {
+	e, fs, home := launchEnv(t)
+	repo := filepath.Join(home, "app")
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Fatal(string(out))
+	}
+	e.Launch.WorkspaceCopy = func(string) (string, error) { return "/var/lib/sandbox/workspaces/0123456789abcdef", nil }
+	other := "ses-20261127-220000-0002"
+	os.MkdirAll(filepath.Join(e.LogsDir, other), 0o755)
+	if _, err := audit.WriteSessionJSON(filepath.Join(e.LogsDir, other), audit.Session{ID: other, Agent: "claude", Tier: "2", Repos: []string{repo}}); err != nil {
+		t.Fatal(err)
+	}
+	fs.started = append(fs.started, &sessionspec.Spec{ID: other})
+	ov := filepath.Join(home, "overlay")
+	os.MkdirAll(ov, 0o755)
+	os.WriteFile(filepath.Join(ov, "config.yaml"), []byte("shared_tree_policy: deny\n"), 0o644)
+	e.SandboxOverlay = ov
+	var errb bytes.Buffer
+	if rc := Run([]string{"run", "--repo", repo}, e, &bytes.Buffer{}, &errb); rc != 1 || !strings.Contains(errb.String(), "shared_tree_policy: deny") || len(fs.started) != 1 {
+		t.Errorf("%d %d\n%s", rc, len(fs.started), errb.String())
 	}
 }
