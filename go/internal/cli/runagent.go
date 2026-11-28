@@ -187,15 +187,29 @@ func (c *cmdCtx) setUpAgent(spec *sessionspec.Spec, s LaunchSpec, rec SessionRec
 // the VM per tier, which its own device login writes; the files staged from the operator's
 // onboarded copy (~/.sandbox/agent-config/<agent>/) that seed a new home; and how it signs in.
 type agentHome struct {
-	dir     string
-	account string
-	login   string
-	staged  []string
+	dir       string
+	account   string
+	login     string
+	staged    []string
+	generated map[string]string // seed files for a new home, when the operator staged none
 }
 
+// copilotConfig is a new Copilot home's config.json: /workspace trusted (the session is the
+// boundary, as for Claude Code), so Copilot does not ask at the first launch of each tier. Copilot
+// keeps writing the file itself (its login, more folders).
+const copilotConfig = `// User settings belong in settings.json.
+// This file is managed automatically.
+{
+  "trustedFolders": [
+    "/workspace"
+  ]
+}
+`
+
 var unbrokered = map[string]agentHome{
-	"copilot": {dir: AgentHome + "/.copilot", account: "GitHub", login: "sign in when Copilot asks (or with /login): a device login"},
-	"grok":    {dir: AgentHome + "/.grok", account: "xAI", login: "sign in when Grok asks (grok login --device-auth): a device login", staged: []string{"config.toml"}},
+	"copilot": {dir: AgentHome + "/.copilot", account: "GitHub", login: "sign in when Copilot asks (or with /login): a device login",
+		generated: map[string]string{"config.json": copilotConfig}},
+	"grok": {dir: AgentHome + "/.grok", account: "xAI", login: "sign in when Grok asks (grok login --device-auth): a device login", staged: []string{"config.toml"}},
 }
 
 // setUpAgentHome mounts an unbrokered agent's home (sessionspec.AgentHome), warns that the agent
@@ -210,6 +224,11 @@ func (c *cmdCtx) setUpAgentHome(spec *sessionspec.Spec, s LaunchSpec, rec Sessio
 	for _, name := range h.staged {
 		if b, err := os.ReadFile(filepath.Join(src, name)); err == nil {
 			seed[name] = b
+		}
+	}
+	for name, content := range h.generated {
+		if _, have := seed[name]; !have {
+			seed[name] = []byte(content)
 		}
 	}
 	warnings, err := c.env.Launch.PrepareAgentHome(s.Agent, spec.Tier, seed)

@@ -112,6 +112,8 @@ login is kept in the sandbox VM, in the agent's home for that tier
 (`/var/lib/sandbox/agent-home/<agent>/tier<N>`, mounted at `~/.copilot` or
 `~/.grok`), so later sessions of that agent at that tier are signed in. Each tier
 signs in once: a tier 1 session cannot leave files that a tier 3 session loads.
+A new Copilot home trusts `/workspace` (as Claude Code's configuration does), so Copilot does not
+ask whether to trust the folder.
 
 What that means:
 

@@ -59,6 +59,9 @@ func TestLaunchUnbrokered(t *testing.T) {
 		if len(sp.Bindings) != 0 {
 			t.Errorf("%s: bindings %+v", c.agent, sp.Bindings)
 		}
+		if c.agent == "copilot" && !strings.Contains(string(got[0].seed["config.json"]), `"trustedFolders": [`+"\n"+`    "/workspace"`) {
+			t.Errorf("copilot's seed: %q", got[0].seed)
+		}
 		if len(got) != 1 || got[0].agent != c.agent || got[0].tier != 1 || (c.agent == "grok") != (string(got[0].seed["config.toml"]) == "[ui]\n") {
 			t.Errorf("%s: prepared %+v", c.agent, got)
 		}
