@@ -156,7 +156,7 @@ this page says otherwise.
 
 ### Not available yet
 
-- `upgrade` (reinstall with a newer image for now) and `ca`.
+- `upgrade` (reinstall with a newer image for now).
 - `allow` (adding domains to a running session).
 - Resuming a stopped tier 3 or opencode session, or one whose profile binds
   secrets: `resume` says why and prints the `run` command for an equivalent
