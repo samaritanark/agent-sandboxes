@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,9 @@ func (f *vetTransport) Output(ctx context.Context, ep driver.SSHEndpoint, argv [
 // repository, where git verifies it; a plan for another commit or identity is refused; exceptions
 // and commits a session made need an acknowledgement; --status runs in the VM.
 func TestVet(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("host paths are POSIX paths the VM mirrors; v3 does not run sessions from a Windows host yet")
+	}
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("no ssh-keygen")
 	}

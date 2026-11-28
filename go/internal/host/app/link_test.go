@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,9 @@ func (f *linkTransport) Run(ctx context.Context, ep driver.SSHEndpoint, argv []s
 // status, sync (rolling back a tree the VM refuses), the run-path sync, and unlink work on the
 // host's clone.
 func TestLink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("host paths are POSIX paths the VM mirrors; v3 does not run sessions from a Windows host yet")
+	}
 	tmp, _ := filepath.EvalSymlinks(t.TempDir())
 	remote, state := filepath.Join(tmp, "team-overlay.git"), filepath.Join(tmp, "home", ".sandbox")
 	os.MkdirAll(remote, 0o755)
