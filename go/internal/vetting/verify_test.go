@@ -12,7 +12,10 @@ import (
 
 var verifyBase = filepath.Join("testdata", "verify")
 
-func verifyOutput(t *testing.T) string {
+func verifyOutput(t *testing.T) string { return verifyOutputWith(t, nil) }
+
+// verifyOutputWith runs the cases with the git config global set up by global (nil: none).
+func verifyOutputWith(t *testing.T, global func(fx string) string) string {
 	t.Helper()
 	abs, _ := filepath.Abs(verifyBase)
 	tmp, _ := filepath.EvalSymlinks(t.TempDir())
@@ -21,6 +24,9 @@ func verifyOutput(t *testing.T) string {
 		t.Fatalf("setup.sh: %v\n%s", err, out)
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	if global != nil {
+		t.Setenv("GIT_CONFIG_GLOBAL", global(fx))
+	}
 	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
 	var sb strings.Builder
 	for _, r := range tsvRows(t, filepath.Join(verifyBase, "cases.tsv")) {
@@ -87,6 +93,26 @@ func TestVerifyGolden(t *testing.T) {
 			bad = bad[:4]
 		}
 		t.Errorf("%d divergence(s), first %d:\n%s", n, len(bad), strings.Join(bad, "\n=====\n"))
+	}
+}
+
+// TestVerifyIgnoresGlobalSigningConfig: verification runs in a scratch repository, so the repo's own
+// signing config never reaches it, but the gate user's global config would. Every program it can
+// name, and its allowed signers, are overridden: the cases come out as the oracle's, and no
+// program ran.
+func TestVerifyIgnoresGlobalSigningConfig(t *testing.T) {
+	golden, err := os.ReadFile(filepath.Join(verifyBase, "golden-verify.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := verifyOutputWith(t, func(fx string) string {
+		p := filepath.Join(fx, "hostile.gitconfig")
+		os.WriteFile(p, []byte(fmt.Sprintf("[gpg \"ssh\"]\n\tprogram = %[1]s/scripts/ssh.sh\n\tallowedSignersFile = %[1]s/signers-evil\n"+
+			"[gpg]\n\tprogram = %[1]s/scripts/gpg.sh\n[gpg \"x509\"]\n\tprogram = %[1]s/scripts/x509.sh\n", fx)), 0o644)
+		return p
+	})
+	if have != string(golden) {
+		t.Errorf("with a hostile global config:\n%s", have)
 	}
 }
 

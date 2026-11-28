@@ -171,15 +171,16 @@ m("internal/bashcompat/bashcompat.go", "if d >= base {", "if d >= 10 {", R_VC, p
 
 VF = "internal/vetting/verify.go"
 R_VF = "TestVerifyGolden"
+R_VF_GLOBAL = "TestVerifyGolden|TestVerifyIgnoresGlobalSigningConfig"
 m(VF, '"-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"}, args...)', '"-c", "core.hooksPath=/dev/null"}, args...)', R_VF)
 m(VF, 'env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", n))', 'env = append(env, "GIT_CONFIG_COUNT=0")', R_VF)
 m(VF, 'if m := filterNameRe.FindStringSubmatch(l); m != nil {', 'if m := filterNameRe.FindStringSubmatch(l); false && m != nil {', R_VF)
 m(VF, 'filterNameRe = regexp.MustCompile(`^filter\\.(.*)\\.[^.]+$`)', 'filterNameRe = regexp.MustCompile(`^filter\\.([^.]*)\\.[^.]+$`)', R_VF)
-m(VF, '"-c", "gpg.ssh.program=" + sshKeygen, "-c", "gpg.program=" + gpgBin,', '"-c", "gpg.program=" + gpgBin,', R_VF)
-m(VF, '"-c", "gpg.ssh.program=" + sshKeygen, "-c", "gpg.program=" + gpgBin,', '"-c", "gpg.ssh.program=" + sshKeygen,', R_VF)
-m(VF, '"-c", "gpg.x509.program=" + falseBin}', "}", R_VF)
-m(VF, 'args = append(args, "-c", "gpg.format=ssh", "-c", "gpg.ssh.allowedSignersFile="+trustRoot)', 'args = append(args, "-c", "gpg.format=ssh")', R_VF)
-m(VF, 'args = append(args, "-c", "gpg.format=openpgp", "-c", "gpg.ssh.allowedSignersFile=/dev/null")', 'args = append(args, "-c", "gpg.format=openpgp")', R_VF)
+m(VF, '"-c", "gpg.ssh.program=" + sshKeygen, "-c", "gpg.program=" + gpgBin,', '"-c", "gpg.program=" + gpgBin,', R_VF_GLOBAL)
+m(VF, '"-c", "gpg.ssh.program=" + sshKeygen, "-c", "gpg.program=" + gpgBin,', '"-c", "gpg.ssh.program=" + sshKeygen,', R_VF_GLOBAL)
+m(VF, '"-c", "gpg.x509.program=" + falseBin}', "}", R_VF_GLOBAL)
+m(VF, 'args = append(args, "-c", "gpg.format=ssh", "-c", "gpg.ssh.allowedSignersFile="+trustRoot)', 'args = append(args, "-c", "gpg.format=ssh")', R_VF_GLOBAL)
+m(VF, 'args = append(args, "-c", "gpg.format=openpgp", "-c", "gpg.ssh.allowedSignersFile=/dev/null")', 'args = append(args, "-c", "gpg.format=openpgp")', R_VF_GLOBAL)
 m(VF, 'if _, ok := vgit(realRepo, "merge-base", "--is-ancestor", t, "HEAD"); !ok {', "if false {", R_VF)
 m(VF, 'if c.RequireCleanWorktree() == "true" {', "if false {", R_VF)
 m(VF, "return a < b", "return a > b", R_VF)
