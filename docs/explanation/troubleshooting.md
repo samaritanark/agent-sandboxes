@@ -30,6 +30,12 @@ microVMs need nested virtualization. On macOS it needs an Apple silicon Mac with
 macOS 15 or later (M3 or newer for vfkit's nested support); on Linux, KVM with
 nested virtualization enabled for your CPU's KVM module.
 
+**`a canary sandbox under Kata` (or `gVisor`) fails in `doctor`.** Sessions under
+that runtime will not start either. `did not run` with Kata usually follows a
+`/dev/kvm` failure above; with gVisor, or with anything else, the message says
+which step failed. Sessions under the other runtime are unaffected
+(`--runtime`); see [Kata or gVisor](../how-to/runtimes.md).
+
 **`WARNING: could not give the credential broker its key`** at `install` or
 `vm start`. Sessions that use any credential (an agent login, a bound secret) are
 refused until it succeeds. Run `sandbox vm start` again; if the warning stays,
