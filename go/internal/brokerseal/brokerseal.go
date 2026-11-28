@@ -92,7 +92,7 @@ type Binding struct {
 }
 
 var (
-	injectRE = regexp.MustCompile(`^(bearer|basic|header:[A-Za-z0-9-]{1,64}|query:[A-Za-z0-9_.-]{1,64})$`)
+	injectRE = regexp.MustCompile(`^(bearer|basic|mtls|header:[A-Za-z0-9-]{1,64}|query:[A-Za-z0-9_.-]{1,64})$`)
 	labelRE  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
@@ -137,6 +137,8 @@ func (b Binding) Validate() error {
 		return errors.New("a brokered secret needs both its hosts and its injection")
 	case b.Inject != "" && !ValidInject(b.Inject):
 		return fmt.Errorf("unknown injection %q (bearer, basic, header:NAME, or query:NAME)", b.Inject)
+	case b.Inject == "mtls" && (len(b.Hosts) != 1 || !strings.HasSuffix(b.Hosts[0], ".gw.sandbox.internal")):
+		return errors.New("mtls is a tier 3 cluster's client certificate, bound to its gateway name alone")
 	}
 	for i, h := range b.Hosts {
 		if !ValidHost(h) {

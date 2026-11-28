@@ -2,8 +2,16 @@ package sessionspec
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -255,5 +263,64 @@ func TestHistoryMounts(t *testing.T) {
 	s.Mounts[4].Source = AgentHistoryStore + "/claude/tier1/" + key
 	if err := s.Validate(Options{}); err == nil {
 		t.Error("a tier 1 session kept history")
+	}
+}
+
+// testCA is a self-signed certificate in PEM.
+func testCA(t *testing.T) string {
+	t.Helper()
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "kube-ca"}, NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &k.PublicKey, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+// TestKube: tier 3 clusters are at their gateway names, on the allowlist, each with exactly one
+// bearer or mtls binding, with an https server that is not loopback and a CA that parses.
+func TestKube(t *testing.T) {
+	ca := testCA(t)
+	kube := func() *Spec {
+		s := good()
+		s.Tier = 3
+		s.Kube = []KubeCluster{{Name: KubeName(0), Server: "https://10.0.0.5:6443", CA: ca},
+			{Name: KubeName(1), Server: "https://rancher.example.com/k8s/clusters/c-x", TLSServerName: "rancher.example.com"}}
+		s.Egress.Allow = append(s.Egress.Allow, KubeName(0), KubeName(1))
+		s.Bindings = append(s.Bindings,
+			Binding{Ref: "infra.kube.0", Hosts: []string{KubeName(0)}, Inject: "bearer", Placeholder: "sbxph_" + strings.Repeat("K", 43)},
+			Binding{Ref: "infra.kube.1", Hosts: []string{KubeName(1)}, Inject: "mtls", Placeholder: "sbxph_" + strings.Repeat("M", 43)})
+		return s
+	}
+	if err := kube().Validate(Options{}); err != nil {
+		t.Fatal(err)
+	}
+	for name, f := range map[string]func(*Spec){
+		"tier 2":          func(s *Spec) { s.Tier = 2 },
+		"wrong name":      func(s *Spec) { s.Kube[0].Name = KubeName(5) },
+		"http":            func(s *Spec) { s.Kube[0].Server = "http://10.0.0.5:6443" },
+		"loopback":        func(s *Spec) { s.Kube[0].Server = "https://127.0.0.1:6443" },
+		"localhost":       func(s *Spec) { s.Kube[0].Server = "https://localhost:6443" },
+		"user info":       func(s *Spec) { s.Kube[0].Server = "https://u:p@k.example.com" },
+		"query":           func(s *Spec) { s.Kube[0].Server = "https://k.example.com/?x=1" },
+		"bad port":        func(s *Spec) { s.Kube[0].Server = "https://k.example.com:70000" },
+		"bad CA":          func(s *Spec) { s.Kube[0].CA = "not a cert" },
+		"not allowlisted": func(s *Spec) { s.Egress.Allow = s.Egress.Allow[:len(s.Egress.Allow)-1] },
+		"no binding":      func(s *Spec) { s.Bindings = s.Bindings[:len(s.Bindings)-1] },
+		"two bindings": func(s *Spec) {
+			b := s.Bindings[len(s.Bindings)-1]
+			b.Ref, b.Placeholder = "x", "sbxph_"+strings.Repeat("Z", 43)
+			s.Bindings = append(s.Bindings, b)
+		},
+		"header binding":  func(s *Spec) { s.Bindings[len(s.Bindings)-1].Inject = "header:x" },
+		"mtls elsewhere":  func(s *Spec) { s.Bindings[0].Inject = "mtls" },
+		"bad server name": func(s *Spec) { s.Kube[1].TLSServerName = "bad name" },
+	} {
+		s := kube()
+		f(s)
+		if s.Validate(Options{}) == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

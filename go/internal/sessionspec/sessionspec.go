@@ -11,13 +11,16 @@ package sessionspec
 
 import (
 	"bytes"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/netip"
+	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -46,6 +49,27 @@ const (
 	RuntimeGVisor = "gvisor"
 )
 
+// Tier 3 Kubernetes access (design 5.9.5): the agent's kubeconfig names each cluster's API by a
+// gateway name, KubeName(n); the gateway terminates TLS for it, applies the API deny-list, puts in
+// the real credential, and connects to Server verified against CA.
+const (
+	KubeGatewayDomain = "gw.sandbox.internal"
+	MaxKube           = 16
+)
+
+// KubeName is the gateway name of the session's n-th cluster.
+func KubeName(n int) string { return fmt.Sprintf("kube-%d.%s", n, KubeGatewayDomain) }
+
+// KubeCluster is one cluster a tier 3 session reaches. The credential is a binding on Name:
+// "bearer" (the real token replaces the kubeconfig's placeholder) or "mtls" (the placeholder is
+// checked and removed, and the gateway presents the client certificate).
+type KubeCluster struct {
+	Name          string `json:"name"`
+	Server        string `json:"server"`       // https://host[:port][/path]
+	CA            string `json:"ca,omitempty"` // PEM; empty: the system roots
+	TLSServerName string `json:"tls_server_name,omitempty"`
+}
+
 // DefaultMaxDependencies is v2's SANDBOX_MAX_DEPS_PER_SESSION default (design 5.5.3).
 const DefaultMaxDependencies = 6
 
@@ -66,6 +90,7 @@ type Spec struct {
 	Bindings     []Binding         `json:"bindings"`
 	Readable     []Readable        `json:"readable,omitempty"`
 	Dependencies []Dependency      `json:"dependencies,omitempty"`
+	Kube         []KubeCluster     `json:"kube,omitempty"` // tier 3's clusters (design 5.9.5)
 	KeepAlive    bool              `json:"keep_alive"`
 	Audit        map[string]string `json:"audit,omitempty"`
 }
@@ -284,6 +309,7 @@ func (s *Spec) Validate(o Options) error {
 	checkCommand(s.Command, "command", bad)
 	checkResources(s.Resources, "resources", bad)
 	checkMounts(s, bad)
+	checkKube(s, bad)
 	bound := checkBindings(s.Bindings, "bindings", bad)
 	checkBindingReach(s.Bindings, s.Egress, "bindings", bad)
 	checkEnv(s.Env, bound, "env", bad)
@@ -463,7 +489,89 @@ func checkMounts(s *Spec, bad func(string, ...any)) {
 	}
 }
 
-var injectRE = regexp.MustCompile(`^(bearer|basic|header:[A-Za-z0-9-]{1,64}|query:[A-Za-z0-9_.-]{1,64})$`)
+var injectRE = regexp.MustCompile(`^(bearer|basic|mtls|header:[A-Za-z0-9-]{1,64}|query:[A-Za-z0-9_.-]{1,64})$`)
+
+// checkKube checks tier 3's clusters: each at its gateway name, an https server that is not a
+// loopback address, a CA that parses, the name on the allowlist, and exactly one binding for it,
+// bearer or mtls.
+func checkKube(s *Spec, bad func(string, ...any)) {
+	if len(s.Kube) == 0 {
+		return
+	}
+	if s.Tier != 3 {
+		bad("kube: clusters are for tier 3 only")
+	}
+	if len(s.Kube) > MaxKube {
+		bad("kube: at most %d clusters", MaxKube)
+	}
+	for i, k := range s.Kube {
+		w := fmt.Sprintf("kube %d", i)
+		if k.Name != KubeName(i) {
+			bad("%s: name must be %s", w, KubeName(i))
+		}
+		if err := CheckKubeServer(k.Server); err != nil {
+			bad("%s: %v", w, err)
+		}
+		if k.CA != "" {
+			if p := x509.NewCertPool(); !p.AppendCertsFromPEM([]byte(k.CA)) {
+				bad("%s: the CA is not PEM certificates", w)
+			}
+		}
+		if k.TLSServerName != "" && !validHost(strings.ToLower(k.TLSServerName)) {
+			if _, err := netip.ParseAddr(k.TLSServerName); err != nil {
+				bad("%s: invalid tls_server_name", w)
+			}
+		}
+		if !slices.Contains(s.Egress.Allow, k.Name) {
+			bad("%s: %s must be on the allowlist", w, k.Name)
+		}
+		n := 0
+		for _, b := range s.Bindings {
+			if slices.Contains(b.Hosts, k.Name) {
+				n++
+				if len(b.Hosts) != 1 || (b.Inject != "bearer" && b.Inject != "mtls") {
+					bad("%s: its binding must be bearer or mtls, for %s alone", w, k.Name)
+				}
+			}
+		}
+		if n != 1 {
+			bad("%s: needs exactly one binding (has %d)", w, n)
+		}
+	}
+	for _, b := range s.Bindings {
+		if b.Inject == "mtls" && (len(b.Hosts) != 1 || !strings.HasSuffix(b.Hosts[0], "."+KubeGatewayDomain)) {
+			bad("binding %s: mtls is for a cluster's gateway name only", b.Ref)
+		}
+	}
+}
+
+// CheckKubeServer checks a cluster's API server URL: https, a host (a name or an address, not
+// loopback), an optional port, an optional path, and nothing else.
+func CheckKubeServer(server string) error {
+	u, err := url.Parse(server)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		return fmt.Errorf("server %q must be https://host[:port][/path]", server)
+	}
+	h := u.Hostname()
+	if a, err := netip.ParseAddr(h); err == nil {
+		if a.IsLoopback() || a.IsUnspecified() {
+			return fmt.Errorf("server %q is a loopback address", server)
+		}
+	} else if !validHost(strings.ToLower(h)) || strings.EqualFold(h, "localhost") {
+		return fmt.Errorf("server %q has an invalid host", server)
+	}
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("server %q has an invalid port", server)
+		}
+	}
+	if !pathRE.MatchString(u.EscapedPath()) {
+		return fmt.Errorf("server %q has an invalid path", server)
+	}
+	return nil
+}
+
+var pathRE = regexp.MustCompile(`^(/[A-Za-z0-9._~!$&'()*+,;=:@%-]*)*$`)
 
 // l7Reachable reports whether an L7 rule's host is one the egress allowlist allows: an exact name
 // as the gateway decides it, a wildcard only when the allowlist has that wildcard itself.

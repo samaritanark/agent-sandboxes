@@ -14,6 +14,8 @@ var (
 	phAn  = ph("B")
 	phQ   = ph("C")
 	phB   = ph("D")
+	phK   = ph("K")
+	phM   = ph("M")
 	phOld = ph("E")
 )
 
@@ -23,6 +25,8 @@ func set(t *testing.T) *Set {
 		{Ref: "anthropic", Hosts: []string{"api.anthropic.com"}, Inject: "header:x-api-key", Placeholder: phAn, Value: "sk-ant-real-0987654321"},
 		{Ref: "maps", Hosts: []string{"maps.example.com"}, Inject: "query:key", Placeholder: phQ, Value: "AIzaReal key/+="},
 		{Ref: "registry", Hosts: []string{"npm.corp.example"}, Inject: "basic", Placeholder: phB, Value: "deploy:s3cretpass"},
+		{Ref: "infra.kube.0", Hosts: []string{"kube-0.gw.sandbox.internal"}, Inject: "bearer", Placeholder: phK, Value: "eyJkubetoken"},
+		{Ref: "infra.kube.1", Hosts: []string{"kube-1.gw.sandbox.internal"}, Inject: "mtls", Placeholder: phM, Value: "-----BEGIN CERTIFICATE-----"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +82,15 @@ func TestDecide(t *testing.T) {
 		{name: "a WebSocket upgrade to a bound destination", r: Request{Host: "api.github.com", Path: "/", Headers: hdr("authorization", "Bearer "+phGH, "connection", "Upgrade, x-drop", "upgrade", "websocket")},
 			set: "authorization=Bearer ghp_realtoken1234567890", removed: "x-drop"},
 		{name: "another upgrade to a bound destination", r: Request{Host: "api.github.com", Path: "/", Headers: hdr("authorization", "Bearer "+phGH, "connection", "upgrade", "upgrade", "h2c")}, refuse: true, event: "refused"},
+		{name: "a cluster's token", r: Request{Host: "kube-0.gw.sandbox.internal", Path: "/api/v1/pods", Headers: hdr("authorization", "Bearer "+phK)},
+			set: "authorization=Bearer eyJkubetoken"},
+		{name: "kubectl exec over SPDY to a cluster", r: Request{Host: "kube-0.gw.sandbox.internal", Path: "/api/v1/namespaces/a/pods/p/exec", Headers: hdr("authorization", "Bearer "+phK, "connection", "Upgrade", "upgrade", "SPDY/3.1")},
+			set: "authorization=Bearer eyJkubetoken"},
+		{name: "SPDY elsewhere is still refused", r: Request{Host: "api.github.com", Path: "/", Headers: hdr("authorization", "Bearer "+phGH, "connection", "upgrade", "upgrade", "SPDY/3.1")}, refuse: true, event: "refused"},
+		{name: "mtls: the placeholder is checked and removed", r: Request{Host: "kube-1.gw.sandbox.internal", Path: "/api", Headers: hdr("authorization", "Bearer "+phM)},
+			removed: "authorization"},
+		{name: "mtls: no placeholder, no client certificate", r: Request{Host: "kube-1.gw.sandbox.internal", Path: "/api", Headers: hdr("authorization", "Bearer x")}, refuse: true, event: "credential_missing"},
+		{name: "mtls: a request with no credential at all is refused", r: Request{Host: "kube-1.gw.sandbox.internal", Path: "/version"}, refuse: true, event: "credential_missing"},
 		{name: "an upgrade elsewhere passes", r: Request{Host: "example.org", Path: "/", Headers: hdr("connection", "upgrade", "upgrade", "websocket")}},
 		{name: "CR in a header", r: Request{Host: "example.org", Path: "/", Headers: hdr("x", "a\r\nb")}, refuse: true},
 		{name: "two content lengths", r: Request{Host: "example.org", Path: "/", Headers: hdr("content-length", "1", "content-length", "2")}, refuse: true},

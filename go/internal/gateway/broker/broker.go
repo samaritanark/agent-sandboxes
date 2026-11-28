@@ -26,7 +26,7 @@ import (
 type Binding struct {
 	Ref         string
 	Hosts       []string // exact destinations
-	Inject      string   // "bearer", "header:<name>", "query:<name>", "basic"
+	Inject      string   // "bearer", "header:<name>", "query:<name>", "basic", or "mtls" (checked, removed)
 	Placeholder string
 	Prefix      string // what the guest's credential has before the placeholder (bearer only)
 	Value       string // for "basic", "user:password" (the whole pair) or a password alone
@@ -43,7 +43,7 @@ type Set struct {
 	limits   *limiter
 }
 
-var injectRE = regexp.MustCompile(`^(bearer|basic|header:[A-Za-z0-9-]{1,64}|query:[A-Za-z0-9_.-]{1,64})$`)
+var injectRE = regexp.MustCompile(`^(bearer|basic|mtls|header:[A-Za-z0-9-]{1,64}|query:[A-Za-z0-9_.-]{1,64})$`)
 
 // placeholderRE finds a placeholder anywhere (sessionspec.PlaceholderPattern, unanchored).
 var placeholderRE = regexp.MustCompile(`sbxph_[A-Za-z0-9_-]{43}`)
@@ -200,8 +200,13 @@ func (s *Set) Decide(r Request) Outcome {
 
 	// after an upgrade the broker sees raw frames: it can scrub WebSocket's (FrameScrubber), and
 	// no other protocol's, so any other upgrade never carries an injected value (fail closed)
+	// no other protocol's, so any other upgrade never carries an injected value (fail closed). A
+	// cluster's API (a tier 3 gateway name) also takes SPDY/3.1, which kubectl exec, attach, and
+	// port-forward use with API servers that predate WebSocket streaming: the API server never
+	// echoes the request's credential into those streams, and an mtls binding sends none.
 	for _, h := range r.Headers {
-		if h.Name == "upgrade" && !strings.EqualFold(strings.TrimSpace(h.Value), "websocket") {
+		v := strings.TrimSpace(h.Value)
+		if h.Name == "upgrade" && !strings.EqualFold(v, "websocket") && !(strings.EqualFold(v, "SPDY/3.1") && allKube(bound)) {
 			return refuse("refused", bound[0].Ref, "a protocol upgrade other than WebSocket on a brokered destination cannot be scrubbed")
 		}
 	}
@@ -214,11 +219,21 @@ func (s *Set) Decide(r Request) Outcome {
 			if carriesCredential(b, r) {
 				return refuse("credential_missing", b.Ref, "a request to a bound destination with a credential that is not its placeholder")
 			}
+			if b.Inject == "mtls" {
+				// the gateway presents the client certificate on every request it forwards there,
+				// so only a request with the placeholder goes on
+				return refuse("credential_missing", b.Ref, "a request to a client-certificate cluster without its placeholder")
+			}
 			continue
 		}
 		set, path, err := inject(b, r)
 		if err != nil {
 			return refuse("credential_misuse", b.Ref, "the placeholder is not where the binding injects ("+err.Error()+")")
+		}
+		if b.Inject == "mtls" {
+			// the credential is the client certificate the gateway presents upstream; the
+			// placeholder only proves the request is the session's, and goes no further
+			out.RemoveHeaders = append(out.RemoveHeaders, "authorization")
 		}
 		out.SetHeaders = append(out.SetHeaders, set...)
 		if path != "" {
@@ -254,6 +269,19 @@ func (s *Set) Decide(r Request) Outcome {
 	}
 	out.RemoveHeaders = keep
 	return out
+}
+
+// kubeDomain is the domain of tier 3 clusters' gateway names (sessionspec.KubeGatewayDomain).
+const kubeDomain = ".gw.sandbox.internal"
+
+// allKube is whether every binding is for a cluster's gateway name alone.
+func allKube(bs []Binding) bool {
+	for _, b := range bs {
+		if len(b.Hosts) != 1 || !strings.HasSuffix(b.Hosts[0], kubeDomain) {
+			return false
+		}
+	}
+	return true
 }
 
 // credentialHeaders are the request headers that carry a client's credential.
@@ -337,6 +365,15 @@ func inject(b Binding, r Request) ([]Header, string, error) {
 		return vs
 	}
 	switch {
+	case b.Inject == "mtls":
+		vs := values("authorization")
+		if len(vs) != 1 {
+			return nil, "", errAmbiguous
+		}
+		if rest, ok := cutFold(vs[0], "bearer "); !ok || strings.TrimSpace(rest) != b.Placeholder {
+			return nil, "", errors.New("not a bearer placeholder")
+		}
+		return nil, "", nil
 	case b.Inject == "bearer":
 		vs := values("authorization")
 		if len(vs) != 1 {
