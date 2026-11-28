@@ -9,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/samaritanark/agent-sandboxes/go/internal/config"
 	"github.com/samaritanark/agent-sandboxes/go/internal/deviation"
 	"github.com/samaritanark/agent-sandboxes/go/internal/jqjson"
 )
@@ -183,7 +184,14 @@ func cmdCleanup(c *cmdCtx, args []string) {
 			n = -n
 		}
 	}
-	count := 0
+	var mins map[string]int
+	if deviation.Fixed(deviation.RetentionMinimum) {
+		var err error
+		if mins, err = config.RetentionMinDays(c.env.Env); err != nil {
+			c.die("%v; nothing was removed.", err)
+		}
+	}
+	count, kept := 0, 0
 	if ok {
 		ents, _ := os.ReadDir(logs)
 		now := time.Now()
@@ -196,6 +204,11 @@ func cmdCleanup(c *cmdCtx, args []string) {
 				continue
 			}
 			if age := now.Sub(st.ModTime()); age > 0 && int64(age/(24*time.Hour)) > n {
+				if min, t := keepFor(mins, filepath.Join(logs, e.Name())); min >= 0 && int64(age/(24*time.Hour)) <= int64(min) {
+					c.out("  Keeping:  %s (the overlay keeps tier %s logs for %d days)", e.Name(), t, min)
+					kept++
+					continue
+				}
 				c.out("  Removing: %s", e.Name())
 				os.RemoveAll(filepath.Join(logs, e.Name()))
 				count++
@@ -203,6 +216,34 @@ func cmdCleanup(c *cmdCtx, args []string) {
 		}
 	}
 	c.out("Removed %d session(s).", count)
+	if kept > 0 {
+		c.out("Kept %d session(s) the overlay's minimum retention still covers.", kept)
+	}
+}
+
+// keepFor is the overlay's minimum retention for the session logged in dir (-1 for none), and the
+// tier it applies to. A session whose tier cannot be read gets the largest minimum the overlay
+// sets, so an unreadable record is never what lets its logs go early.
+func keepFor(mins map[string]int, dir string) (int, string) {
+	if len(mins) == 0 {
+		return -1, ""
+	}
+	if rec, ok := sessionRecord(filepath.Join(dir, "session.json")); ok {
+		t := jqRawField(rec, "tier", "")
+		if d, ok := mins[t]; ok {
+			return d, t
+		}
+		if t == "1" || t == "2" || t == "3" {
+			return -1, t
+		}
+	}
+	max, tier := -1, "unknown"
+	for t, d := range mins {
+		if d > max {
+			max, tier = d, t+" (its record unreadable; the largest minimum)"
+		}
+	}
+	return max, tier
 }
 
 // phases are v2's pod phases for sandboxd's session states.

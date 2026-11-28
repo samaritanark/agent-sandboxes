@@ -282,10 +282,21 @@ func runPrepare(c *cmdCtx, s *LaunchSpec) SessionRecord {
 		seen[d] = true
 		domains = append(domains, d)
 	}
+	var keep *int
+	if deviation.Fixed(deviation.RetentionMinimum) {
+		mins, err := config.RetentionMinDays(c.env.Env)
+		if err != nil {
+			c.die("%v", err)
+		}
+		if d, ok := mins[s.Tier]; ok {
+			keep = &d
+		}
+	}
 	line, _ := audit.WriteSessionJSON(rec.LogDir, audit.Session{ID: rec.ID, Agent: s.Agent, Tier: s.Tier,
 		User: c.env.User, Repos: s.Repos, Name: s.Name, PodName: rec.PodName, StartTime: c.stamp(),
 		CredentialType: agents.CredentialType(s.Agent), Domains: domains, Profile: s.Profile,
-		Overlay: s.Overlay, InfraToken: len(s.InfraTokens) > 0, InfraKubeconfig: len(s.InfraKubeconfigs) > 0})
+		Overlay: s.Overlay, InfraToken: len(s.InfraTokens) > 0, InfraKubeconfig: len(s.InfraKubeconfigs) > 0,
+		RetentionMinDays: keep})
 	if line != "" {
 		c.out("%s", line)
 	}

@@ -424,8 +424,9 @@ apply:
 Every session produces an audit log under `~/.sandbox/logs/<session>/`
 containing start/stop times, the allowed-domain list, the resolved
 tier, and the gateway's records described below. Retention is the
-operator's responsibility; `sandbox cleanup` prunes old records in the
-VM on request.
+operator's responsibility; nothing expires on its own, `sandbox cleanup`
+prunes old records in the VM on request, and a team overlay can set a
+minimum retention per tier that `cleanup` never goes below.
 
 If you observe unexpected agent behavior during a session, the
 recommended sequence is: stop the session (`sandbox stop <id>`), do

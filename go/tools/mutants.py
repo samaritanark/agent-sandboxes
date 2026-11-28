@@ -419,7 +419,7 @@ m(AU, "\tif len(overrides) == 0 {\n\t\treturn\n\t}", "", R_AU, equivalent="the l
 m(AU, '\t\t\traw += `"` + d + `"`', '\t\t\traw += strconv.Quote(d)', R_AU)
 m(AU, "\t\t\tos.WriteFile(p, nil, 0o666)\n\t\t\treturn line, err\n\t\t}\n\t}\n\ttierV", "\t\t\treturn line, err\n\t\t}\n\t}\n\ttierV", R_AU)
 m(AU, '"infra_token", BoolV(s.InfraToken),', '"infra_token", BoolV(s.InfraKubeconfig),', R_AU)
-m(AU, '"retention_days", Int(tier.RetentionDays(s.Tier)))', '"retention_days", Int(90))', R_AU)
+m(AU, '\t\treturn Int(tier.RetentionDays(s.Tier))', '\t\treturn Int(90)', R_AU)
 m(AU, '\tif reason == "" {\n\t\treturn\n\t}', "", R_AU)
 m(AU, '\t\treturn v.Set("end_detail", Str(detail))', '\t\treturn v, nil', R_AU)
 m(AU, "\t\tif deps.Kind != Array {\n\t\t\treturn v, nil\n\t\t}", "\t\tif deps.Kind == Null {\n\t\t\treturn v, nil\n\t\t}", R_AU)
@@ -1555,3 +1555,15 @@ m(OV, '\t\t\tif keys[i] != h.key(p) {', '\t\t\tif keys[len(keys)-1-i] != h.key(p
 m("internal/host/syncgate/classify.go", '\tif overlayExec(keys, h, r.ExecVectors) {', '\tif false {', R_OV)
 m("internal/host/syncengine/engine.go", 'HooksPath: hooks, ExecVectors: e.ExecVectors}', 'HooksPath: hooks}', "TestOverlayExecVectorsHeld")
 m("internal/host/app/syncone.go", '\t\tExecVectors: vectors,\n', '', "TestSyncOverlayExecVectors", pkg="host/app")
+
+# log retention (OQ-08)
+RTN = "internal/config/retention.go"
+m(RTN, '\t\tif err != nil || n < 0 || strconv.Itoa(n) != v {', '\t\tif err != nil {', "TestRetentionMinimum", pkg="cli")
+m(RTN, '\t\tout[t] = n\n', '', "TestRetentionMinimum", pkg="cli")
+m("internal/audit/audit.go", '\tif s.RetentionMinDays == nil {\n\t\treturn Value{}\n\t}\n', '\tif s.RetentionMinDays == nil {\n\t\treturn Int(0)\n\t}\n', "TestRetentionMinimum", pkg="cli")
+m("internal/cli/runprep.go", '\t\tif d, ok := mins[s.Tier]; ok {\n\t\t\tkeep = &d\n\t\t}\n', '', "TestRetentionMinimum")
+CL = "internal/cli/sessions.go"
+m(CL, '&& int64(age/(24*time.Hour)) <= int64(min) {', '&& int64(age/(24*time.Hour)) < int64(min)-30 {', "TestRetentionMinimum")
+m(CL, '\t\t\treturn -1, t\n\t\t}\n\t}\n\tmax, tier := -1, "unknown"', '\t\t\treturn 99, t\n\t\t}\n\t}\n\tmax, tier := -1, "unknown"', "TestRetentionMinimum")
+m(CL, '\t\tif d > max {\n\t\t\tmax, tier', '\t\tif d < max || max < 0 {\n\t\t\tmax, tier', "TestRetentionMinimum")
+m(CL, '\t\t\tc.die("%v; nothing was removed.", err)', '\t\t\tc.warn("%v", err)', "TestRetentionMinimum")

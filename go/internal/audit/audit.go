@@ -131,7 +131,11 @@ type Session struct {
 	KubeAPIContexts       string
 	KubeHostEntity        string
 	InfraToken            bool
-	InfraKubeconfig       bool
+	// RetentionMinDays is the overlay's minimum retention for the session's tier (nil: none). With
+	// deviation.RetentionMinimum the record's retention_days is it (null for none) instead of v2's
+	// unenforced 90 or 180.
+	RetentionMinDays *int
+	InfraKubeconfig  bool
 }
 
 // WriteSessionJSON is audit_write_session_json: it writes <logDir>/session.json and returns the
@@ -181,8 +185,18 @@ func WriteSessionJSON(logDir string, s Session) (string, error) {
 		"kube_api_port", Str(s.KubeAPIPort), "kube_api_contexts", Str(s.KubeAPIContexts),
 		"kube_host_entity", Str(s.KubeHostEntity), "infra_token", BoolV(s.InfraToken),
 		"infra_kubeconfig", BoolV(s.InfraKubeconfig), "allowed_domains", domains,
-		"retention_days", Int(tier.RetentionDays(s.Tier)))
+		"retention_days", retention(s))
 	return line, os.WriteFile(p, []byte(Encode(v)), 0o666)
+}
+
+func retention(s Session) Value {
+	if !deviation.Fixed(deviation.RetentionMinimum) {
+		return Int(tier.RetentionDays(s.Tier))
+	}
+	if s.RetentionMinDays == nil {
+		return Value{}
+	}
+	return Int(*s.RetentionMinDays)
 }
 
 func setter(k string, x Value) func(Value) (Value, error) {

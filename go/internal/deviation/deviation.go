@@ -217,6 +217,11 @@ const (
 	// runtime: in ~/.sandbox/config.yaml and then to kata; the banner names the one used and the
 	// help says so.
 	RuntimeChoice ID = "runtime-choice"
+	// RetentionMinimum: session.json recorded retention_days (90, or 180 for tier 3) and nothing
+	// enforced it. Nothing expires by default now (OQ-08, owner decision 2026-11-27): the record
+	// holds the overlay's minimum for the tier (log_retention_min_days_tier<N>) or null, and
+	// `cleanup` keeps every session younger than its tier's minimum.
+	RetentionMinimum ID = "retention-minimum"
 )
 
 var (

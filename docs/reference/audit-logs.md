@@ -21,9 +21,14 @@ number, and a jump in the sequence is recorded in `gaps.jsonl` as an
 `audit_gap`. So a record that reached your machine cannot be changed later from
 inside the VM, and records deleted there before the pull show up as a gap.
 
-Retention: `sandbox cleanup` removes session records in the VM older than 90
-days, or `--older-than DAYS`. The copies pulled to `~/.sandbox/logs` are yours
-to keep or delete; `cleanup` does not touch them.
+Retention: nothing expires on its own. `sandbox cleanup` removes session
+records in the VM older than 90 days, or `--older-than DAYS`, when you run it.
+A team overlay can set a minimum per tier (`log_retention_min_days_tier1`,
+`_tier2`, `_tier3`); `cleanup` keeps every session younger than its tier's
+minimum, and each session's `session.json` records that minimum as
+`retention_days` (null when there is none; v2 recorded 90 or 180 days that
+nothing enforced). The copies pulled to `~/.sandbox/logs` are yours to keep or
+delete; `cleanup` does not touch them.
 
 v2's `transcript/` and `files.log` are not written in v3: the agent's
 conversation is in its history (see [Agents & tiers](agents-and-tiers.md#agent-history)),
