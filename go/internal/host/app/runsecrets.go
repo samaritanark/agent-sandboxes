@@ -734,14 +734,19 @@ func (a *app) overlaySetting() string {
 var overlayKey = regexp.MustCompile(`(?m)^overlay:[ \t]*([^#\n]*)`)
 
 // localOverlay is the overlay directory the push carries (opstate.OverlayLocal): one on this
-// machine outside ~/.sandbox, which the VM could not see otherwise. "" when there is none.
+// machine outside ~/.sandbox, or a linked overlay's clone, which the VM could not see otherwise.
+// "" when there is none.
 func (a *app) localOverlay() string {
 	p := a.overlaySetting()
 	if p == "" || !filepath.IsAbs(p) {
 		return ""
 	}
 	if rel, err := filepath.Rel(a.env.StateDir, p); err == nil && !strings.HasPrefix(rel, "..") {
-		return "" // under ~/.sandbox: the VM's own (a linked overlay)
+		// under ~/.sandbox: only a linked overlay's clone (sandbox link) is pushed this way; the
+		// rest of ~/.sandbox goes as the managed set
+		if r := filepath.ToSlash(rel); !strings.HasPrefix(r, LinkedOverlaysDir+"/") || strings.Count(r, "/") != 1 {
+			return ""
+		}
 	}
 	if st, err := os.Stat(p); err != nil || !st.IsDir() {
 		return ""

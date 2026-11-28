@@ -4,8 +4,8 @@
 // and Receive (VM). The archive is a tar stream of regular files only, with strict names and size
 // caps; each managed item is replaced whole in the VM, and anything else there is left alone.
 //
-// Not yet pushed (they need the broker and per-session bindings): secrets, agent tokens during
-// onboarding, linked overlay checkouts, and a session's infra kubeconfigs and tokens.
+// Never pushed this way: secrets, agent tokens, and a session's infra kubeconfigs and tokens (the
+// host seals them for the broker instead). A linked overlay's clone goes as the local overlay.
 package opstate
 
 import (

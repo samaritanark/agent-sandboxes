@@ -39,6 +39,8 @@ type Env struct {
 	// runs kubectl).
 	Kubectl func(args []string) ([]byte, string, error)
 	// HostAddrs and LookupHost are this machine's addresses and resolver (tests; nil: the real ones).
+	// Git runs git in dir for `sandbox link` (tests; nil runs git).
+	Git func(dir string, args ...string) (string, error)
 	// GitConfig reads one key of the operator's global git configuration (tests; nil runs git).
 	GitConfig  func(key string) string
 	HostAddrs  func() ([]netip.Prefix, error)
@@ -138,6 +140,8 @@ func Run(ctx context.Context, args []string, env Env) (rc int) {
 			return a.vet(args[1:])
 		case "upgrade":
 			return a.upgrade(args[1:])
+		case "link":
+			return a.link(args[1:])
 		case "status":
 			return a.vm([]string{"status"})
 		}
@@ -233,6 +237,9 @@ const ReceiveOperatorState = "__receive-operator-state"
 func (a *app) proxy(args []string) int {
 	ep := a.running()
 	a.handshake(ep)
+	if len(args) > 0 && args[0] == "run" {
+		a.linkSyncOnRun(ep) // before the push, which carries the overlay's tree
+	}
 	archive := a.pushState(ep)
 	var extra []string
 	if len(args) > 0 && args[0] == "run" {

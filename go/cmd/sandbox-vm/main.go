@@ -56,6 +56,7 @@ const importHistoryCmd = "__import-history"
 // vetPrepare and vetFinish are the VM's halves of `sandbox vet --repo` (cli.VetPrepare, VetFinish).
 const (
 	vetPrepare = "__vet-prepare"
+	linkCheck  = "__link-check" // the VM's half of `sandbox link` (cli.LinkCheck)
 	vetFinish  = "__vet-finish"
 )
 
@@ -148,6 +149,9 @@ func main() {
 		b, _ := json.Marshal(map[string][]string{"repos": repos})
 		os.Stdout.Write(append(b, '\n'))
 		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == linkCheck {
+		os.Exit(cli.LinkCheck(os.Args[2:], cliEnv(), os.Stdout, os.Stderr))
 	}
 	if len(os.Args) >= 2 && os.Args[1] == vetPrepare {
 		os.Exit(cli.VetPrepare(os.Args[2:], cliEnv(), os.Stdout, os.Stderr))

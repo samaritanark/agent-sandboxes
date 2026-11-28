@@ -407,12 +407,21 @@ func TestOverlayAndSettings(t *testing.T) {
 		!strings.Contains(argv, "USER=op") || strings.Contains(argv, "AWS_SECRET") {
 		t.Errorf("argv %q", argv)
 	}
-	// a linked overlay (under ~/.sandbox) is the VM's own: named, not pushed
+	// a linked overlay's clone (~/.sandbox/overlays/<name>, sandbox link) is pushed the same way
 	linked := filepath.Join(state, "overlays", "org")
 	os.MkdirAll(linked, 0o700)
+	os.WriteFile(filepath.Join(linked, "config.yaml"), []byte("vetting: required\n"), 0o644)
 	tr = run(map[string]string{"SANDBOX_OVERLAY": linked})
-	if slices.Contains(tarNames(t, tr.pushes[0]), "overlay-local/config.yaml") || !strings.Contains(strings.Join(tr.runs[len(tr.runs)-1], " "), "SANDBOX_OVERLAY="+linked) {
+	if !slices.Contains(tarNames(t, tr.pushes[0]), "overlay-local/config.yaml") || !strings.Contains(strings.Join(tr.runs[len(tr.runs)-1], " "), "SANDBOX_OVERLAY="+home+"/.sandbox/overlay-local") {
 		t.Errorf("linked: %q", tr.runs[len(tr.runs)-1])
+	}
+	// anything else under ~/.sandbox is named, not pushed again
+	other := filepath.Join(state, "elsewhere")
+	os.MkdirAll(other, 0o700)
+	os.WriteFile(filepath.Join(other, "config.yaml"), []byte("x: y\n"), 0o644)
+	tr = run(map[string]string{"SANDBOX_OVERLAY": other})
+	if slices.Contains(tarNames(t, tr.pushes[0]), "overlay-local/config.yaml") || !strings.Contains(strings.Join(tr.runs[len(tr.runs)-1], " "), "SANDBOX_OVERLAY="+other) {
+		t.Errorf("elsewhere: %q", tr.runs[len(tr.runs)-1])
 	}
 	// none: nothing pushed or set
 	os.Remove(filepath.Join(state, "config.yaml"))
