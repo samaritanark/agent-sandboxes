@@ -104,11 +104,25 @@ How it works in v3, and how it differs from v2:
   checked against the block lists (see [Persistent domains](persistent-domains.md#never-allow-a-personal-block-list)),
   and a server on loopback is refused.
 
+**Exec credential plugins** (`aws eks get-token`, `gke-gcloud-auth-plugin`, `kubelogin`): the
+sandbox runs the plugin on your machine, with your own configuration (`~/.aws`, gcloud, a browser
+sign-in), once at launch, after asking (`--allow-exec-plugin` skips the question, and is required
+when stdin is not a terminal), and brokers the token or client certificate it returns:
+
+```text
+WARN: kubeconfig '/home/you/.kube/eks.yaml' gets its credential from the exec plugin 'aws'.
+...
+  Run it now? [y/N] y
+==> Cluster eks: credential from the exec plugin 'aws' (valid until 2026-11-28 15:04 UTC)
+```
+
+The credential is not renewed during the session: once it expires (EKS tokens after 15 minutes,
+GKE's after about an hour) the session's `kubectl` gets `401 Unauthorized`, and the next launch gets
+a new one. For a long session, mint a longer-lived token (below). In v2 the plugin was copied into
+the pod without its configuration, so every call failed.
+
 Refused, with what to do instead:
 
-- **Exec credential plugins** (`aws eks get-token`, `gke-gcloud-auth-plugin`, `kubelogin`) are
-  not run yet. v2 copied them in, but they failed there too. Mint a static token for the session
-  (below), or bake one into a kubeconfig.
 - **`auth-provider`** (removed from Kubernetes in 1.26), **basic auth**, and a kubeconfig with no
   credential.
 - **`insecure-skip-tls-verify`**: the gateway verifies every API server, so the kubeconfig needs

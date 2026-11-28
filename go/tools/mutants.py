@@ -1717,7 +1717,7 @@ m(HK, '\t\tk.CA = string(ca)\n', '', R_HK)
 m(HK, '\tif token == "" && u.TokenFile != "" {', '\tif false {', R_HK)
 m(HK, '\t\tif b, _ := pem.Decode(kd); b == nil || !strings.HasSuffix(b.Type, "PRIVATE KEY") {', '\t\tif b, _ := pem.Decode(kd); b == nil {', R_HK)
 m(HK, '\t\tk.Auth, k.value = "mtls", append(append(c, \'\\n\'), kd...)', '\t\tk.Auth, k.value = "mtls", c', R_HK)
-m(HK, '\tcase len(u.Exec) > 0 && string(u.Exec) != "null":', '\tcase false:', R_HK)
+m(HK, '\tcase u.Exec != nil && u.Exec.Command != "":', '\tcase false:', R_HK)
 m(HK, 'brokerseal.Binding{Hosts: []string{kubeName(i)}, Inject: inject})', 'brokerseal.Binding{Hosts: []string{kubeName(0)}, Inject: inject})', R_HK)
 m(HK, '\tinject := map[string]string{"token": "bearer", "mtls": "mtls"}[k.Auth]\n\t\tsealed', '\tinject := "bearer"\n\t\tsealed', R_HK)
 m("internal/host/app/runsecrets.go", '\ta.pushKube(ep, clusters)\n', '', R_HK)
@@ -1861,3 +1861,16 @@ m("internal/host/app/runsecrets.go", '\t\tif r := filepath.ToSlash(rel); !string
 m("internal/host/app/app.go", '\t\ta.linkSyncOnRun(ep) // before the push', '\t\t// before the push', R_LK, equivalent="TestLink calls linkSyncOnRun itself; the call site is a launch")
 m("internal/cli/linkcheck.go", '\t\tif !isDir(args[0]) {', '\t\tif false {', "TestLinkCheck")
 m("internal/cli/linkcheck.go", '\t\tif unmet != "" {', '\t\tif false {', "TestLinkCheck")
+
+# exec credential plugins run on the host at launch
+KE = "internal/host/app/kubeexec.go"
+R_KE = "TestExecPlugin"
+m(KE, '\tcase !a.env.StdinTTY:', '\tcase false:', R_KE)
+m(KE, '\t\tif l := strings.TrimSpace(line); l != "y" && l != "Y" && l != "yes" && l != "YES" {', '\t\tif false {', R_KE)
+m(KE, '\tif strings.Contains(cmdPath, "/") && !filepath.IsAbs(cmdPath) {', '\tif false {', R_KE)
+m(KE, '\tcmd.Env = append(os.Environ(), "KUBERNETES_EXEC_INFO="+string(info))', '\tcmd.Env = os.Environ()', R_KE)
+m(KE, '\t\tcmd.Env = append(cmd.Env, v.Name+"="+v.Value)\n', '', R_KE)
+m(KE, '\t\tif !t.After(a.env.Now()) {', '\t\tif false {', R_KE)
+m(KE, '\tif err := json.Unmarshal(out.Bytes(), &c); err != nil || c.Kind != "ExecCredential" || c.Status == nil {', '\tif err := json.Unmarshal(out.Bytes(), &c); err != nil || c.Status == nil {', R_KE)
+m(KE, '\t\tif strings.ContainsAny(r.token, "\\r\\n\\x00") {', '\t\tif false {', R_KE)
+m(KE, '\t\tk.Auth, k.value = "token", []byte(cred.token)', '\t\tk.Auth, k.value = "token", []byte("x")', R_KE)

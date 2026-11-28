@@ -44,6 +44,19 @@ type kubeCluster struct {
 	Auth          string `json:"auth"`
 	Source        string `json:"source"`
 	value         []byte
+	exec          *execSpec // the exec credential plugin that gives the credential, run on the host
+}
+
+// execSpec is a kubeconfig user's exec credential plugin (client.authentication.k8s.io).
+type execSpec struct {
+	Command    string   `json:"command"`
+	Args       []string `json:"args"`
+	APIVersion string   `json:"apiVersion"`
+	Env        []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	} `json:"env"`
+	InteractiveMode string `json:"interactiveMode"`
 }
 
 // kubeconfigView is the part of `kubectl config view -o json` read here.
@@ -70,7 +83,7 @@ type kubeconfigView struct {
 			TokenFile    string          `json:"tokenFile"`
 			CertData     string          `json:"client-certificate-data"`
 			KeyData      string          `json:"client-key-data"`
-			Exec         json.RawMessage `json:"exec"`
+			Exec         *execSpec       `json:"exec"`
 			AuthProvider json.RawMessage `json:"auth-provider"`
 		} `json:"user"`
 	} `json:"users"`
@@ -141,6 +154,9 @@ func (a *app) readKubeconfigs(args []string) []kubeCluster {
 		k, err := parseKubeconfig(raw, p, a.expandTilde)
 		if err != nil {
 			a.die("%v", err)
+		}
+		if k.exec != nil {
+			a.execCredential(&k, p, args)
 		}
 		// v2 kept each context's name, suffixed -2, -3, ... on a collision
 		name := k.Context
@@ -217,8 +233,8 @@ func parseKubeconfig(raw []byte, source string, expand func(string) string) (kub
 		}
 		k.Auth, k.value = "mtls", append(append(c, '\n'), kd...)
 		brokerseal.Wipe(kd)
-	case len(u.Exec) > 0 && string(u.Exec) != "null":
-		return k, fmt.Errorf("kubeconfig '%s' uses an exec credential plugin, which v3 does not run yet: bake a static token or client certificate (docs/how-to/tier3-infra-credentials.md).", source)
+	case u.Exec != nil && u.Exec.Command != "":
+		k.exec = u.Exec // run on the host, once the operator agrees (execCredential)
 	default:
 		return k, fmt.Errorf("kubeconfig for context '%s' has no static credentials this tool can use (a bearer token, or a client cert+key pair).", k.Context)
 	}

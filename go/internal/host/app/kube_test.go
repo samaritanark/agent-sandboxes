@@ -74,12 +74,16 @@ func TestParseKubeconfig(t *testing.T) {
 	if err != nil || k.Auth != "mtls" || !strings.Contains(string(k.value), "MIIBY2xpZW50") || !strings.Contains(string(k.value), "MHcCa2V5") || k.TLSServerName != "kubernetes" {
 		t.Errorf("client certificate: %+v %v", k, err)
 	}
+	// an exec plugin is kept for the host to run (kubeexec.go), with no credential yet
+	k, err = parseKubeconfig(view("eks", "https://k", map[string]any{"exec": map[string]any{"command": "aws", "args": []string{"eks", "get-token"}}}, nil), "/k", nil)
+	if err != nil || k.exec == nil || k.exec.Command != "aws" || len(k.exec.Args) != 2 || k.Auth != "" {
+		t.Errorf("exec: %+v %v", k, err)
+	}
 	for name, c := range map[string]struct {
 		raw  []byte
 		want string
 	}{
 		"no credential":  {view("dev", "https://k", map[string]any{"username": "u", "password": "p"}, nil), "no static credentials"},
-		"exec":           {view("dev", "https://k", map[string]any{"exec": map[string]any{"command": "aws"}}, nil), "exec credential plugin"},
 		"auth provider":  {view("dev", "https://k", map[string]any{"auth-provider": map[string]any{"name": "oidc"}}, nil), "auth-provider"},
 		"insecure":       {view("dev", "https://k", map[string]any{"token": "t"}, map[string]any{"insecure-skip-tls-verify": true}), "insecure-skip-tls-verify"},
 		"proxy":          {view("dev", "https://k", map[string]any{"token": "t"}, map[string]any{"proxy-url": "http://p"}), "proxy-url"},

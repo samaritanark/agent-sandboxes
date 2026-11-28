@@ -165,7 +165,7 @@ this page says otherwise.
 - Resuming a stopped tier 3 or opencode session, or one whose profile binds
   secrets: `resume` says why and prints the `run` command for an equivalent
   session. Other stopped sessions are recreated (see What changed).
-- `run --allow-exec-plugin`: kubeconfigs with exec credential plugins are refused
+- Renewing an exec plugin's credential during a session: it is fetched once at launch
   (see [Tier 3 infra credentials](../how-to/tier3-infra-credentials.md)).
 - Brokering the copilot and grok logins: they run with their own login, as in
   v2 (see [Onboarding agents](../how-to/onboarding-agents.md#copilot-and-grok-not-brokered)).
