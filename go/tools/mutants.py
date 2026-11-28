@@ -1877,3 +1877,13 @@ m(KE, '\t\tk.Auth, k.value = "token", []byte(cred.token)', '\t\tk.Auth, k.value 
 m("internal/cli/runagent.go", '\t\tif _, have := seed[name]; !have {\n\t\t\tseed[name] = []byte(content)', '\t\tif false {\n\t\t\tseed[name] = []byte(content)', "TestLaunchUnbrokered")
 m("cmd/sandbox-vm/mirror.go", '\tvarHome := parts[1] == "var" && len(parts) >= 4 && parts[2] == "home" && parts[3] != ""', '\tvarHome := false', "TestMirror", pkg="../cmd/sandbox-vm")
 m("cmd/sandbox-vm/mirror.go", '\tvarHome := parts[1] == "var" && len(parts) >= 4 && parts[2] == "home" && parts[3] != ""', '\tvarHome := parts[1] == "var"', "TestMirror", pkg="../cmd/sandbox-vm")
+
+# declared host endpoints scoped to their session's uplink in the VM (5.2.6, defense in depth)
+NS = "internal/sandboxd/netsetup/netsetup.go"
+m(NS, '\t\tif !seen[k] {\n\t\t\tseen[k] = true\n\t\t\tep = append(ep, k)', '\t\tif true {\n\t\t\tseen[k] = true\n\t\t\tep = append(ep, k)', "TestHostEndpointsScript", pkg="sandboxd/netsetup")
+m(NS, '\t\tif !e.Addr.Is4() || e.Port < 1 || e.Port > 65535 || e.Uplink < 0 || e.Uplink >= MaxUplinks {', '\t\tif !e.Addr.Is4() {', "TestHostEndpointsScript", pkg="sandboxd/netsetup")
+m(NS, ' iifname . ip daddr . th dport != @hostep_owner counter', ' counter', "TestHostEndpointsScript", pkg="sandboxd/netsetup")
+DD = "internal/sandboxd/daemon/daemon.go"
+m(DD, '\tif len(spec.Egress.HostEndpoints) > 0 {\n\t\tif err := d.syncHostEndpoints(ctx); err != nil {', '\tif false {\n\t\tif err := d.syncHostEndpoints(ctx); err != nil {', "TestHostEndpointScoping", pkg="sandboxd/daemon")
+m(DD, '\tif s, err := d.Journal.Load(id); err == nil && s.Spec != nil && len(s.Spec.Egress.HostEndpoints) > 0 {', '\tif false {', "TestHostEndpointScoping", pkg="sandboxd/daemon")
+m(DD, '\t\tif uplink < 0 {\n\t\t\tcontinue', '\t\tif false {\n\t\t\tcontinue', "TestHostEndpointScoping", pkg="sandboxd/daemon")

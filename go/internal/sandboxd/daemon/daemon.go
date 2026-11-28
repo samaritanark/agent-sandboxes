@@ -65,6 +65,9 @@ type Namespaces interface {
 type Network interface {
 	Root(ctx context.Context) error // the VM root namespace's rules, once at start
 	Up(ctx context.Context, s netsetup.Session) error
+	// HostEndpoints replaces the declared host endpoints the root namespace lets through, each
+	// only from the uplink of the session that declared it (design 5.2.6).
+	HostEndpoints(ctx context.Context, eps []netsetup.HostEndpoint) error
 }
 
 // GatewayRunner runs a session's gateway process in its gateway namespace.
@@ -568,6 +571,11 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 	}); err != nil {
 		return err
 	}
+	if len(spec.Egress.HostEndpoints) > 0 {
+		if err := d.syncHostEndpoints(ctx); err != nil {
+			return fmt.Errorf("host endpoints: %w", err)
+		}
+	}
 	files["policy.json"], _ = json.Marshal(pol)
 	if err := d.Journal.Intend(id, KindGateway, "gateway"); err != nil {
 		return err
@@ -657,6 +665,38 @@ func (d *Daemon) bringUp(ctx context.Context, spec *sessionspec.Spec) error {
 		}
 		return d.Runtime.Start(ctx, id)
 	})
+}
+
+// syncHostEndpoints gives the root namespace every live session's declared host endpoints, each
+// with the session's uplink.
+func (d *Daemon) syncHostEndpoints(ctx context.Context) error {
+	all, err := d.Journal.List()
+	if err != nil {
+		return err
+	}
+	var eps []netsetup.HostEndpoint
+	for _, s := range all {
+		if s.Spec == nil || len(s.Spec.Egress.HostEndpoints) == 0 {
+			continue
+		}
+		uplink := -1
+		for _, r := range s.Live() {
+			if r.Kind == KindUplink {
+				uplink, _ = strconv.Atoi(r.Name)
+			}
+		}
+		if uplink < 0 {
+			continue
+		}
+		for _, h := range s.Spec.Egress.HostEndpoints {
+			a, err := netip.ParseAddr(h.Address)
+			if err != nil {
+				continue
+			}
+			eps = append(eps, netsetup.HostEndpoint{Uplink: uplink, Addr: a, Port: h.Port})
+		}
+	}
+	return d.Network.HostEndpoints(ctx, eps)
 }
 
 // freeUplink is the lowest uplink index no live session holds.
@@ -770,6 +810,11 @@ func (d *Daemon) end(ctx context.Context, id, reason string, failed bool) error 
 	}
 	os.Remove(filepath.Join(d.SessionRoot, id)) // only if empty
 	delete(d.offsets, id)
+	if s, err := d.Journal.Load(id); err == nil && s.Spec != nil && len(s.Spec.Egress.HostEndpoints) > 0 {
+		if err := d.syncHostEndpoints(ctx); err != nil {
+			d.logf("session %s: could not withdraw its host endpoints: %v", id, err)
+		}
+	}
 	end := map[string]any{"end_reason": reason}
 	if s, err := d.Journal.Load(id); err == nil {
 		var incomplete []string

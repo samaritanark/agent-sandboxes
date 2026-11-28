@@ -59,6 +59,15 @@ func (network) Up(ctx context.Context, s netsetup.Session) error {
 	return netsetup.Up(ctx, execRunner{}, s)
 }
 
+func (network) HostEndpoints(ctx context.Context, eps []netsetup.HostEndpoint) error {
+	script, err := netsetup.HostEndpointsScript(eps)
+	if err != nil {
+		return err
+	}
+	_, err = execRunner{}.Run(ctx, script, "nft", "-f", "-")
+	return err
+}
+
 // upstreamResolvers is the VM's upstream DNS (systemd-resolved's real servers, not its stub,
 // which a gateway namespace cannot reach).
 func upstreamResolvers() ([]netip.Addr, error) {

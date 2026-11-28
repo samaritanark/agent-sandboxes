@@ -116,9 +116,14 @@ type fakeNet struct {
 	root    int
 	uplinks []int
 	fail    bool
+	hosteps [][]netsetup.HostEndpoint // each HostEndpoints call
 }
 
 func (f *fakeNet) Root(context.Context) error { f.root++; return nil }
+func (f *fakeNet) HostEndpoints(_ context.Context, eps []netsetup.HostEndpoint) error {
+	f.hosteps = append(f.hosteps, eps)
+	return nil
+}
 func (f *fakeNet) Up(_ context.Context, s netsetup.Session) error {
 	if f.fail {
 		return errors.New("nft failed")
@@ -1004,5 +1009,36 @@ func TestExtraCAs(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "second.pem"), ca2.CertPEM, 0o644)
 	if !strings.Contains(string(tl.roots()), string(ca2.CertPEM)) {
 		t.Error("a CA added later was not read")
+	}
+}
+
+// TestHostEndpointScoping (design 5.2.6): a session with declared host endpoints has the root
+// namespace let them through from its uplink only, a session without any changes nothing, and the
+// endpoints are withdrawn when the session ends.
+func TestHostEndpointScoping(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	if _, err := r.d.Start(ctx, spec("s-plain", 1024)); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.net.hosteps) != 0 {
+		t.Errorf("a session without host endpoints changed them: %v", r.net.hosteps)
+	}
+	sp, _ := sessionspec.Decode(bytes.NewReader(spec("s-k3d", 1024)))
+	sp.Tier = 3
+	sp.Egress.HostEndpoints = []sessionspec.HostEndpoint{{Address: "192.168.1.178", Port: 6443}}
+	b, _ := sp.Encode()
+	id, err := r.d.Start(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(r.net.hosteps); n != 1 || len(r.net.hosteps[0]) != 1 || r.net.hosteps[0][0] != (netsetup.HostEndpoint{Uplink: 1, Addr: netip.MustParseAddr("192.168.1.178"), Port: 6443}) {
+		t.Errorf("declared: %v", r.net.hosteps)
+	}
+	if err := r.d.Stop(ctx, id, "operator stop"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(r.net.hosteps); n != 2 || len(r.net.hosteps[1]) != 0 {
+		t.Errorf("withdrawn: %v", r.net.hosteps)
 	}
 }

@@ -94,9 +94,14 @@ table inet sandbox {
 		type filter hook input priority filter; policy accept;
 		iifname "sbxu*" counter drop
 	}
+	# the declared host endpoints (design 5.2.6) and the uplink of the session that declared each:
+	# another session's gateway may not reach them (HostEndpointsScript fills both)
+	set hostep { type ipv4_addr . inet_service; }
+	set hostep_owner { type ifname . ipv4_addr . inet_service; }
 	chain forward {
 		type filter hook forward priority filter; policy accept;
 		iifname "sbxu*" oifname "sbxu*" counter drop
+		iifname "sbxu*" meta l4proto { tcp, udp } ip daddr . th dport @hostep iifname . ip daddr . th dport != @hostep_owner counter log prefix "sbx hostep " reject
 	}
 	chain postrouting {
 		type nat hook postrouting priority srcnat; policy accept;
@@ -104,6 +109,37 @@ table inet sandbox {
 	}
 }
 `
+}
+
+// HostEndpoint is a declared host endpoint and the uplink of the session that declared it.
+type HostEndpoint struct {
+	Uplink int
+	Addr   netip.Addr
+	Port   int
+}
+
+// HostEndpointsScript replaces the root table's declared endpoints with eps (RootRules' sets).
+func HostEndpointsScript(eps []HostEndpoint) (string, error) {
+	var b strings.Builder
+	b.WriteString("flush set inet sandbox hostep\nflush set inet sandbox hostep_owner\n")
+	var ep, own []string
+	seen := map[string]bool{}
+	for _, e := range eps {
+		if !e.Addr.Is4() || e.Port < 1 || e.Port > 65535 || e.Uplink < 0 || e.Uplink >= MaxUplinks {
+			return "", fmt.Errorf("netsetup: bad host endpoint %v:%d on uplink %d", e.Addr, e.Port, e.Uplink)
+		}
+		k := fmt.Sprintf("%s . %d", e.Addr, e.Port)
+		if !seen[k] {
+			seen[k] = true
+			ep = append(ep, k)
+		}
+		own = append(own, fmt.Sprintf("%q . %s", RootIf(e.Uplink), k))
+	}
+	if len(ep) > 0 {
+		fmt.Fprintf(&b, "add element inet sandbox hostep { %s }\n", strings.Join(ep, ", "))
+		fmt.Fprintf(&b, "add element inet sandbox hostep_owner { %s }\n", strings.Join(own, ", "))
+	}
+	return b.String(), nil
 }
 
 func joinInts(ps []int) string {

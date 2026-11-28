@@ -188,3 +188,32 @@ while True:
 		}
 	}
 }
+
+// TestHostEndpointsScript (design 5.2.6): the root table refuses a declared host endpoint from any
+// uplink but its session's, and the script replaces both sets whole; an endpoint two sessions
+// declare is listed once with both owners; a bad one is refused.
+func TestHostEndpointsScript(t *testing.T) {
+	root := RootRules()
+	for _, want := range []string{"set hostep { type ipv4_addr . inet_service; }", "set hostep_owner { type ifname . ipv4_addr . inet_service; }",
+		`iifname "sbxu*" meta l4proto { tcp, udp } ip daddr . th dport @hostep iifname . ip daddr . th dport != @hostep_owner counter log prefix "sbx hostep " reject`} {
+		if !strings.Contains(root, want) {
+			t.Errorf("root rules lack %q", want)
+		}
+	}
+	a := netip.MustParseAddr("192.168.1.178")
+	got, err := HostEndpointsScript([]HostEndpoint{{Uplink: 0, Addr: a, Port: 6443}, {Uplink: 3, Addr: a, Port: 6443}, {Uplink: 3, Addr: a, Port: 8200}})
+	want := "flush set inet sandbox hostep\nflush set inet sandbox hostep_owner\n" +
+		"add element inet sandbox hostep { 192.168.1.178 . 6443, 192.168.1.178 . 8200 }\n" +
+		`add element inet sandbox hostep_owner { "sbxu0" . 192.168.1.178 . 6443, "sbxu3" . 192.168.1.178 . 6443, "sbxu3" . 192.168.1.178 . 8200 }` + "\n"
+	if err != nil || got != want {
+		t.Errorf("%v\n%s", err, got)
+	}
+	if got, _ := HostEndpointsScript(nil); got != "flush set inet sandbox hostep\nflush set inet sandbox hostep_owner\n" {
+		t.Errorf("none: %q", got)
+	}
+	for _, bad := range []HostEndpoint{{Uplink: 0, Addr: netip.MustParseAddr("::1"), Port: 1}, {Uplink: 0, Addr: a, Port: 0}, {Uplink: MaxUplinks, Addr: a, Port: 1}} {
+		if _, err := HostEndpointsScript([]HostEndpoint{bad}); err == nil {
+			t.Errorf("%+v accepted", bad)
+		}
+	}
+}

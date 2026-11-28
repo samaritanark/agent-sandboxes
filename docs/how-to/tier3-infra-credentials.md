@@ -178,8 +178,8 @@ sandbox run --agent claude --tier 3 --repo ~/repos/infra \
   (v2 had the same requirement).
 - Only the drivers whose network is `sandbox netd` (vfkit on macOS, qemu on Linux) can open
   endpoints one by one. With `--driver lima` the launch stops and says so.
-- The address and port are open to the whole sandbox VM while declared; each other session's
-  gateway still refuses it unless that session's allowlist names it.
+- Only that session reaches it: the sandbox VM refuses the address and port to every other
+  session's gateway (and netd opens it to the VM only while it is declared).
 
 > **Combining credentials widens the blast radius.** A session handed several tokens can use all
 > of them, toward all of their endpoints, and the in-sandbox agent is the adversary in this tool's
