@@ -116,6 +116,22 @@ func TestDecide(t *testing.T) {
 	}
 }
 
+// TestRawStreams: kubectl's streaming upgrades to a cluster (SPDY, and WebSocket from kubectl 1.30)
+// are relayed unparsed; a WebSocket anywhere else is read as frames.
+func TestRawStreams(t *testing.T) {
+	s := set(t)
+	for _, c := range []struct {
+		host, cred, upgrade string
+		raw                 bool
+	}{{"kube-0.gw.sandbox.internal", phK, "SPDY/3.1", true}, {"kube-0.gw.sandbox.internal", phK, "websocket", true},
+		{"kube-1.gw.sandbox.internal", phM, "WebSocket", true}, {"api.github.com", phGH, "websocket", false}} {
+		o := s.Decide(Request{Host: c.host, Path: "/api/v1/namespaces/a/pods/p/exec", Headers: hdr("authorization", "Bearer "+c.cred, "connection", "Upgrade", "upgrade", c.upgrade)})
+		if o.Refuse || o.RawStream != c.raw {
+			t.Errorf("%s %s: %+v", c.host, c.upgrade, o)
+		}
+	}
+}
+
 func TestNewSetRefuses(t *testing.T) {
 	good := Binding{Ref: "r", Hosts: []string{"a.com"}, Inject: "bearer", Placeholder: phGH, Value: "v"}
 	for name, mut := range map[string]func(*Binding){

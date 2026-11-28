@@ -106,9 +106,9 @@ type Outcome struct {
 	RemoveHeaders []string // hop-by-hop and duplicates
 	Path          string   // the new ":path" when a query parameter was injected ("" to keep it)
 	Injected      bool
-	// RawStream: the request upgrades to SPDY/3.1 toward a cluster's API (kubectl exec, attach,
-	// port-forward), whose frames carry container I/O the broker does not parse; its response
-	// headers are scrubbed, its stream is not
+	// RawStream: the request upgrades to SPDY/3.1 or WebSocket toward a cluster's API (kubectl
+	// exec, attach, port-forward), whose frames carry container I/O, never the request's
+	// credential; its response headers are scrubbed, its stream is not
 	RawStream bool
 
 	TooMany bool // refused by a rate limit or quota (HTTP 429, not 403)
@@ -218,6 +218,13 @@ func (s *Set) Decide(r Request) Outcome {
 	for _, h := range r.Headers {
 		if h.Name == "upgrade" && strings.EqualFold(strings.TrimSpace(h.Value), "SPDY/3.1") {
 			out.RawStream = true // allowed above for clusters only
+		}
+		// kubectl 1.30+ streams exec, attach, and port-forward over WebSocket: to a cluster's API
+		// it is relayed as SPDY is. Holding its frames in the broker cost the stream its end: an
+		// API server closes right after its status and close frames, Envoy resets the stream,
+		// and the frames still in the broker were lost (kubectl: "close 1006 (abnormal closure)").
+		if h.Name == "upgrade" && strings.EqualFold(strings.TrimSpace(h.Value), "websocket") && allKube(bound) {
+			out.RawStream = true
 		}
 	}
 	for _, b := range bound {

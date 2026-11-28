@@ -113,6 +113,10 @@ func fakeAPIServer(t *testing.T, addr netip.Addr, p kubePKI, mtls bool) {
 		if len(body) > 0 {
 			line += fmt.Sprintf(" body=%d", len(body))
 		}
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			wsExecServer(w, r)
+			return
+		}
 		if strings.EqualFold(r.Header.Get("Upgrade"), "SPDY/3.1") {
 			c, rw, _ := w.(http.Hijacker).Hijack()
 			rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: SPDY/3.1\r\n\r\n" + line + "\n")
@@ -253,6 +257,50 @@ func TestKubeEndToEnd(t *testing.T) {
 	if !strings.Contains(status, "101") || !strings.Contains(rest, `auth=token`) {
 		t.Errorf("SPDY upgrade: %q %q", status, rest)
 	}
+	// kubectl exec over WebSocket (kubectl 1.30+): long binary transfers both ways, and a slow
+	// stream that outlasts the broker's message and call timeouts, arrive whole
+	wsDial := func(mode string) (*tls.Conn, *bufio.Reader) {
+		conn, err := tls.Dial("tcp", gw.String()+":443", conf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(conn, "GET /api/v1/namespaces/a/pods/p/exec?command=sh&mode=%s HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\n"+
+			"Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"+
+			"Sec-WebSocket-Protocol: v5.channel.k8s.io\r\n\r\n", mode, k0, ph0)
+		conn.SetDeadline(time.Now().Add(60 * time.Second))
+		r := bufio.NewReader(conn)
+		status, _ := r.ReadString('\n')
+		for {
+			l, err := r.ReadString('\n')
+			if err != nil || l == "\r\n" {
+				break
+			}
+		}
+		if !strings.Contains(status, "101") {
+			t.Fatalf("WebSocket upgrade (%s): %q", mode, status)
+		}
+		return conn, r
+	}
+	for _, mode := range []string{"down", "slow"} {
+		conn, r := wsDial(mode)
+		n, sum, text, err := wsReadAll(r)
+		conn.Close()
+		if want := wsExpect(mode); err != nil || n != want.n || sum != want.sum || text != "auth=token" {
+			t.Errorf("WebSocket %s: %d bytes (want %d), sum %x (want %x), %q, %v", mode, n, want.n, sum, want.sum, text, err)
+		}
+	}
+	conn, r = wsDial("up")
+	up := wsPattern(64 << 20)
+	go func() {
+		for off := 0; off < len(up); off += 1 << 16 {
+			conn.Write(wsClientFrame(0x2, up[off:min(off+1<<16, len(up))]))
+		}
+		conn.Write(wsClientFrame(0x8, []byte{0x03, 0xe8}))
+	}()
+	if _, _, text, err := wsReadAll(r); err != nil || text != fmt.Sprintf("auth=token got=%d sum=%x", len(up), wsSum(up)) {
+		t.Errorf("WebSocket upload: %q %v", text, err)
+	}
+	conn.Close()
 	logb, _ := os.ReadFile(c.AccessLog)
 	if strings.Contains(string(logb), token) || strings.Contains(string(logb), ph0) {
 		t.Error("a value reached the log")

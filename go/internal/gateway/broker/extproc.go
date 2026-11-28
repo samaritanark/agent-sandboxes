@@ -84,7 +84,7 @@ func clusterHost(host string) bool {
 func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
 	var scrub *Scrubber
 	var frames *FrameScrubber // after a WebSocket upgrade
-	var raw bool              // a SPDY stream to a cluster (Outcome.RawStream)
+	var raw bool              // an exec-style stream to a cluster (Outcome.RawStream)
 	var reps []Replacement
 	var ev Event
 	inspect, contentType := false, "" // a write to a cluster, whose body is checked (riskyWorkload)
@@ -210,7 +210,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				for _, h := range hs {
 					if h.Key == ":status" && headerValue(h) == "101" && !raw {
 						// the connection becomes WebSocket frames (Decide lets no other upgrade
-						// by, except SPDY to a cluster, whose stream is not sent here)
+						// by, except to a cluster, whose stream is not sent here)
 						frames = NewFrameScrubber(reps)
 					}
 				}
