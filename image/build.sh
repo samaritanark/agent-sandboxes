@@ -28,7 +28,7 @@ GO="${GO:-$(command -v go || echo /usr/local/go/bin/go)}"
 
 stage="${here}/mkosi.extra"
 lib="${stage}/usr/lib/sandbox"
-rm -rf "${lib:?}/bin" "${lib:?}/config" "${lib:?}/setup" "${stage:?}/etc/sandbox"
+rm -rf "${lib:?}/bin" "${lib:?}/config" "${lib:?}/setup" "${lib:?}/canary" "${stage:?}/etc/sandbox"
 install -d "${lib}/bin" "${lib}/setup" "${stage}/etc/sandbox"
 
 # The in-VM sandbox: the Go policy layer, the command the host binary proxies to.
@@ -41,6 +41,16 @@ install -d "${lib}/bin" "${lib}/setup" "${stage}/etc/sandbox"
 # Each session's egress gateway (design 5.8): the resolver, the connection check, and Envoy's parent.
 (cd go && CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" "${GO}" build -trimpath -buildvcs=false \
   -ldflags "-s -w" -o "${lib}/bin/sandbox-gateway" ./cmd/sandbox-gateway)
+# The capability probe's canary (design 5.2.3 check 3): sandboxd runs it under each runtime with this
+# directory, which holds nothing else, as its read-only root; the mount points it needs are made here.
+canary="${lib}/canary/rootfs"
+install -d "${canary}/canary/in" "${canary}/canary/out" "${canary}/proc" "${canary}/dev" "${canary}/sys" \
+  "${canary}/tmp" "${canary}/etc" "${canary}/run"
+(cd go && CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" "${GO}" build -trimpath -buildvcs=false \
+  -ldflags "-s -w" -o "${canary}/sandbox-canary" ./cmd/sandbox-canary)
+: > "${canary}/etc/resolv.conf"
+: > "${canary}/etc/hostname"
+: > "${canary}/etc/hosts"
 # What it reads from its install root (two levels above the binary).
 cp -a config "${lib}/config"
 cp -a setup/versions.sh "${lib}/setup/versions.sh"

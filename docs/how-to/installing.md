@@ -106,8 +106,10 @@ sandbox doctor
 ```
 
 `doctor` checks the driver, netd, that the VM answers and its version, nested
-virtualization in the VM (`/dev/kvm`, which Kata needs), and that the VM cannot
-reach your machine. Every line should say `ok`.
+virtualization in the VM (`/dev/kvm`, which Kata needs), that a canary sandbox
+starts under each runtime (Kata and gVisor), sees a kernel that is not the VM's,
+and reads a file through a mount, and that the VM cannot reach your machine.
+Every line should say `ok`.
 
 Sessions run under Kata by default. On macOS, Kata microVMs run nested inside
 the sandbox VM, which makes agents slower to start and respond; gVisor is the

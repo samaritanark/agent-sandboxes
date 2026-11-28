@@ -14,8 +14,7 @@ import (
 var HostAliases = []string{"192.168.5.2"} // Lima's host.lima.internal on its user-mode network
 
 // doctor is `sandbox doctor`: the capability probe of design 5.2.3 as far as this build can run
-// it, plus the state of the VM and its driver. Check 3 (a canary Kata microVM) waits for Kata in
-// the image.
+// it, plus the state of the VM and its driver. Check 3 runs a canary sandbox under each runtime.
 func (a *app) doctor(args []string) int {
 	if len(args) > 0 {
 		if args[0] == "-h" || args[0] == "--help" {
@@ -54,6 +53,17 @@ func (a *app) doctor(args []string) int {
 	// check 2: a hardware virtualization backend inside the VM (diagnostic; check 3 is the contract)
 	out, err := a.env.Transport.Output(a.ctx, ep, []string{"sh", "-c", "test -c /dev/kvm && echo present || echo absent"}, 64)
 	report(err == nil && strings.TrimSpace(string(out)) == "present", "/dev/kvm in the VM (nested virtualization)", strings.TrimSpace(string(out)))
+
+	// check 3: a canary sandbox starts under each runtime, reports a kernel that is not the VM's,
+	// reads a file through a mount, and is torn down (sandboxd, design 5.2.3)
+	for _, rt := range []string{"kata", "gvisor"} {
+		out, err := a.env.Transport.Output(a.ctx, ep, []string{"/usr/bin/sandbox", "__canary", rt}, 4096)
+		res := strings.TrimSpace(string(out))
+		if err != nil && res == "" {
+			res = err.Error()
+		}
+		report(err == nil, "a canary sandbox under "+map[string]string{"kata": "Kata", "gvisor": "gVisor"}[rt], res)
+	}
 
 	// check 4: the VM must not reach the host. Listen on every host address and let VM root try.
 	l, err := net.Listen("tcp", ":0")

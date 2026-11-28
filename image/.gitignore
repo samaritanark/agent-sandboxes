@@ -2,6 +2,7 @@
 mkosi.extra/usr/lib/sandbox/bin/
 mkosi.extra/usr/lib/sandbox/config/
 mkosi.extra/usr/lib/sandbox/setup/
+mkosi.extra/usr/lib/sandbox/canary/
 mkosi.extra/etc/sandbox/
 # mkosi's outputs and caches
 mkosi.output/

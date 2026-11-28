@@ -53,6 +53,10 @@ const syncAgent = "__sync-agent"
 // VM (importhistory.go).
 const importHistoryCmd = "__import-history"
 
+// canaryCmd runs the capability probe's canary under a runtime (design 5.2.3 check 3) for the
+// host's `sandbox doctor`: one line, what it found, or the error, with status 1.
+const canaryCmd = "__canary"
+
 // resumeRepos prints a session's repositories for the host, which syncs them before a resume.
 const resumeRepos = "__resume-repos"
 
@@ -113,6 +117,18 @@ func main() {
 			os.Exit(1)
 		}
 		os.Stdout.WriteString(strconv.Itoa(n) + "\n")
+		return
+	}
+	if len(os.Args) == 3 && os.Args[1] == canaryCmd {
+		resp, err := daemon.Call(context.Background(), daemon.Socket, daemon.Request{Op: "canary", ID: os.Args[2]})
+		if err == nil && !resp.OK {
+			err = errors.New(resp.Error)
+		}
+		if err != nil {
+			os.Stdout.WriteString(err.Error() + "\n")
+			os.Exit(1)
+		}
+		os.Stdout.WriteString(resp.Detail + "\n")
 		return
 	}
 	if len(os.Args) == 3 && os.Args[1] == resumeRepos {

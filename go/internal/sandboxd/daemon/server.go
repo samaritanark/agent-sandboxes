@@ -23,7 +23,7 @@ const Socket = "/run/sandboxd.sock"
 
 // Request is one call on sandboxd's socket. One request per connection.
 type Request struct {
-	Op     string          `json:"op"` // start, stop, heartbeat, list, attach, broker-key, broker-put, broker-delete, broker-list
+	Op     string          `json:"op"` // start, stop, heartbeat, list, attach, canary, broker-key, broker-put, broker-delete, broker-list
 	Spec   json.RawMessage `json:"spec,omitempty"`
 	ID     string          `json:"id,omitempty"` // a session, or for broker-put and broker-delete a credential reference
 	Reason string          `json:"reason,omitempty"`
@@ -53,7 +53,8 @@ type Response struct {
 	Exp int64 `json:"exp,omitempty"`
 	// broker-list: the binding each entry of the second form carries, by reference (unchecked)
 	Bindings map[string]brokerseal.Binding `json:"bindings,omitempty"`
-	Exit     *int                          `json:"exit,omitempty"` // attach: the command's exit status
+	Exit     *int                          `json:"exit,omitempty"`   // attach: the command's exit status
+	Detail   string                        `json:"detail,omitempty"` // canary: what it found
 }
 
 // Authorize decides whether a connection's peer may use sandboxd (SO_PEERCRED on Linux).
@@ -192,6 +193,12 @@ func (d *Daemon) call(ctx context.Context, req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, ID: req.ID}
+	case "canary":
+		detail, err := d.Canary(ctx, req.ID)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, ID: req.ID, Detail: detail}
 	case "heartbeat":
 		if err := d.Heartbeat(req.ID); err != nil {
 			return fail(err)

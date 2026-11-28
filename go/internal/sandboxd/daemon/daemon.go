@@ -164,6 +164,8 @@ type Daemon struct {
 	ReadableRoot string
 	Now          func() time.Time
 	Log          *log.Logger
+	// KernelRelease is the VM's kernel release, for the canary (canary.go); nil reads /proc
+	KernelRelease func() string
 
 	mu     sync.Mutex // serializes lifecycle changes
 	live   map[string]*limits.Times

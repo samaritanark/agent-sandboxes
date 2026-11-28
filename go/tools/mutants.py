@@ -1619,3 +1619,14 @@ m(JN, '\t\tif err != nil || !prev.State.Ended() || len(prev.Live()) > 0 {', '\t\
 m(JN, '\t\tif err != nil || !prev.State.Ended() || len(prev.Live()) > 0 {', '\t\tif err != nil || len(prev.Live()) > 0 {', "TestCreateAgain", pkg="sandboxd/journal")
 m(JN, '\t\tif err := os.Rename(st.path(spec.ID), st.path(spec.ID)+".ended"); err != nil {', '\t\tif err := os.Remove(st.path(spec.ID)); err != nil {', "TestCreateAgain", pkg="sandboxd/journal")
 m("internal/host/syncengine/git.go", '\tif err != nil || !st.Mode().IsRegular() || st.Size() <= syncproto.MaxBody {', '\tif true {', "TestLargeObject")
+
+# the capability probe's canary (design 5.2.3 check 3)
+CN = "internal/sandboxd/daemon/canary.go"
+R_CN = "TestCanary"
+m(CN, '\tcase r.Probe != probe:', '\tcase false:', R_CN, pkg="sandboxd/daemon")
+m(CN, '\tcase r.UID != AgentUID:', '\tcase false:', R_CN, pkg="sandboxd/daemon")
+m(CN, '\tcase r.Release == "" || r.Release == d.vmKernel():', '\tcase r.Release == "":', R_CN, pkg="sandboxd/daemon")
+m(CN, '\tif code != 0 {', '\tif false {', R_CN, pkg="sandboxd/daemon")
+m(CN, '\tdefer d.NetNS.Delete(context.WithoutCancel(ctx), ns)\n', '', R_CN, pkg="sandboxd/daemon")
+m(CN, '\tif kind != runtime.Kata && kind != runtime.GVisor {', '\tif false {', R_CN, pkg="sandboxd/daemon")
+m("internal/host/app/doctor.go", '\t\treport(err == nil, "a canary sandbox under "+', '\t\treport(true, "a canary sandbox under "+', "TestDoctor", pkg="host/app")

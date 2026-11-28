@@ -43,6 +43,8 @@ type fakeTransport struct {
 	pushArgs    [][]string
 	epoch       string
 	mirrors     [][]string
+	// the doctor's canary: runtime -> its error ("" passes)
+	canaryFail map[string]string
 }
 
 func (f *fakeTransport) Run(_ context.Context, _ driver.SSHEndpoint, argv []string, stdin io.Reader, stdout, _ io.Writer, tty bool) (int, error) {
@@ -87,6 +89,12 @@ func (f *fakeTransport) Output(_ context.Context, _ driver.SSHEndpoint, argv []s
 	}
 	if len(argv) > 1 && argv[1] == auditpull.VMRead {
 		return []byte(f.auditRecords[argv[2]+"/"+argv[3]]), nil
+	}
+	if len(argv) == 3 && argv[0] == "/usr/bin/sandbox" && argv[1] == "__canary" {
+		if e := f.canaryFail[argv[2]]; e != "" {
+			return []byte(e + "\n"), errors.New("exit status 1")
+		}
+		return []byte("kernel 6.12.0-kata, probe read, 1.2 s\n"), nil
 	}
 	switch argv[0] {
 	case "sh":
@@ -296,6 +304,15 @@ func TestDoctor(t *testing.T) {
 		t.Errorf("%+v", r)
 	}
 	if r := run(t, d, &fakeTransport{release: goodRelease, reach: "reachable"}, "", "doctor"); r.rc != 1 || !strings.Contains(r.out, "FAIL  the VM cannot reach the host at 192.168.5.2: reachable") {
+		t.Errorf("%+v", r)
+	}
+	// check 3: a canary under each runtime
+	if r := run(t, d, &fakeTransport{release: goodRelease, reach: "blocked"}, "", "doctor"); !strings.Contains(r.out, "ok    a canary sandbox under Kata: kernel") ||
+		!strings.Contains(r.out, "ok    a canary sandbox under gVisor: kernel") {
+		t.Errorf("%+v", r)
+	}
+	tr := &fakeTransport{release: goodRelease, reach: "blocked", canaryFail: map[string]string{"gvisor": "did not run: no runsc"}}
+	if r := run(t, d, tr, "", "doctor"); r.rc != 1 || !strings.Contains(r.out, "FAIL  a canary sandbox under gVisor: did not run: no runsc") {
 		t.Errorf("%+v", r)
 	}
 }

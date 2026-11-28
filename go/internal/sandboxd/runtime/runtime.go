@@ -174,6 +174,43 @@ func (r *Runtime) Start(ctx context.Context, id string, creator cio.Creator) err
 	return nil
 }
 
+// Canary runs m's process to completion in a sandbox of m's runtime whose root file system is the
+// directory rootfs (read-only; no image), and returns its exit status. The sandbox is removed
+// afterwards, whatever happened. The capability probe's canary (design 5.2.3 check 3).
+func (r *Runtime) Canary(ctx context.Context, m MicroVM, rootfs string, timeout time.Duration) (int, error) {
+	m.Image = "canary" // Check wants one; the root file system is rootfs
+	if err := m.Check(); err != nil {
+		return -1, err
+	}
+	ctx, cancel := context.WithTimeout(ctxNS(ctx), timeout)
+	defer cancel()
+	defer r.Destroy(context.WithoutCancel(ctx), m.ID, time.Second)
+	r.Destroy(ctx, m.ID, time.Second) // a canary left by an earlier run
+	c, err := r.c.NewContainer(ctx, m.ID, withRuntime(m.Runtime),
+		client.WithNewSpec(append(SpecOpts(m), oci.WithRootFSPath(rootfs), oci.WithRootFSReadonly())...))
+	if err != nil {
+		return -1, err
+	}
+	t, err := c.NewTask(ctx, cio.NullIO)
+	if err != nil {
+		return -1, err
+	}
+	wait, err := t.Wait(ctx)
+	if err != nil {
+		return -1, err
+	}
+	if err := t.Start(ctx); err != nil {
+		return -1, err
+	}
+	select {
+	case st := <-wait:
+		code, _, err := st.Result()
+		return int(code), err
+	case <-ctx.Done():
+		return -1, fmt.Errorf("the canary did not finish in %s", timeout)
+	}
+}
+
 // Running reports whether id's process is running (a container with no task, or a stopped one,
 // is not).
 func (r *Runtime) Running(ctx context.Context, id string) (bool, error) {
