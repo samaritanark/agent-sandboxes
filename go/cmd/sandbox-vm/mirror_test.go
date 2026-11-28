@@ -18,6 +18,10 @@ func TestMirror(t *testing.T) {
 	if got, _ := os.Readlink(filepath.Join(root, "Users/op/code/app")); got != cp {
 		t.Errorf("link %q", got)
 	}
+	// a Fedora Atomic home in /var/home
+	if err := mirror(root, "/var/home/op/code/app", cp); err != nil {
+		t.Errorf("/var/home: %v", err)
+	}
 	// again: kept
 	if err := mirror(root, "/Users/op/code/app", cp); err != nil {
 		t.Errorf("repeat: %v", err)
@@ -27,6 +31,8 @@ func TestMirror(t *testing.T) {
 	for name, c := range map[string][2]string{
 		"a system path":         {"/etc/x", cp},
 		"var":                   {"/var/lib/sandbox/operator/x", cp},
+		"var/home itself":       {"/var/home", cp},
+		"var/home/":             {"/var/home/", cp},
 		"root itself":           {"/x", cp},
 		"relative":              {"Users/op/x", cp},
 		"unclean":               {"/Users/op/../op/x", cp},

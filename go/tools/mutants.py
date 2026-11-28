@@ -1875,3 +1875,5 @@ m(KE, '\tif err := json.Unmarshal(out.Bytes(), &c); err != nil || c.Kind != "Exe
 m(KE, '\t\tif strings.ContainsAny(r.token, "\\r\\n\\x00") {', '\t\tif false {', R_KE)
 m(KE, '\t\tk.Auth, k.value = "token", []byte(cred.token)', '\t\tk.Auth, k.value = "token", []byte("x")', R_KE)
 m("internal/cli/runagent.go", '\t\tif _, have := seed[name]; !have {\n\t\t\tseed[name] = []byte(content)', '\t\tif false {\n\t\t\tseed[name] = []byte(content)', "TestLaunchUnbrokered")
+m("cmd/sandbox-vm/mirror.go", '\tvarHome := parts[1] == "var" && len(parts) >= 4 && parts[2] == "home" && parts[3] != ""', '\tvarHome := false', "TestMirror", pkg="../cmd/sandbox-vm")
+m("cmd/sandbox-vm/mirror.go", '\tvarHome := parts[1] == "var" && len(parts) >= 4 && parts[2] == "home" && parts[3] != ""', '\tvarHome := parts[1] == "var"', "TestMirror", pkg="../cmd/sandbox-vm")

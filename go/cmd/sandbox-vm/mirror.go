@@ -39,8 +39,11 @@ func checkMirror(hostPath, target string) error {
 	if len(parts) < 3 {
 		return fmt.Errorf("%s is too near the root to mirror", hostPath)
 	}
+	// Fedora Atomic and its kin keep homes in /var/home/<user>; the VM has no /var/home, so a
+	// home there (and what is under it) is mirrored like any other
+	varHome := parts[1] == "var" && len(parts) >= 4 && parts[2] == "home" && parts[3] != ""
 	for _, r := range reserved {
-		if parts[1] == r {
+		if parts[1] == r && !varHome {
 			return fmt.Errorf("%s is inside the VM's own /%s", hostPath, r)
 		}
 	}

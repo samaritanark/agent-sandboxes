@@ -12,9 +12,9 @@ later.
 `/dev/kvm` with nested virtualization enabled; your user must be in the `kvm`
 group. `--driver lima` needs Lima instead. Only the arm64 image has been tested
 end to end so far (the qemu driver, a gVisor session, and the sync, on an arm64 Linux host). Your
-home directory and the repositories you launch must not be under `/var` (the VM mirrors their paths,
-and refuses one inside its own `/var`), which rules out Fedora Atomic-style homes in
-`/var/home/<user>` for now.
+home directory and the repositories you launch must not be in the VM's own system directories
+(`/var`, `/usr`, `/etc`, `/tmp`, ...): the VM mirrors their paths. Homes in `/var/home/<user>`
+(Fedora Atomic and its kin) are the exception and work.
 
 **Windows**: not available in v3 yet. See [Windows](../how-to/platforms/windows.md).
 
